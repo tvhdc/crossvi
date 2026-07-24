@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include "FontStorageContract.h"
+
 // --- SdCardFontFamilyInfo helpers ---
 
 const SdCardFontFileInfo* SdCardFontFamilyInfo::findFile(uint8_t size, uint8_t style) const {
@@ -148,6 +150,7 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
 
     // Skip macOS resource fork files (._*) and other hidden files
     if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
+    if (!FontStorageContract::isValidCpfontFilename(nameBuffer)) continue;
 
     uint8_t size, style;
     if (!parseFilename(nameBuffer, size, style)) continue;
@@ -170,6 +173,10 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
 
     SdCardFontFileInfo info;
     info.path = std::string(dirPath) + "/" + nameBuffer;
+    if (info.path.size() >= FontStorageContract::FONT_PATH_CAPACITY) {
+      LOG_ERR("SDREG", "Font path is too long — skipping %s", nameBuffer);
+      continue;
+    }
     info.pointSize = size;
     info.style = style;
     family.files.push_back(std::move(info));
@@ -200,6 +207,10 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
 
       // Skip hidden/system directories inside the root (macOS ._*, .Trashes, etc.)
       if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
+      if (!FontStorageContract::isValidFamilyName(nameBuffer)) {
+        LOG_ERR("SDREG", "Invalid font family name — skipping");
+        continue;
+      }
 
       // De-dup by family name across roots.
       bool exists = false;
@@ -250,11 +261,13 @@ bool SdCardFontRegistry::discover() {
 }
 
 const char* SdCardFontRegistry::findFamilyRoot(const char* familyName) {
-  if (!familyName || !*familyName) return nullptr;
-  char path[160];
-  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_HIDDEN, familyName);
+  if (!FontStorageContract::isValidFamilyName(familyName)) return nullptr;
+  char path[FontStorageContract::FONT_PATH_CAPACITY];
+  int written = snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_HIDDEN, familyName);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(path)) return nullptr;
   if (Storage.exists(path)) return FONTS_DIR_HIDDEN;
-  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_VISIBLE, familyName);
+  written = snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_VISIBLE, familyName);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(path)) return nullptr;
   if (Storage.exists(path)) return FONTS_DIR_VISIBLE;
   return nullptr;
 }

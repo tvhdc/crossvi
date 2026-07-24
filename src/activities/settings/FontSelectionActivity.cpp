@@ -170,20 +170,33 @@ void FontSelectionActivity::renderPreviewPane(int top, int height, int fontId, c
   const int maxLines = std::max(1, innerHeight / (lineH + 2));
 
   const char* previewText = I18N.get(StrId::STR_FONT_PREVIEW_TEXT);
+  const char* boldText = I18N.get(StrId::STR_FONT_PREVIEW_BOLD);
+  const char* italicText = I18N.get(StrId::STR_FONT_PREVIEW_ITALIC);
   if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearCache();
     char prewarmBuf[256];
-    snprintf(prewarmBuf, sizeof(prewarmBuf), "%s %s", previewText, ELLIPSIS_UTF8);
-    fcm->prewarmCache(fontId, prewarmBuf, 0x01);
+    snprintf(prewarmBuf, sizeof(prewarmBuf), "%s %s %s %s", previewText, boldText, italicText, ELLIPSIS_UTF8);
+    fcm->prewarmCache(fontId, prewarmBuf, 0x07);
   }
-
-  const auto lines = renderer.wrappedText(fontId, previewText, width, maxLines);
 
   int y = top + metrics_.previewPadding;
   const int textBottomLimit = top + height - labelReserved;
-  for (const auto& line : lines) {
+  const auto regularLines = renderer.wrappedText(fontId, previewText, width, std::max(1, maxLines - 2));
+  for (const auto& line : regularLines) {
     if (y + lineH > textBottomLimit) break;
     renderer.drawText(fontId, left, y, line.c_str());
     y += lineH + 2;
+  }
+  if (y + lineH <= textBottomLimit) {
+    renderer.drawText(fontId, left, y, boldText, true, EpdFontFamily::BOLD);
+    y += lineH + 2;
+  }
+  if (y + lineH <= textBottomLimit) {
+    renderer.drawText(fontId, left, y, italicText, true, EpdFontFamily::ITALIC);
+  }
+
+  if (SETTINGS.sdFontFamilyName[0] != '\0' && !sdFontSystem.currentSupportsVietnamese()) {
+    renderer.drawText(labelFontId, left, labelY - labelH - 2, tr(STR_FONT_MISSING_VIETNAMESE));
   }
 }
 
@@ -205,7 +218,8 @@ void FontSelectionActivity::render(RenderLock&&) {
                                     : nullptr;
   renderPreviewPane(previewTop, previewHeight, previewFontId, previewFontName);
 
-  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, pageWidth, listTop - metrics_.verticalSpacing / 2);
+  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, pageWidth - 1,
+                    listTop - metrics_.verticalSpacing / 2);
 
   const int currentFontIndex = findCurrentFontIndex(registry_, originalSdFontFamilyName_, originalFontFamily_);
   GUI.drawList(
@@ -224,4 +238,5 @@ void FontSelectionActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
+  if (auto* fcm = renderer.getFontCacheManager()) fcm->clearCache();
 }

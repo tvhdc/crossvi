@@ -110,7 +110,31 @@ class HalStorage {
       return false;
     }
     const auto found = files_.find(from);
-    if (found == files_.end() || files_.count(to) != 0) return false;
+    if (found == files_.end()) {
+      const std::string sourceRoot = from;
+      const std::string destinationRoot = to;
+      if (directories_.count(sourceRoot) == 0 || exists(to)) return false;
+      const std::string sourcePrefix = sourceRoot + "/";
+      const std::string destinationPrefix = destinationRoot + "/";
+      std::vector<std::pair<std::string, std::vector<uint8_t>>> movedFiles;
+      std::vector<std::string> movedDirectories;
+      for (const auto& item : files_) {
+        if (item.first.compare(0, sourcePrefix.size(), sourcePrefix) == 0) {
+          movedFiles.emplace_back(destinationPrefix + item.first.substr(sourcePrefix.size()), item.second);
+        }
+      }
+      for (const auto& directory : directories_) {
+        if (directory.compare(0, sourcePrefix.size(), sourcePrefix) == 0) {
+          movedDirectories.push_back(destinationPrefix + directory.substr(sourcePrefix.size()));
+        }
+      }
+      removeDir(sourceRoot.c_str());
+      directories_.insert(destinationRoot);
+      directories_.insert(movedDirectories.begin(), movedDirectories.end());
+      for (auto& item : movedFiles) files_[item.first] = std::move(item.second);
+      return true;
+    }
+    if (files_.count(to) != 0 || directories_.count(to) != 0) return false;
     files_[to] = found->second;
     files_.erase(found);
     if ((corruptRename_ || corruptRenameDestination_ == to) && !files_[to].empty()) {
@@ -164,6 +188,7 @@ class HalStorage {
     reportedSizes_.clear();
   }
   void setFile(const std::string& path, std::vector<uint8_t> data) { files_[path] = std::move(data); }
+  void setDirectory(const std::string& path) { directories_.insert(path); }
   std::vector<uint8_t>& mutableFile(const std::string& path) { return files_.at(path); }
   const std::vector<uint8_t>& file(const std::string& path) const { return files_.at(path); }
   void makeUnreadable(const std::string& path) { unreadable_.insert(path); }

@@ -92,7 +92,9 @@ class FontDownloadActivity : public Activity {
   void downloadFamily(ManifestFamily& family);
   void downloadAll();
   void updateAll();
-  static bool computeFileCrc32(const char* path, uint32_t& outCrc);
+  bool validateFamilyDirectory(const char* directory, const ManifestFamily& family);
+  static bool validateFamilyDirectoryCallback(const char* directory, void* context);
+  bool recoverFamilyTransactions(const ManifestFamily& family);
   bool showDownloadAllRow() const;
   bool showUpdateAllRow() const;
   int specialRowCount() const;

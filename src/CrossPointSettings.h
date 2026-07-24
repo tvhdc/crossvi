@@ -3,6 +3,7 @@
 #include <Epub/EpubRenderMode.h>
 #include <HalStorage.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <mutex>
@@ -300,7 +301,8 @@ class CrossPointSettings {
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t focusReadingEnabled = 0;
   // SD card font family name (empty = use built-in fontFamily)
-  char sdFontFamilyName[32] = "";
+  static constexpr size_t SD_FONT_FAMILY_NAME_CAPACITY = 32;
+  char sdFontFamilyName[SD_FONT_FAMILY_NAME_CAPACITY] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)

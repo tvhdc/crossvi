@@ -92,3 +92,7 @@ int SdCardFontManager::getFontId(const std::string& familyName) const {
   if (familyName != loadedFamilyName_ || loaded_.empty()) return 0;
   return loaded_.front().fontId;
 }
+
+bool SdCardFontManager::currentSupportsVietnamese() const {
+  return !loaded_.empty() && loaded_.front().font && loaded_.front().font->supportsVietnamese();
+}

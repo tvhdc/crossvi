@@ -14,6 +14,7 @@
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
+#include "FontSizeSelectionActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
@@ -212,6 +213,14 @@ void SettingsActivity::toggleCurrentSetting() {
   }
   if (setting.nameId == StrId::STR_DAILY_READING_GOAL) {
     openDailyReadingGoalPicker();
+    return;
+  }
+  if (setting.nameId == StrId::STR_FONT_SIZE) {
+    startActivityForResult(std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) {
+                             SETTINGS.saveToFile();
+                             rebuildSettingsLists();
+                           });
     return;
   }
 

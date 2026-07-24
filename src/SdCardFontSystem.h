@@ -26,6 +26,13 @@ class SdCardFontSystem {
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
   int resolveFontId(const char* familyName, uint8_t fontSizeEnum) const;
 
+  uint8_t currentPointSize() const { return manager_.currentPointSize(); }
+  bool currentSupportsVietnamese() const { return manager_.currentSupportsVietnamese(); }
+
+  /// Point size that a family would use for one of the four reader size
+  /// settings, or 0 when the family/size is unavailable.
+  uint8_t selectedPointSize(const char* familyName, uint8_t fontSizeEnum) const;
+
   /// Access the registry (e.g. for settings UI to enumerate available fonts).
   const SdCardFontRegistry& registry() const { return registry_; }
 

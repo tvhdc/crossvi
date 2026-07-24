@@ -4,6 +4,7 @@
 #include <Logging.h>
 
 #include "CrossPointSettings.h"
+#include "FontInstaller.h"
 
 namespace {
 
@@ -16,6 +17,12 @@ static uint8_t fontSizeEnumFromSettings() {
 }  // namespace
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
+  if (SETTINGS.sdFontFamilyName[0] != '\0') {
+    FontInstaller installer(registry_);
+    if (!installer.recoverInterruptedFamilyDownload(SETTINGS.sdFontFamilyName)) {
+      LOG_ERR("SDFS", "Failed to recover interrupted font update: %s", SETTINGS.sdFontFamilyName);
+    }
+  }
   registry_.discover();
 
   // Register this system as the SD font ID resolver in settings.
@@ -113,4 +120,12 @@ int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEn
   // enum is implicit — always return the single loaded font ID for this family.
   // ensureLoaded() must have been called with the current settings before this.
   return manager_.getFontId(familyName);
+}
+
+uint8_t SdCardFontSystem::selectedPointSize(const char* familyName, const uint8_t fontSizeEnum) const {
+  if (!familyName || familyName[0] == '\0') return 0;
+  const auto* family = registry_.findFamily(familyName);
+  if (!family) return 0;
+  const auto* selected = family->findClosestReaderSize(fontSizeEnum);
+  return selected ? selected->pointSize : 0;
 }

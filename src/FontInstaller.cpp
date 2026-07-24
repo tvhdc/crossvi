@@ -2,74 +2,39 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
+#include <SdCardFont.h>
 
-#include <cctype>
 #include <cstring>
 
 #include "CrossPointSettings.h"
 
+static_assert(FontStorageUtils::MAX_FAMILY_NAME_BYTES + 1 ==
+                  CrossPointSettings::SD_FONT_FAMILY_NAME_CAPACITY,
+              "Font family path contract must match persisted settings capacity");
+
 FontInstaller::FontInstaller(SdCardFontRegistry& registry) : registry_(registry) {}
 
 bool FontInstaller::isValidFamilyName(const char* name) {
-  if (name == nullptr || name[0] == '\0') return false;
-
-  // Reject path traversal
-  if (strstr(name, "..") != nullptr) return false;
-  if (strchr(name, '/') != nullptr) return false;
-  if (strchr(name, '\\') != nullptr) return false;
-
-  for (const char* p = name; *p != '\0'; ++p) {
-    char c = *p;
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
-      return false;
-    }
-  }
-  return true;
+  return FontStorageUtils::isValidFamilyName(name);
 }
 
 bool FontInstaller::isValidCpfontFilename(const char* name) {
-  if (name == nullptr || name[0] == '\0') return false;
-
-  // Reject path separators / traversal up front. Anything that could escape
-  // the family directory or refer to a different one is a hard reject.
-  if (strstr(name, "..") != nullptr) return false;
-  if (strchr(name, '/') != nullptr) return false;
-  if (strchr(name, '\\') != nullptr) return false;
-
-  // Must end with ".cpfont" exactly.
-  static constexpr char kExt[] = ".cpfont";
-  static constexpr size_t kExtLen = sizeof(kExt) - 1;
-  size_t nameLen = strlen(name);
-  if (nameLen <= kExtLen) return false;
-  if (strcmp(name + nameLen - kExtLen, kExt) != 0) return false;
-
-  // Basename (before .cpfont) must be alphanumeric + hyphen + underscore only.
-  // No additional dots — keeps stray "Foo.cpfont.tmp"-style names out.
-  size_t baseLen = nameLen - kExtLen;
-  for (size_t i = 0; i < baseLen; ++i) {
-    char c = name[i];
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
-      return false;
-    }
-  }
-  return true;
+  return FontStorageUtils::isValidCpfontFilename(name);
 }
 
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
+  if (!isValidFamilyName(familyName)) return false;
   // Reuse the family's existing root if installed; otherwise pick the
   // default-write root (hidden if no roots exist yet).
-  const char* root = SdCardFontRegistry::findFamilyRoot(familyName);
-  if (!root) root = SdCardFontRegistry::defaultWriteRoot();
+  const char* root = rootForFamily(familyName);
 
-  if (!Storage.exists(root)) {
-    if (!Storage.mkdir(root)) {
-      LOG_ERR("FONT", "Failed to create fonts dir: %s", root);
-      return false;
-    }
+  if (!ensureRootDir(root)) return false;
+
+  char dirPath[FontStorageUtils::FONT_PATH_CAPACITY];
+  if (!buildFamilyPathAtRoot(root, familyName, dirPath, sizeof(dirPath))) {
+    LOG_ERR("FONT", "Font family path is too long");
+    return false;
   }
-
-  char dirPath[160];
-  snprintf(dirPath, sizeof(dirPath), "%s/%s", root, familyName);
 
   if (!Storage.exists(dirPath)) {
     if (!Storage.mkdir(dirPath)) {
@@ -80,36 +45,101 @@ bool FontInstaller::ensureFamilyDir(const char* familyName) {
   return true;
 }
 
+bool FontInstaller::ensureRootDir(const char* root) {
+  if (!root || root[0] == '\0') return false;
+  if (Storage.exists(root)) return true;
+  if (Storage.mkdir(root)) return true;
+  LOG_ERR("FONT", "Failed to create fonts dir: %s", root);
+  return false;
+}
+
 bool FontInstaller::validateCpfontFile(const char* path) {
-  HalFile file;
-  if (!Storage.openFileForRead("FONT", path, file)) {
-    LOG_ERR("FONT", "Cannot open for validation: %s", path);
+  // Use the production parser as the single format authority. load() performs
+  // bounded header/TOC/section/glyph validation without loading bitmap payloads
+  // into RAM, so malformed uploads fail before atomic publish.
+  SdCardFont font;
+  if (!font.load(path)) {
+    LOG_ERR("FONT", "Invalid .cpfont: %s", path);
     return false;
   }
-
-  uint8_t magic[CPFONT_MAGIC_LEN];
-  size_t bytesRead = file.read(magic, CPFONT_MAGIC_LEN);
-  file.close();
-
-  if (bytesRead < CPFONT_MAGIC_LEN) {
-    LOG_ERR("FONT", "File too small: %s (%zu bytes)", path, bytesRead);
-    return false;
-  }
-
-  if (memcmp(magic, "CPFONT\0\0", CPFONT_MAGIC_LEN) != 0) {
-    LOG_ERR("FONT", "Bad magic in: %s", path);
-    return false;
-  }
-
   return true;
 }
 
-void FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize) {
+bool FontInstaller::validateFamilyDirectory(const char* directory) {
+  HalFile dir = Storage.open(directory);
+  if (!dir || !dir.isDirectory()) return false;
+  bool foundFont = false;
+  char name[FontStorageUtils::MAX_CPFONT_FILENAME_BYTES + 1];
+  while (true) {
+    HalFile entry = dir.openNextFile();
+    if (!entry) break;
+    if (entry.isDirectory()) {
+      entry.close();
+      continue;
+    }
+    entry.getName(name, sizeof(name));
+    entry.close();
+    const size_t length = strlen(name);
+    if (length < 7 || strcmp(name + length - 7, ".cpfont") != 0) continue;
+    char path[FontStorageUtils::FONT_PATH_CAPACITY];
+    if (!isValidCpfontFilename(name) || !FontStorageUtils::buildFilePath(directory, name, path, sizeof(path)) ||
+        !validateCpfontFile(path)) {
+      dir.close();
+      return false;
+    }
+    foundFont = true;
+  }
+  dir.close();
+  return foundFont;
+}
+
+bool FontInstaller::recoverInterruptedFamilyDownload(const char* familyName) {
+  if (!isValidFamilyName(familyName)) return false;
+  const auto validateFamily = [](const char* directory, void* context) {
+    return static_cast<FontInstaller*>(context)->validateFamilyDirectory(directory);
+  };
+  const char* roots[] = {SdCardFontRegistry::FONTS_DIR_HIDDEN, SdCardFontRegistry::FONTS_DIR_VISIBLE};
+  for (const char* root : roots) {
+    char finalDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+    char stagingDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+    char backupDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+    if (!buildFamilyPathAtRoot(root, familyName, finalDirectory, sizeof(finalDirectory)) ||
+        !FontStorageUtils::buildTransactionDirectoryPath(root, familyName, ".download.tmp", stagingDirectory,
+                                                        sizeof(stagingDirectory)) ||
+        !FontStorageUtils::buildTransactionDirectoryPath(root, familyName, ".download.bak", backupDirectory,
+                                                        sizeof(backupDirectory))) {
+      return false;
+    }
+    if (!Storage.exists(stagingDirectory) && !Storage.exists(backupDirectory)) continue;
+    if (FontStorageUtils::recoverFamily(finalDirectory, stagingDirectory, backupDirectory, validateFamily, this,
+                                       validateFamily, this) == FontStorageUtils::FamilyTransactionStatus::IoError) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const char* FontInstaller::rootForFamily(const char* family) {
+  const char* root = SdCardFontRegistry::findFamilyRoot(family);
+  return root ? root : SdCardFontRegistry::defaultWriteRoot();
+}
+
+bool FontInstaller::buildFamilyPathAtRoot(const char* root, const char* family, char* outBuf,
+                                          const size_t outBufSize) {
+  if (!isValidFamilyName(family)) return false;
+  return FontStorageUtils::buildFamilyPath(root, family, outBuf, outBufSize);
+}
+
+bool FontInstaller::buildFontPathAtRoot(const char* root, const char* family, const char* filename, char* outBuf,
+                                        const size_t outBufSize) {
+  if (!isValidFamilyName(family) || !isValidCpfontFilename(filename)) return false;
+  return FontStorageUtils::buildFontPath(root, family, filename, outBuf, outBufSize);
+}
+
+bool FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, const size_t outBufSize) {
   // Use the same root selection as ensureFamilyDir: existing install dir wins,
   // otherwise the default-write root.
-  const char* root = SdCardFontRegistry::findFamilyRoot(family);
-  if (!root) root = SdCardFontRegistry::defaultWriteRoot();
-  snprintf(outBuf, outBufSize, "%s/%s/%s", root, family, filename);
+  return buildFontPathAtRoot(rootForFamily(family), family, filename, outBuf, outBufSize);
 }
 
 FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
@@ -122,8 +152,8 @@ FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
   bool removedAny = false;
   bool sawAny = false;
   for (const char* root : roots) {
-    char dirPath[160];
-    snprintf(dirPath, sizeof(dirPath), "%s/%s", root, familyName);
+    char dirPath[FontStorageUtils::FONT_PATH_CAPACITY];
+    if (!buildFamilyPathAtRoot(root, familyName, dirPath, sizeof(dirPath))) return Error::INVALID_FAMILY_NAME;
     if (!Storage.exists(dirPath)) continue;
     sawAny = true;
     if (!Storage.removeDir(dirPath)) {

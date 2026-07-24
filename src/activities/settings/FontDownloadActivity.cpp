@@ -6,11 +6,13 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
-#include <esp_rom_crc.h>
+
+#include <limits>
 
 #include "MappedInputManager.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
+#include "FontStorageUtils.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
@@ -109,28 +111,50 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   }
 
   baseUrl_ = doc["baseUrl"] | "";
+  if (baseUrl_.empty()) {
+    errorMessage_ = "Invalid font manifest";
+    return false;
+  }
   families_.clear();
   fontInstaller_.refreshRegistry();
 
   JsonArray familiesArr = doc["families"].as<JsonArray>();
+  if (familiesArr.size() > SdCardFontRegistry::MAX_SD_FAMILIES) {
+    LOG_ERR("FONT", "Manifest contains too many font families: %zu", familiesArr.size());
+    errorMessage_ = "Invalid font manifest";
+    return false;
+  }
   families_.reserve(familiesArr.size());
 
   for (JsonObject fObj : familiesArr) {
     ManifestFamily family;
     family.name = fObj["name"] | "";
     family.description = fObj["description"] | "";
+    if (!FontInstaller::isValidFamilyName(family.name.c_str())) {
+      LOG_ERR("FONT", "Malformed manifest family name");
+      errorMessage_ = "Invalid font manifest";
+      return false;
+    }
 
     for (JsonVariant s : fObj["styles"].as<JsonArray>()) {
       family.styles.push_back(s.as<std::string>());
     }
 
     family.totalSize = 0;
-    for (JsonObject fileObj : fObj["files"].as<JsonArray>()) {
+    JsonArray fileEntries = fObj["files"].as<JsonArray>();
+    static constexpr size_t MAX_FILES_PER_FAMILY = 16;
+    if (fileEntries.size() == 0 || fileEntries.size() > MAX_FILES_PER_FAMILY) {
+      LOG_ERR("FONT", "Invalid file count for family %s: %zu", family.name.c_str(), fileEntries.size());
+      errorMessage_ = "Invalid font manifest";
+      return false;
+    }
+    for (JsonObject fileObj : fileEntries) {
       ManifestFile file;
       file.name = fileObj["name"] | "";
       file.size = fileObj["size"] | 0;
 
-      if (!fileObj["crc32"].is<uint32_t>()) {
+      if (!FontInstaller::isValidCpfontFilename(file.name.c_str()) || file.size == 0 ||
+          !fileObj["crc32"].is<uint32_t>() || family.totalSize > std::numeric_limits<size_t>::max() - file.size) {
         LOG_ERR("FONT", "Malformed manifest file entry: missing or invalid crc32 for %s", file.name.c_str());
         errorMessage_ = "Invalid font manifest";
         return false;
@@ -141,24 +165,19 @@ bool FontDownloadActivity::fetchAndParseManifest() {
       family.files.push_back(std::move(file));
     }
 
+    if (!recoverFamilyTransactions(family)) {
+      errorMessage_ = "Failed to recover font family";
+      return false;
+    }
     family.installed = fontInstaller_.isFamilyInstalled(family.name.c_str());
 
-    // Detect updates by comparing manifest file sizes with files on disk.
-    // Not a checksum, but a size mismatch reliably indicates a rebuild in practice.
+    // Update checks run only while this user-opened download screen is loading.
+    // CRC32 catches rebuilt fonts whose byte length happens to stay unchanged.
     if (family.installed) {
       for (const auto& file : family.files) {
-        char path[128];
-        FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), path, sizeof(path));
-        HalFile f;
-        if (Storage.openFileForRead("FONT", path, f)) {
-          size_t actual = f.fileSize();
-          f.close();
-          if (actual != file.size) {
-            family.hasUpdate = true;
-            break;
-          }
-        } else {
-          // File missing on disk but family dir exists — treat as update
+        char path[FontStorageUtils::FONT_PATH_CAPACITY];
+        if (!FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), path, sizeof(path)) ||
+            FontStorageUtils::fileMatches(path, file.size, file.crc32) != FontStorageUtils::FileMatch::Match) {
           family.hasUpdate = true;
           break;
         }
@@ -246,21 +265,61 @@ size_t FontDownloadActivity::totalUpdateSize() const {
   return total;
 }
 
-// Standard CRC32 matching zlib/Python zlib.crc32().
-bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) {
-  HalFile f;
-  if (!Storage.openFileForRead("FONT", path, f)) {
-    return false;
+namespace {
+struct FamilyValidationContext {
+  FontDownloadActivity* activity;
+  const void* family;
+};
+
+bool validateInstalledFamily(const char* directory, void* opaque) {
+  return static_cast<FontInstaller*>(opaque)->validateFamilyDirectory(directory);
+}
+}  // namespace
+
+bool FontDownloadActivity::validateFamilyDirectoryCallback(const char* directory, void* opaque) {
+  const auto* context = static_cast<FamilyValidationContext*>(opaque);
+  return context && context->activity && context->family &&
+         context->activity->validateFamilyDirectory(
+             directory, *static_cast<const ManifestFamily*>(context->family));
+}
+
+bool FontDownloadActivity::validateFamilyDirectory(const char* directory, const ManifestFamily& family) {
+  for (const auto& file : family.files) {
+    char path[FontStorageUtils::FONT_PATH_CAPACITY];
+    if (!FontStorageUtils::buildFilePath(directory, file.name.c_str(), path, sizeof(path)) ||
+        FontStorageUtils::fileMatches(path, file.size, file.crc32) != FontStorageUtils::FileMatch::Match ||
+        !fontInstaller_.validateCpfontFile(path)) {
+      return false;
+    }
   }
-  constexpr size_t BUF_SIZE = 128;
-  uint8_t buf[BUF_SIZE];
-  uint32_t crc = 0;
-  while (f.available()) {
-    const int n = f.read(buf, BUF_SIZE);
-    if (n <= 0) break;
-    crc = esp_rom_crc32_le(crc, buf, static_cast<uint32_t>(n));
+  return true;
+}
+
+bool FontDownloadActivity::recoverFamilyTransactions(const ManifestFamily& family) {
+  FamilyValidationContext context{this, &family};
+  bool touched = false;
+  const char* roots[] = {SdCardFontRegistry::FONTS_DIR_HIDDEN, SdCardFontRegistry::FONTS_DIR_VISIBLE};
+  for (const char* root : roots) {
+    char finalDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+    char stagingDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+    char backupDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+    if (!FontInstaller::buildFamilyPathAtRoot(root, family.name.c_str(), finalDirectory, sizeof(finalDirectory)) ||
+        !FontStorageUtils::buildTransactionDirectoryPath(root, family.name.c_str(), ".download.tmp", stagingDirectory,
+                                                        sizeof(stagingDirectory)) ||
+        !FontStorageUtils::buildTransactionDirectoryPath(root, family.name.c_str(), ".download.bak", backupDirectory,
+                                                        sizeof(backupDirectory))) {
+      return false;
+    }
+    if (!Storage.exists(stagingDirectory) && !Storage.exists(backupDirectory)) continue;
+    touched = true;
+    if (FontStorageUtils::recoverFamily(finalDirectory, stagingDirectory, backupDirectory,
+                                       validateFamilyDirectoryCallback, &context,
+                                       validateInstalledFamily, &fontInstaller_) ==
+        FontStorageUtils::FamilyTransactionStatus::IoError) {
+      return false;
+    }
   }
-  outCrc = crc;
+  if (touched) fontInstaller_.refreshRegistry();
   return true;
 }
 
@@ -275,12 +334,53 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
   }
   requestUpdateAndWait();
 
-  if (!fontInstaller_.ensureFamilyDir(family.name.c_str())) {
+  const char* root = FontInstaller::rootForFamily(family.name.c_str());
+  if (!fontInstaller_.ensureRootDir(root)) {
     RenderLock lock(*this);
     state_ = ERROR;
     errorMessage_ = "Failed to create font directory";
     return;
   }
+
+  char finalDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+  char stagingDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+  char backupDirectory[FontStorageUtils::FONT_PATH_CAPACITY];
+  if (!FontInstaller::buildFamilyPathAtRoot(root, family.name.c_str(), finalDirectory, sizeof(finalDirectory)) ||
+      !FontStorageUtils::buildTransactionDirectoryPath(root, family.name.c_str(), ".download.tmp", stagingDirectory,
+                                                      sizeof(stagingDirectory)) ||
+      !FontStorageUtils::buildTransactionDirectoryPath(root, family.name.c_str(), ".download.bak", backupDirectory,
+                                                      sizeof(backupDirectory))) {
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = "Font path is too long";
+    return;
+  }
+
+  FamilyValidationContext validationContext{this, &family};
+  if (FontStorageUtils::recoverFamily(finalDirectory, stagingDirectory, backupDirectory,
+                                     validateFamilyDirectoryCallback, &validationContext,
+                                     validateInstalledFamily, &fontInstaller_) ==
+      FontStorageUtils::FamilyTransactionStatus::IoError) {
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = "Failed to recover font family";
+    return;
+  }
+  if (!Storage.mkdir(stagingDirectory)) {
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = "Failed to create font staging directory";
+    return;
+  }
+
+  const auto failDownload = [this, &family, stagingDirectory](const std::string& message) {
+    FontStorageUtils::discardStagingFamily(stagingDirectory);
+    fontInstaller_.refreshRegistry();
+    family.installed = fontInstaller_.isFamilyInstalled(family.name.c_str());
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = message;
+  };
 
   for (size_t i = 0; i < family.files.size(); i++) {
     const auto& file = family.files[i];
@@ -292,13 +392,16 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     }
     requestUpdateAndWait();
 
-    char destPath[128];
-    FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), destPath, sizeof(destPath));
+    char stagingPath[FontStorageUtils::FONT_PATH_CAPACITY];
+    if (!FontStorageUtils::buildFilePath(stagingDirectory, file.name.c_str(), stagingPath, sizeof(stagingPath))) {
+      failDownload("Font path is too long: " + file.name);
+      return;
+    }
 
     std::string url = baseUrl_ + file.name;
 
     auto result = HttpDownloader::downloadToFile(
-        url, destPath,
+        url, stagingPath,
         [this](size_t downloaded, size_t total) {
           fileProgress_ = downloaded;
           fileTotal_ = total;
@@ -309,12 +412,12 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
           }
           requestUpdate(true);
         },
-        &cancelRequested_);
+        &cancelRequested_, "", "", false);
 
     if (result == HttpDownloader::ABORTED) {
-      fontInstaller_.deleteFamily(family.name.c_str());
-      family.installed = false;
-      family.hasUpdate = false;
+      FontStorageUtils::discardStagingFamily(stagingDirectory);
+      fontInstaller_.refreshRegistry();
+      family.installed = fontInstaller_.isFamilyInstalled(family.name.c_str());
       {
         RenderLock lock(*this);
         state_ = FAMILY_LIST;
@@ -324,49 +427,40 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     if (result != HttpDownloader::OK) {
       LOG_ERR("FONT", "Download failed: %s (%d)", file.name.c_str(), result);
-      fontInstaller_.deleteFamily(family.name.c_str());
-      family.installed = false;
-      family.hasUpdate = false;
-      RenderLock lock(*this);
-      state_ = ERROR;
-      errorMessage_ = "Download failed: " + file.name;
+      failDownload("Download failed: " + file.name);
       return;
     }
 
     uint32_t actualCrc = 0;
-    if (!computeFileCrc32(destPath, actualCrc)) {
-      LOG_ERR("FONT", "Failed to open file for CRC check: %s", destPath);
-      fontInstaller_.deleteFamily(family.name.c_str());
-      family.installed = false;
-      family.hasUpdate = false;
-      RenderLock lock(*this);
-      state_ = ERROR;
-      errorMessage_ = "Failed to compute checksum: " + file.name;
+    uint64_t actualSize = 0;
+    if (!FontStorageUtils::computeFileCrc32(stagingPath, actualCrc, actualSize) || actualSize != file.size) {
+      LOG_ERR("FONT", "Invalid downloaded size/read for %s: got %llu expected %zu", file.name.c_str(),
+              static_cast<unsigned long long>(actualSize), file.size);
+      failDownload("Invalid downloaded file: " + file.name);
       return;
     }
     if (actualCrc != file.crc32) {
       LOG_ERR("FONT", "CRC32 mismatch for %s: got %08x expected %08x", file.name.c_str(), actualCrc, file.crc32);
-      fontInstaller_.deleteFamily(family.name.c_str());
-      family.installed = false;
-      family.hasUpdate = false;
-      RenderLock lock(*this);
-      state_ = ERROR;
-      errorMessage_ = "Checksum mismatch: " + file.name;
+      failDownload("Checksum mismatch: " + file.name);
       return;
     }
     LOG_DBG("FONT", "Downloaded %s (size=%zu crc32=%08x)", file.name.c_str(), file.size, actualCrc);
 
-    if (!fontInstaller_.validateCpfontFile(destPath)) {
-      LOG_ERR("FONT", "Invalid .cpfont: %s", destPath);
-      fontInstaller_.deleteFamily(family.name.c_str());
-      family.installed = false;
-      family.hasUpdate = false;
-      RenderLock lock(*this);
-      state_ = ERROR;
-      errorMessage_ = "Invalid font file: " + file.name;
+    if (!fontInstaller_.validateCpfontFile(stagingPath)) {
+      LOG_ERR("FONT", "Invalid .cpfont: %s", stagingPath);
+      failDownload("Invalid font file: " + file.name);
       return;
     }
     currentFileIndex_++;
+  }
+
+  if (FontStorageUtils::publishFamily(finalDirectory, stagingDirectory, backupDirectory,
+                                     validateFamilyDirectoryCallback, &validationContext,
+                                     validateInstalledFamily, &fontInstaller_) !=
+      FontStorageUtils::FamilyTransactionStatus::Published) {
+    LOG_ERR("FONT", "Failed to publish font family: %s", family.name.c_str());
+    failDownload("Failed to install font family: " + family.name);
+    return;
   }
 
   fontInstaller_.refreshRegistry();

@@ -13,8 +13,9 @@ CrossVi có giao diện tiếng Việt và được khởi xướng bởi một 
 - Đọc sách EPUB, TXT, XTC/XTCH và ảnh BMP. CrossVi hỗ trợ chính thức tập con XTC/XTCH v1.0 không nén, trang dựng sẵn 480×800: X4 hiển thị đúng 1:1, còn X3 thu vừa toàn trang, giữ tỷ lệ và căn giữa nên không cắt nội dung.
 - Ghi nhớ sách đang đọc, vị trí đọc, dấu trang và lịch sử sách gần đây.
 - Tra từ điển StarDict, gồm tệp đồng nghĩa `.syn` tùy chọn và lịch sử tối đa 15 lần tra thành công; đồng bộ tiến độ đọc với máy chủ tương thích KOReader.
-- Đổi phông chữ, cỡ chữ, khoảng cách dòng, căn lề và giao diện.
-- Cài thêm phông chữ từ thẻ nhớ.
+- Đổi phông chữ, cỡ chữ, khoảng cách dòng, căn lề và giao diện. Noto Serif/Noto Sans tích hợp có đủ kiểu Thường,
+  Đậm, Nghiêng và Đậm Nghiêng ở 12, 14, 16 và 18 pt.
+- Cài thêm phông chữ `.cpfont` từ thẻ nhớ hoặc giao diện web; tệp hỏng/không tương thích bị từ chối an toàn.
 - Chuyển sách qua Wi-Fi bằng trình duyệt hoặc Calibre.
 - Tải sách từ thư viện trực tuyến OPDS.
 - Đổi chức năng các nút bấm, màn hình ngủ và thanh trạng thái.
@@ -34,6 +35,20 @@ Thống kê trong trình đọc dùng được cho EPUB, TXT/Markdown và XTC/XT
 - **Nearby Sync:** hai máy CrossVi ở gần nhau có thể trao đổi vị trí đọc của đúng cùng một tệp EPUB, hoặc lưu một bản thống kê của máy kia. Cả hai bên đều phải mở tính năng và xác nhận; dữ liệu nhận được không tự ghi đè dữ liệu trên máy. Nếu chương đích chưa có dữ liệu bố cục phù hợp hoặc không xác định được đúng đoạn văn, CrossVi sẽ từ chối thay vì đoán một trang gần đúng.
 
 Nearby Sync không cần Internet nhưng dữ liệu truyền gần **không được mã hóa**. Chỉ dùng với một máy đáng tin cậy và kiểm tra mã ghép cặp trên cả hai màn hình.
+
+## Phông chữ tiếng Việt
+
+Trong **Cài đặt → Trình đọc → Cỡ chữ**, CrossVi hiển thị rõ **Nhỏ — 12 pt**, **Vừa — 14 pt**,
+**Lớn — 16 pt** và **Rất lớn — 18 pt**, kèm đoạn xem trước tiếng Việt. Nếu một family `.cpfont` không có đúng cỡ
+đã chọn, máy vẫn giữ family đó, chọn cỡ gần nhất và báo cỡ thực tế đang dùng.
+
+Muốn tự tạo font, hãy chuyển TTF/OTF thành `.cpfont` trên máy tính bằng preset `vietnamese-reading`. Preset này bao
+gồm chữ tiếng Việt dạng dựng sẵn NFC, dấu tổ hợp NFD và dấu câu đọc sách thường gặp. Converter kiểm tra từng style;
+nếu font nguồn thiếu ký tự, bạn phải cung cấp font fallback tương ứng cho Thường/Đậm/Nghiêng/Đậm Nghiêng hoặc quá
+trình tạo sẽ báo lỗi rõ theo mã `U+XXXX`. Máy không đọc trực tiếp TTF/OTF. Regular là style bắt buộc; các style khác
+có thể thiếu và sẽ fallback an toàn. Catalog font tải về của CrossVi cũng dùng preset này và Noto Sans đúng style làm
+fallback khi convert. Xem lệnh đầy đủ tại [hướng dẫn font thẻ nhớ](docs/sd-card-fonts.md). Giấy phép font vẫn thuộc
+tác giả hoặc nhà phát hành font, không chuyển thành giấy phép của CrossVi.
 
 ## Máy nào được hỗ trợ?
 

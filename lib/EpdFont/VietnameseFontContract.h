@@ -1,0 +1,35 @@
+#pragma once
+
+#include <cstdint>
+
+namespace VietnameseFontContract {
+
+struct Range {
+  uint32_t first;
+  uint32_t last;
+};
+
+// Exact codepoint contract shared by runtime coverage checks and mirrored by
+// --require-vietnamese. Keep the Python mirror locked to this header by test.
+inline constexpr Range REQUIRED_RANGES[] = {
+    {0x0020, 0x007E},  // Basic Latin letters, digits, punctuation and '%'.
+    {0x1EA0, 0x1EF9},  // Remaining precomposed Vietnamese letters.
+};
+
+inline constexpr uint32_t REQUIRED_SINGLETONS[] = {
+    // Vietnamese NFC letters that live in Latin-1.
+    0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C8, 0x00C9, 0x00CA, 0x00CC, 0x00CD,
+    0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D9, 0x00DA, 0x00DD, 0x00E0, 0x00E1,
+    0x00E2, 0x00E3, 0x00E8, 0x00E9, 0x00EA, 0x00EC, 0x00ED, 0x00F2, 0x00F3,
+    0x00F4, 0x00F5, 0x00F9, 0x00FA, 0x00FD,
+    // Vietnamese base letters in Latin Extended-A/B.
+    0x0102, 0x0103, 0x0110, 0x0111, 0x0128, 0x0129, 0x0168, 0x0169, 0x01A0,
+    0x01A1, 0x01AF, 0x01B0,
+    // NFD combining marks.
+    0x0300, 0x0301, 0x0302, 0x0303, 0x0306, 0x0309, 0x031B, 0x0323,
+    // Reading punctuation, currency and the safe replacement glyph.
+    0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AB,
+    0x20AC, 0xFFFD,
+};
+
+}  // namespace VietnameseFontContract

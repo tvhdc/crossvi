@@ -2021,8 +2021,11 @@ void CrossPointWebServer::handleFontUploadData() {
         break;
       }
 
-      char path[128];
-      FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path));
+      char path[FontStorageUtils::FONT_PATH_CAPACITY];
+      if (!FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path))) {
+        LOG_ERR("WEB", "Font destination path is too long");
+        break;
+      }
       fontUpload.finalPath = path;
       fontUpload.stagingPath = fontUpload.finalPath + ".upload.tmp";
       fontUpload.backupPath = fontUpload.finalPath + ".upload.bak";

@@ -30,6 +30,8 @@ done
 
 UI_FONT_SIZES=(10 12)
 UI_FONT_STYLES=("Regular" "Bold")
+UI_FALLBACK_DIR=$(mktemp -d)
+trap 'rm -rf "$UI_FALLBACK_DIR"' EXIT
 
 # Arabic glyphs for UI text (menus, file browser titles). The built-in fonts
 # must cover the *output* of MiniBidi's do_shape() — contextual presentation
@@ -70,8 +72,19 @@ for size in ${UI_FONT_SIZES[@]}; do
     # are filled from it while every glyph Ubuntu already has stays unchanged
     # (fontstack is ordered by descending priority).
     viet_path="../builtinFonts/source/Ubuntu/Ubuntu-Vietnamese-${style}.ttf"
+    # The Vietnamese cut intentionally stays tiny and omits several combining
+    # marks plus U+20AB/U+FFFD. Build a five-codepoint Noto Sans subset as the
+    # final UI-only fallback. Passing the full Noto file would unnecessarily
+    # grow every UI font with unrelated glyphs from the converter's defaults.
+    noto_source_path="../builtinFonts/source/NotoSans/NotoSans-${style}.ttf"
+    noto_fallback_path="$UI_FALLBACK_DIR/NotoSans-UiVietnamese-${style}.ttf"
+    if [ ! -f "$noto_fallback_path" ]; then
+      python -m fontTools.subset "$noto_source_path" \
+        --unicodes=U+0309,U+031B,U+0323,U+20AB,U+FFFD \
+        --output-file="$noto_fallback_path"
+    fi
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
+    python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path $noto_fallback_path \
       --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
     echo "Generated $output_path"
   done

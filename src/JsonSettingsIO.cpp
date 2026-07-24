@@ -13,6 +13,7 @@
 
 #include "BookmarkEntry.h"
 #include "CrossPointSettings.h"
+#include "FontStorageUtils.h"
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
@@ -303,8 +304,11 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.fontFamily = clamp(storedFontFamily, CrossPointSettings::BUILTIN_FONT_COUNT, 0);
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
-  strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);
-  s.sdFontFamilyName[sizeof(s.sdFontFamilyName) - 1] = '\0';
+  if (!FontStorageUtils::copyPersistedFamilyName(sfn, s.sdFontFamilyName, sizeof(s.sdFontFamilyName))) {
+    // Never persist or select a truncated family name: two long names could
+    // otherwise collide after reboot.
+    if (needsResave) *needsResave = true;
+  }
   if (storedFontFamily == CrossPointSettings::LEGACY_OPENDYSLEXIC && s.sdFontFamilyName[0] == '\0') {
     s.fontFamily = CrossPointSettings::NOTOSERIF;
     strncpy(s.sdFontFamilyName, "OpenDyslexic", sizeof(s.sdFontFamilyName) - 1);

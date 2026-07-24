@@ -7,6 +7,7 @@
 #include <LegacyStateCodec.h>
 #include <StagedFileTransaction.h>
 #include <TiltLifecyclePolicy.h>
+#include <FontStorageUtils.h>
 
 #include <cstdint>
 #include <cstring>
@@ -261,6 +262,201 @@ TEST_F(AtomicPersistenceTest, InterruptedFontPublishRecoversBackup) {
             StagedFileTransaction::Status::Recovered);
   EXPECT_TRUE(Storage.exists(FONT));
   EXPECT_EQ(Storage.file(FONT).back(), 1);
+}
+
+constexpr char FONT_FAMILY[] = "/.fonts/Family";
+constexpr char FONT_FAMILY_TEMP[] = "/.fonts/.Family.download.tmp";
+constexpr char FONT_FAMILY_BACKUP[] = "/.fonts/.Family.download.bak";
+
+struct FamilyExpectation {
+  uint8_t first;
+  uint8_t second;
+};
+
+bool familyValidator(const char* directory, void* opaque) {
+  const auto& expected = *static_cast<FamilyExpectation*>(opaque);
+  const std::string firstPath = std::string(directory) + "/Family_12.cpfont";
+  const std::string secondPath = std::string(directory) + "/Family_14.cpfont";
+  return Storage.exists(firstPath.c_str()) && Storage.exists(secondPath.c_str()) &&
+         Storage.file(firstPath).back() == expected.first && Storage.file(secondPath).back() == expected.second;
+}
+
+bool anyCompleteFamilyValidator(const char* directory, void*) {
+  const std::string firstPath = std::string(directory) + "/Family_12.cpfont";
+  const std::string secondPath = std::string(directory) + "/Family_14.cpfont";
+  return Storage.exists(firstPath.c_str()) && Storage.exists(secondPath.c_str()) &&
+         Storage.file(firstPath).size() >= 8 && Storage.file(secondPath).size() >= 8;
+}
+
+void setFamily(const char* directory, const uint8_t first, const uint8_t second) {
+  Storage.setDirectory(directory);
+  Storage.setFile(std::string(directory) + "/Family_12.cpfont", fontBytes(first));
+  Storage.setFile(std::string(directory) + "/Family_14.cpfont", fontBytes(second));
+}
+
+void expectFamily(const char* directory, const uint8_t first, const uint8_t second) {
+  FamilyExpectation expected{first, second};
+  EXPECT_TRUE(familyValidator(directory, &expected));
+}
+
+TEST_F(AtomicPersistenceTest, NewFontFamilyPublishesOnlyWhenEveryFileIsValid) {
+  setFamily(FONT_FAMILY_TEMP, 2, 2);
+  FamilyExpectation expected{2, 2};
+  EXPECT_EQ(FontStorageUtils::publishFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expected, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::Published);
+  expectFamily(FONT_FAMILY, 2, 2);
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_TEMP));
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_BACKUP));
+}
+
+TEST_F(AtomicPersistenceTest, MultiFileFontFamilyUpdateSwapsTheWholeDirectory) {
+  setFamily(FONT_FAMILY, 1, 1);
+  setFamily(FONT_FAMILY_TEMP, 2, 2);
+  FamilyExpectation expected{2, 2};
+  EXPECT_EQ(FontStorageUtils::publishFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expected, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::Published);
+  expectFamily(FONT_FAMILY, 2, 2);
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_BACKUP));
+}
+
+TEST_F(AtomicPersistenceTest, FailedSecondDownloadNeverTouchesOldFamily) {
+  setFamily(FONT_FAMILY, 1, 1);
+  Storage.setDirectory(FONT_FAMILY_TEMP);
+  Storage.setFile(std::string(FONT_FAMILY_TEMP) + "/Family_12.cpfont", fontBytes(2));
+  FamilyExpectation expected{2, 2};
+  EXPECT_EQ(FontStorageUtils::publishFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expected, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::InvalidStaging);
+  ASSERT_TRUE(FontStorageUtils::discardStagingFamily(FONT_FAMILY_TEMP));
+  expectFamily(FONT_FAMILY, 1, 1);
+}
+
+TEST_F(AtomicPersistenceTest, CancelledFamilyDownloadDiscardsOnlyStaging) {
+  setFamily(FONT_FAMILY, 1, 1);
+  Storage.setDirectory(FONT_FAMILY_TEMP);
+  Storage.setFile(std::string(FONT_FAMILY_TEMP) + "/Family_12.cpfont", fontBytes(2));
+  ASSERT_TRUE(FontStorageUtils::discardStagingFamily(FONT_FAMILY_TEMP));
+  expectFamily(FONT_FAMILY, 1, 1);
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_TEMP));
+}
+
+TEST_F(AtomicPersistenceTest, BadSecondFileChecksumNeverTouchesOldFamily) {
+  setFamily(FONT_FAMILY, 1, 1);
+  setFamily(FONT_FAMILY_TEMP, 2, 3);
+  FamilyExpectation expected{2, 2};
+  EXPECT_EQ(FontStorageUtils::publishFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expected, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::InvalidStaging);
+  expectFamily(FONT_FAMILY, 1, 1);
+}
+
+TEST_F(AtomicPersistenceTest, SecondPhasePublishFailureRestoresCompleteOldFamily) {
+  setFamily(FONT_FAMILY, 1, 1);
+  setFamily(FONT_FAMILY_TEMP, 2, 2);
+  FamilyExpectation expected{2, 2};
+  Storage.failRenameTo(FONT_FAMILY);
+  EXPECT_EQ(FontStorageUtils::publishFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expected, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::IoError);
+  expectFamily(FONT_FAMILY, 1, 1);
+}
+
+TEST_F(AtomicPersistenceTest, RecoveryFromBackupThenLaterFailureKeepsRecoveredFamily) {
+  setFamily(FONT_FAMILY_BACKUP, 1, 1);
+  Storage.setDirectory(FONT_FAMILY_TEMP);
+  Storage.setFile(std::string(FONT_FAMILY_TEMP) + "/Family_12.cpfont", fontBytes(2));
+  FamilyExpectation expectedNew{2, 2};
+  EXPECT_EQ(FontStorageUtils::recoverFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expectedNew, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::Recovered);
+  expectFamily(FONT_FAMILY, 1, 1);
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_BACKUP));
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_TEMP));
+}
+
+TEST_F(AtomicPersistenceTest, RecoveryCommitsOnlyACompletePublishedFamily) {
+  setFamily(FONT_FAMILY, 2, 2);
+  setFamily(FONT_FAMILY_BACKUP, 1, 1);
+  Storage.setDirectory(FONT_FAMILY_TEMP);
+  FamilyExpectation expectedNew{2, 2};
+  EXPECT_EQ(FontStorageUtils::recoverFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expectedNew, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::NoRecoveryNeeded);
+  expectFamily(FONT_FAMILY, 2, 2);
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_BACKUP));
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY_TEMP));
+}
+
+TEST_F(AtomicPersistenceTest, RecoveryNeverReplacesAFamilyWithAnIncompleteBackup) {
+  Storage.setDirectory(FONT_FAMILY_BACKUP);
+  Storage.setFile(std::string(FONT_FAMILY_BACKUP) + "/Family_12.cpfont", fontBytes(1));
+  Storage.setDirectory(FONT_FAMILY_TEMP);
+  FamilyExpectation expectedNew{2, 2};
+  EXPECT_EQ(FontStorageUtils::recoverFamily(FONT_FAMILY, FONT_FAMILY_TEMP, FONT_FAMILY_BACKUP,
+                                            familyValidator, &expectedNew, anyCompleteFamilyValidator, nullptr),
+            FontStorageUtils::FamilyTransactionStatus::IoError);
+  EXPECT_TRUE(Storage.exists(FONT_FAMILY_BACKUP));
+  EXPECT_FALSE(Storage.exists(FONT_FAMILY));
+}
+
+TEST_F(AtomicPersistenceTest, FontCrcUpdateDetectionUsesSizeAndStreamingCrc) {
+  const auto data = bytes("123456789");
+  Storage.setFile("/font.cpfont", data);
+  EXPECT_EQ(FontStorageUtils::fileMatches("/font.cpfont", data.size(), 0xCBF43926U),
+            FontStorageUtils::FileMatch::Match);
+  EXPECT_EQ(FontStorageUtils::fileMatches("/font.cpfont", data.size() + 1, 0xCBF43926U),
+            FontStorageUtils::FileMatch::Different);
+  EXPECT_EQ(FontStorageUtils::fileMatches("/font.cpfont", data.size(), 0xCBF43927U),
+            FontStorageUtils::FileMatch::Different);
+  EXPECT_LE(Storage.maxRead(), 512U);
+}
+
+TEST_F(AtomicPersistenceTest, UnreadableFontIsNeverReportedCurrent) {
+  EXPECT_EQ(FontStorageUtils::fileMatches("/missing.cpfont", 0, 0), FontStorageUtils::FileMatch::IoError);
+  Storage.setFile("/font.cpfont", bytes("same-size"));
+  Storage.makeUnreadable("/font.cpfont");
+  EXPECT_EQ(FontStorageUtils::fileMatches("/font.cpfont", 9, 0), FontStorageUtils::FileMatch::IoError);
+}
+
+TEST_F(AtomicPersistenceTest, FontPathContractRejectsTruncationAndAvoidsLongNameCollision) {
+  std::string exactFamily(FontStorageUtils::MAX_FAMILY_NAME_BYTES, 'a');
+  std::string tooLongFamily = exactFamily + 'b';
+  std::string exactFile(FontStorageUtils::MAX_CPFONT_FILENAME_BYTES - 7, 'f');
+  exactFile += ".cpfont";
+  char path[FontStorageUtils::FONT_PATH_CAPACITY];
+  EXPECT_TRUE(FontStorageUtils::isValidFamilyName(exactFamily.c_str()));
+  EXPECT_FALSE(FontStorageUtils::isValidFamilyName(tooLongFamily.c_str()));
+  EXPECT_FALSE(FontStorageUtils::isValidFamilyName("Family with spaces"));
+  EXPECT_TRUE(FontStorageUtils::isValidCpfontFilename(exactFile.c_str()));
+  EXPECT_FALSE(FontStorageUtils::isValidCpfontFilename(("x" + exactFile).c_str()));
+  char persistedFamily[FontStorageUtils::MAX_FAMILY_NAME_BYTES + 1];
+  EXPECT_TRUE(FontStorageUtils::copyPersistedFamilyName(exactFamily.c_str(), persistedFamily,
+                                                       sizeof(persistedFamily)));
+  EXPECT_EQ(exactFamily, persistedFamily);
+  EXPECT_FALSE(FontStorageUtils::copyPersistedFamilyName(tooLongFamily.c_str(), persistedFamily,
+                                                        sizeof(persistedFamily)));
+  EXPECT_STREQ(persistedFamily, "");
+  EXPECT_TRUE(FontStorageUtils::buildFontPath("/.fonts", exactFamily.c_str(), exactFile.c_str(), path,
+                                             sizeof(path)));
+  const std::string firstPath = path;
+  EXPECT_FALSE(FontStorageUtils::buildFontPath("/.fonts", tooLongFamily.c_str(), exactFile.c_str(), path,
+                                              sizeof(path)));
+  std::string otherFamily = exactFamily;
+  otherFamily.back() = 'z';
+  ASSERT_TRUE(FontStorageUtils::buildFontPath("/.fonts", otherFamily.c_str(), exactFile.c_str(), path,
+                                             sizeof(path)));
+  EXPECT_NE(firstPath, path);
+
+  const std::string shortFile = "A.cpfont";
+  const std::string exactDirectory(FontStorageUtils::FONT_PATH_CAPACITY - shortFile.size() - 2, 'd');
+  EXPECT_TRUE(FontStorageUtils::buildFilePath(exactDirectory.c_str(), shortFile.c_str(), path, sizeof(path)));
+  EXPECT_EQ(strlen(path), sizeof(path) - 1);
+  char truncated[FontStorageUtils::FONT_PATH_CAPACITY - 1];
+  EXPECT_FALSE(FontStorageUtils::buildFilePath(exactDirectory.c_str(), shortFile.c_str(), truncated,
+                                               sizeof(truncated)));
+  EXPECT_STREQ(truncated, "");
 }
 
 TEST_F(AtomicPersistenceTest, ClockCalendarConvertsRtcUtcWithoutLocalOffset) {

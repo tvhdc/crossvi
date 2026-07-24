@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "EpdFontFamily.h"
+#include "VietnameseFontContract.h"
 
 static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
@@ -38,9 +39,20 @@ constexpr uint32_t HEADER_SIZE = 32;
 constexpr uint32_t STYLE_TOC_ENTRY_SIZE = 32;
 
 // Helper to read little-endian values from byte buffer
-inline uint16_t readU16(const uint8_t* p) { return p[0] | (p[1] << 8); }
-inline int16_t readI16(const uint8_t* p) { return static_cast<int16_t>(p[0] | (p[1] << 8)); }
-inline uint32_t readU32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
+inline uint16_t readU16(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+inline int16_t readI16(const uint8_t* p) { return static_cast<int16_t>(readU16(p)); }
+inline uint32_t readU32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+bool checkedAddMul(const uint64_t base, const uint64_t count, const uint64_t elementSize, uint64_t& out) {
+  if (count != 0 && elementSize > (UINT64_MAX - base) / count) return false;
+  out = base + count * elementSize;
+  return true;
+}
 
 // Walks a null-terminated UTF-8 string and appends each unique codepoint to
 // codepoints[0..cpCount-1] via O(n²) dedup.  Returns true if the buffer
@@ -406,15 +418,28 @@ void SdCardFont::applyGlyphMissCallback(uint8_t styleIdx) {
 
 // --- Compute per-style file offsets from a base data offset ---
 
-void SdCardFont::computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset) {
+bool SdCardFont::computeStyleFileOffsets(PerStyle& s, const uint32_t baseOffset, const uint32_t styleEnd) {
+  uint64_t next = baseOffset;
   s.intervalsFileOffset = baseOffset;
-  s.glyphsFileOffset = s.intervalsFileOffset + s.header.intervalCount * sizeof(EpdUnicodeInterval);
-  s.kernLeftFileOffset = s.glyphsFileOffset + s.header.glyphCount * sizeof(EpdGlyph);
-  s.kernRightFileOffset = s.kernLeftFileOffset + s.header.kernLeftEntryCount * sizeof(EpdKernClassEntry);
-  s.kernMatrixFileOffset = s.kernRightFileOffset + s.header.kernRightEntryCount * sizeof(EpdKernClassEntry);
-  s.ligatureFileOffset =
-      s.kernMatrixFileOffset + static_cast<uint32_t>(s.header.kernLeftClassCount) * s.header.kernRightClassCount;
-  s.bitmapFileOffset = s.ligatureFileOffset + s.header.ligaturePairCount * sizeof(EpdLigaturePair);
+  if (!checkedAddMul(next, s.header.intervalCount, sizeof(EpdUnicodeInterval), next) || next > UINT32_MAX)
+    return false;
+  s.glyphsFileOffset = static_cast<uint32_t>(next);
+  if (!checkedAddMul(next, s.header.glyphCount, sizeof(EpdGlyph), next) || next > UINT32_MAX) return false;
+  s.kernLeftFileOffset = static_cast<uint32_t>(next);
+  if (!checkedAddMul(next, s.header.kernLeftEntryCount, sizeof(EpdKernClassEntry), next) || next > UINT32_MAX)
+    return false;
+  s.kernRightFileOffset = static_cast<uint32_t>(next);
+  if (!checkedAddMul(next, s.header.kernRightEntryCount, sizeof(EpdKernClassEntry), next) || next > UINT32_MAX)
+    return false;
+  s.kernMatrixFileOffset = static_cast<uint32_t>(next);
+  if (!checkedAddMul(next, s.header.kernLeftClassCount, s.header.kernRightClassCount, next) || next > UINT32_MAX)
+    return false;
+  s.ligatureFileOffset = static_cast<uint32_t>(next);
+  if (!checkedAddMul(next, s.header.ligaturePairCount, sizeof(EpdLigaturePair), next) || next > styleEnd)
+    return false;
+  s.bitmapFileOffset = static_cast<uint32_t>(next);
+  s.bitmapSize = styleEnd - s.bitmapFileOffset;
+  return true;
 }
 
 // --- Load ---
@@ -433,6 +458,13 @@ bool SdCardFont::load(const char* path) {
     LOG_ERR("SDCF", "Failed to open .cpfont: %s", path);
     return false;
   }
+
+  const uint64_t fileSize64 = file.fileSize64();
+  if (fileSize64 < HEADER_SIZE || fileSize64 > UINT32_MAX) {
+    LOG_ERR("SDCF", "Invalid .cpfont file size: %llu", static_cast<unsigned long long>(fileSize64));
+    return false;
+  }
+  const uint32_t fileSize = static_cast<uint32_t>(fileSize64);
 
   // Read and validate global header
   uint8_t headerBuf[HEADER_SIZE];
@@ -462,6 +494,13 @@ bool SdCardFont::load(const char* path) {
     LOG_ERR("SDCF", "Invalid style count: %u", styleCount);
     return false;
   }
+  const uint32_t tocEnd = HEADER_SIZE + static_cast<uint32_t>(styleCount) * STYLE_TOC_ENTRY_SIZE;
+  if (tocEnd > fileSize) {
+    LOG_ERR("SDCF", "Truncated style TOC");
+    return false;
+  }
+
+  uint32_t styleDataOffsets[MAX_STYLES] = {};
 
   // Read style TOC
   for (uint8_t i = 0; i < styleCount; i++) {
@@ -484,6 +523,11 @@ bool SdCardFont::load(const char* path) {
     }
 
     auto& s = styles_[styleId];
+    if (s.present) {
+      LOG_ERR("SDCF", "Duplicate styleId %u in TOC", styleId);
+      freeAll();
+      return false;
+    }
     s.present = true;
     s.header.intervalCount = readU32(tocBuf + 4);
     s.header.glyphCount = readU32(tocBuf + 8);
@@ -503,7 +547,8 @@ bool SdCardFont::load(const char* path) {
     static constexpr uint32_t MAX_INTERVALS = 4096;
     static constexpr uint32_t MAX_GLYPHS = 65536;
     static constexpr uint32_t MAX_KERN_ENTRIES = 4096;
-    if (s.header.intervalCount > MAX_INTERVALS || s.header.glyphCount > MAX_GLYPHS ||
+    if (s.header.intervalCount == 0 || s.header.glyphCount == 0 || s.header.advanceY == 0 ||
+        s.header.intervalCount > MAX_INTERVALS || s.header.glyphCount > MAX_GLYPHS ||
         s.header.kernLeftEntryCount > MAX_KERN_ENTRIES || s.header.kernRightEntryCount > MAX_KERN_ENTRIES) {
       LOG_ERR("SDCF", "Style %u: unreasonable counts (iv=%u, gl=%u, kL=%u, kR=%u)", styleId, s.header.intervalCount,
               s.header.glyphCount, s.header.kernLeftEntryCount, s.header.kernRightEntryCount);
@@ -512,8 +557,54 @@ bool SdCardFont::load(const char* path) {
       return false;
     }
 
+    const bool invalidKernShape =
+        (s.header.kernLeftEntryCount == 0) != (s.header.kernLeftClassCount == 0) ||
+        (s.header.kernRightEntryCount == 0) != (s.header.kernRightClassCount == 0);
+    if (invalidKernShape) {
+      LOG_ERR("SDCF", "Style %u: inconsistent kerning counts", styleId);
+      freeAll();
+      return false;
+    }
+
     uint32_t dataOffset = readU32(tocBuf + 24);
-    computeStyleFileOffsets(s, dataOffset);
+    if (dataOffset < tocEnd || dataOffset >= fileSize) {
+      LOG_ERR("SDCF", "Style %u: data offset outside file", styleId);
+      freeAll();
+      return false;
+    }
+    for (uint8_t other = 0; other < MAX_STYLES; ++other) {
+      if (styles_[other].present && other != styleId && styleDataOffsets[other] == dataOffset) {
+        LOG_ERR("SDCF", "Styles %u and %u share a data offset", other, styleId);
+        freeAll();
+        return false;
+      }
+    }
+    styleDataOffsets[styleId] = dataOffset;
+  }
+
+  if (!styles_[0].present) {
+    LOG_ERR("SDCF", "Regular style is required");
+    freeAll();
+    return false;
+  }
+
+  // A style owns bytes up to the next style's data offset (or EOF). This
+  // provides a hard boundary for all fixed sections and its bitmap payload,
+  // regardless of TOC order.
+  for (uint8_t styleId = 0; styleId < MAX_STYLES; ++styleId) {
+    if (!styles_[styleId].present) continue;
+    const uint32_t base = styleDataOffsets[styleId];
+    uint32_t end = fileSize;
+    for (uint8_t other = 0; other < MAX_STYLES; ++other) {
+      if (styles_[other].present && styleDataOffsets[other] > base && styleDataOffsets[other] < end) {
+        end = styleDataOffsets[other];
+      }
+    }
+    if (!computeStyleFileOffsets(styles_[styleId], base, end)) {
+      LOG_ERR("SDCF", "Style %u: sections exceed file bounds", styleId);
+      freeAll();
+      return false;
+    }
   }
 
   styleCount_ = styleCount;
@@ -546,6 +637,7 @@ bool SdCardFont::load(const char* path) {
         freeAll();
         return false;
       }
+      hash = fnv1a(reinterpret_cast<const uint8_t*>(&iv), sizeof(iv), hash);
       if (iv.first > iv.last) {
         LOG_ERR("SDCF", "Style %u: invalid interval %u (first 0x%lX > last 0x%lX)", i, j,
                 static_cast<unsigned long>(iv.first), static_cast<unsigned long>(iv.last));
@@ -570,6 +662,102 @@ bool SdCardFont::load(const char* path) {
       }
       expectedOffset += span;
       prevLast = iv.last;
+    }
+    if (expectedOffset != s.header.glyphCount) {
+      LOG_ERR("SDCF", "Style %u: intervals cover %u glyphs, expected %u", i, expectedOffset, s.header.glyphCount);
+      freeAll();
+      return false;
+    }
+
+    if (!file.seekSet(s.glyphsFileOffset)) {
+      LOG_ERR("SDCF", "Failed to seek to glyph metadata for style %u", i);
+      freeAll();
+      return false;
+    }
+    EpdGlyph glyph{};
+    for (uint32_t glyphIndex = 0; glyphIndex < s.header.glyphCount; ++glyphIndex) {
+      if (file.read(reinterpret_cast<uint8_t*>(&glyph), sizeof(glyph)) != sizeof(glyph)) {
+        LOG_ERR("SDCF", "Failed to read glyph %u for style %u", glyphIndex, i);
+        freeAll();
+        return false;
+      }
+      hash = fnv1a(reinterpret_cast<const uint8_t*>(&glyph), sizeof(glyph), hash);
+      const uint64_t pixelCount = static_cast<uint64_t>(glyph.width) * glyph.height;
+      const uint64_t expectedLength = (pixelCount + (s.header.is2Bit ? 3U : 7U)) / (s.header.is2Bit ? 4U : 8U);
+      const uint64_t bitmapEnd = static_cast<uint64_t>(glyph.dataOffset) + glyph.dataLength;
+      if (glyph.dataLength != expectedLength || bitmapEnd > s.bitmapSize) {
+        LOG_ERR("SDCF", "Style %u: glyph %u bitmap outside payload", i, glyphIndex);
+        freeAll();
+        return false;
+      }
+    }
+
+    auto validateKernTable = [&](const uint32_t offset, const uint16_t count, const uint8_t classCount,
+                                 const char* side) {
+      if (count == 0) return true;
+      if (!file.seekSet(offset)) return false;
+      uint16_t previousCodepoint = 0;
+      for (uint16_t entryIndex = 0; entryIndex < count; ++entryIndex) {
+        EpdKernClassEntry entry{};
+        if (file.read(reinterpret_cast<uint8_t*>(&entry), sizeof(entry)) != sizeof(entry)) return false;
+        hash = fnv1a(reinterpret_cast<const uint8_t*>(&entry), sizeof(entry), hash);
+        if (entry.classId == 0 || entry.classId > classCount ||
+            (entryIndex > 0 && entry.codepoint <= previousCodepoint)) {
+          LOG_ERR("SDCF", "Style %u: invalid %s kern entry %u", i, side, entryIndex);
+          return false;
+        }
+        previousCodepoint = entry.codepoint;
+      }
+      return true;
+    };
+    if (!validateKernTable(s.kernLeftFileOffset, s.header.kernLeftEntryCount, s.header.kernLeftClassCount, "left") ||
+        !validateKernTable(s.kernRightFileOffset, s.header.kernRightEntryCount, s.header.kernRightClassCount,
+                           "right")) {
+      freeAll();
+      return false;
+    }
+
+    if (s.header.ligaturePairCount > 0) {
+      if (!file.seekSet(s.ligatureFileOffset)) {
+        freeAll();
+        return false;
+      }
+      uint32_t previousPair = 0;
+      for (uint8_t pairIndex = 0; pairIndex < s.header.ligaturePairCount; ++pairIndex) {
+        EpdLigaturePair pair{};
+        if (file.read(reinterpret_cast<uint8_t*>(&pair), sizeof(pair)) != sizeof(pair)) {
+          LOG_ERR("SDCF", "Style %u: truncated ligature table", i);
+          freeAll();
+          return false;
+        }
+        if (pairIndex > 0 && pair.pair <= previousPair) {
+          LOG_ERR("SDCF", "Style %u: unsorted or duplicate ligature pair %u", i, pairIndex);
+          freeAll();
+          return false;
+        }
+        previousPair = pair.pair;
+      }
+    }
+
+    // Kerning matrices and ligature pairs affect layout and therefore form
+    // part of the content identity. Hash them in a fixed-size stack buffer;
+    // bitmap pixels are deliberately excluded because they do not alter page
+    // breaks and renderer glyph caches are cleared when the family reloads.
+    if (!file.seekSet(s.kernMatrixFileOffset)) {
+      freeAll();
+      return false;
+    }
+    uint32_t bytesLeft = s.bitmapFileOffset - s.kernMatrixFileOffset;
+    uint8_t metadataChunk[128];
+    while (bytesLeft > 0) {
+      const size_t wanted = std::min<size_t>(bytesLeft, sizeof(metadataChunk));
+      if (file.read(metadataChunk, wanted) != static_cast<int>(wanted)) {
+        LOG_ERR("SDCF", "Style %u: truncated kerning/ligature data", i);
+        freeAll();
+        return false;
+      }
+      hash = fnv1a(metadataChunk, wanted, hash);
+      bytesLeft -= static_cast<uint32_t>(wanted);
     }
 
     if (!file.seekSet(s.intervalsFileOffset)) {
@@ -622,6 +810,7 @@ bool SdCardFont::load(const char* path) {
   }
 
   loaded_ = true;
+  contentHash_ = hash;
 
   LOG_DBG("SDCF", "Loaded: %s (v%u, %u styles)", path, CPFONT_VERSION, styleCount_);
   for (uint8_t i = 0; i < MAX_STYLES; i++) {
@@ -653,6 +842,23 @@ int32_t SdCardFont::findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) 
     }
   }
   return -1;
+}
+
+bool SdCardFont::supportsVietnamese() const {
+  if (!loaded_ || !styles_[0].present) return false;
+  for (uint8_t style = 0; style < MAX_STYLES; ++style) {
+    if (!styles_[style].present) continue;
+    const auto& data = styles_[style];
+    for (const auto& range : VietnameseFontContract::REQUIRED_RANGES) {
+      for (uint32_t cp = range.first; cp <= range.last; ++cp) {
+        if (findGlobalGlyphIndex(data, cp) < 0) return false;
+      }
+    }
+    for (const uint32_t cp : VietnameseFontContract::REQUIRED_SINGLETONS) {
+      if (findGlobalGlyphIndex(data, cp) < 0) return false;
+    }
+  }
+  return true;
 }
 
 // --- Prewarm ---

@@ -13,6 +13,7 @@
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
 #include "activities/settings/FontSelectionActivity.h"
+#include "activities/settings/FontSizeSelectionActivity.h"
 #include "components/UITheme.h"
 
 BookReaderSettingsActivity::BookReaderSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -153,6 +154,27 @@ void BookReaderSettingsActivity::toggleSelected() {
 
   const SettingInfo& setting = settings[selectedIndex - 1];
   const bool independentBookOption = isIndependentBookOption(setting);
+  if (setting.nameId == StrId::STR_FONT_SIZE) {
+    const uint8_t previousSize = SETTINGS.fontSize;
+    startActivityForResult(
+        std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput, false),
+        [this, previousSize](const ActivityResult&) {
+          if (SETTINGS.fontSize == previousSize) {
+            requestUpdate();
+            return;
+          }
+          const uint8_t selectedSize = SETTINGS.fontSize;
+          if (!customEnabled) setCustomEnabled(true);
+          SETTINGS.fontSize = selectedSize;
+          sdFontSystem.ensureLoaded(renderer, false);
+          customEnabled = true;
+          savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
+                                              savedCustom.autoPageTurnSeconds,
+                                              savedCustom.autoPageTurnStartsOnOpen);
+          requestUpdate();
+        });
+    return;
+  }
   if (setting.nameId == StrId::STR_FONT_FAMILY) {
     const uint8_t previousFontFamily = SETTINGS.fontFamily;
     const std::string previousSdFontFamily = SETTINGS.sdFontFamilyName;

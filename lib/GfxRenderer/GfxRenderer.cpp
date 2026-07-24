@@ -358,7 +358,9 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
                            const bool pixelState, const EpdFontFamily::Style style) {
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) {
-    LOG_ERR("GFX", "No glyph for codepoint %d", cp);
+    // EpdFont already tried U+FFFD. Silently skip when even the replacement
+    // glyph is absent; logging here runs once per render pass/pixel band and
+    // can flood serial output for an otherwise safely handled bad font.
     return;
   }
 

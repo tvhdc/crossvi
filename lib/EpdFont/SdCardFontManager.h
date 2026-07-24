@@ -36,6 +36,10 @@ class SdCardFontManager {
   // 0 if nothing loaded.
   uint8_t currentPointSize() const { return loadedPointSize_; };
 
+  // Coverage of the currently loaded physical font file. Built-in families
+  // are handled by their compile-time coverage test and never reach here.
+  bool currentSupportsVietnamese() const;
+
  private:
   struct LoadedFont {
     SdCardFont* font;  // heap-allocated, owned

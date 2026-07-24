@@ -30,7 +30,9 @@ The original CrossPoint project and community remain the foundation of this firm
 
 - **Screenshots.**
 
-- **Custom fonts**: install your favorite fonts on the SD card.
+- **Vietnamese-ready typography**: the built-in Noto Serif and Noto Sans reader fonts provide true Regular, Bold,
+  Italic and Bold Italic styles at 12, 14, 16 and 18 pt. Additional bounded `.cpfont` families can be installed from
+  SD or the Web UI; malformed or unsupported files are rejected before activation.
 
 - **Tilt page turn (X3 only)**.
 
@@ -140,6 +142,19 @@ Convert your own TTF/OTF files into `.cpfont` files that load from the SD card. 
 5. Select the font on the device from the font settings.
 
 Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` script unmodified, so output matches a local host build.
+
+For Vietnamese books, use the self-contained `vietnamese-reading` preset. It includes Basic Latin, precomposed NFC
+letters, the combining marks needed by NFD text, and common reading punctuation. The converter checks every emitted
+style and lists any missing character as `U+XXXX`; a source font without Vietnamese support needs a style-matched
+fallback font or conversion must fail. Regular is required, while absent Bold/Italic/Bold Italic styles safely fall
+back to the closest style available. TTF/OTF files are converted on a computer or builder and are never parsed on the
+reader. CrossVi's downloadable font catalog uses this preset and matching Noto Sans Regular/Bold/Italic/Bold Italic
+fallbacks during conversion. See [SD-card fonts](./docs/sd-card-fonts.md) for commands, validation details and
+licensing notes.
+
+Font size is selected under **Settings → Reader → Font size** as Small 12 pt, Medium 14 pt, Large 16 pt or X Large
+18 pt, with a Vietnamese preview. If an SD family does not ship the exact size, CrossVi keeps the same family, uses
+its closest available size and shows the physical point size in the picker.
 
 ---
 
