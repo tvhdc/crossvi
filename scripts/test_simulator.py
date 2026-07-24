@@ -15,6 +15,7 @@ import subprocess
 import sys
 import unicodedata
 import zipfile
+import zlib
 from pathlib import Path
 
 
@@ -152,10 +153,82 @@ def create_typography_epub(path: Path, lines: tuple[str, ...]) -> None:
         book.writestr("OEBPS/chapter.xhtml", chapter, compress_type=zipfile.ZIP_DEFLATED)
 
 
+def install_sd_font_family(sd: Path, family_dir: Path) -> str:
+    destination = sd / ".fonts" / family_dir.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(family_dir, destination)
+    return family_dir.name
+
+
+def write_per_book_reader_settings(
+    path: Path, *, custom: bool, font_size: int, sd_font_family: str,
+    font_family: int = 0, line_spacing: int = 1,
+) -> None:
+    payload = bytearray(48)
+    payload[0] = 1 if custom else 0
+    payload[1] = font_family
+    payload[2] = font_size
+    payload[3] = line_spacing
+    payload[4] = 0
+    payload[5] = 0
+    payload[6] = 5
+    payload[7] = 1
+    payload[10] = 1
+    payload[11] = 1
+    encoded_name = sd_font_family.encode("utf-8")
+    if len(encoded_name) >= 32:
+        raise AssertionError("Simulator per-book font fixture name is too long")
+    payload[14:14 + len(encoded_name)] = encoded_name
+    payload[47] = 1  # EpubRenderMode::Balanced when no per-book render override is present.
+    path.write_bytes(b"CVRS" + bytes([4]) + struct.pack("<H", len(payload)) + struct.pack("<I", zlib.crc32(payload)) + payload)
+
+
+def read_per_book_reader_settings(path: Path) -> tuple[int, int, int, int, str]:
+    data = path.read_bytes()
+    if len(data) != 59 or data[:4] != b"CVRS" or data[4] != 4 or struct.unpack_from("<H", data, 5)[0] != 48:
+        raise AssertionError(f"Invalid per-book reader settings fixture: {path}")
+    payload = data[11:]
+    if zlib.crc32(payload) != struct.unpack_from("<I", data, 7)[0]:
+        raise AssertionError(f"Invalid per-book reader settings CRC: {path}")
+    family_name = payload[14:46].split(b"\0", 1)[0].decode("utf-8")
+    return payload[0], payload[1], payload[2], payload[3], family_name
+
+
+def reset_simulator_navigation(control: Path) -> None:
+    for name in ("state.json", "state.json.bak", "recent.json", "recent.json.bak"):
+        (control / name).unlink(missing_ok=True)
+
+
+def prime_book_cache(device: str, sd: Path, book_format: str) -> Path:
+    control = sd / ".crosspoint"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SDL_VIDEODRIVER": "dummy",
+            "CROSSVI_SIM_SD": str(sd),
+            "CROSSVI_SIM_INPUT_SCRIPT": "1200:CONFIRM,2600:CONFIRM",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "4800",
+        }
+    )
+    binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+    completed = run([str(binary)], env=environment, capture_output=True, timeout=12)
+    log = completed.stdout + completed.stderr
+    expected_activity = "TxtReader" if book_format == "txt" else "EpubReader"
+    if f"Entering activity: {expected_activity}" not in log:
+        raise AssertionError(f"{device.upper()} could not prime the {book_format.upper()} cache:\n{log}")
+    candidates = list(control.glob(f"{book_format}_*/source_identity.bin"))
+    if len(candidates) != 1:
+        raise AssertionError(f"{device.upper()} found {len(candidates)} {book_format.upper()} cache identities")
+    reset_simulator_navigation(control)
+    return candidates[0].parent
+
+
 def run_typography_case(
-    device: str, book_format: str, normalization: str, darkness: int, font_family: int = 0
+    device: str, book_format: str, normalization: str, darkness: int, font_family: int = 0,
+    font_size: int = 1, sd_font_family: Path | None = None,
 ) -> tuple[list[int], str]:
-    output = BUILD / f"{device}-typography-{font_family}-{book_format}-{normalization.lower()}-{darkness}"
+    family_key = sd_font_family.name if sd_font_family else str(font_family)
+    output = BUILD / f"{device}-typography-{family_key}-{font_size}-{book_format}-{normalization.lower()}-{darkness}"
     if output.exists():
         shutil.rmtree(output)
     sd = output / "sd"
@@ -166,7 +239,7 @@ def run_typography_case(
     settings = {
         "language": "VI",
         "fontFamily": font_family,
-        "fontSize": 1,
+        "fontSize": font_size,
         "lineSpacing": 1,
         "paragraphAlignment": 1,
         "screenMargin": 5,
@@ -179,6 +252,8 @@ def run_typography_case(
         "statusBarTitle": 2,
         "statusBarBattery": 0,
     }
+    if sd_font_family:
+        settings["sdFontFamilyName"] = install_sd_font_family(sd, sd_font_family)
     (control / "settings.json").write_text(json.dumps(settings) + "\n", encoding="utf-8")
     lines = tuple(unicodedata.normalize(normalization, line) for line in TYPOGRAPHY_LINES)
     if book_format == "txt":
@@ -206,10 +281,37 @@ def run_typography_case(
     if f"Entering activity: {expected_activity}" not in log:
         raise AssertionError(f"{device.upper()} did not open the {book_format.upper()} typography fixture:\n{log}")
     missed = [int(value) for value in re.findall(r"\((\d+) missed\)", log)]
-    if not missed or any(missed):
+    # Built-ins report explicit prewarm counts. SD fonts prewarm through their
+    # bounded on-demand cache and do not emit the same summary line.
+    if (sd_font_family is None and not missed) or any(missed):
         raise AssertionError(f"{device.upper()} {book_format.upper()} {normalization} missed glyphs: {missed}\n{log}")
     _, _, pixels = bmp_grayscale_pixels(find_single(shots, "*.bmp"))
     return pixels, log
+
+
+def smoke_large_sd_font_typography(device: str, family_dir: Path) -> None:
+    size20, log20 = run_typography_case(device, "txt", "NFC", 0, font_size=4, sd_font_family=family_dir)
+    size28, log28 = run_typography_case(device, "txt", "NFD", 0, font_size=8, sd_font_family=family_dir)
+    for point_size, log in ((20, log20), (28, log28)):
+        if not re.search(rf"Loaded .* size={point_size}\b", log):
+            raise AssertionError(f"{device.upper()} did not load the physical {point_size} pt SD font")
+    if not any(pixel < 255 for pixel in size20) or not any(pixel < 255 for pixel in size28):
+        raise AssertionError(f"{device.upper()} large SD font rendered no text")
+
+    normal, normal_log = run_typography_case(
+        device, "epub", "NFC", 0, font_size=8, sd_font_family=family_dir
+    )
+    decomposed, _ = run_typography_case(device, "epub", "NFD", 0, font_size=8, sd_font_family=family_dir)
+    dark, _ = run_typography_case(device, "epub", "NFC", 1, font_size=8, sd_font_family=family_dir)
+    extra_dark, _ = run_typography_case(device, "epub", "NFC", 2, font_size=8, sd_font_family=family_dir)
+    if normal != decomposed:
+        raise AssertionError(f"{device.upper()} 28 pt SD font differs for NFC/NFD text")
+    normal_mask = [pixel < 255 for pixel in normal]
+    if normal_mask != [pixel < 255 for pixel in dark] or normal_mask != [pixel < 255 for pixel in extra_dark]:
+        raise AssertionError(f"{device.upper()} 28 pt text darkness changed typography geometry")
+    if not re.search(r"Loaded .* size=28\b", normal_log):
+        raise AssertionError(f"{device.upper()} EPUB did not use the 28 pt SD font")
+    print(f"{device.upper()}: 20/28 pt SD font content with four styles and text-darkness smoke passed")
 
 
 def smoke_vietnamese_typography(device: str) -> None:
@@ -872,6 +974,337 @@ def smoke_font_size_settings(device: str) -> None:
     print(f"{device.upper()}: font-size preview/cancel/confirm/persist smoke passed")
 
 
+def smoke_extended_sd_font_sizes(device: str, family_dir: Path) -> None:
+    output = BUILD / f"{device}-extended-font-size-settings"
+    if output.exists():
+        shutil.rmtree(output)
+    sd = output / "sd"
+    shots = output / "screenshots"
+    control = sd / ".crosspoint"
+    control.mkdir(parents=True)
+    shots.mkdir(parents=True)
+    family_name = install_sd_font_family(sd, family_dir)
+    (control / "settings.json").write_text(
+        json.dumps({"uiTheme": 5, "language": "VI" if device == "x3" else "EN", "fontSize": 1,
+                    "sdFontFamilyName": family_name}) + "\n",
+        encoding="utf-8",
+    )
+
+    # Enter the font-size picker, navigate from 14 to the exact 28 pt file,
+    # cancel, then repeat and confirm. This covers scrolling and Back restore.
+    events = (
+        "800:DOWN,1100:DOWN,1400:DOWN,1700:DOWN,2000:DOWN,2400:CONFIRM,"
+        "3100:CONFIRM,3500:DOWN,3800:DOWN,4100:DOWN,4500:CONFIRM,"
+        "4900:DOWN,5200:DOWN,5500:DOWN,5800:DOWN,6100:DOWN,6400:DOWN,6700:DOWN,"
+        "7100:SCREENSHOT,7500:BACK,8100:CONFIRM,"
+        "8500:DOWN,8800:DOWN,9100:DOWN,9400:DOWN,9700:DOWN,10000:DOWN,10300:DOWN,"
+        "10700:SCREENSHOT,11100:CONFIRM,11700:BACK,12100:BACK"
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SDL_VIDEODRIVER": "dummy",
+            "CROSSVI_SIM_SD": str(sd),
+            "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
+            "CROSSVI_SIM_INPUT_SCRIPT": events,
+            "CROSSVI_SIM_EXIT_AFTER_MS": "12800",
+        }
+    )
+    binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+    completed = run([str(binary)], env=environment, capture_output=True, timeout=20)
+    log = completed.stdout + completed.stderr
+    if log.count("Entering activity: FontSizeSelect") != 2:
+        raise AssertionError(f"{device.upper()} did not complete both extended-size picker flows:\n{log}")
+    if "Outside range" in log or "page buffer slots full" in log:
+        raise AssertionError(f"{device.upper()} large-size picker overflowed display/cache state:\n{log}")
+    if not re.search(r"Loaded .* size=28\b", log):
+        raise AssertionError(f"{device.upper()} picker never loaded the exact 28 pt file:\n{log}")
+    saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
+    if saved.get("fontSize") != 8 or saved.get("sdFontFamilyName") != family_name:
+        raise AssertionError(f"{device.upper()} did not persist the confirmed 28 pt SD font selection")
+    if len(list(shots.glob("*.bmp"))) != 2:
+        raise AssertionError(f"{device.upper()} extended-size picker did not render both 28 pt states")
+    reboot_environment = os.environ.copy()
+    reboot_environment.update(
+        {"SDL_VIDEODRIVER": "dummy", "CROSSVI_SIM_SD": str(sd), "CROSSVI_SIM_EXIT_AFTER_MS": "1600"}
+    )
+    rebooted = run([str(binary)], env=reboot_environment, capture_output=True, timeout=10)
+    reboot_log = rebooted.stdout + rebooted.stderr
+    if not re.search(r"Loaded .* size=28\b", reboot_log):
+        raise AssertionError(f"{device.upper()} did not reload the persisted 28 pt SD font after reboot")
+    print(f"{device.upper()}: extended-size picker reached exact 28 pt and cancel/confirm/persist passed")
+
+
+def smoke_failed_font_size_preview_rollback(device: str, family_dir: Path) -> None:
+    output = BUILD / f"{device}-font-size-preview-rollback-{family_dir.name}"
+    if output.exists():
+        shutil.rmtree(output)
+    sd = output / "sd"
+    control = sd / ".crosspoint"
+    control.mkdir(parents=True)
+    family_name = install_sd_font_family(sd, family_dir)
+    broken = sd / ".fonts" / family_name / f"{family_name}_16.cpfont"
+    broken.write_bytes(b"invalid cpfont preview fixture")
+    (control / "settings.json").write_text(
+        json.dumps({"uiTheme": 5, "language": "VI", "fontSize": 1, "sdFontFamilyName": family_name}) + "\n",
+        encoding="utf-8",
+    )
+    events = (
+        "800:DOWN,1100:DOWN,1400:DOWN,1700:DOWN,2000:DOWN,2400:CONFIRM,"
+        "3100:CONFIRM,3500:DOWN,3800:DOWN,4100:DOWN,4500:CONFIRM,"
+        "5200:DOWN,6100:BACK,6900:BACK,7500:BACK"
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SDL_VIDEODRIVER": "dummy",
+            "CROSSVI_SIM_SD": str(sd),
+            "CROSSVI_SIM_INPUT_SCRIPT": events,
+            "CROSSVI_SIM_EXIT_AFTER_MS": "8400",
+        }
+    )
+    binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+    completed = run([str(binary)], env=environment, capture_output=True, timeout=15)
+    log = completed.stdout + completed.stderr
+    saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
+    if saved.get("fontFamily", 0) != 0 or saved.get("fontSize") != 1 or saved.get("sdFontFamilyName") != family_name:
+        raise AssertionError(f"{device.upper()} did not restore the original family and size after failed preview")
+    if len(re.findall(rf"Loaded .*{re.escape(family_name)}_14\.cpfont size=14\b", log)) < 2:
+        raise AssertionError(f"{device.upper()} did not reload the original 14 pt font after failed preview:\n{log}")
+    if "Failed to load SD font family" not in log:
+        raise AssertionError(f"{device.upper()} did not exercise the malformed preview fallback")
+    print(f"{device.upper()}: malformed size preview rolled back family, size and loaded font")
+
+
+def smoke_per_book_font_size_confirm_back(device: str, family_dir: Path) -> None:
+    cases = (
+        ("normal-confirm", False, False, True, 2, family_dir.name),
+        ("normal-back", False, False, False, 8, family_dir.name),
+        ("failed-confirm", True, False, True, 2, ""),
+        ("missing-original-back", False, True, False, 8, family_dir.name),
+    )
+    for case_name, break_preview, remove_original_on_entry, confirm, expected_size, expected_sd_family in cases:
+        output = BUILD / f"{device}-per-book-size-{case_name}"
+        if output.exists():
+            shutil.rmtree(output)
+        sd = output / "sd"
+        control = sd / ".crosspoint"
+        control.mkdir(parents=True)
+        family_name = install_sd_font_family(sd, family_dir)
+        family_path = sd / ".fonts" / family_name
+        if break_preview:
+            (family_path / f"{family_name}_16.cpfont").write_bytes(b"invalid cpfont preview fixture")
+        (control / "settings.json").write_text(
+            json.dumps(
+                {
+                    "uiTheme": 5,
+                    "language": "VI",
+                    "fontFamily": 0,
+                    "fontSize": 1,
+                    "sdFontFamilyName": family_name,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (sd / "font-size-result.txt").write_text("Kiểm tra cỡ chữ riêng từng sách.\n", encoding="utf-8")
+        cache = prime_book_cache(device, sd, "txt")
+        profile = cache / "crossvi_reader_settings.bin"
+        write_per_book_reader_settings(profile, custom=False, font_size=8, sd_font_family=family_name)
+
+        picker_action = "CONFIRM" if confirm else "BACK"
+        events = (
+            "1200:CONFIRM,2600:CONFIRM,5000:CONFIRM,5500:DOWN,5900:DOWN,6300:DOWN,6700:DOWN,"
+            "7200:CONFIRM,7800:DOWN,8200:DOWN,8700:CONFIRM,9300:DOWN,"
+            f"10100:{picker_action},11100:BACK"
+        )
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SDL_VIDEODRIVER": "dummy",
+                "CROSSVI_SIM_SD": str(sd),
+                "CROSSVI_SIM_INPUT_SCRIPT": events,
+                "CROSSVI_SIM_EXIT_AFTER_MS": "12300",
+            }
+        )
+        binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+        if remove_original_on_entry:
+            print("+", binary)
+            process = subprocess.Popen(
+                [str(binary)],
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            lines: list[str] = []
+            removed = False
+            assert process.stdout is not None
+            for line in process.stdout:
+                lines.append(line)
+                if not removed and "Entering activity: FontSizeSelect" in line:
+                    (family_path / f"{family_name}_14.cpfont").unlink()
+                    removed = True
+            return_code = process.wait(timeout=18)
+            if return_code != 0 or not removed:
+                raise AssertionError(
+                    f"{device.upper()} could not remove the original font during picker test: rc={return_code}"
+                )
+            log = "".join(lines)
+        else:
+            completed = run([str(binary)], env=environment, capture_output=True, timeout=18)
+            log = completed.stdout + completed.stderr
+
+        flags, family, size, _, sd_family = read_per_book_reader_settings(profile)
+        expected_custom = confirm
+        if bool(flags & 1) != expected_custom or family != 0 or size != expected_size or sd_family != expected_sd_family:
+            raise AssertionError(
+                f"{device.upper()} {case_name} returned wrong typography state: "
+                f"flags={flags} family={family} size={size} sd={sd_family!r}\n{log}"
+            )
+        if (break_preview or remove_original_on_entry) and "Failed to load SD font family" not in log:
+            raise AssertionError(f"{device.upper()} {case_name} did not exercise the expected font-load failure")
+    print(f"{device.upper()}: per-book size Confirm/Back preserved complete typography state")
+
+
+def smoke_disabled_custom_font_switches(device: str, first_family: Path, second_family: Path) -> None:
+    cases = (
+        ("builtin-to-sd", "", 0, ["DOWN", "DOWN"], first_family.name),
+        ("sd-to-builtin", first_family.name, 0, ["UP", "UP"], ""),
+        ("sd-to-sd", first_family.name, 0, ["DOWN"], second_family.name),
+    )
+    for case_name, global_sd_family, global_family, picker_moves, expected_sd_family in cases:
+        output = BUILD / f"{device}-custom-off-{case_name}"
+        if output.exists():
+            shutil.rmtree(output)
+        sd = output / "sd"
+        control = sd / ".crosspoint"
+        control.mkdir(parents=True)
+        install_sd_font_family(sd, first_family)
+        install_sd_font_family(sd, second_family)
+        settings = {"uiTheme": 5, "language": "VI", "fontFamily": global_family, "fontSize": 1}
+        if global_sd_family:
+            settings["sdFontFamilyName"] = global_sd_family
+        (control / "settings.json").write_text(json.dumps(settings) + "\n", encoding="utf-8")
+        (sd / "custom-off.txt").write_text("Kiểm tra đổi phông chữ riêng từng sách.\n", encoding="utf-8")
+        cache = prime_book_cache(device, sd, "txt")
+        profile = cache / "crossvi_reader_settings.bin"
+        write_per_book_reader_settings(profile, custom=False, font_size=8, sd_font_family=second_family.name)
+
+        events = [
+            "1200:CONFIRM", "2600:CONFIRM", "5000:CONFIRM", "5500:DOWN", "5900:DOWN", "6300:DOWN",
+            "6700:DOWN", "7200:CONFIRM", "7800:DOWN", "8300:CONFIRM",
+        ]
+        move_time = 8800
+        for move in picker_moves:
+            events.append(f"{move_time}:{move}")
+            move_time += 400
+        events.extend((f"{move_time}:CONFIRM", f"{move_time + 800}:CONFIRM", f"{move_time + 1600}:BACK"))
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SDL_VIDEODRIVER": "dummy",
+                "CROSSVI_SIM_SD": str(sd),
+                "CROSSVI_SIM_INPUT_SCRIPT": ",".join(events),
+                "CROSSVI_SIM_EXIT_AFTER_MS": str(move_time + 2600),
+            }
+        )
+        binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+        completed = run([str(binary)], env=environment, capture_output=True, timeout=18)
+        log = completed.stdout + completed.stderr
+        if "Entering activity: FontSelect" not in log:
+            raise AssertionError(f"{device.upper()} did not enter font selection for {case_name}:\n{log}")
+        flags, family, size, _, sd_family = read_per_book_reader_settings(profile)
+        if not (flags & 1) or family != 0 or size != 1 or sd_family != expected_sd_family:
+            raise AssertionError(
+                f"{device.upper()} {case_name} restored stale custom size: "
+                f"flags={flags} family={family} size={size} sd={sd_family!r}"
+            )
+    print(f"{device.upper()}: Custom-off built-in/SD/SD family switches retained the global 14 pt size")
+
+
+def smoke_per_book_missing_font_persistence(device: str, book_format: str, requested_size: int) -> None:
+    expected_size = requested_size if requested_size < 4 else 3
+    requested_points = (12, 14, 16, 18, 20, 22, 24, 26, 28)[requested_size]
+    expected_points = (12, 14, 16, 18)[expected_size]
+    output = BUILD / f"{device}-{book_format}-missing-book-font-{requested_size}"
+    if output.exists():
+        shutil.rmtree(output)
+    sd = output / "sd"
+    control = sd / ".crosspoint"
+    control.mkdir(parents=True)
+    (control / "settings.json").write_text(
+        json.dumps({"uiTheme": 5, "language": "VI", "fontFamily": 0, "fontSize": 1}) + "\n",
+        encoding="utf-8",
+    )
+    if book_format == "txt":
+        (sd / "missing-font.txt").write_text("Sách thử tiếng Việt.\n", encoding="utf-8")
+    else:
+        create_typography_epub(sd / "missing-font.epub", TYPOGRAPHY_LINES)
+    cache = prime_book_cache(device, sd, book_format)
+    profile = cache / "crossvi_reader_settings.bin"
+    write_per_book_reader_settings(
+        profile, custom=True, font_size=requested_size, sd_font_family="MissingPerBookFont", line_spacing=2
+    )
+
+    def reopen() -> str:
+        reset_simulator_navigation(control)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SDL_VIDEODRIVER": "dummy",
+                "CROSSVI_SIM_SD": str(sd),
+                "CROSSVI_SIM_INPUT_SCRIPT": "1200:CONFIRM,2600:CONFIRM",
+                "CROSSVI_SIM_EXIT_AFTER_MS": "5200",
+            }
+        )
+        binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+        completed = run([str(binary)], env=environment, capture_output=True, timeout=15)
+        return completed.stdout + completed.stderr
+
+    first_log = reopen()
+    flags, family, size, line_spacing, sd_family = read_per_book_reader_settings(profile)
+    if not (flags & 1) or family != 0 or size != expected_size or line_spacing != 2 or sd_family:
+        raise AssertionError(f"{device.upper()} {book_format.upper()} did not persist the safe per-book fallback")
+    if "Persisted missing per-book font fallback" not in first_log:
+        raise AssertionError(f"{device.upper()} {book_format.upper()} did not exercise fallback persistence")
+    second_log = reopen()
+    if "Persisted missing per-book font fallback" in second_log or "MissingPerBookFont" in second_log:
+        raise AssertionError(f"{device.upper()} {book_format.upper()} repeated the repaired fallback after reopen")
+    print(
+        f"{device.upper()}: {book_format.upper()} missing {requested_points} pt font fallback "
+        f"persisted as {expected_points} pt across reopen"
+    )
+
+
+def smoke_missing_sd_font_fallback(device: str) -> None:
+    output = BUILD / f"{device}-missing-sd-font-fallback"
+    if output.exists():
+        shutil.rmtree(output)
+    sd = output / "sd"
+    control = sd / ".crosspoint"
+    control.mkdir(parents=True)
+    (control / "settings.json").write_text(
+        json.dumps({"fontSize": 8, "sdFontFamilyName": "MissingLargeFont"}) + "\n", encoding="utf-8"
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SDL_VIDEODRIVER": "dummy",
+            "CROSSVI_SIM_SD": str(sd),
+            "CROSSVI_SIM_EXIT_AFTER_MS": "1600",
+        }
+    )
+    binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
+    completed = run([str(binary)], env=environment, capture_output=True, timeout=10)
+    log = completed.stdout + completed.stderr
+    saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
+    if saved.get("fontSize") != 3 or saved.get("sdFontFamilyName", ""):
+        raise AssertionError(f"{device.upper()} did not persist the safe built-in 18 pt fallback:\n{log}")
+    print(f"{device.upper()}: missing SD font safely persisted the built-in 18 pt fallback")
+
+
 def smoke_device(device: str, expected: dict[str, object], update: bool) -> tuple[str, str]:
     output = BUILD / device
     if output.exists():
@@ -930,7 +1363,30 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true", help="reuse existing simulator binaries")
     parser.add_argument("--update-golden", action="store_true", help="accept the current empty-Home frame")
+    parser.add_argument(
+        "--large-font-family-dir",
+        type=Path,
+        default=os.environ.get("CROSSVI_LARGE_FONT_FAMILY_DIR"),
+        help="optional generated 12–28 pt .cpfont family used by extended typography smoke tests",
+    )
+    parser.add_argument(
+        "--second-large-font-family-dir",
+        type=Path,
+        default=os.environ.get("CROSSVI_SECOND_LARGE_FONT_FAMILY_DIR"),
+        help="second generated family used for SD-to-SD and full two-family typography checks",
+    )
     args = parser.parse_args()
+
+    large_font_family = Path(args.large_font_family_dir).resolve() if args.large_font_family_dir else None
+    second_large_font_family = (
+        Path(args.second_large_font_family_dir).resolve() if args.second_large_font_family_dir else None
+    )
+    if large_font_family and not list(large_font_family.glob("*.cpfont")):
+        raise AssertionError(f"No .cpfont fixtures found in {large_font_family}")
+    if second_large_font_family and not list(second_large_font_family.glob("*.cpfont")):
+        raise AssertionError(f"No .cpfont fixtures found in {second_large_font_family}")
+    if second_large_font_family and not large_font_family:
+        raise AssertionError("The second large font family requires --large-font-family-dir")
 
     run([sys.executable, "scripts/setup_simulator_deps.py"])
     test_host_adapters()
@@ -943,8 +1399,21 @@ def main() -> int:
     for device in ("x3", "x4"):
         smoke_home_stats_menu(device)
         smoke_font_size_settings(device)
+        smoke_missing_sd_font_fallback(device)
         smoke_vietnamese_telex(device)
         smoke_vietnamese_typography(device)
+        if large_font_family:
+            smoke_extended_sd_font_sizes(device, large_font_family)
+            smoke_large_sd_font_typography(device, large_font_family)
+            smoke_failed_font_size_preview_rollback(device, large_font_family)
+            smoke_per_book_font_size_confirm_back(device, large_font_family)
+        if second_large_font_family:
+            smoke_extended_sd_font_sizes(device, second_large_font_family)
+            smoke_large_sd_font_typography(device, second_large_font_family)
+            smoke_disabled_custom_font_switches(device, large_font_family, second_large_font_family)
+            for requested_size in (0, 8):
+                smoke_per_book_missing_font_persistence(device, "txt", requested_size)
+                smoke_per_book_missing_font_persistence(device, "epub", requested_size)
         smoke_book_search_actions(device, "browser" if device == "x3" else "recent")
         raw_digest, bmp_digest = smoke_device(device, golden[device], args.update_golden)
         golden[device]["sha256"] = raw_digest

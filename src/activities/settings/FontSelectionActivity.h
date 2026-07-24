@@ -22,7 +22,7 @@ class FontSelectionActivity final : public Activity {
 
  private:
   void handleSelection();
-  int getFontIdForPreview(int index) const;
+  void applyFontSelection(int index);
   void renderPreviewPane(int top, int height, int fontId, const char* fontName) const;
 
   struct FontEntry {
@@ -38,6 +38,8 @@ class FontSelectionActivity final : public Activity {
   int selectedIndex_ = 0;
   int previewFontIndex_ = 0;
   uint8_t originalFontFamily_ = 0;
+  uint8_t originalFontSize_ = 0;
+  uint8_t preferredPointSize_ = 14;
   char originalSdFontFamilyName_[32] = {};
 
   ThemeMetrics metrics_ = {};

@@ -2,6 +2,7 @@
 
 #include <Epub/EpubRenderMode.h>
 #include <HalStorage.h>
+#include <ReaderFontSize.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -115,7 +116,20 @@ class CrossPointSettings {
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
-  enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
+  enum FONT_SIZE {
+    SMALL = 0,
+    MEDIUM = 1,
+    LARGE = 2,
+    EXTRA_LARGE = 3,
+    SIZE_20 = 4,
+    SIZE_22 = 5,
+    SIZE_24 = 6,
+    SIZE_26 = 7,
+    SIZE_28 = 8,
+    FONT_SIZE_COUNT = ReaderFontSize::COUNT
+  };
+  static_assert(SMALL == 0 && MEDIUM == 1 && LARGE == 2 && EXTRA_LARGE == 3,
+                "Existing font-size settings must retain their stored meaning");
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,

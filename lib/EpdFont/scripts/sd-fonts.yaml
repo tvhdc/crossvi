@@ -8,6 +8,8 @@
 # Fields:
 #   name:        Output family name (used in filenames and on-device UI)
 #   description: Human-readable description (shown in download UI and manifest)
+#   license:     Font license identifier carried into the manifest
+#   provenance:  Short source/version note carried into the manifest
 #   intervals:   Comma-separated Unicode interval presets for fontconvert_sdcard.py.
 #                Bundled families include vietnamese-reading so every emitted
 #                style is checked and missing Vietnamese glyphs come from the
@@ -34,6 +36,18 @@
 #   Requires fonttools: pip install -r requirements.txt
 
 families:
+  - name: NotoSerifVietnamese
+    description: "Noto Serif for Vietnamese and English reading (12–28 pt)"
+    license: "SIL Open Font License 1.1"
+    provenance: "Bundled official Noto Serif sources: Regular/Bold v2.015; Italic/Bold Italic v2.013"
+    intervals: vietnamese-reading
+    sizes: [12, 14, 16, 18, 20, 22, 24, 26, 28]
+    styles:
+      regular:    {path: "builtinFonts/source/NotoSerif/NotoSerif-Regular.ttf"}
+      bold:       {path: "builtinFonts/source/NotoSerif/NotoSerif-Bold.ttf"}
+      italic:     {path: "builtinFonts/source/NotoSerif/NotoSerif-Italic.ttf"}
+      bolditalic: {path: "builtinFonts/source/NotoSerif/NotoSerif-BoldItalic.ttf"}
+
   # ── Serif ──────────────────────────────────────────────────────────────
 
   - name: Literata
@@ -147,6 +161,18 @@ families:
       bolditalic: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/vollkorn/Vollkorn-Italic%5Bwght%5D.ttf", variable: {wght: 700}}
 
   # ── Sans-serif ─────────────────────────────────────────────────────────
+
+  - name: NotoSansVietnamese
+    description: "Noto Sans for Vietnamese and English reading (12–28 pt)"
+    license: "SIL Open Font License 1.1"
+    provenance: "Bundled official Noto Sans v2.015 sources"
+    intervals: vietnamese-reading
+    sizes: [12, 14, 16, 18, 20, 22, 24, 26, 28]
+    styles:
+      regular:    {path: "builtinFonts/source/NotoSans/NotoSans-Regular.ttf"}
+      bold:       {path: "builtinFonts/source/NotoSans/NotoSans-Bold.ttf"}
+      italic:     {path: "builtinFonts/source/NotoSans/NotoSans-Italic.ttf"}
+      bolditalic: {path: "builtinFonts/source/NotoSans/NotoSans-BoldItalic.ttf"}
 
   - name: NotoSansExtended
     description: "Sans-serif (Latin, Greek, Cyrillic, Georgian, Armenian, Ethiopic)"

@@ -43,6 +43,22 @@ void refreshCrc(Encoded& encoded) {
   writeU32(encoded.data() + CRC_OFFSET, crc32(encoded.data() + PAYLOAD_OFFSET, PAYLOAD_SIZE));
 }
 
+std::vector<uint8_t> encodedAsVersion(const uint8_t version, const uint8_t fontSize) {
+  auto settings = populatedSettings();
+  settings.fontSize = fontSize;
+  Encoded current{};
+  EXPECT_TRUE(encode(settings, current));
+  current[VERSION_OFFSET] = version;
+  if (version <= AUTO_TURN_VERSION) {
+    current[PAYLOAD_OFFSET] = version == LEGACY_VERSION ? 0x03U : 0x07U;
+    writeU16(current.data() + PAYLOAD_LENGTH_OFFSET, LEGACY_PAYLOAD_SIZE);
+    writeU32(current.data() + CRC_OFFSET, crc32(current.data() + PAYLOAD_OFFSET, LEGACY_PAYLOAD_SIZE));
+    return {current.begin(), current.begin() + static_cast<std::ptrdiff_t>(LEGACY_ENCODED_SIZE)};
+  }
+  refreshCrc(current);
+  return {current.begin(), current.end()};
+}
+
 }  // namespace
 
 TEST(PerBookReaderSettingsCodec, RoundTripsAllFields) {
@@ -59,11 +75,10 @@ TEST(PerBookReaderSettingsCodec, UsesStableExactByteLayout) {
   Encoded encoded;
   ASSERT_TRUE(encode(populatedSettings(), encoded));
 
-  const Encoded expected = {0x43, 0x56, 0x52, 0x53, 0x03, 0x30, 0x00, 0x34, 0x8E, 0xF2, 0x6A, 0x1F,
-                            0x01, 0x03, 0x02, 0x04, 0x03, 0x28, 0x00, 0x01, 0x01, 0x00, 0x00, 0x02,
-                            0x78, 0x4E, 0x6F, 0x74, 0x6F, 0x20, 0x53, 0x61, 0x6E, 0x73, 0x20, 0x56,
-                            0x4E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00};
+  const Encoded expected = {0x43, 0x56, 0x52, 0x53, 0x04, 0x30, 0x00, 0x34, 0x8E, 0xF2, 0x6A, 0x1F, 0x01, 0x03, 0x02,
+                            0x04, 0x03, 0x28, 0x00, 0x01, 0x01, 0x00, 0x00, 0x02, 0x78, 0x4E, 0x6F, 0x74, 0x6F, 0x20,
+                            0x53, 0x61, 0x6E, 0x73, 0x20, 0x56, 0x4E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00};
   EXPECT_EQ(encoded, expected);
 }
 
@@ -110,7 +125,7 @@ TEST(PerBookReaderSettingsCodec, RejectsOutOfRangeValuesWithValidCrc) {
   PerBookReaderSettings decoded;
 
   const std::array<std::pair<size_t, uint8_t>, 17> invalidValues = {
-      std::pair{size_t{0}, uint8_t{0x80}}, std::pair{size_t{1}, uint8_t{2}},  std::pair{size_t{2}, uint8_t{4}},
+      std::pair{size_t{0}, uint8_t{0x80}}, std::pair{size_t{1}, uint8_t{2}},  std::pair{size_t{2}, uint8_t{9}},
       std::pair{size_t{3}, uint8_t{3}},    std::pair{size_t{4}, uint8_t{5}},  std::pair{size_t{5}, uint8_t{4}},
       std::pair{size_t{6}, uint8_t{41}},   std::pair{size_t{7}, uint8_t{2}},  std::pair{size_t{8}, uint8_t{2}},
       std::pair{size_t{9}, uint8_t{2}},    std::pair{size_t{10}, uint8_t{2}}, std::pair{size_t{11}, uint8_t{2}},
@@ -149,6 +164,47 @@ TEST(PerBookReaderSettingsCodec, RejectsOutOfRangeValuesWithValidCrc) {
   std::fill(corrupt.begin() + static_cast<std::ptrdiff_t>(PAYLOAD_OFFSET + 16), corrupt.end(), 0);
   refreshCrc(corrupt);
   EXPECT_EQ(decode(corrupt.data(), corrupt.size(), decoded), DecodeStatus::INVALID_VALUE);
+}
+
+TEST(PerBookReaderSettingsCodec, RoundTripsEveryExtendedFontSizeWithoutChangingLegacyValues) {
+  for (uint8_t fontSize = 0; fontSize < ReaderFontSize::COUNT; ++fontSize) {
+    auto expected = populatedSettings();
+    expected.fontSize = fontSize;
+    Encoded encoded;
+    ASSERT_TRUE(encode(expected, encoded)) << static_cast<int>(fontSize);
+    PerBookReaderSettings decoded;
+    ASSERT_EQ(decode(encoded.data(), encoded.size(), decoded), DecodeStatus::OK);
+    EXPECT_EQ(decoded.fontSize, fontSize);
+  }
+}
+
+TEST(PerBookReaderSettingsCodec, VersionsOneThroughThreeKeepTheFourSizeContract) {
+  for (const uint8_t version : {LEGACY_VERSION, AUTO_TURN_VERSION, EPUB_OPTIONS_VERSION}) {
+    for (uint8_t fontSize = 0; fontSize < ReaderFontSize::BUILTIN_COUNT; ++fontSize) {
+      const auto encoded = encodedAsVersion(version, fontSize);
+      PerBookReaderSettings decoded;
+      ASSERT_EQ(decode(encoded.data(), encoded.size(), decoded), DecodeStatus::OK)
+          << "version=" << static_cast<int>(version) << " size=" << static_cast<int>(fontSize);
+      EXPECT_EQ(decoded.fontSize, fontSize);
+    }
+  }
+}
+
+TEST(PerBookReaderSettingsCodec, VersionThreeRejectsExtendedFontSizes) {
+  for (uint8_t fontSize = ReaderFontSize::BUILTIN_COUNT; fontSize < ReaderFontSize::COUNT; ++fontSize) {
+    const auto encoded = encodedAsVersion(EPUB_OPTIONS_VERSION, fontSize);
+    PerBookReaderSettings decoded;
+    EXPECT_EQ(decode(encoded.data(), encoded.size(), decoded), DecodeStatus::INVALID_VALUE)
+        << static_cast<int>(fontSize);
+  }
+}
+
+TEST(PerBookReaderSettingsCodec, VersionThreePreservesItsEpubOptions) {
+  const auto expected = populatedSettings();
+  const auto encoded = encodedAsVersion(EPUB_OPTIONS_VERSION, expected.fontSize);
+  PerBookReaderSettings decoded;
+  ASSERT_EQ(decode(encoded.data(), encoded.size(), decoded), DecodeStatus::OK);
+  EXPECT_EQ(decoded, expected);
 }
 
 TEST(PerBookReaderSettingsCodec, ReadsVersionOneRatesAsSecondsAndKeepsLegacyAutoStart) {

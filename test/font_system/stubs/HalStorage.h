@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 
 inline uint32_t millis() { return 0; }
@@ -21,6 +22,13 @@ class HalFile {
     size_ = static_cast<uint64_t>(stream_.tellg());
     stream_.seekg(0, std::ios::beg);
     return true;
+  }
+
+  explicit operator bool() const { return stream_.is_open(); }
+  bool isDirectory() const { return false; }
+  HalFile openNextFile() { return {}; }
+  void getName(char* destination, const size_t capacity) const {
+    if (capacity > 0) destination[0] = '\0';
   }
 
   int read(void* destination, size_t length) {
@@ -57,6 +65,8 @@ class HalStorage {
   }
 
   bool openFileForRead(const char*, const char* path, HalFile& file) { return file.open(path); }
+  HalFile open(const char*) { return {}; }
+  bool exists(const char*) const { return false; }
 };
 
 #define Storage HalStorage::getInstance()

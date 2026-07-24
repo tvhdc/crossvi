@@ -352,30 +352,31 @@ int CrossPointSettings::getReaderFontId() const {
     // Fall through to built-in if SD font not found
   }
 
+  const uint8_t builtinSize = std::min<uint8_t>(fontSize, EXTRA_LARGE);
   switch (fontFamily) {
     case NOTOSERIF:
     default:
-      switch (fontSize) {
+      switch (builtinSize) {
         case SMALL:
           return NOTOSERIF_12_FONT_ID;
         case MEDIUM:
-        default:
           return NOTOSERIF_14_FONT_ID;
         case LARGE:
           return NOTOSERIF_16_FONT_ID;
         case EXTRA_LARGE:
+        default:
           return NOTOSERIF_18_FONT_ID;
       }
     case NOTOSANS:
-      switch (fontSize) {
+      switch (builtinSize) {
         case SMALL:
           return NOTOSANS_12_FONT_ID;
         case MEDIUM:
-        default:
           return NOTOSANS_14_FONT_ID;
         case LARGE:
           return NOTOSANS_16_FONT_ID;
         case EXTRA_LARGE:
+        default:
           return NOTOSANS_18_FONT_ID;
       }
   }

@@ -8,12 +8,72 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <string>
 #include <vector>
 
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "activities/settings/SettingsActivity.h"
 #include "util/DictionaryRegistry.h"
+
+inline std::string readerFontSizeLabel(const uint8_t logicalSize) {
+  return std::to_string(ReaderFontSize::pointSize(logicalSize)) + " pt";
+}
+
+inline SettingInfo buildPersistedFontSizeSetting() {
+  std::vector<std::string> labels;
+  labels.reserve(ReaderFontSize::COUNT);
+  for (uint8_t index = 0; index < ReaderFontSize::COUNT; ++index) labels.push_back(readerFontSizeLabel(index));
+  return SettingInfo::EnumStrings(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize, std::move(labels), "fontSize",
+                                  StrId::STR_CAT_READER);
+}
+
+inline SettingInfo buildAvailableFontSizeSetting(const SdCardFontRegistry& registry) {
+  std::vector<uint8_t> logicalSizes;
+  const SdCardFontFamilyInfo* selectedFamily = nullptr;
+  if (SETTINGS.sdFontFamilyName[0] != '\0') {
+    selectedFamily = registry.findFamily(SETTINGS.sdFontFamilyName);
+    if (selectedFamily) {
+      logicalSizes = selectedFamily->availableReaderSizeEnums();
+    }
+  }
+  if (logicalSizes.empty()) {
+    for (uint8_t index = 0; index < ReaderFontSize::BUILTIN_COUNT; ++index) logicalSizes.push_back(index);
+  }
+
+  SettingInfo setting;
+  setting.nameId = StrId::STR_FONT_SIZE;
+  setting.type = SettingType::ENUM;
+  setting.key = "fontSize";
+  setting.category = StrId::STR_CAT_READER;
+  setting.enumStringValues.reserve(logicalSizes.size());
+  for (const uint8_t logicalSize : logicalSizes) {
+    const auto* file = selectedFamily ? selectedFamily->findClosestReaderSize(logicalSize) : nullptr;
+    setting.enumStringValues.push_back(std::to_string(file ? file->pointSize : ReaderFontSize::pointSize(logicalSize)) +
+                                       " pt");
+  }
+  setting.valueGetter = [logicalSizes] {
+    const auto exact = std::find(logicalSizes.begin(), logicalSizes.end(), SETTINGS.fontSize);
+    if (exact != logicalSizes.end()) return static_cast<uint8_t>(std::distance(logicalSizes.begin(), exact));
+
+    const uint8_t target = ReaderFontSize::pointSize(SETTINGS.fontSize);
+    uint8_t bestPosition = 0;
+    uint8_t bestDelta = UINT8_MAX;
+    for (uint8_t position = 0; position < logicalSizes.size(); ++position) {
+      const uint8_t candidate = ReaderFontSize::pointSize(logicalSizes[position]);
+      const uint8_t delta = candidate > target ? candidate - target : target - candidate;
+      if (delta < bestDelta) {
+        bestPosition = position;
+        bestDelta = delta;
+      }
+    }
+    return bestPosition;
+  };
+  setting.valueSetter = [logicalSizes](const uint8_t position) {
+    if (position < logicalSizes.size()) SETTINGS.fontSize = logicalSizes[position];
+  };
+  return setting;
+}
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
@@ -179,9 +239,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // version when SD fonts are installed.
         SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
                           {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS}, "fontFamily", StrId::STR_CAT_READER),
-        SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize,
-                          {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE}, "fontSize",
-                          StrId::STR_CAT_READER),
+        buildPersistedFontSizeSetting(),
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
                           {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER),
         SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",
@@ -194,10 +252,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_READER),
         SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                             StrId::STR_CAT_READER),
-        SettingInfo::Value(
-            StrId::STR_DAILY_READING_GOAL, &CrossPointSettings::dailyReadingGoalMinutes,
-            {0, CrossPointSettings::MAX_DAILY_READING_GOAL_MINUTES, 5}, "dailyReadingGoalMinutes",
-            StrId::STR_CAT_READER),
+        SettingInfo::Value(StrId::STR_DAILY_READING_GOAL, &CrossPointSettings::dailyReadingGoalMinutes,
+                           {0, CrossPointSettings::MAX_DAILY_READING_GOAL_MINUTES, 5}, "dailyReadingGoalMinutes",
+                           StrId::STR_CAT_READER),
         SettingInfo::Toggle(StrId::STR_HYPHENATION, &CrossPointSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER),
         SettingInfo::Enum(
@@ -210,10 +267,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "forceParagraphIndents", StrId::STR_CAT_READER),
         SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                             StrId::STR_CAT_READER),
-        SettingInfo::Enum(StrId::STR_TEXT_DARKNESS, &CrossPointSettings::textDarkness,
-                          {StrId::STR_TEXT_DARKNESS_NORMAL, StrId::STR_TEXT_DARKNESS_DARK,
-                           StrId::STR_TEXT_DARKNESS_EXTRA_DARK},
-                          "textDarkness", StrId::STR_CAT_READER),
+        SettingInfo::Enum(
+            StrId::STR_TEXT_DARKNESS, &CrossPointSettings::textDarkness,
+            {StrId::STR_TEXT_DARKNESS_NORMAL, StrId::STR_TEXT_DARKNESS_DARK, StrId::STR_TEXT_DARKNESS_EXTRA_DARK},
+            "textDarkness", StrId::STR_CAT_READER),
         SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
                           {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                           "imageRendering", StrId::STR_CAT_READER),
@@ -362,11 +419,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   }();
 
   std::vector<SettingInfo> v = baseList;
-  if (registry && registry->getFamilyCount() > 0) {
+  if (registry) {
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_FAMILY; });
-    if (it != v.end()) {
+    if (registry->getFamilyCount() > 0 && it != v.end()) {
       *it = buildFontFamilySetting(registry);
     }
+    it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_SIZE; });
+    if (it != v.end()) *it = buildAvailableFontSizeSetting(*registry);
   }
   if (dictionaries && !dictionaries->empty()) {
     // Insert at the end of the Reader category (just before the first Controls entry).

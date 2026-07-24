@@ -40,11 +40,10 @@ void BookReaderSettingsActivity::rebuildSettings() {
       continue;
     }
     if (readerKind == ReaderKind::PlainText) {
-      const bool supported =
-          setting.nameId == StrId::STR_FONT_FAMILY || setting.nameId == StrId::STR_FONT_SIZE ||
-          setting.nameId == StrId::STR_LINE_SPACING || setting.nameId == StrId::STR_SCREEN_MARGIN ||
-          setting.nameId == StrId::STR_PARA_ALIGNMENT || setting.nameId == StrId::STR_ORIENTATION ||
-          setting.nameId == StrId::STR_TEXT_AA;
+      const bool supported = setting.nameId == StrId::STR_FONT_FAMILY || setting.nameId == StrId::STR_FONT_SIZE ||
+                             setting.nameId == StrId::STR_LINE_SPACING || setting.nameId == StrId::STR_SCREEN_MARGIN ||
+                             setting.nameId == StrId::STR_PARA_ALIGNMENT || setting.nameId == StrId::STR_ORIENTATION ||
+                             setting.nameId == StrId::STR_TEXT_AA;
       if (!supported) continue;
       if (setting.nameId == StrId::STR_PARA_ALIGNMENT) {
         setting.enumValues = {StrId::STR_ALIGN_LEFT, StrId::STR_CENTER, StrId::STR_ALIGN_RIGHT};
@@ -55,8 +54,8 @@ void BookReaderSettingsActivity::rebuildSettings() {
                      : static_cast<uint8_t>(0);
         };
         setting.valueSetter = [](const uint8_t value) {
-          SETTINGS.paragraphAlignment = static_cast<uint8_t>(CrossPointSettings::LEFT_ALIGN +
-                                                              std::min<uint8_t>(value, 2));
+          SETTINGS.paragraphAlignment =
+              static_cast<uint8_t>(CrossPointSettings::LEFT_ALIGN + std::min<uint8_t>(value, 2));
         };
       }
     }
@@ -155,41 +154,58 @@ void BookReaderSettingsActivity::toggleSelected() {
   const SettingInfo& setting = settings[selectedIndex - 1];
   const bool independentBookOption = isIndependentBookOption(setting);
   if (setting.nameId == StrId::STR_FONT_SIZE) {
+    const uint8_t previousFontFamily = SETTINGS.fontFamily;
     const uint8_t previousSize = SETTINGS.fontSize;
+    const std::string previousSdFontFamily = SETTINGS.sdFontFamilyName;
     startActivityForResult(
-        std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput, false),
-        [this, previousSize](const ActivityResult&) {
-          if (SETTINGS.fontSize == previousSize) {
+        std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
+        [this, previousFontFamily, previousSize, previousSdFontFamily](const ActivityResult& result) {
+          if (result.isCancelled) {
             requestUpdate();
             return;
           }
+
+          if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.fontSize == previousSize &&
+              SETTINGS.sdFontFamilyName == previousSdFontFamily) {
+            requestUpdate();
+            return;
+          }
+
+          const uint8_t selectedFontFamily = SETTINGS.fontFamily;
           const uint8_t selectedSize = SETTINGS.fontSize;
+          const std::string selectedSdFontFamily = SETTINGS.sdFontFamilyName;
           if (!customEnabled) setCustomEnabled(true);
+          SETTINGS.fontFamily = selectedFontFamily;
           SETTINGS.fontSize = selectedSize;
+          std::strncpy(SETTINGS.sdFontFamilyName, selectedSdFontFamily.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+          SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
           sdFontSystem.ensureLoaded(renderer, false);
           customEnabled = true;
           savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
-                                              savedCustom.autoPageTurnSeconds,
-                                              savedCustom.autoPageTurnStartsOnOpen);
+                                              savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);
           requestUpdate();
         });
     return;
   }
   if (setting.nameId == StrId::STR_FONT_FAMILY) {
     const uint8_t previousFontFamily = SETTINGS.fontFamily;
+    const uint8_t previousFontSize = SETTINGS.fontSize;
     const std::string previousSdFontFamily = SETTINGS.sdFontFamilyName;
     startActivityForResult(
         std::make_unique<FontSelectionActivity>(renderer, mappedInput, &sdFontSystem.registry(), false),
-        [this, previousFontFamily, previousSdFontFamily](const ActivityResult&) {
-          if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.sdFontFamilyName == previousSdFontFamily) {
+        [this, previousFontFamily, previousFontSize, previousSdFontFamily](const ActivityResult&) {
+          if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.fontSize == previousFontSize &&
+              SETTINGS.sdFontFamilyName == previousSdFontFamily) {
             requestUpdate();
             return;
           }
 
           const uint8_t selectedFontFamily = SETTINGS.fontFamily;
+          const uint8_t selectedFontSize = SETTINGS.fontSize;
           const std::string selectedSdFontFamily = SETTINGS.sdFontFamilyName;
           if (!customEnabled) setCustomEnabled(true);
           SETTINGS.fontFamily = selectedFontFamily;
+          SETTINGS.fontSize = selectedFontSize;
           std::strncpy(SETTINGS.sdFontFamilyName, selectedSdFontFamily.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
           SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
           sdFontSystem.ensureLoaded(renderer, false);

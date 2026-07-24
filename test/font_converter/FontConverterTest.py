@@ -91,6 +91,25 @@ class FontConverterContractTest(unittest.TestCase):
         for name, value in zip(family_names, intervals):
             self.assertIn("vietnamese-reading", value.split(","), name)
 
+    def test_noto_vietnamese_packs_cover_all_reader_sizes_and_real_styles(self):
+        if not hasattr(BUILDER.yaml, "safe_load"):
+            self.skipTest("PyYAML is required for catalog structure checks")
+        catalog = BUILDER.yaml.safe_load((SCRIPT_DIR / "sd-fonts.yaml").read_text(encoding="utf-8"))
+        families = {family["name"]: family for family in catalog["families"]}
+        expected_sizes = list(range(12, 29, 2))
+        expected_styles = {"regular", "bold", "italic", "bolditalic"}
+        for name in ("NotoSerifVietnamese", "NotoSansVietnamese"):
+            family = families[name]
+            self.assertEqual(family["sizes"], expected_sizes)
+            self.assertEqual(family["intervals"], "vietnamese-reading")
+            self.assertEqual(set(family["styles"]), expected_styles)
+            self.assertEqual(family["license"], "SIL Open Font License 1.1")
+            self.assertTrue(family["provenance"])
+            for style in expected_styles:
+                self.assertIn("path", family["styles"][style])
+                if style != "regular":
+                    self.assertNotEqual(family["styles"][style]["path"], family["styles"]["regular"]["path"])
+
 
 @unittest.skipUnless(os.environ.get("CROSSVI_FONT_INTEGRATION") == "1",
                      "set CROSSVI_FONT_INTEGRATION=1 for FreeType converter integration")

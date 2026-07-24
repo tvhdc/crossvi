@@ -84,6 +84,18 @@ struct SettingInfo {
     return s;
   }
 
+  static SettingInfo EnumStrings(StrId nameId, uint8_t CrossPointSettings::* ptr, std::vector<std::string> values,
+                                 const char* key = nullptr, StrId category = StrId::STR_NONE_OPT) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::ENUM;
+    s.valuePtr = ptr;
+    s.enumStringValues = std::move(values);
+    s.key = key;
+    s.category = category;
+    return s;
+  }
+
   static SettingInfo Action(StrId nameId, SettingAction action) {
     SettingInfo s;
     s.nameId = nameId;

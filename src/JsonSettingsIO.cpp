@@ -13,8 +13,8 @@
 
 #include "BookmarkEntry.h"
 #include "CrossPointSettings.h"
-#include "FontStorageUtils.h"
 #include "CrossPointState.h"
+#include "FontStorageUtils.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
@@ -267,7 +267,9 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
       if (info.type == SettingType::ENUM) {
-        v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
+        const size_t optionCount =
+            info.enumStringValues.empty() ? info.enumValues.size() : info.enumStringValues.size();
+        v = clamp(v, static_cast<uint8_t>(optionCount), fieldDefault);
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {
@@ -372,8 +374,7 @@ bool JsonSettingsIO::loadBookmarks(std::vector<BookmarkEntry>& bookmarks, const 
 JsonSettingsIO::BookmarkLoadStatus JsonSettingsIO::loadBookmarksFromFile(std::vector<BookmarkEntry>& bookmarks,
                                                                          const char* path) {
   std::string json;
-  const AtomicFile::LoadStatus loaded =
-      AtomicFile::load(path, json, BOOKMARK_FILE_MAX_BYTES, validateBookmarkJson);
+  const AtomicFile::LoadStatus loaded = AtomicFile::load(path, json, BOOKMARK_FILE_MAX_BYTES, validateBookmarkJson);
   switch (loaded) {
     case AtomicFile::LoadStatus::Primary:
     case AtomicFile::LoadStatus::Backup:

@@ -10,6 +10,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "ReaderFontSize.h"
 #include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -28,6 +29,16 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
   }
 
   return fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? fontFamily : 0;
+}
+
+uint8_t currentEffectivePointSize(const SdCardFontRegistry* registry, const char* sdFontFamilyName,
+                                  const uint8_t fontSize) {
+  if (sdFontFamilyName[0] != '\0' && registry) {
+    if (const auto* family = registry->findFamily(sdFontFamilyName)) {
+      if (const auto* selected = family->findClosestReaderSize(fontSize)) return selected->pointSize;
+    }
+  }
+  return ReaderFontSize::pointSize(std::min<uint8_t>(fontSize, ReaderFontSize::BUILTIN_COUNT - 1));
 }
 }  // namespace
 
@@ -48,8 +59,10 @@ void FontSelectionActivity::onEnter() {
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
 
   originalFontFamily_ = SETTINGS.fontFamily;
+  originalFontSize_ = SETTINGS.fontSize;
   strncpy(originalSdFontFamilyName_, SETTINGS.sdFontFamilyName, sizeof(originalSdFontFamilyName_) - 1);
   originalSdFontFamilyName_[sizeof(originalSdFontFamilyName_) - 1] = '\0';
+  preferredPointSize_ = currentEffectivePointSize(registry_, originalSdFontFamilyName_, originalFontSize_);
 
   fonts_.clear();
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
@@ -75,6 +88,7 @@ void FontSelectionActivity::onExit() { Activity::onExit(); }
 void FontSelectionActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     SETTINGS.fontFamily = originalFontFamily_;
+    SETTINGS.fontSize = originalFontSize_;
     strncpy(SETTINGS.sdFontFamilyName, originalSdFontFamilyName_, sizeof(SETTINGS.sdFontFamilyName) - 1);
     SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
     sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
@@ -87,19 +101,7 @@ void FontSelectionActivity::loop() {
       handleSelection();
     } else {
       previewFontIndex_ = selectedIndex_;
-      const auto& font = fonts_[selectedIndex_];
-      if (font.isBuiltin) {
-        SETTINGS.fontFamily = font.settingIndex;
-        SETTINGS.sdFontFamilyName[0] = '\0';
-      } else if (registry_) {
-        const int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
-        const auto& families = registry_->getFamilies();
-        if (sdIdx < static_cast<int>(families.size())) {
-          strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
-          SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-          sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
-        }
-      }
+      applyFontSelection(selectedIndex_);
       requestUpdate();
     }
     return;
@@ -131,19 +133,29 @@ void FontSelectionActivity::loop() {
 }
 
 void FontSelectionActivity::handleSelection() {
-  const auto& font = fonts_[selectedIndex_];
+  applyFontSelection(selectedIndex_);
+  finish();
+}
+
+void FontSelectionActivity::applyFontSelection(const int index) {
+  const auto& font = fonts_[index];
   if (font.settingIndex < CrossPointSettings::BUILTIN_FONT_COUNT) {
     SETTINGS.fontFamily = font.settingIndex;
+    SETTINGS.fontSize = ReaderFontSize::closestIndex(preferredPointSize_, ReaderFontSize::BUILTIN_COUNT);
     SETTINGS.sdFontFamilyName[0] = '\0';
   } else if (registry_) {
     const int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
     const auto& families = registry_->getFamilies();
     if (sdIdx < static_cast<int>(families.size())) {
+      const auto& family = families[sdIdx];
+      const int logicalSize = family.findClosestReaderSizeEnum(preferredPointSize_);
+      if (logicalSize < 0) return;
+      SETTINGS.fontSize = static_cast<uint8_t>(logicalSize);
       strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
       SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
     }
   }
-  finish();
+  sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
 }
 
 void FontSelectionActivity::renderPreviewPane(int top, int height, int fontId, const char* fontName) const {
@@ -218,8 +230,7 @@ void FontSelectionActivity::render(RenderLock&&) {
                                     : nullptr;
   renderPreviewPane(previewTop, previewHeight, previewFontId, previewFontName);
 
-  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, pageWidth - 1,
-                    listTop - metrics_.verticalSpacing / 2);
+  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, pageWidth - 1, listTop - metrics_.verticalSpacing / 2);
 
   const int currentFontIndex = findCurrentFontIndex(registry_, originalSdFontFamilyName_, originalFontFamily_);
   GUI.drawList(

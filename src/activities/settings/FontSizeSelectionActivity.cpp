@@ -6,74 +6,107 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "ReaderFontSize.h"
 #include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 
-namespace {
-constexpr uint8_t kPointSizes[CrossPointSettings::FONT_SIZE_COUNT] = {12, 14, 16, 18};
-constexpr StrId kSizeLabels[CrossPointSettings::FONT_SIZE_COUNT] = {
-    StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE};
-}  // namespace
-
-FontSizeSelectionActivity::FontSizeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                                     const bool persistInvalidSelection)
-    : Activity("FontSizeSelect", renderer, mappedInput), persistInvalidSelection_(persistInvalidSelection) {}
+FontSizeSelectionActivity::FontSizeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+    : Activity("FontSizeSelect", renderer, mappedInput) {}
 
 void FontSizeSelectionActivity::onEnter() {
   Activity::onEnter();
   metrics_ = UITheme::getInstance().getMetrics();
-  originalSize_ = SETTINGS.fontSize < CrossPointSettings::FONT_SIZE_COUNT ? SETTINGS.fontSize
-                                                                          : CrossPointSettings::MEDIUM;
-  selectedIndex_ = originalSize_;
+  originalFontFamily_ = SETTINGS.fontFamily;
+  originalSize_ =
+      SETTINGS.fontSize < CrossPointSettings::FONT_SIZE_COUNT ? SETTINGS.fontSize : CrossPointSettings::MEDIUM;
+  std::strncpy(originalSdFontFamilyName_, SETTINGS.sdFontFamilyName, sizeof(originalSdFontFamilyName_) - 1);
+  originalSdFontFamilyName_[sizeof(originalSdFontFamilyName_) - 1] = '\0';
+  buildSizeOptions();
+  const auto selected = std::find(sizeOptions_.begin(), sizeOptions_.end(), originalSize_);
+  if (selected != sizeOptions_.end()) {
+    selectedIndex_ = static_cast<int>(std::distance(sizeOptions_.begin(), selected));
+  } else {
+    const uint8_t target = ReaderFontSize::pointSize(originalSize_);
+    uint8_t bestDelta = UINT8_MAX;
+    selectedIndex_ = 0;
+    for (int index = 0; index < static_cast<int>(sizeOptions_.size()); ++index) {
+      const uint8_t candidate = ReaderFontSize::pointSize(sizeOptions_[index]);
+      const uint8_t delta = candidate > target ? candidate - target : target - candidate;
+      if (delta < bestDelta) {
+        selectedIndex_ = index;
+        bestDelta = delta;
+      }
+    }
+  }
   requestUpdate();
 }
 
+void FontSizeSelectionActivity::buildSizeOptions() {
+  sizeOptions_.clear();
+  if (SETTINGS.sdFontFamilyName[0] != '\0') {
+    if (const auto* family = sdFontSystem.registry().findFamily(SETTINGS.sdFontFamilyName)) {
+      sizeOptions_ = family->availableReaderSizeEnums();
+    }
+  }
+  if (sizeOptions_.empty()) {
+    for (uint8_t index = 0; index < ReaderFontSize::BUILTIN_COUNT; ++index) sizeOptions_.push_back(index);
+  }
+}
+
 void FontSizeSelectionActivity::previewSelection(const int index) {
-  selectedIndex_ = std::clamp(index, 0, static_cast<int>(CrossPointSettings::FONT_SIZE_COUNT) - 1);
-  SETTINGS.fontSize = static_cast<uint8_t>(selectedIndex_);
-  sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
+  selectedIndex_ = std::clamp(index, 0, static_cast<int>(sizeOptions_.size()) - 1);
+  SETTINGS.fontSize = sizeOptions_[selectedIndex_];
+  sdFontSystem.ensureLoaded(renderer, false);
   requestUpdate();
 }
 
 void FontSizeSelectionActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    SETTINGS.fontFamily = originalFontFamily_;
     SETTINGS.fontSize = originalSize_;
-    sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
+    std::strncpy(SETTINGS.sdFontFamilyName, originalSdFontFamilyName_, sizeof(SETTINGS.sdFontFamilyName) - 1);
+    SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+    sdFontSystem.ensureLoaded(renderer, false);
+    ActivityResult cancelled;
+    cancelled.isCancelled = true;
+    setResult(std::move(cancelled));
     finish();
     return;
   }
   // Finish on release so the same edge cannot be observed by Settings after
   // this child activity is popped.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    SETTINGS.fontSize = static_cast<uint8_t>(selectedIndex_);
+    setResult(ActivityResult{});
     finish();
     return;
   }
 
-  buttonNavigator_.onNextRelease([this] {
-    previewSelection(ButtonNavigator::nextIndex(selectedIndex_, CrossPointSettings::FONT_SIZE_COUNT));
-  });
+  buttonNavigator_.onNextRelease(
+      [this] { previewSelection(ButtonNavigator::nextIndex(selectedIndex_, static_cast<int>(sizeOptions_.size()))); });
   buttonNavigator_.onPreviousRelease([this] {
-    previewSelection(ButtonNavigator::previousIndex(selectedIndex_, CrossPointSettings::FONT_SIZE_COUNT));
+    previewSelection(ButtonNavigator::previousIndex(selectedIndex_, static_cast<int>(sizeOptions_.size())));
   });
 }
 
 std::string FontSizeSelectionActivity::sizeLabel(const int index) const {
-  char label[64];
-  snprintf(label, sizeof(label), "%s — %u pt", I18N.get(kSizeLabels[index]), kPointSizes[index]);
+  char label[16];
+  const uint8_t logicalSize = sizeOptions_[index];
+  const uint8_t actual = SETTINGS.sdFontFamilyName[0] == '\0'
+                             ? ReaderFontSize::pointSize(logicalSize)
+                             : sdFontSystem.selectedPointSize(SETTINGS.sdFontFamilyName, logicalSize);
+  snprintf(label, sizeof(label), "%u pt",
+           static_cast<unsigned>(actual ? actual : ReaderFontSize::pointSize(logicalSize)));
   return label;
 }
 
 std::string FontSizeSelectionActivity::actualSizeLabel(const int index) const {
-  if (SETTINGS.sdFontFamilyName[0] == '\0') return {};
-  const uint8_t actual = sdFontSystem.selectedPointSize(SETTINGS.sdFontFamilyName, static_cast<uint8_t>(index));
-  if (actual == 0 || actual == kPointSizes[index]) return {};
-  char label[48];
-  snprintf(label, sizeof(label), tr(STR_FONT_ACTUAL_SIZE_FORMAT), actual);
-  return label;
+  (void)index;
+  // The primary label already shows the physical size that will be rendered.
+  return {};
 }
 
 void FontSizeSelectionActivity::render(RenderLock&&) {
@@ -108,11 +141,10 @@ void FontSizeSelectionActivity::render(RenderLock&&) {
     }
   }
 
-  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, screenWidth - 1,
-                    listTop - metrics_.verticalSpacing / 2);
+  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, screenWidth - 1, listTop - metrics_.verticalSpacing / 2);
   GUI.drawList(
       renderer, Rect{0, listTop, screenWidth, std::max(0, screenHeight - bottomReserved - listTop)},
-      CrossPointSettings::FONT_SIZE_COUNT, selectedIndex_, [this](const int index) { return sizeLabel(index); },
+      static_cast<int>(sizeOptions_.size()), selectedIndex_, [this](const int index) { return sizeLabel(index); },
       nullptr, nullptr, [this](const int index) { return actualSizeLabel(index); }, true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

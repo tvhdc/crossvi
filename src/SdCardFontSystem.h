@@ -29,7 +29,7 @@ class SdCardFontSystem {
   uint8_t currentPointSize() const { return manager_.currentPointSize(); }
   bool currentSupportsVietnamese() const { return manager_.currentSupportsVietnamese(); }
 
-  /// Point size that a family would use for one of the four reader size
+  /// Point size that a family would use for a reader size
   /// settings, or 0 when the family/size is unavailable.
   uint8_t selectedPointSize(const char* familyName, uint8_t fontSizeEnum) const;
 

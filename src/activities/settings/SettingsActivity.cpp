@@ -1,9 +1,8 @@
 #include "SettingsActivity.h"
 
-#include <Version.h>
-
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <Version.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -217,7 +216,11 @@ void SettingsActivity::toggleCurrentSetting() {
   }
   if (setting.nameId == StrId::STR_FONT_SIZE) {
     startActivityForResult(std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) {
+                           [this](const ActivityResult& result) {
+                             if (result.isCancelled) {
+                               rebuildSettingsLists();
+                               return;
+                             }
                              SETTINGS.saveToFile();
                              rebuildSettingsLists();
                            });
@@ -457,7 +460,11 @@ void SettingsActivity::render(RenderLock&&) {
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
           const uint8_t value = SETTINGS.*(setting.valuePtr);
-          valueText = I18N.get(setting.enumValues[value]);
+          if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
+            valueText = setting.enumStringValues[value];
+          } else if (value < setting.enumValues.size()) {
+            valueText = I18N.get(setting.enumValues[value]);
+          }
         } else if (setting.type == SettingType::ENUM && setting.valueGetter) {
           const uint8_t value = setting.valueGetter();
           if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
@@ -501,10 +508,10 @@ void SettingsActivity::render(RenderLock&&) {
 
   // Draw help text
   const bool selectedSettingUsesPicker =
-      selectedSettingIndex > 0 && ((*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP ||
-                                   (*currentSettings)[selectedSettingIndex - 1].nameId ==
-                                       StrId::STR_DAILY_READING_GOAL ||
-                                   (*currentSettings)[selectedSettingIndex - 1].type == SettingType::STRING);
+      selectedSettingIndex > 0 &&
+      ((*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP ||
+       (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_DAILY_READING_GOAL ||
+       (*currentSettings)[selectedSettingIndex - 1].type == SettingType::STRING);
   const auto confirmLabel = selectedSettingIndex == 0
                                 ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
                                 : (selectedSettingUsesPicker ? tr(STR_SELECT) : tr(STR_TOGGLE));

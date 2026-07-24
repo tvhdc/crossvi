@@ -1,13 +1,13 @@
 #pragma once
 
+#include <Epub/EpubRenderMode.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
-
-#include <Epub/EpubRenderMode.h>
 
 struct PerBookReaderSettings {
   static constexpr size_t SD_FONT_NAME_CAPACITY = 32;
@@ -43,4 +43,13 @@ inline void setPerBookSdFontFamilyName(PerBookReaderSettings& settings, const st
   settings.sdFontFamilyName.fill('\0');
   const size_t len = std::min(name.size(), settings.sdFontFamilyName.size() - 1);
   std::memcpy(settings.sdFontFamilyName.data(), name.data(), len);
+}
+
+inline bool applyMissingSdFontFallback(PerBookReaderSettings& settings, const uint8_t builtinFamily,
+                                       const uint8_t builtinFontSize) {
+  if (!settings.hasReaderOverrides || settings.sdFontFamilyName.front() == '\0') return false;
+  settings.fontFamily = builtinFamily;
+  settings.fontSize = builtinFontSize;
+  settings.sdFontFamilyName.fill('\0');
+  return true;
 }

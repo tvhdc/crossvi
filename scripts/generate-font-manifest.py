@@ -44,9 +44,11 @@ CPFONT_MAGIC = b"CPFONT\x00\x00"
 
 STYLE_NAMES = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
 
-# Family descriptions can be loaded from the sd-fonts.yaml config
-# (via --descriptions-from) or fall back to the family name.
+# Family metadata can be loaded from the sd-fonts.yaml config
+# (via --descriptions-from). Description falls back to the family name;
+# license and provenance remain optional, additive manifest fields.
 FAMILY_DESCRIPTIONS: dict[str, str] = {}
+FAMILY_METADATA: dict[str, dict[str, str]] = {}
 
 
 def load_descriptions_from_yaml(yaml_path: Path) -> dict[str, str]:
@@ -61,6 +63,24 @@ def load_descriptions_from_yaml(yaml_path: Path) -> dict[str, str]:
         config = yaml.safe_load(f)
 
     return {f["name"]: f["description"] for f in config.get("families", []) if "description" in f}
+
+
+def load_metadata_from_yaml(yaml_path: Path) -> dict[str, dict[str, str]]:
+    """Load optional license/provenance fields without changing schema requirements."""
+    try:
+        import yaml
+    except ImportError:
+        return {}
+
+    with open(yaml_path) as f:
+        config = yaml.safe_load(f)
+
+    metadata: dict[str, dict[str, str]] = {}
+    for family in config.get("families", []):
+        values = {key: str(family[key]) for key in ("license", "provenance") if family.get(key)}
+        if values:
+            metadata[family["name"]] = values
+    return metadata
 
 
 def read_cpfont_styles(filepath: Path) -> list[str]:
@@ -180,14 +200,14 @@ def build_manifest(
                 }
             )
 
-        manifest_families.append(
-            {
-                "name": family_name,
-                "description": description,
-                "styles": styles,
-                "files": file_entries,
-            }
-        )
+        entry = {
+            "name": family_name,
+            "description": description,
+            "styles": styles,
+            "files": file_entries,
+        }
+        entry.update(FAMILY_METADATA.get(family_name, {}))
+        manifest_families.append(entry)
 
     return {
         "version": FONTS_MANIFEST_VERSION,
@@ -233,11 +253,12 @@ def main():
         base_url += "/"
 
     # Load descriptions from YAML config if provided
-    global FAMILY_DESCRIPTIONS
+    global FAMILY_DESCRIPTIONS, FAMILY_METADATA
     if args.descriptions_from:
         desc_path = Path(args.descriptions_from)
         if desc_path.exists():
             FAMILY_DESCRIPTIONS = load_descriptions_from_yaml(desc_path)
+            FAMILY_METADATA = load_metadata_from_yaml(desc_path)
             print(f"Loaded {len(FAMILY_DESCRIPTIONS)} descriptions from {desc_path}")
         else:
             print(f"WARNING: {desc_path} not found, using family names as descriptions", file=sys.stderr)

@@ -14,6 +14,12 @@ static uint8_t fontSizeEnumFromSettings() {
   return e;
 }
 
+bool normalizeBuiltinFontSize() {
+  if (SETTINGS.fontSize < ReaderFontSize::BUILTIN_COUNT) return false;
+  SETTINGS.fontSize = CrossPointSettings::EXTRA_LARGE;
+  return true;
+}
+
 }  // namespace
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
@@ -41,13 +47,18 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
       } else {
         LOG_ERR("SDFS", "Failed to load SD font family: %s (clearing)", SETTINGS.sdFontFamilyName);
         SETTINGS.sdFontFamilyName[0] = '\0';
+        normalizeBuiltinFontSize();
         SETTINGS.saveToFile();
       }
     } else {
       LOG_DBG("SDFS", "SD font family not found on card: %s (clearing)", SETTINGS.sdFontFamilyName);
       SETTINGS.sdFontFamilyName[0] = '\0';
+      normalizeBuiltinFontSize();
       SETTINGS.saveToFile();
     }
+  } else if (normalizeBuiltinFontSize()) {
+    LOG_DBG("SDFS", "Built-in fonts support up to 18 pt; normalized saved font size");
+    SETTINGS.saveToFile();
   }
 
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
@@ -72,6 +83,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
     if (!currentFamily.empty()) {
       manager_.unloadAll(renderer);
     }
+    if (normalizeBuiltinFontSize() && persistInvalidSelection) SETTINGS.saveToFile();
     return;
   }
 
@@ -85,6 +97,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
       LOG_DBG("SDFS", "SD font family disappeared: %s (clearing)", wantedFamily);
       manager_.unloadAll(renderer);
       SETTINGS.sdFontFamilyName[0] = '\0';
+      normalizeBuiltinFontSize();
       if (persistInvalidSelection) SETTINGS.saveToFile();
       return;
     }
@@ -106,11 +119,13 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
     } else {
       LOG_ERR("SDFS", "Failed to load SD font family: %s (clearing)", wantedFamily);
       SETTINGS.sdFontFamilyName[0] = '\0';
+      normalizeBuiltinFontSize();
       if (persistInvalidSelection) SETTINGS.saveToFile();
     }
   } else {
     LOG_DBG("SDFS", "SD font family not found: %s (clearing)", wantedFamily);
     SETTINGS.sdFontFamilyName[0] = '\0';
+    normalizeBuiltinFontSize();
     if (persistInvalidSelection) SETTINGS.saveToFile();
   }
 }

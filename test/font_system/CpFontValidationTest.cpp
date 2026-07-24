@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,8 +29,7 @@ void putU32(std::vector<uint8_t>& bytes, size_t at, uint32_t value) {
   for (int i = 0; i < 4; ++i) bytes[at + i] = static_cast<uint8_t>(value >> (i * 8));
 }
 
-std::vector<uint8_t> makeFont(const std::vector<uint8_t>& styleIds = {0}, uint32_t first = 0x20,
-                              uint32_t last = 0x7E,
+std::vector<uint8_t> makeFont(const std::vector<uint8_t>& styleIds = {0}, uint32_t first = 0x20, uint32_t last = 0x7E,
                               const std::vector<std::pair<uint32_t, uint32_t>>& ligatures = {}) {
   const uint32_t glyphCount = last - first + 1;
   const uint32_t dataStart = kHeaderSize + static_cast<uint32_t>(styleIds.size()) * kTocSize;
@@ -82,8 +82,10 @@ std::vector<uint8_t> makeSparseFont(std::vector<uint32_t> codepoints, const std:
     if (!intervals.empty() && cp == intervals.back().last + 1) {
       intervals.back().last = cp;
     } else {
-      intervals.push_back({cp, cp, static_cast<uint32_t>(intervals.empty() ? 0 :
-          intervals.back().offset + intervals.back().last - intervals.back().first + 1)});
+      intervals.push_back(
+          {cp, cp,
+           static_cast<uint32_t>(
+               intervals.empty() ? 0 : intervals.back().offset + intervals.back().last - intervals.back().first + 1)});
     }
   }
 
@@ -131,9 +133,7 @@ std::vector<uint32_t> vietnameseContractCodepoints() {
 
 class CpFontValidationTest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    path_ = std::filesystem::temp_directory_path() / "crossvi-font-validation.cpfont";
-  }
+  void SetUp() override { path_ = std::filesystem::temp_directory_path() / "crossvi-font-validation.cpfont"; }
   void TearDown() override { std::filesystem::remove(path_); }
 
   bool load(const std::vector<uint8_t>& bytes, SdCardFont* out = nullptr) {
@@ -243,6 +243,16 @@ TEST_F(CpFontValidationTest, ConverterFixturePassesProductionParser) {
   ASSERT_TRUE(font.load(fixture));
   EXPECT_TRUE(font.supportsVietnamese());
   for (uint8_t style = 0; style < 4; ++style) EXPECT_TRUE(font.hasStyle(style));
+
+  constexpr const char* sample =
+      "Cô bé Thủy ăn phở ở sân. Đậm: Ă Â Ê Ô Ơ Ư Đ. Nghiêng: ờ ớ ở ỡ ợ. Đậm nghiêng: ừ ứ ử ữ ự.";
+  font.resetStats();
+  EXPECT_EQ(font.prewarm(sample, 0x0F, false), 0);
+  const auto& stats = font.getStats();
+  EXPECT_GT(stats.uniqueGlyphs, 0U);
+  EXPECT_LE(stats.uniqueGlyphs, static_cast<uint32_t>(SdCardFont::MAX_PAGE_GLYPHS) * 4U);
+  EXPECT_GT(stats.bitmapBytes, 0U);
+  std::cout << "cpfont prewarm: glyphs=" << stats.uniqueGlyphs << " bitmap=" << stats.bitmapBytes << " bytes\n";
 }
 
 TEST_F(CpFontValidationTest, CompleteRegularOnlyVietnameseFontIsAcceptedWithStyleFallback) {

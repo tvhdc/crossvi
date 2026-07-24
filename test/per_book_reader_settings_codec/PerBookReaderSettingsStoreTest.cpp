@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "PerBookReaderSettingsCodec.h"
@@ -144,6 +145,58 @@ TEST_F(PerBookReaderSettingsStoreTest, LoadUsesValidTemporaryWhenNoCommittedCopy
   EXPECT_TRUE(loaded.hasReaderOverrides);
   EXPECT_EQ(loaded.fontSize, 3);
   EXPECT_EQ(Storage.file(path(".tmp")), temporary);
+}
+
+TEST_F(PerBookReaderSettingsStoreTest, PersistsExtendedFontSizeInBookProfile) {
+  auto settings = globalDefaults();
+  settings.hasReaderOverrides = true;
+  settings.fontSize = 8;
+  ASSERT_EQ(PerBookReaderSettingsStore::save(CACHE_PATH, settings), PerBookReaderSettingsStore::SaveStatus::SAVED);
+
+  PerBookReaderSettings loaded;
+  ASSERT_EQ(PerBookReaderSettingsStore::load(CACHE_PATH, loaded), PerBookReaderSettingsStore::LoadStatus::LOADED);
+  EXPECT_EQ(loaded.fontSize, 8);
+  EXPECT_EQ(loaded.sdFontFamilyName, settings.sdFontFamilyName);
+}
+
+TEST_F(PerBookReaderSettingsStoreTest, MissingSdFontFallbackPersistsForEpubAndTxtProfiles) {
+  for (const auto& [cachePath, requestedSize, fallbackSize] :
+       std::initializer_list<std::tuple<const char*, uint8_t, uint8_t>>{
+           {"/.crosspoint/epub_missing_small_font", 0, 0},
+           {"/.crosspoint/txt_missing_small_font", 0, 0},
+           {"/.crosspoint/epub_missing_large_font", 8, 3},
+           {"/.crosspoint/txt_missing_large_font", 8, 3}}) {
+    Storage.mkdir(cachePath);
+    auto original = globalDefaults();
+    original.hasReaderOverrides = true;
+    original.fontSize = requestedSize;
+    original.lineSpacing = 2;
+    original.forceParagraphIndents = 1;
+    setPerBookSdFontFamilyName(original, "Missing Font");
+    ASSERT_EQ(PerBookReaderSettingsStore::save(cachePath, original), PerBookReaderSettingsStore::SaveStatus::SAVED);
+
+    PerBookReaderSettings repaired;
+    ASSERT_EQ(PerBookReaderSettingsStore::load(cachePath, repaired), PerBookReaderSettingsStore::LoadStatus::LOADED);
+    ASSERT_TRUE(applyMissingSdFontFallback(repaired, 0, fallbackSize));
+    ASSERT_EQ(PerBookReaderSettingsStore::save(cachePath, repaired), PerBookReaderSettingsStore::SaveStatus::SAVED);
+
+    PerBookReaderSettings reopened;
+    ASSERT_EQ(PerBookReaderSettingsStore::load(cachePath, reopened), PerBookReaderSettingsStore::LoadStatus::LOADED);
+    EXPECT_TRUE(reopened.hasReaderOverrides);
+    EXPECT_EQ(reopened.fontFamily, 0);
+    EXPECT_EQ(reopened.fontSize, fallbackSize);
+    EXPECT_EQ(reopened.sdFontFamilyName.front(), '\0');
+    EXPECT_EQ(reopened.lineSpacing, original.lineSpacing);
+    EXPECT_EQ(reopened.forceParagraphIndents, original.forceParagraphIndents);
+    EXPECT_FALSE(applyMissingSdFontFallback(reopened, 0, fallbackSize));
+  }
+}
+
+TEST_F(PerBookReaderSettingsStoreTest, MissingSdFontFallbackDoesNotCreateAnOverride) {
+  auto settings = globalDefaults();
+  settings.hasReaderOverrides = false;
+  EXPECT_FALSE(applyMissingSdFontFallback(settings, 0, 3));
+  EXPECT_EQ(settings.sdFontFamilyName, globalDefaults().sdFontFamilyName);
 }
 
 TEST_F(PerBookReaderSettingsStoreTest, LoadPrefersCommittedBackupOverTemporaryCopy) {

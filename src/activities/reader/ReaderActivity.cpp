@@ -25,6 +25,33 @@
 #include "util/BookCacheUtils.h"
 #include "util/BookPathMoveUtils.h"
 
+namespace {
+
+bool isLoadedBookSettings(const PerBookReaderSettingsStore::LoadStatus status) {
+  return status == PerBookReaderSettingsStore::LoadStatus::LOADED ||
+         status == PerBookReaderSettingsStore::LoadStatus::LOADED_BACKUP ||
+         status == PerBookReaderSettingsStore::LoadStatus::LOADED_TEMP;
+}
+
+void persistMissingBookFontFallback(const std::string& cachePath,
+                                    const PerBookReaderSettingsStore::LoadStatus loadStatus,
+                                    const bool settingsWritable, PerBookReaderSettings& bookSettings) {
+  if (!settingsWritable || !isLoadedBookSettings(loadStatus) || SETTINGS.sdFontFamilyName[0] != '\0' ||
+      !applyMissingSdFontFallback(bookSettings, SETTINGS.fontFamily, SETTINGS.fontSize)) {
+    return;
+  }
+
+  const auto saveStatus = PerBookReaderSettingsStore::save(cachePath, bookSettings);
+  if (saveStatus != PerBookReaderSettingsStore::SaveStatus::SAVED) {
+    LOG_ERR("READER", "Could not persist missing per-book font fallback (status %u): %s",
+            static_cast<unsigned>(saveStatus), cachePath.c_str());
+  } else {
+    LOG_DBG("READER", "Persisted missing per-book font fallback: %s", cachePath.c_str());
+  }
+}
+
+}  // namespace
+
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
 bool ReaderActivity::isTxtFile(const std::string& path) {
@@ -144,6 +171,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
   // A per-book SD font must be active before layout starts. Invalid book-only
   // choices are cleared in memory without leaking the override to settings.json.
   sdFontSystem.ensureLoaded(renderer, false);
+  persistMissingBookFontFallback(epub->getCachePath(), settingsStatus, settingsWritable, bookSettings);
   // Missing, legacy, or malformed derived metadata is rebuilt below. Show the
   // indexing popup for all of those cases, not only a physically missing file.
   const bool uncached = cacheStatus != BookMetadataCache::LoadStatus::Loaded;
@@ -200,8 +228,7 @@ std::unique_ptr<Xtc> ReaderActivity::loadXtc(const std::string& path) {
   }
 
   ZipFile::SourceIdentity storedIdentity;
-  const SourceIdentityStore::LoadStatus identityStatus =
-      SourceIdentityStore::load(xtc->getCachePath(), storedIdentity);
+  const SourceIdentityStore::LoadStatus identityStatus = SourceIdentityStore::load(xtc->getCachePath(), storedIdentity);
   switch (identityStatus) {
     case SourceIdentityStore::LoadStatus::Primary:
     case SourceIdentityStore::LoadStatus::Backup:
@@ -338,6 +365,7 @@ std::unique_ptr<Txt> ReaderActivity::loadTxt(const std::string& path, PerBookRea
   }
   applyReaderSettings(bookSettings.hasReaderOverrides ? bookSettings : globalSettings);
   sdFontSystem.ensureLoaded(renderer, false);
+  persistMissingBookFontFallback(txt->getCachePath(), settingsStatus, settingsWritable, bookSettings);
   return txt;
 }
 
@@ -370,9 +398,9 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt, PerBookReaderSett
                                      PerBookReaderSettings bookSettings, const bool settingsWritable) {
   const auto txtPath = txt->getPath();
   currentBookPath = txtPath;
-  activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(
-      renderer, mappedInput, std::move(txt), std::move(globalSettings), std::move(bookSettings), settingsWritable,
-      std::move(initialClippingJump)));
+  activityManager.replaceActivity(
+      std::make_unique<TxtReaderActivity>(renderer, mappedInput, std::move(txt), std::move(globalSettings),
+                                          std::move(bookSettings), settingsWritable, std::move(initialClippingJump)));
 }
 
 void ReaderActivity::onEnter() {
@@ -395,10 +423,10 @@ void ReaderActivity::onEnter() {
     const bool epubTarget = initialClippingJump->bookType == "epub" && FsHelpers::hasEpubExtension(initialBookPath);
     const bool textTarget = initialClippingJump->bookType == "txt" && isTxtFile(initialBookPath);
     if (initialClippingJump->bookPath != initialBookPath || (!epubTarget && !textTarget)) {
-    // The overload is only a transport. ReaderActivity remains the dispatch
-    // boundary and never forwards a clipping target into a different reader
-    // type.
-    LOG_ERR("READER", "Rejected clipping jump for mismatched reader dispatch: %s", initialBookPath.c_str());
+      // The overload is only a transport. ReaderActivity remains the dispatch
+      // boundary and never forwards a clipping target into a different reader
+      // type.
+      LOG_ERR("READER", "Rejected clipping jump for mismatched reader dispatch: %s", initialBookPath.c_str());
       initialClippingJump.reset();
     }
   }

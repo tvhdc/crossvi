@@ -1,0 +1,9 @@
+{
+  "name": "EpdFont",
+  "version": "1.0.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "InflateReader": "*"
+  }
+}
