@@ -1,157 +1,202 @@
 # CrossVi
 
-[English](README.md) | **Tiếng Việt**
+[English](README.md) | [**Tiếng Việt**](README.vi.md)
 
-CrossVi là phần mềm hệ thống (firmware) mã nguồn mở dành cho máy đọc sách màn hình e-paper Xteink X3 và X4. Dự án được phát triển độc lập từ mã nguồn của [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), tập trung vào độ ổn định, tốc độ và các tính năng mới.
+CrossVi là firmware máy đọc sách mã nguồn mở, đa ngôn ngữ dành cho Xteink X3 và
+X4 sử dụng ESP32-C3. Dự án được phát triển độc lập từ
+[CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), tập
+trung vào trải nghiệm đọc ổn định, chữ tiếng Việt, dữ liệu thẻ nhớ an toàn và
+những tính năng phù hợp với tài nguyên giới hạn của thiết bị.
 
-CrossVi có giao diện tiếng Việt và được khởi xướng bởi một lập trình viên Việt Nam, nhưng **không chỉ dành cho người Việt**. Firmware hỗ trợ 30 ngôn ngữ và chào đón cả người dùng lẫn người đóng góp trên toàn thế giới.
+> **Tình trạng dự án:** CrossVi hiện là bản thử nghiệm dành cho phát triển. Dự
+> án đã có kiểm thử trên máy tính, biên dịch firmware, phân tích tĩnh
+> và kiểm thử mô phỏng X3/X4, nhưng vẫn cần xác minh trên cả X3 và X4 thật
+> trước khi phát hành bản ổn định.
 
-> **Tình trạng hiện tại:** mã nguồn đã vượt qua kiểm thử tự động, biên dịch firmware thành công và giao diện có thể chạy trong trình mô phỏng riêng cho X3/X4. Dự án vẫn chưa được kiểm tra đầy đủ trên máy thật, nên hiện chưa có bản phát hành ổn định được khuyến nghị cho người dùng phổ thông.
+![Trình mô phỏng CrossVi X4 trên máy tính](docs/images/crossvi-simulator-x4.png)
 
-## CrossVi làm được gì?
+## Điểm nổi bật
 
-- Đọc sách EPUB, TXT, XTC/XTCH và ảnh BMP. CrossVi hỗ trợ chính thức tập con XTC/XTCH v1.0 không nén, trang dựng sẵn 480×800: X4 hiển thị đúng 1:1, còn X3 thu vừa toàn trang, giữ tỷ lệ và căn giữa nên không cắt nội dung.
-- Ghi nhớ sách đang đọc, vị trí đọc, dấu trang và lịch sử sách gần đây.
-- Tra từ điển StarDict, gồm tệp đồng nghĩa `.syn` tùy chọn và lịch sử tối đa 15 lần tra thành công; đồng bộ tiến độ đọc với máy chủ tương thích KOReader.
-- Đổi phông chữ, cỡ chữ, khoảng cách dòng, căn lề và giao diện. Noto Serif/Noto Sans tích hợp có đủ kiểu Thường,
-  Đậm, Nghiêng và Đậm Nghiêng ở 12, 14, 16 và 18 pt.
-- Cài thêm phông chữ `.cpfont` từ thẻ nhớ hoặc giao diện web; tệp hỏng/không tương thích bị từ chối an toàn.
-- Chuyển sách qua Wi-Fi bằng trình duyệt hoặc Calibre.
-- Tải sách từ thư viện trực tuyến OPDS.
-- Đổi chức năng các nút bấm, màn hình ngủ và thanh trạng thái.
-- Hỗ trợ 30 ngôn ngữ, gồm tiếng Việt và các ngôn ngữ viết từ phải sang trái. Các tính năng đọc mới đã có đầy đủ tiếng Anh và tiếng Việt; một số nhãn mới ở ngôn ngữ khác tạm dùng bản tiếng Anh.
+- Đọc EPUB 2/3, TXT/Markdown dạng văn bản, XTC/XTCH và ảnh BMP.
+- Có thiết lập hiển thị riêng từng sách, các chế độ dựng EPUB, EPUB Safe Mode,
+  dấu trang, đoạn trích, từ điển StarDict, thống kê đọc, chế độ tập trung và tự
+  lật trang.
+- Tích hợp Noto Serif và Noto Sans hỗ trợ tiếng Việt; có thể cài thêm họ
+  phông `.cpfont` đã được kiểm tra từ thẻ nhớ.
+- Có trình duyệt tệp, sách gần đây, chuyển tệp bằng Web UI, WebDAV, Calibre
+  Wireless, OPDS, đồng bộ tiến độ KOReader và cập nhật OTA.
+- Nhiều giao diện dành cho màn hình 4 inch, tùy chỉnh nút bấm, màn hình ngủ,
+  chụp màn hình và nghiêng máy để lật trang trên X3.
+- 30 ngôn ngữ giao diện; các tính năng riêng của CrossVi có đầy đủ tiếng Việt.
+- Nearby Sync thử nghiệm cho phép hai máy CrossVi ở gần nhau trao đổi vị trí đã
+  xác nhận hoặc bản thống kê. Dữ liệu Nearby không được mã hóa.
 
-## Các tính năng đọc mới
+CrossVi tập trung vào việc đọc sách; dự án không hướng tới trình duyệt web,
+phát nội dung đa phương tiện, trò chơi hoặc các tác vụ nền nặng.
 
-CrossVi bổ sung một số tiện ích dễ dùng, nhưng không tự ý thay đổi sách hoặc vị trí đọc của bạn:
+## Thiết bị và định dạng được hỗ trợ
 
-Thống kê trong trình đọc dùng được cho EPUB, TXT/Markdown và XTC/XTCH. EPUB và TXT/Markdown đều có menu công cụ, dấu trang, tra cứu từ điển, đoạn trích và cài đặt hiển thị riêng cho từng sách. Với TXT/Markdown, dấu trang và đoạn trích bám theo vị trí byte trong tệp, nên đổi phông, lề hoặc hướng màn hình không làm chúng âm thầm trỏ sang đoạn khác. Các chức năng phụ thuộc cấu trúc EPUB như chọn chương, chú thích chân trang và đồng bộ vị trí KOReader không xuất hiện trong menu văn bản thuần. XTC/XTCH là ảnh trang cố định nên không đổi phông/cỡ chữ, không tra từ theo vùng chọn, không clipping và không đồng bộ vị trí KOReader; xem [contract định dạng](lib/Xtc/README).
+| Thiết bị | Trạng thái | Ghi chú |
+| --- | --- | --- |
+| Xteink X3 | Mục tiêu được hỗ trợ | ESP32-C3; có lật trang bằng nghiêng máy |
+| Xteink X4 | Mục tiêu được hỗ trợ | ESP32-C3 |
 
-- **Dashboard:** màn hình chính gọn hơn, hiển thị sách vừa đọc và các con số tổng quan. Khi dữ liệu của EPUB gần nhất đọc được an toàn, bạn có thể mở thẳng phần thống kê đầy đủ từ đây. Bật tại **Cài đặt → Hiển thị → Giao diện → Bảng đọc sách**.
-- **Theme CrossVi:** màn hình chính hai cột riêng cho X3/X4, nổi bật sách đang đọc, tiến độ, nút **Đọc tiếp**, sáu lối tắt chính và thẻ tóm tắt **Hôm nay/Mục tiêu** có thể mở phần thống kê đầy đủ. Bạn có thể đặt tên máy tại **Cài đặt → Hiển thị → Tên hiển thị**, bật theme tại **Giao diện → CrossVi** và đặt chỉ tiêu tại **Cài đặt → Trình đọc → Mục tiêu đọc mỗi ngày**.
-- **Thiết lập riêng cho từng sách:** mỗi EPUB có thể dùng phông chữ, cỡ chữ, lề, khoảng cách dòng, buộc thụt đầu dòng, hướng màn hình và tốc độ tự lật trang riêng. Ba chế độ hiển thị EPUB là **Đầy đủ**, **Cân bằng** (mặc định) và **Nhẹ**. Nếu một EPUB thật sự hết bộ nhớ khi dựng trang, CrossVi hỏi trước khi thử lại bằng **Chế độ an toàn**; chế độ này chỉ được lưu cho cuốn sách đó sau khi một trang đã hiển thị thành công.
-- **Thống kê đọc:** xem thời gian đọc, số trang đã lật, số phiên đọc, chuỗi ngày đọc và tiến độ cho EPUB, TXT/Markdown và XTC/XTCH. Thời gian chỉ được tính khi trang đã hiển thị thành công; thời gian ở menu hoặc lúc máy đang lập chỉ mục không được tính. Với TXT/Markdown, nhấn **Xác nhận** để mở menu rồi chọn **Thống kê đọc**; XTC/XTCH không có chương vẫn mở thống kê trực tiếp, còn XTC/XTCH có chương dùng thao tác giữ **Xác nhận**. Tại trang **Sách này**, nhấn **Xác nhận** để chỉnh ngày giờ bắt đầu/hoàn thành. Tại trang **Thiết bị này**, nhấn **Xác nhận** để mở lịch đọc 730 ngày; nếu vào từ Home, cùng menu này còn có sao lưu và khôi phục tổng thống kê của máy. Ngày nằm ngoài phần lịch sử còn được lưu sẽ được ghi rõ là chưa có dữ liệu, không giả thành ngày không đọc. Vì số trang TXT/Markdown thay đổi theo phông chữ và lề, CrossVi không đưa ra tốc độ hoặc ngày hoàn thành dự kiến thiếu tin cậy.
-- **Clipping (lưu đoạn trích):** chọn một đoạn trên trang đang đọc hoặc tiếp tục sang các trang liền kề trong cùng chương, rồi xem lại hoặc xóa sau đó. Bản nháp có giới hạn rõ ràng để không làm đầy bộ nhớ và chỉ được lưu sau khi bạn xác nhận. CrossVi không tìm kiếm và đoán vị trí cũ sau khi bố cục sách thay đổi; nếu không khớp an toàn, đoạn chữ vẫn được giữ nhưng phần đánh dấu sẽ tạm không hiện.
-- **Nearby Sync:** hai máy CrossVi ở gần nhau có thể trao đổi vị trí đọc của đúng cùng một tệp EPUB, hoặc lưu một bản thống kê của máy kia. Cả hai bên đều phải mở tính năng và xác nhận; dữ liệu nhận được không tự ghi đè dữ liệu trên máy. Nếu chương đích chưa có dữ liệu bố cục phù hợp hoặc không xác định được đúng đoạn văn, CrossVi sẽ từ chối thay vì đoán một trang gần đúng.
+| Định dạng | Mức hỗ trợ |
+| --- | --- |
+| `.epub` | EPUB 2/3 có dàn lại nội dung |
+| `.txt`, `.md` | Trình đọc văn bản; Markdown hiện được xử lý như văn bản thường |
+| `.xtc`, `.xtch` | Tập con bố cục cố định v1.0 không nén đã được kiểm thử, dùng trang 480×800 |
+| `.bmp` | Xem ảnh và dùng ảnh làm màn hình ngủ |
 
-Nearby Sync không cần Internet nhưng dữ liệu truyền gần **không được mã hóa**. Chỉ dùng với một máy đáng tin cậy và kiểm tra mã ghép cặp trên cả hai màn hình.
+Trang XTC/XTCH hiển thị 1:1 trên X4 và được thu vừa, căn giữa trên X3. Định dạng
+này không có tùy biến phông/cỡ chữ như EPUB, chọn từ để tra, lưu đoạn trích
+hoặc đồng bộ vị trí KOReader. Xem [quy ước XTC/XTCH](lib/Xtc/README).
 
-## Phông chữ tiếng Việt
+## Phông chữ và cỡ chữ
 
-Trong **Cài đặt → Trình đọc → Cỡ chữ**, CrossVi hiển thị rõ **Nhỏ — 12 pt**, **Vừa — 14 pt**,
-**Lớn — 16 pt** và **Rất lớn — 18 pt**, kèm đoạn xem trước tiếng Việt. Nếu một family `.cpfont` không có đúng cỡ
-đã chọn, máy vẫn giữ family đó, chọn cỡ gần nhất và báo cỡ thực tế đang dùng.
+Noto Serif và Noto Sans tích hợp có đủ kiểu Thường, Đậm, Nghiêng và Đậm Nghiêng
+ở các cỡ 12, 14, 16 và 18 pt.
 
-Muốn tự tạo font, hãy chuyển TTF/OTF thành `.cpfont` trên máy tính bằng preset `vietnamese-reading`. Preset này bao
-gồm chữ tiếng Việt dạng dựng sẵn NFC, dấu tổ hợp NFD và dấu câu đọc sách thường gặp. Converter kiểm tra từng style;
-nếu font nguồn thiếu ký tự, bạn phải cung cấp font fallback tương ứng cho Thường/Đậm/Nghiêng/Đậm Nghiêng hoặc quá
-trình tạo sẽ báo lỗi rõ theo mã `U+XXXX`. Máy không đọc trực tiếp TTF/OTF. Regular là style bắt buộc; các style khác
-có thể thiếu và sẽ fallback an toàn. Catalog font tải về của CrossVi cũng dùng preset này và Noto Sans đúng style làm
-fallback khi convert. Xem lệnh đầy đủ tại [hướng dẫn font thẻ nhớ](docs/sd-card-fonts.md). Giấy phép font vẫn thuộc
-tác giả hoặc nhà phát hành font, không chuyển thành giấy phép của CrossVi.
+Họ phông `.cpfont` tương thích trên thẻ nhớ có thể cung cấp thêm 20, 22, 24,
+26 và 28 pt. Màn chọn cỡ chỉ hiển thị những cỡ họ phông đang chọn thực sự có,
+và máy chỉ nạp một tệp `.cpfont` vật lý tại một thời điểm. Firmware không nhúng sẵn
+các tệp phông lớn, vì vậy bản cài mới vẫn chỉ hiện cỡ tích hợp cho đến khi cài
+một họ phông trên thẻ nhớ có các cỡ lớn hơn.
 
-## Máy nào được hỗ trợ?
+Để tạo hoặc cài phông chữ:
 
-- Xteink X3 dùng ESP32-C3.
-- Xteink X4 dùng ESP32-C3.
+1. Mở [công cụ tạo phông chữ CrossPoint](https://crosspointreader.com/fonts), hoặc
+   chạy `lib/EpdFont/scripts/fontconvert_sdcard.py` trên máy tính.
+2. Chuyển TTF/OTF thành `.cpfont`; thiết bị không đọc trực tiếp TTF/OTF.
+3. Chép họ phông đã tạo vào `/fonts/TenFamily/` hoặc `/.fonts/TenFamily/` trên thẻ
+   nhớ.
+4. Chọn tại **Cài đặt → Trình đọc → Phông chữ khi đọc**.
 
-CrossVi không phải firmware chính thức, không trực thuộc Xteink hoặc bất kỳ nhà sản xuất thiết bị nào.
+Khi tạo phông tiếng Việt, nên dùng cấu hình `vietnamese-reading`. Cấu hình này
+kiểm tra chữ NFC, dấu tổ hợp NFD cần thiết, dấu câu và từng kiểu chữ được xuất
+ra. Giấy phép của phông nguồn tiếp tục áp dụng cho mọi tệp `.cpfont` được tạo ra.
 
-## Trước khi cài firmware
+## Cài đặt
 
-Một số máy mua từ cửa hàng bên thứ ba có thể bị khóa chức năng nạp firmware qua USB. Theo hướng dẫn của dự án gốc, máy mua trực tiếp từ xteink.com không cần công cụ mở khóa.
+### Cảnh báo an toàn
 
-> **Cảnh báo quan trọng:** công cụ Xteink Unlocker hiện chỉ hỗ trợ chính thức CrossPoint và CrossInk. Không dùng CrossVi làm firmware mở khóa cho một thiết bị đang bị khóa USB. Làm sai có thể khiến máy không thể khôi phục.
+Một số máy mua từ bên thứ ba bị khóa chức năng nạp firmware qua USB. Xteink
+Unlocker công khai hiện hỗ trợ CrossPoint và CrossInk làm firmware mở khóa,
+không hỗ trợ CrossVi. **Không dùng CrossVi làm firmware mở khóa cho máy đang bị
+khóa USB**; làm vậy có thể khiến thiết bị không còn đường khôi phục được hỗ trợ.
 
-Nếu chưa biết máy có bị khóa hay không:
+CrossVi hiện chưa phát hành bản ổn định đã được kiểm chứng trên phần cứng. Nếu
+bạn chủ động thử bản phát triển, hãy sao lưu thẻ nhớ trước và chỉ dùng
+`firmware.bin` từ nguồn biên dịch tin cậy hoặc tự biên dịch từ mã nguồn.
 
-1. Bật máy và cắm cáp USB-C có truyền dữ liệu.
-2. Mở công cụ nạp firmware trên trình duyệt.
-3. Kiểm tra xem trình duyệt có nhận cổng USB của máy không.
-4. Thử cáp, cổng USB hoặc trình duyệt khác trước khi kết luận máy bị khóa.
+### Nạp bằng trình duyệt
 
-## Cách cài CrossVi
+1. Bật máy và kết nối bằng cáp USB-C có truyền dữ liệu.
+2. Mở [công cụ nạp CrossPoint](https://crosspointreader.com/#flash-tools).
+3. Chọn X3 hoặc X4, chọn **Custom .bin** rồi mở `firmware.bin` của CrossVi.
+4. Giữ máy kết nối cho đến khi quá trình nạp hoàn tất.
 
-Hiện CrossVi chưa có bản phát hành đã được kiểm tra trên phần cứng thật. Người dùng không chuyên nên chờ một bản ổn định xuất hiện tại [trang phát hành CrossVi](https://github.com/tvhdc/crossvi/releases).
+### Nạp bằng dòng lệnh
 
-Khi đã có bản phù hợp:
+Với Python 3.10 trở lên, hãy cài bản
+[`esptool`](https://github.com/espressif/esptool) mới nhất, sau đó ghi firmware ứng
+dụng tại địa chỉ `0x10000`:
 
-1. Tải file `firmware.bin` từ trang Releases.
-2. Bật máy, kết nối với máy tính bằng USB-C.
-3. Mở [công cụ cài firmware trên web](https://crosspointreader.com/#flash-tools).
-4. Chọn đúng X3 hoặc X4.
-5. Chọn **Custom .bin** và mở file `firmware.bin`.
-6. Không rút cáp hoặc tắt máy trong lúc nạp firmware.
+```bash
+python3 -m pip install --upgrade esptool
+esptool --chip esp32c3 --port /dev/ttyACM0 --baud 921600 \
+  write-flash 0x10000 /duong-dan/toi/firmware.bin
+```
 
-Muốn quay lại firmware CrossPoint chính thức, bạn có thể dùng cùng công cụ và chọn một bản CrossPoint phù hợp.
+Thay `/dev/ttyACM0` bằng cổng thiết bị trên máy tính của bạn. Có thể khôi phục
+firmware CrossPoint chính thức bằng cùng công cụ web.
 
-## Chép sách vào máy
+## Dữ liệu trên thẻ nhớ
 
-Cách đơn giản nhất là tháo thẻ nhớ, chép sách vào thư mục bạn muốn rồi lắp lại vào máy.
+CrossVi giữ dữ liệu làm việc tương thích với CrossPoint trong `/.crosspoint` ở
+những nơi được hỗ trợ. Thư mục này chứa cả bộ nhớ đệm có thể tạo lại và dữ
+liệu quan trọng như cài đặt, vị trí đọc, dấu trang, đoạn trích và thống kê.
 
-Bạn cũng có thể:
+Không xóa toàn bộ thư mục này như một bước sửa lỗi thông thường. Hãy dùng chức
+năng xóa bộ nhớ đệm trong firmware trước, đồng thời luôn sao lưu thẻ nhớ trước khi
+đổi firmware hoặc sửa dữ liệu thủ công. Xem
+[định dạng dữ liệu](docs/file-formats.md) để biết cấu trúc trên thẻ nhớ.
 
-- Mở **File Transfer** trên máy để chuyển sách bằng trình duyệt.
-- Dùng tiện ích CrossPoint Reader của Calibre để gửi sách qua Wi-Fi.
-- Thêm thư viện OPDS để tải sách trực tiếp.
+## Phát triển
 
-Các định dạng được hỗ trợ trực tiếp là `.epub`, `.txt`, `.md`, `.xtc`, `.xtch` và `.bmp`. Với XTC/XTCH, hãy xuất trang dọc 480×800, version 1.0 và không nén. Có thể dùng [EPUB to XTC Converter](https://github.com/bigbag/epub-to-xtc-converter); kể cả đọc trên X3, hãy chọn đầu ra X4 480×800 vì đây là kích thước mà firmware kiểm tra và thu vừa an toàn.
+### Yêu cầu
 
-## Dữ liệu cũ có dùng lại được không?
+- [pioarduino](https://github.com/pioarduino/pioarduino), hoặc VS Code cùng
+  tiện ích tương ứng
+- Python 3.8 trở lên
+- `clang-format` 21 nếu đóng góp mã nguồn
+- Cáp USB-C có truyền dữ liệu khi làm việc với máy thật
 
-Có. CrossVi giữ nguyên thư mục `.crosspoint`, các mã định danh kỹ thuật và giao thức tương thích của CrossPoint. Những định dạng an toàn mới được ghi cạnh dữ liệu cũ thay vì xóa hoặc ghi đè dữ liệu cũ. Bạn vẫn nên sao lưu thẻ nhớ trước khi đổi firmware.
+### Biên dịch
 
-Không nên xóa cả thư mục `.crosspoint` chỉ để sửa lỗi hiển thị sách. Thư mục này không chỉ là bộ nhớ đệm: nó còn chứa cài đặt, vị trí đọc, dấu trang, đoạn trích và thống kê. Hãy dùng chức năng xóa bộ nhớ đệm trong máy trước; nếu phải thao tác thẻ nhớ thủ công, hãy sao lưu rồi chỉ di chuyển thư mục `sections` của đúng cuốn sách cần tạo lại bố cục.
+```bash
+git clone --recursive https://github.com/tvhdc/crossvi.git
+cd crossvi
+pio run
+```
 
-## Cập nhật firmware
+Nếu đã clone mà chưa lấy submodule:
 
-CrossVi có chức năng kiểm tra cập nhật qua Wi-Fi. Chức năng này chỉ hoạt động sau khi kho GitHub có một bản phát hành CrossVi chứa file `firmware.bin`.
+```bash
+git submodule update --init --recursive
+```
 
-Không đổi tên `firmware.bin` nếu cập nhật từ thẻ nhớ hoặc trang phát hành GitHub.
+Các bước kiểm tra chính trước khi đóng góp:
 
-## Khi gặp lỗi
+```bash
+./bin/clang-format-fix
+pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+pio run
+```
 
-- Thử khởi động lại máy trước.
-- Kiểm tra thẻ nhớ và dung lượng còn trống.
-- Nếu máy tạo file nhật ký lỗi (crash log) ở thư mục gốc của thẻ nhớ, hãy giữ lại file đó.
-- Báo lỗi tại [GitHub Issues](https://github.com/tvhdc/crossvi/issues) và mô tả thao tác đã gây ra lỗi.
-- Trao đổi ý tưởng hoặc đặt câu hỏi tại [GitHub Discussions](https://github.com/tvhdc/crossvi/discussions).
+### Trình mô phỏng X3/X4
 
-Tài liệu sử dụng chi tiết hiện có tại [CrossVi User Guide](USER_GUIDE.md).
+Trình mô phỏng chạy giao diện và bộ dựng thật của CrossVi mà không cần máy đọc
+sách:
 
-## Xem và bấm thử giao diện khi chưa có máy
-
-Bạn có thể chạy chính giao diện CrossVi trên máy tính, không phải một bản vẽ
-lại bằng web. Trình mô phỏng dùng đúng mã hiển thị, phông chữ, biểu tượng, giao
-diện và cách xử lý nút của firmware.
-
-Mở Terminal trong thư mục CrossVi rồi chạy một trong hai lệnh:
-
-```sh
+```bash
 python3 scripts/run_simulator.py x3
 python3 scripts/run_simulator.py x4
 ```
 
-Trong cửa sổ hiện ra, bạn có thể bấm trực tiếp các nút ở cột bên phải. Bàn phím
-cũng dùng được: `Esc` là Quay lại, `Enter` là Chọn, các phím mũi tên là nút điều
-hướng/chuyển trang và `P` là nút nguồn. Nhấn `F12` để chụp riêng phần giao diện
-đúng từng pixel.
+Trình mô phỏng không chứng minh được bóng mờ e-paper, tốc độ thẻ nhớ, sóng radio,
+pin hoặc mức dùng bộ nhớ cao nhất trên phần cứng thật. Xem
+[hướng dẫn trình mô phỏng](docs/contributing/simulator.md) và
+[checklist phần cứng](docs/contributing/hardware-validation.md).
 
-Dữ liệu thử của hai máy nằm riêng trong `.simulator-data/x3` và
-`.simulator-data/x4`. Bạn có thể chép sách vào đó rồi mở bằng **Browse Files**.
+## Tài liệu
 
-X3 và X4 được build riêng với đúng kích thước màn hình của từng máy; X3 không
-phải ảnh X4 bị co lại. Tuy vậy, máy tính không thể tái tạo màu mực, bóng mờ,
-thời gian làm tươi e-paper, nguồn điện, lỗi thẻ nhớ vật lý hoặc sóng Nearby
-Sync. Xem [hướng dẫn trình mô phỏng](docs/contributing/simulator.md) nếu bạn muốn
-đổi thư mục sách, vị trí ảnh chụp hoặc chạy kiểm thử giao diện.
+- [Hướng dẫn sử dụng](USER_GUIDE.md)
+- [Hướng dẫn đóng góp](docs/contributing/README.md)
+- [Kiến trúc](docs/contributing/architecture.md)
+- [Kiểm thử và gỡ lỗi](docs/contributing/testing-debugging.md)
+- [Web Server](docs/webserver.md)
 
-## Dành cho người muốn phát triển
+## Đóng góp và hỗ trợ
 
-Hướng dẫn build, cấu trúc mã nguồn và kiểm thử được giữ trong [README tiếng Anh](README.md) và [tài liệu đóng góp](docs/contributing/README.md).
+CrossVi chào đón những đóng góp tập trung vào trải nghiệm đọc. Trước khi làm một
+thay đổi lớn, hãy mở [thảo luận Ý tưởng](https://github.com/tvhdc/crossvi/discussions/categories/ideas)
+để tránh trùng công việc.
 
-## Nguồn gốc và giấy phép
+- Báo lỗi có thể tái hiện tại [GitHub Issues](https://github.com/tvhdc/crossvi/issues).
+- Đặt câu hỏi và đề xuất tính năng tại
+  [GitHub Discussions](https://github.com/tvhdc/crossvi/discussions).
+- Đọc [GOVERNANCE.md](GOVERNANCE.md) trước khi đóng góp.
 
-CrossVi là một fork độc lập của CrossPoint Reader. Dự án gốc và cộng đồng CrossPoint là nền tảng của firmware này. CrossVi giữ nguyên giấy phép MIT, thông tin bản quyền và các ghi nhận bắt buộc của tác giả gốc.
+## Nguồn gốc, ghi nhận và giấy phép
 
-Các ý tưởng Dashboard, lưu đoạn trích, Nearby Sync, thống kê đọc và cài đặt riêng theo sách được tham khảo từ [CrossInk](https://github.com/uxjulia/CrossInk), sau đó được rà soát và triển khai theo các giới hạn an toàn riêng của CrossVi.
+CrossVi là fork độc lập của
+[CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader).
+CrossPoint và các tác giả đóng góp là nền tảng kỹ thuật của dự án này. Một số ý
+tưởng trải nghiệm đọc được tham khảo từ
+[CrossInk](https://github.com/uxjulia/CrossInk) và được triển khai lại theo giới
+hạn tài nguyên và tương thích của CrossVi.
+
+Dự án được phân phối theo [giấy phép MIT](LICENSE), đồng thời giữ nguyên thông
+tin bản quyền và ghi nhận của upstream. Các tệp phông giữ giấy phép riêng của
+chúng. CrossVi không trực thuộc Xteink hoặc bất kỳ nhà sản xuất thiết bị nào.

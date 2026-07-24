@@ -2,344 +2,199 @@
 
 [**English**](README.md) | [Tiếng Việt](README.vi.md)
 
-[![Support upstream CrossPoint contributors](https://img.shields.io/badge/Support_upstream-CrossPoint-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
+CrossVi is an open-source, multilingual e-reader firmware for the ESP32-C3-based
+Xteink X3 and X4. It is independently developed from
+[CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), with
+an emphasis on reliable reading, Vietnamese typography, safe SD-card data, and
+features that fit the devices' limited resources.
 
-CrossVi is an independent fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) for readers and contributors worldwide. It keeps the open, hackable reading experience for Xteink e-paper devices while focusing on faster text layout, safer SD-card I/O, resilient caches, and carefully developed new features.
+> **Project status:** CrossVi is a development preview. Automated host tests,
+> firmware builds, static analysis, and X3/X4 simulator checks are available,
+> but a stable release still requires validation on physical X3 and X4 devices.
 
-The original CrossPoint project and community remain the foundation of this firmware. CrossVi preserves its MIT license, device support, technical identifiers, protocols, and on-card `.crosspoint` data layout. New protected formats are written beside retained legacy data so migration remains non-destructive.
+![CrossVi X4 desktop simulator](docs/images/crossvi-simulator-x4.png)
 
-> **Current validation status:** core codecs, storage recovery, layout mapping, and protocol state machines have host tests, static analysis, and ESP32-C3 build validation. The production UI can also be exercised in the model-specific X3/X4 desktop simulator. ESP-NOW radio, physical e-paper refresh, power-loss behavior, and device memory use still require the [X3/X4 hardware checklist](./docs/contributing/hardware-validation.md) before a stable release.
+## Highlights
 
-**Target devices:** ESP32C3-based Xteink [X4](https://www.xteink.com/products/xteink-x4) and [X3](https://www.xteink.com/products/xteink-x3).
+- EPUB 2/3, plain-text TXT/Markdown, XTC/XTCH, and BMP support.
+- Per-book typography, EPUB render modes, EPUB Safe Mode, bookmarks, clippings,
+  StarDict lookup, reading statistics, focus reading, and automatic page turns.
+- Built-in Vietnamese-capable Noto Serif and Noto Sans fonts, plus validated
+  `.cpfont` families loaded from the SD card.
+- File browser, recent books, Web UI transfers, WebDAV, Calibre Wireless, OPDS,
+  KOReader progress sync, and OTA updates.
+- Themes designed for the 4-inch display, configurable controls, sleep screens,
+  screenshots, and tilt page turns on X3.
+- 30 interface languages, including a complete Vietnamese interface for
+  CrossVi-specific features.
+- Experimental Nearby Sync for confirmed position or statistics exchange
+  between two nearby CrossVi readers. Nearby traffic is not encrypted.
 
-![CrossPoint Reader on an Xteink device (upstream project image)](./docs/images/cover.jpg)
+CrossVi keeps the reader focused: it does not aim to add web browsing, media
+playback, games, or other background-heavy applications.
 
-> If you're planning to buy an Xteink device, consider purchasing an **X3/X4 Developer Edition** through https://crosspointreader.com. CrossPoint receives a small share of each sale, helping fund development costs.
+## Supported hardware and formats
 
-## What can CrossVi do?
+| Device | Status | Notes |
+| --- | --- | --- |
+| Xteink X3 | Supported target | ESP32-C3; tilt page turn available |
+| Xteink X4 | Supported target | ESP32-C3 |
 
-- **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling, hyphenation, kerning, chapter navigation, footnotes, bookmarks, bounded StarDict lookups with optional synonym files and recent-history recall ([setup](docs/dictionary.md)), go-to-percent, auto page turn, orientation control, focus reading, forced paragraph indentation, three bounded rendering modes, per-book Safe Mode, KOReader progress sync and more.
+| Format | Support |
+| --- | --- |
+| `.epub` | Reflowable EPUB 2/3 reader |
+| `.txt`, `.md` | Plain-text reader; Markdown is currently treated as text |
+| `.xtc`, `.xtch` | Tested uncompressed v1.0 fixed-layout subset using 480×800 pages |
+| `.bmp` | Image viewer and sleep-screen images |
 
-- **Reading tools**: view per-book and all-time reading statistics for EPUB, TXT/Markdown, XTC and XTCH books. The device view includes a binary reading calendar backed by the existing bounded 730-day local history; days outside retained history are marked as unknown instead of being shown as zero. EPUB and TXT/Markdown provide a keyboard-driven reader menu with bookmarks, dictionary lookup, clippings and a separate reader profile without changing device-wide defaults. Plain-text bookmarks and clippings use source-byte anchors, so repagination after a font, margin or orientation change does not silently point at a different passage. TXT/Markdown statistics intentionally mark layout-dependent pace and finish-time estimates as not applicable instead of presenting misleading values. Per-book start/finish timestamps can be corrected explicitly; the local device totals can be backed up and restored from the Home statistics screen.
+XTC/XTCH pages display 1:1 on X4 and are fitted and centred on X3. They do not
+provide EPUB typography, dictionary selection, clippings, or KOReader position
+sync. See the [XTC/XTCH format contract](lib/Xtc/README).
 
-- **Dashboard home theme**: a compact overview of the latest book and reading totals, with a direct shortcut to the full statistics view when its verified data is available. Enable it under **Settings → Display → UI Theme → Dashboard**.
+## Typography and custom fonts
 
-- **CrossVi home theme**: a polished two-column Home designed for the small X3/X4 display, with a personal device name, current-book card, honest progress, a prominent Continue Reading action, and a compact Today/Goal summary that opens full reading statistics. Enable it under **Settings → Display → UI Theme → CrossVi** and optionally set a daily target under **Settings → Reader → Daily Reading Goal**.
+The built-in Noto Serif and Noto Sans reader families provide Regular, Bold,
+Italic, and Bold Italic faces at 12, 14, 16, and 18 pt.
 
-- **Various formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt/.md`, and `.bmp`. XTC/XTCH support is the tested, uncompressed v1.0 subset with pre-rendered 480×800 pages: X4 displays it 1:1, while X3 fits and centers the complete page without cropping. See the [fixed-layout contract](./lib/Xtc/README); XTC/XTCH do not provide EPUB typography, dictionary, clipping, or position-sync features.
+Compatible SD-card `.cpfont` families can additionally provide 20, 22, 24, 26,
+and 28 pt. The size picker only shows sizes available for the selected family,
+and the reader loads one physical `.cpfont` file at a time. Large font files are
+not bundled into the firmware, so a fresh installation still exposes only the
+built-in sizes until a compatible SD font family is installed.
 
-- **Screenshots.**
+To create or install a font family:
 
-- **Vietnamese-ready typography**: the built-in Noto Serif and Noto Sans reader fonts provide true Regular, Bold,
-  Italic and Bold Italic styles at 12, 14, 16 and 18 pt. Additional bounded `.cpfont` families can be installed from
-  SD or the Web UI; malformed or unsupported files are rejected before activation.
+1. Open the [CrossPoint font builder](https://crosspointreader.com/fonts), or use
+   `lib/EpdFont/scripts/fontconvert_sdcard.py` locally.
+2. Convert TTF/OTF sources to `.cpfont`; TTF/OTF files are not parsed on-device.
+3. Copy the generated family to `/fonts/FamilyName/` or
+   `/.fonts/FamilyName/` on the SD card.
+4. Select it under **Settings → Reader → Font Family**.
 
-- **Tilt page turn (X3 only)**.
+Use the `vietnamese-reading` preset when preparing Vietnamese fonts. It checks
+NFC letters, required NFD combining marks, punctuation, and every emitted style.
+The source font's licence continues to apply to every generated `.cpfont` file.
 
-- **Library workflow**: folder browser, hidden-file toggle, long-press delete, recent books, SD-cache management.
+## Installation
 
-- **Wireless workflows**:
-  
-  - File transfer web UI
-  - EPUB Optimizer
-  - Web settings UI/API (edit many device settings from browser)
-  - WebSocket fast uploads
-  - WebDAV handler
-  - AP mode (hotspot) and STA mode (join existing Wi-Fi), both with QR helpers
-  - Calibre wireless connect flow
-  - OPDS browser with saved servers (up to 8), search, pagination, and direct download
-  - OTA update checks and installs from GitHub releases
-  - Experimental Nearby Sync between two CrossVi readers: manually exchange an exact-book reading position or a separate reading-statistics snapshot without an internet connection
+### Important safety notice
 
-- **Customization**: multiple themes (Classic, Lyra, Lyra Extended, RoundedRaff, Dashboard, CrossVi), a user-defined display name, sleep screen modes, front/side button remapping, status bar controls, power-button behavior, refresh cadence, and more.
+Some devices sold by third parties have USB flashing locked. The public Xteink
+Unlocker currently supports CrossPoint and CrossInk as unlock payloads, not
+CrossVi. **Do not use CrossVi as the unlock payload on a USB-locked device**;
+doing so may leave the device without a supported recovery path.
 
-- **Localization**: 30 UI languages and counting, including Vietnamese. RTL support. New reader tools are fully translated in English and Vietnamese; other languages currently use English fallback for some new labels.
+CrossVi does not currently publish a hardware-validated stable release. If you
+intentionally test a development build, back up the SD card first and use a
+`firmware.bin` from a trusted build or build it locally.
 
-> **Safety boundaries for the new reading tools:** clipping selection can continue across adjacent rendered pages in the same chapter, within fixed memory and text limits; nothing is saved until the reader confirms the complete selection. A saved highlight or jump is applied only when its source and layout can be matched safely. Nearby position sync requires the same complete EPUB file, a usable paragraph anchor in the target chapter's current local layout, and explicit confirmation on both devices; it refuses to guess a page when those checks are unavailable. Nearby traffic is not encrypted, so use it only with a trusted reader nearby.
+### Web flasher
 
-### Coming soon:
-
-- More themes.
-
-- Much more! stay tuned.
-
----
-
-## USB-locked devices (Xteink Unlocker)
-
-Some Xteink units purchased from third-party stores (e.g. AliExpress) ship with USB flashing locked from the factory.
-If your device is locked, you will need to use the **Xteink Unlocker** tool available at
-https://crosspointreader.com/#unlock-tool before you can flash a supported firmware.
-
-**You do not need this tool if you bought your device directly from xteink.com.** Those units are not locked.
-
-**Not sure if your device is locked?** Power it on, connect the USB-C cable, and try flashing via the web flasher first (see
-[Install firmware](#install-firmware) below). If the browser's serial device picker does not show your device, try a different
-USB port or browser before assuming the device is locked. Only reach for the unlocker if the device still doesn't appear.
-
-> ### ⚠️ WARNING: READ THIS BEFORE USING THE UNLOCKER ⚠️
-> 
-> **The only officially supported firmwares in the unlock tool are CrossPoint and CrossInk.**
-> 
-> **CrossVi is an independent fork and is not currently on that supported list. Do not use it as the unlock payload for a USB-locked device.**
->
-> Flashing any other firmware on a USB-locked device may **permanently brick the device** or leave it **permanently
-> stuck on that firmware with no recovery path**. Once USB flashing is re-locked, your only way back is via OTA, and if
-> the firmware you flashed doesn't support OTA, **there is no way out**.
-
-## Install firmware
-
-### Web installer
-
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Download `firmware.bin` from the [CrossVi Releases page](https://github.com/tvhdc/crossvi/releases), a local build, or a continuous integration artifact.
-3. Go to https://crosspointreader.com/#flash-tools, select device (X3 or X4), click "Custom .bin", and upload `firmware.bin`.
-
-> CrossVi does not yet publish a hardware-validated release. Do not flash it to a USB-locked device.
-
-### Revert to official CrossPoint firmware
-
-To revert to the official firmware, you can also flash the latest official firmware using https://crosspointreader.com/#flash-tools.
+1. Wake the reader and connect it with a data-capable USB-C cable.
+2. Open the [CrossPoint flash tools](https://crosspointreader.com/#flash-tools).
+3. Select X3 or X4, choose **Custom .bin**, and open CrossVi's `firmware.bin`.
+4. Keep the reader connected until flashing completes.
 
 ### Command line
 
-1. Install [`esptool`](https://github.com/espressif/esptool):
+With Python 3.10 or newer, install the latest
+[`esptool`](https://github.com/espressif/esptool), then flash the app image at
+`0x10000`:
 
 ```bash
-pip install esptool
+python3 -m pip install --upgrade esptool
+esptool --chip esp32c3 --port /dev/ttyACM0 --baud 921600 \
+  write-flash 0x10000 /path/to/firmware.bin
 ```
 
-2. Download `firmware.bin` from the [CrossVi Releases page](https://github.com/tvhdc/crossvi/releases).
-3. Connect your device via USB-C.
-4. Find the device port. On Linux, run `dmesg` after connecting. On macOS:
+Replace `/dev/ttyACM0` with the device port on your system. Official CrossPoint
+firmware can be restored through the same web flasher.
 
-```bash
-log stream --predicate 'subsystem == "com.apple.iokit"' --info
-```
+## SD-card data
 
-5. Flash:
+CrossVi retains CrossPoint-compatible working data under `/.crosspoint` where
+supported. This directory contains both generated caches and important reader
+data such as settings, positions, bookmarks, clippings, and statistics.
 
-```bash
-esptool.py --chip esp32c3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
-```
+Do not delete the entire directory as routine troubleshooting. Use the
+firmware's cache-clear action first, and always back up the SD card before
+switching firmware or manually changing reader data. See
+[file formats](docs/file-formats.md) for the on-card layout.
 
-Adjust `/dev/ttyACM0` to match your system.
-
-### Manual
-
-See [Development quick start](#development-quick-start) below.
-
----
-
-## Custom SD-card fonts
-
-Convert your own TTF/OTF files into `.cpfont` files that load from the SD card. No firmware reflash is needed.
-
-1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
-2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name, point sizes, and Unicode range.
-3. Download the generated `.cpfont` files.
-4. Copy them to your SD card under `/fonts/YourFont/` (or `/.fonts/YourFont/` to hide the folder).
-5. Select the font on the device from the font settings.
-
-Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` script unmodified, so output matches a local host build.
-
-For Vietnamese books, use the self-contained `vietnamese-reading` preset. It includes Basic Latin, precomposed NFC
-letters, the combining marks needed by NFD text, and common reading punctuation. The converter checks every emitted
-style and lists any missing character as `U+XXXX`; a source font without Vietnamese support needs a style-matched
-fallback font or conversion must fail. Regular is required, while absent Bold/Italic/Bold Italic styles safely fall
-back to the closest style available. TTF/OTF files are converted on a computer or builder and are never parsed on the
-reader. CrossVi's downloadable font catalog uses this preset and matching Noto Sans Regular/Bold/Italic/Bold Italic
-fallbacks during conversion. See [SD-card fonts](./docs/sd-card-fonts.md) for commands, validation details and
-licensing notes.
-
-Font size is selected under **Settings → Reader → Font size** as Small 12 pt, Medium 14 pt, Large 16 pt or X Large
-18 pt, with a Vietnamese preview. If an SD family does not ship the exact size, CrossVi keeps the same family, uses
-its closest available size and shows the physical point size in the picker.
-
----
-
-## Documentation
-
-- [User Guide](./USER_GUIDE.md)
-- [Web server usage](./docs/webserver.md)
-- [Web server endpoints](./docs/webserver-endpoints.md)
-- [Project scope](./SCOPE.md)
-- [Contributing docs](./docs/contributing/README.md)
-
----
-
-## Development quick start
+## Development
 
 ### Prerequisites
 
-- [pioarduino](https://github.com/pioarduino/pioarduino) or VS Code + pioarduino plugin
-- Python 3.8+
-- `clang-format` 21
-- USB-C cable supporting data transfer
+- [pioarduino](https://github.com/pioarduino/pioarduino), or VS Code with its
+  extension
+- Python 3.8 or newer
+- `clang-format` 21 for formatting contributions
+- A data-capable USB-C cable for physical-device work
 
-### Setup
+### Build
 
 ```bash
-git clone --recursive https://github.com/tvhdc/crossvi
+git clone --recursive https://github.com/tvhdc/crossvi.git
 cd crossvi
+pio run
+```
 
-# if cloned without --recursive:
+If the repository was cloned without submodules:
+
+```bash
 git submodule update --init --recursive
 ```
 
-### Nix/NixOS
-
-Nix/NixOS users can enter the development shell with either `nix develop` (flakes) or `nix-shell`:
+Run the main contributor checks with:
 
 ```bash
-nix develop -f nix
-# or
-nix-shell nix
+./bin/clang-format-fix
+pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+pio run
 ```
 
-To flash a connected ESP32-C3 device, enable PlatformIO's udev rules in your NixOS configuration:
+### X3/X4 desktop simulator
 
-```nix
-services.udev.packages = with pkgs; [ platformio-core.udev ];
-```
-
-After rebuilding the system configuration, reconnect the device or reload udev rules.
-
-### Build / flash / monitor
-
-```bash
-pio run --target upload
-```
-
-### Desktop UI simulator (no device required)
-
-Run the real CrossVi UI, renderer, fonts, themes, image decoders, and input
-mapping in an interactive desktop window:
+The simulator runs the real CrossVi interface and renderer without a physical
+reader:
 
 ```bash
 python3 scripts/run_simulator.py x3
 python3 scripts/run_simulator.py x4
 ```
 
-Click the labeled hardware buttons or use `Esc`, `Enter`, the arrow keys, and
-`P`. Press `F12` to save a framebuffer-only pixel capture. X3 and X4 are
-separate native targets with their exact `792x528` and `800x480` physical
-buffers; the control sidebar is outside the captured UI.
+It validates desktop-visible behaviour, not e-paper ghosting, SD-card timing,
+radio behaviour, battery use, or peak memory on real hardware. See the
+[simulator guide](docs/contributing/simulator.md) and
+[hardware validation checklist](docs/contributing/hardware-validation.md).
 
-See the [X3/X4 simulator guide](./docs/contributing/simulator.md) for virtual SD
-cards, adding test books, screenshot paths, regression tests, and the hardware
-limits that a desktop cannot reproduce.
+## Documentation
 
-### Contributor pre-PR checks
+- [User Guide](USER_GUIDE.md)
+- [Contributing Guide](docs/contributing/README.md)
+- [Architecture](docs/contributing/architecture.md)
+- [Testing and Debugging](docs/contributing/testing-debugging.md)
+- [Web Server](docs/webserver.md)
 
-```bash
-./bin/clang-format-fix
-pio check -e default
-pio run -e default
-```
+## Contributing and support
 
-### Debugging
+Focused-reading contributions are welcome. Before starting a large
+change, open an [Ideas discussion](https://github.com/tvhdc/crossvi/discussions/categories/ideas)
+so work is not duplicated.
 
-After flashing the new features, it’s recommended to capture detailed logs from the serial port.
+- Report reproducible bugs through [GitHub Issues](https://github.com/tvhdc/crossvi/issues).
+- Ask questions and propose features in [GitHub Discussions](https://github.com/tvhdc/crossvi/discussions).
+- Read [GOVERNANCE.md](GOVERNANCE.md) before contributing.
 
-First, make sure all required Python packages are installed:
+## Upstream, credits, and license
 
-```python
-python3 -m pip install pyserial colorama matplotlib
-```
+CrossVi is an independent fork of
+[CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader).
+CrossPoint and its contributors remain the technical foundation of this project.
+Some reading-experience ideas were informed by
+[CrossInk](https://github.com/uxjulia/CrossInk) and independently adapted for
+CrossVi's resource and compatibility constraints.
 
-After that run the script:
-
-```sh
-# For Linux
-# This was tested on Debian and should work on most Linux systems.
-python3 scripts/debugging_monitor.py
-
-# For macOS
-python3 scripts/debugging_monitor.py /dev/cu.usbmodem2101
-```
-
-Minor adjustments may be required for Windows.
-
----
-
-## Internals
-
-CrossVi inherits CrossPoint Reader's aggressive SD-card caching to minimise RAM usage. The ESP32-C3 only has ~380KB of usable RAM, so we have to be careful. A lot of the decisions made in the design of the firmware were based on this constraint.
-
-### SD-card working data
-
-The first time chapters of a book are loaded, they are cached to the SD card. Subsequent loads are served from the
-cache. The same `.crosspoint` directory also contains settings and reader data that are **not disposable cache**. Its main structure is:
-
-```text
-.crosspoint/
-├── epub_<path-hash>/    # one directory per book path
-│   ├── progress.bin     # saved reading position
-│   ├── crossvi_reader_settings.bin  # per-book reader profile
-│   ├── stats_v6.bin     # CRC-protected per-book reading statistics
-│   ├── cover.bmp        # generated cover image
-│   ├── book.bin         # generated title, author, spine, and TOC metadata
-│   ├── css_rules.cache  # generated parsed-CSS cache
-│   ├── img_*            # generated image cache files
-│   └── sections/        # generated per-chapter layout cache
-│       ├── 0.bin
-│       ├── 1.bin
-│       └── ...
-├── bookmarks/           # bookmark JSON files
-├── clippings/           # saved EPUB passages
-├── synced_stats/        # CRC-protected per-device Nearby snapshots
-├── global_stats_v4.bin  # CRC-protected local all-time reading statistics
-├── settings.bin/json    # device settings and compatibility fallback
-├── state.bin/json       # resume/runtime state and compatibility fallback
-└── recent.json          # recent books list
-```
-
-CrossVi keeps supported `stats_v5.bin`/`stats_v4.bin`/`stats.bin` and
-`global_stats.bin` files unchanged when it migrates them. The new envelope is
-written beside the legacy source so an interrupted migration cannot destroy the
-only copy and older firmware data remains available for manual rollback.
-
-Do **not** delete all of `/.crosspoint` as routine cache troubleshooting: that is effectively a reader-data reset and removes settings, positions, bookmarks, clippings, and statistics. Use the firmware's cache command first. It preserves the saved position, per-book profile, clippings, and reading statistics while rebuilding only generated indexes and render data. For the narrowest manual layout reset, back up the SD card and move only that book's `sections/` directory aside. Book deletes, overwrites, and moves done through the firmware or web UI clear or re-key matching state; manual SD-card edits may leave stale path-keyed directories behind.
-
-For more details on the internal file structures, see the [file formats document](./docs/file-formats.md).
-
----
-
-## Contributing
-
-Contributions are welcome. If you're new to the codebase, start with the [contributing docs](./docs/contributing/README.md). For things to work on, check the [CrossVi ideas board](https://github.com/tvhdc/crossvi/discussions/categories/ideas) — leave a comment before starting so we don't duplicate effort.
-
-Everyone here is a volunteer, so please be respectful and patient. For governance and community expectations, see [GOVERNANCE.md](./GOVERNANCE.md).
-
----
-
-## Community forks
-
-One of the best things about open source is that anyone can take the code in a different direction. If you need something outside CrossVi's [scope](./SCOPE.md), check out these sibling CrossPoint forks:
-
-- [CrossInk](https://github.com/uxjulia/CrossInk) — Its Dashboard, clipping, Nearby Sync, reading-statistics, and per-book-settings work informed CrossVi's independently reviewed implementations. CrossInk also explores Bionic Reading, guide dots, paragraph typography, and alternative fonts.
-
-- [papyrix-reader](https://github.com/bigbag/papyrix-reader) — Adds FB2 and MD format support. Actively maintained with Arabic script support. Custom themes via SD card.
-
-- ~~[crosspet](https://github.com/trilwu/crosspet) — A Vietnamese fork that adds a Tamagotchi-style virtual chicken that grows based on your reading milestones (pages read, streaks, care). Also: Flashcards, Weather, Pomodoro timer, and mini-games.~~ (Unmaintained)
-
-- [crosspoint-reader-cjk](https://github.com/aBER0724/crosspoint-reader-cjk) — Purpose-built for Chinese, Japanese, and Korean reading.
-
-- [inx](https://github.com/obijuankenobiii/inx) — Completely reimagines the user interface with tabbed navigation.
-
-- ~~[PlusPoint](https://github.com/ngxson/pluspoint-reader) — custom JS apps support.~~ (Unmaintained)
-
-- [crosspoint-reader-papers3](https://github.com/juicecultus/crosspoint-reader-papers3) — Crosspoint port for M5Stack Paper S3. 
-
-- [t5s3-reader](https://github.com/ShallowGreen123/t5s3-reader) — Crosspoint port for LilyGo T5 ePaper S3 / T5S3 4.7-inch e-paper device.
-
-**Note:** Some of these features may reach upstream CrossPoint or CrossVi over time. CrossVi favours stability before changes reach devices.
-
-Want to build your own device? Be sure to check out the [de-link](https://github.com/iandchasse/de-link) project.
-
----
-
-CrossVi is an independent fork of CrossPoint Reader, developed as an international open-source project. It is **not affiliated with Xteink or any device manufacturer**.
-
-Huge shoutout to [diy-esp32-epub-reader](https://github.com/atomic14/diy-esp32-epub-reader), which inspired this project.
+The project is distributed under the [MIT License](LICENSE) while preserving
+upstream copyright and attribution. Font files retain their own licences.
+CrossVi is not affiliated with Xteink or any device manufacturer.
