@@ -8,6 +8,7 @@
 
 class GfxRenderer;
 struct RecentBook;
+struct HomeBookSummary;
 
 struct Rect {
   int x;
@@ -113,7 +114,22 @@ struct ThemeMetrics {
   int textFieldLineEndOffset;
 };
 
-enum UIIcon { None = 0, Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Bookmark };
+enum UIIcon {
+  None = 0,
+  Folder,
+  Text,
+  Image,
+  Book,
+  File,
+  Recent,
+  Settings,
+  Transfer,
+  Library,
+  Wifi,
+  Hotspot,
+  Bookmark,
+  Search
+};
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
 
@@ -218,9 +234,16 @@ class BaseTheme {
                         const std::function<std::string(int index)>& rowSubtitle = nullptr,
                         const std::function<UIIcon(int index)>& rowIcon = nullptr,
                         const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
-                        const std::function<bool(int index)>& rowDimmed = nullptr) const;
+                        const std::function<bool(int index)>& rowDimmed = nullptr,
+                        const std::function<bool(int index)>& rowBadge = nullptr, int pageAnchorIndex = -1,
+                        const std::function<int(int index)>& rowValueReservedWidth = nullptr) const;
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                           const char* subtitle = nullptr) const;
+  // Home may use a lighter, personalized header without changing the visual
+  // contract of headers used by Settings, lists and reader dialogs.
+  virtual void drawHomeHeader(const GfxRenderer& renderer, Rect rect, const char* title) const {
+    drawHeader(renderer, rect, title);
+  }
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                              const char* rightLabel = nullptr) const;
   virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
@@ -228,6 +251,10 @@ class BaseTheme {
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+  virtual Rect getHomeCoverCacheRect(Rect tileRect) const { return tileRect; }
+  virtual void drawHomeContent(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
+                               int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
+                               std::function<bool()> storeCoverBuffer, const HomeBookSummary& summary) const;
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;

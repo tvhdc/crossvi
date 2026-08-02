@@ -16,6 +16,11 @@ class FontCacheManager {
   void setFontDecompressor(FontDecompressor* d);
 
   void clearCache();
+  void releasePageCache();
+  // Release layout-persistent SD-font advance tables as well. Use only before
+  // memory-heavy maintenance operations; normal rendering keeps them to avoid
+  // repeated SD reads.
+  void clearAllCaches();
   void prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F);
   void logStats(const char* label = "render");
   void resetStats();

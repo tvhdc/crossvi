@@ -79,16 +79,20 @@ std::string buildUrl(const std::string& serverUrl, const std::string& path) {
     // Absolute path - use just the host
     return encodeUnsafeUrlChars(extractHost(urlWithProtocol) + path);
   }
-  // Relative path - strip query string from base before appending
+  // Relative path - resolve against the directory containing the base resource.
   std::string base = urlWithProtocol;
-  const size_t queryPos = base.find('?');
-  if (queryPos != std::string::npos) {
-    base.resize(queryPos);
-  }
+  const size_t suffixPos = base.find_first_of("?#");
+  if (suffixPos != std::string::npos) base.resize(suffixPos);
   if (base.back() == '/') {
     return encodeUnsafeUrlChars(base + path);
   }
-  return encodeUnsafeUrlChars(base + "/" + path);
+
+  const size_t protocolEnd = base.find("://");
+  const size_t pathStart = base.find('/', protocolEnd == std::string::npos ? 0 : protocolEnd + 3);
+  if (pathStart == std::string::npos) return encodeUnsafeUrlChars(base + "/" + path);
+
+  const size_t lastSlash = base.rfind('/');
+  return encodeUnsafeUrlChars(base.substr(0, lastSlash + 1) + path);
 }
 
 }  // namespace UrlUtils

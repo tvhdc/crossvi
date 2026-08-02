@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <BootRecovery.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -13,8 +14,13 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <SPI.h>
+#include <Version.h>
 #include <WiFi.h>
 #include <builtinFonts/all.h>
+#ifndef SIMULATOR
+#include <driver/gpio.h>
+#include <esp_ota_ops.h>
+#endif
 
 #include <cstring>
 
@@ -27,11 +33,13 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/boot_sleep/SafeBootActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
 #include "util/ButtonNavigator.h"
+#include "util/PowerButtonGesture.h"
 #include "util/ScreenshotUtil.h"
 
 GfxRenderer renderer(display);
@@ -41,6 +49,7 @@ FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
+static PowerButtonGesture powerButtonGesture;
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -170,10 +179,18 @@ void waitForPowerRelease() {
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
 
 static void saveSleepFrameBuffer() {
+  const uint8_t* buffer = renderer.getFrameBuffer();
+  const size_t bufferSize = renderer.getBufferSize();
+  if (!buffer || bufferSize == 0) {
+    Storage.remove(SLEEP_FRAME_FILE);
+    return;
+  }
   HalFile file;
   if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_FILE, file)) return;
-  file.write(renderer.getFrameBuffer(), renderer.getBufferSize());
-  file.close();
+  bool saved = file.write(buffer, bufferSize) == bufferSize;
+  saved = file.sync() && saved;
+  saved = file.close() && saved;
+  if (!saved) Storage.remove(SLEEP_FRAME_FILE);
 }
 
 static bool loadSleepFrameBuffer() {
@@ -196,21 +213,26 @@ void enterDeepSleep(bool fromTimeout = false) {
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
 
   const bool isQuickResumeSleep =
-      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
-      (fromTimeout &&
-       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
+      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
   APP_STATE.showBootScreen = !isQuickResumeSleep;
 
-  APP_STATE.saveToFile();
+  // Sleep preparation and the outgoing activity both persist state. Detect a
+  // removed card once up front so all subsequent writes fail immediately.
+  {
+    RenderLock lock;
+    Storage.probeMedia();
+    APP_STATE.saveToFile();
+    if (isQuickResumeSleep) {
+      // Preserve the outgoing page, not the moon marker drawn by SleepActivity.
+      // The render lock also prevents a torn frame while the buffer is copied.
+      saveSleepFrameBuffer();
+    }
+  }
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
   deepSleepInProgress = true;
   activityManager.goToSleep(fromTimeout);
-
-  if (isQuickResumeSleep) {
-    saveSleepFrameBuffer();
-  }
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.
@@ -253,13 +275,15 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 
-  // Discover and load SD card fonts
-  sdFontSystem.begin(renderer);
-
-  LOG_DBG("MAIN", "Fonts setup");
+  LOG_DBG("MAIN", "Built-in fonts setup");
 }
 
 void setup() {
+#ifndef SIMULATOR
+  // Keep battery-latched boards alive before the power button is released.
+  // Runtime detection calls this again after selecting the final board profile.
+  BoardConfig::holdPowerRails();
+#endif
   t1 = millis();
 
 #ifdef ENABLE_SERIAL_LOG
@@ -270,7 +294,9 @@ void setup() {
   // worked without the delay because USB was already enumerated.
   delay(250);
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
+#endif
 #endif
 
   HalSystem::begin();
@@ -290,27 +316,60 @@ void setup() {
 
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
 
+  const auto wakeupReason = gpio.getWakeupReason();
+  bool recoveryFirmwareMode = false;
+  bool manualSafeBoot = false;
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    const unsigned long settleStart = millis();
+    while (millis() - settleStart < 500) {
+      gpio.update();
+      delay(10);
+    }
+    // UP keeps priority because it is the established firmware-recovery chord.
+    recoveryFirmwareMode = gpio.isPressed(HalGPIO::BTN_UP);
+    manualSafeBoot = !recoveryFirmwareMode && gpio.isPressed(HalGPIO::BTN_DOWN);
+    if (recoveryFirmwareMode) {
+      LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
+    } else if (manualSafeBoot) {
+      LOG_INF("MAIN", "Manual safe startup (DOWN + POWER held at boot)");
+    }
+  }
+  BootRecovery::begin(manualSafeBoot);
+
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
   if (!Storage.begin()) {
     LOG_ERR("MAIN", "SD card initialization failed");
-    setupDisplayAndFonts(isSilentReboot);
+    setupDisplayAndFonts(false);
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
 
   HalSystem::checkPanic();
 
-  SETTINGS.loadFromFile();
-  APP_STATE.loadFromFile();
-  RECENT_BOOKS.loadFromFile();
+  if (BootRecovery::shouldSkip(BootStage::Settings)) {
+    SETTINGS.markReadOnlyForRecovery();
+  } else {
+    BootRecovery::StageGuard stage(BootStage::Settings);
+    SETTINGS.loadFromFile();
+  }
+  if (SETTINGS.deviceDisplayName[0] == '\0') {
+    const char* defaultDeviceName = gpio.deviceIsX3() ? "Xteink X3" : "Xteink X4";
+    std::strncpy(SETTINGS.deviceDisplayName, defaultDeviceName, sizeof(SETTINGS.deviceDisplayName) - 1);
+    SETTINGS.deviceDisplayName[sizeof(SETTINGS.deviceDisplayName) - 1] = '\0';
+    // Safe-start may intentionally make settings read-only; the in-memory
+    // default still works and a later normal boot can persist it.
+    SETTINGS.saveToFile();
+  }
+  if (BootRecovery::shouldSkip(BootStage::AppState)) {
+    APP_STATE.markReadOnlyForRecovery();
+  } else {
+    BootRecovery::StageGuard stage(BootStage::AppState);
+    APP_STATE.loadFromFile();
+  }
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
-  KOREADER_STORE.loadFromFile();
-  OPDS_STORE.loadFromFile();
-  UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
-  const auto wakeupReason = gpio.getWakeupReason();
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       LOG_DBG("MAIN", "Verifying power button press duration");
@@ -331,42 +390,31 @@ void setup() {
       break;
   }
 
-  // Recovery firmware mode: hold left side button (BTN_UP) together with the power button at
-  // boot to skip directly to the SD-card firmware update screen. Useful on devices where USB
-  // flashing has been locked down (e.g. recent X3 firmware).
-  bool recoveryFirmwareMode = false;
-  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
-    // Refresh the cached button state a few times — isPressed() needs ~half a second to settle
-    // after boot per the HalGPIO contract. Use a millis-based deadline so we always wait the full
-    // settle window even if the loop body takes longer than expected on slow boots.
-    const unsigned long settleStart = millis();
-    while (millis() - settleStart < 500) {
-      gpio.update();
-      delay(10);
-    }
-    if (gpio.isPressed(HalGPIO::BTN_UP)) {
-      recoveryFirmwareMode = true;
-      LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
-    }
-  }
-
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
-  LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
+  LOG_DBG("MAIN", "Starting CrossVi version %s", CROSSPOINT_VERSION);
 
-  // Resolve the single boot-presentation decision. Skipping the splash also
-  // skips the panel-clearing pass and the X3 initial-full-sync arming (see
-  // HalDisplay::begin), so the first paint is FAST_REFRESH (~500ms) over the
-  // retained frame and input dispatches against a visible UI.
-  const BootResume resume = isSilentReboot              ? BootResume::Silent
+  // Resolve the single boot-presentation decision. Only Quick Resume keeps the
+  // retained panel/framebuffer baseline; silent restarts show a clean boot
+  // frame while startup I/O completes.
+  const BootResume resume = BootRecovery::active()      ? BootResume::Splash
+                            : isSilentReboot            ? BootResume::Silent
                             : !APP_STATE.showBootScreen ? BootResume::QuickResume
                                                         : BootResume::Splash;
+  const bool minimalBlankWake =
+      wakeupReason == HalGPIO::WakeupReason::PowerButton &&
+      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::BLANK &&
+      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_NEVER &&
+      !recoveryFirmwareMode && !manualSafeBoot && !BootRecovery::active();
+  bool allowFastInitialReaderRefresh = false;
 
-  setupDisplayAndFonts(resume != BootResume::Splash);
+  // Only Quick Resume retains the old framebuffer. A silent reboot (for
+  // example when leaving WiFi) must establish a clean panel baseline instead
+  // of leaving the old screen powered while startup I/O continues.
+  setupDisplayAndFonts(resume == BootResume::QuickResume);
 
   switch (resume) {
     case BootResume::Silent:
-      // Splash skipped: the routing block below picks the target activity; the
-      // panel keeps showing the pre-reboot popup until that first paint lands.
+      activityManager.goToBoot(false);
       break;
     case BootResume::QuickResume:
       // One-shot flag: re-arm the splash for the next non-quick-resume boot. Save
@@ -375,23 +423,68 @@ void setup() {
       APP_STATE.showBootScreen = true;
       APP_STATE.saveToFile();
       if (loadSleepFrameBuffer()) {
-        // Frame restored: swap the sleep moon for the loading icon.
+        const bool useDifferentialRefresh = gpio.deviceIsX3();
+        if (useDifferentialRefresh) {
+          // begin() clears the X3 controller RAM. Restore the saved frame as
+          // its differential baseline before replacing the moon.
+          renderer.cleanupGrayscaleWithFrameBuffer();
+        }
         const auto pageHeight = renderer.getScreenHeight();
         renderer.drawImage(LoadingIcon, 0, pageHeight - LOADINGICON_HEIGHT, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        if (useDifferentialRefresh) {
+          renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+          allowFastInitialReaderRefresh = true;
+        } else {
+          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        }
       } else {
-        activityManager.goToBoot();  // frame file missing, fall back to the splash
+        activityManager.goToBoot(minimalBlankWake);  // frame file missing, fall back to the splash
       }
       break;
     case BootResume::Splash:
-      activityManager.goToBoot();
+      activityManager.goToBoot(minimalBlankWake);
       break;
   }
+
+  // The panel now contains a stable boot/resume frame. Load optional startup
+  // data afterwards so slow SD access or font discovery cannot leave an old
+  // WiFi/sleep frame progressively darkening on the powered panel.
+  LOG_DBG("MAIN", "Initial boot frame ready at %lu ms", millis());
+  if (BootRecovery::shouldSkip(BootStage::RecentBooks)) {
+    RECENT_BOOKS.markReadOnlyForRecovery();
+  } else {
+    BootRecovery::StageGuard stage(BootStage::RecentBooks);
+    RECENT_BOOKS.loadFromFile();
+  }
+  if (BootRecovery::shouldSkip(BootStage::KOReader)) {
+    KOREADER_STORE.markReadOnlyForRecovery();
+  } else {
+    BootRecovery::StageGuard stage(BootStage::KOReader);
+    KOREADER_STORE.loadFromFile();
+  }
+  if (BootRecovery::shouldSkip(BootStage::Opds)) {
+    OPDS_STORE.markReadOnlyForRecovery();
+  } else {
+    BootRecovery::StageGuard stage(BootStage::Opds);
+    OPDS_STORE.loadFromFile();
+  }
+  if (!BootRecovery::shouldSkip(BootStage::SdFonts)) {
+    BootRecovery::StageGuard stage(BootStage::SdFonts);
+    sdFontSystem.begin();
+  }
+  LOG_DBG("MAIN", "Startup stores and SD fonts ready at %lu ms", millis());
+
+  const bool safeStartup = BootRecovery::active();
+  const bool manualSafeStartup = BootRecovery::manual();
+  BootRecovery::completeStartup();
 
   if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+  } else if (safeStartup) {
+    activityManager.replaceActivity(
+        std::make_unique<SafeBootActivity>(renderer, mappedInputManager, manualSafeStartup));
   } else if (HalSystem::isRebootFromPanic()) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
@@ -414,10 +507,13 @@ void setup() {
     APP_STATE.openEpubPath = "";
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
-    activityManager.goToReader(path);
+    activityManager.goToReader(path, allowFastInitialReaderRefresh);
   }
 
   if (resume == BootResume::Silent) {
+    // Silent boot now displays BootActivity early. Apply the pending Home or
+    // Reader replacement before waiting for the target frame.
+    activityManager.loop();
     // Block until the first paint physically completes. refreshDisplay()
     // waits on the panel BUSY pin so when this returns the user can see the
     // new activity. Without the wait, an edge captured by gpio.update()
@@ -439,15 +535,56 @@ void setup() {
   allowSleepAt = millis() + 2000;
 }
 
+#ifndef SIMULATOR
+// Arduino normally accepts a pending OTA image before setup() runs. Defer that
+// decision so a firmware that immediately boot-loops can still roll back.
+extern "C" bool verifyRollbackLater() { return true; }
+
+namespace {
+void markOtaValidOnceHealthy() {
+  static bool done = false;
+  if (done || millis() < 10000) return;
+  done = true;
+
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state;
+  if (esp_ota_get_state_partition(running, &state) != ESP_OK || state != ESP_OTA_IMG_PENDING_VERIFY) return;
+
+  const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+  if (result == ESP_OK) {
+    LOG_INF("OTA", "Image marked valid after healthy boot");
+  } else {
+    LOG_ERR("OTA", "Could not mark image valid: %s", esp_err_to_name(result));
+  }
+}
+}  // namespace
+#endif
+
 void loop() {
+#ifndef SIMULATOR
+  markOtaValidOnceHealthy();
+#endif
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
 
   gpio.update();
-  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
+  const bool readerVisible = activityManager.isReaderActivity();
+  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, readerVisible, readerVisible && !RenderLock::peek(),
+                       activityManager.getCompletedRenderGeneration());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
+  static int appliedTextDarkness = -1;
+  if (appliedTextDarkness != SETTINGS.textDarkness) {
+    RenderLock lock;
+    renderer.setTextDarkness(SETTINGS.textDarkness);
+    appliedTextDarkness = SETTINGS.textDarkness;
+  }
+
+  const bool doublePowerEnabled =
+      SETTINGS.doublePowerAction != CrossPointSettings::DOUBLE_POWER_ACTION::DOUBLE_POWER_DISABLED ||
+      SETTINGS.doublePowerReadingFunction != CrossPointSettings::LP_MENU_DISABLED;
+  mappedInputManager.setPowerReleaseOverride(doublePowerEnabled, false);
 
   if (Serial && millis() - lastMemPrint >= 10000) {
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),
@@ -463,11 +600,16 @@ void loop() {
       String cmd = line.substring(4);
       cmd.trim();
       if (cmd == "SCREENSHOT") {
+        RenderLock lock;
         const uint32_t bufferSize = display.getBufferSize();
-        logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
         uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, bufferSize);
-        logSerial.printf("SCREENSHOT_END\n");
+        if (buf) {
+          logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
+          logSerial.write(buf, bufferSize);
+          logSerial.printf("SCREENSHOT_END\n");
+        } else {
+          logSerial.printf("SCREENSHOT_ERROR:BUSY\n");
+        }
       }
     }
   }
@@ -483,6 +625,7 @@ void loop() {
   static bool screenshotButtonsReleased = true;
   static bool screenshotComboActive = false;
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    powerButtonGesture.cancel();
     screenshotComboActive = true;
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
@@ -494,14 +637,62 @@ void loop() {
     return;
   }
   if (screenshotComboActive) {
-    if (gpio.isPressed(HalGPIO::BTN_POWER)) return;
-    if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
-      screenshotButtonsReleased = true;
-      screenshotComboActive = false;
-      return;
-    }
+    powerButtonGesture.cancel();
+    // Keep owning input until both buttons are up. This also consumes a Down
+    // release that arrives after Power, so the screenshot chord cannot turn a
+    // reader page as a side effect.
+    if (gpio.isPressed(HalGPIO::BTN_POWER) || gpio.isPressed(HalGPIO::BTN_DOWN)) return;
     screenshotButtonsReleased = true;
     screenshotComboActive = false;
+    return;
+  }
+
+  const PowerButtonGesture::Event powerEvent = powerButtonGesture.update(
+      static_cast<uint32_t>(millis()), gpio.wasPressed(HalGPIO::BTN_POWER), gpio.wasReleased(HalGPIO::BTN_POWER),
+      gpio.isPressed(HalGPIO::BTN_POWER), static_cast<uint32_t>(gpio.getPowerButtonHeldTime()), doublePowerEnabled,
+      millis() >= allowSleepAt);
+  mappedInputManager.setPowerReleaseOverride(doublePowerEnabled, powerEvent == PowerButtonGesture::Event::Single);
+
+  if (powerEvent == PowerButtonGesture::Event::Hold) {
+    if (activityManager.preventAutoSleep()) return;
+    enterDeepSleep();
+    return;
+  }
+
+  if (powerEvent == PowerButtonGesture::Event::Double) {
+    if (activityManager.isReaderActivity()) {
+      if (SETTINGS.doublePowerReadingFunction != CrossPointSettings::LP_MENU_DISABLED) {
+        activityManager.handleReaderShortcut(SETTINGS.doublePowerReadingFunction);
+      }
+      return;
+    }
+    switch (static_cast<CrossPointSettings::DOUBLE_POWER_ACTION>(SETTINGS.doublePowerAction)) {
+      case CrossPointSettings::DOUBLE_POWER_HOME:
+        activityManager.handleGlobalShortcut(GlobalShortcut::GoHome);
+        break;
+      case CrossPointSettings::DOUBLE_POWER_RESUME:
+        activityManager.handleGlobalShortcut(GlobalShortcut::ResumeReading);
+        break;
+      case CrossPointSettings::DOUBLE_POWER_REFRESH:
+        activityManager.handleGlobalShortcut(GlobalShortcut::RefreshScreen);
+        break;
+      case CrossPointSettings::DOUBLE_POWER_SCREENSHOT: {
+        RenderLock lock;
+        ScreenshotUtil::takeScreenshot(renderer);
+        break;
+      }
+      case CrossPointSettings::DOUBLE_POWER_DISABLED:
+      default:
+        break;
+    }
+    return;
+  }
+
+  if (powerEvent == PowerButtonGesture::Event::Single &&
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) {
+    if (activityManager.preventAutoSleep()) return;
+    enterDeepSleep();
+    return;
   }
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
@@ -512,23 +703,14 @@ void loop() {
     return;
   }
 
-  if (millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
-      gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
-    // If the screenshot combination is potentially being pressed, don't sleep
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
-      return;
-    }
-    enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
-    return;
-  }
-
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
-    RenderLock lock;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    if (!activityManager.handleForcedRefresh()) {
+      RenderLock lock;
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
   }
 
   // Refresh the battery icon when USB is plugged or unplugged.

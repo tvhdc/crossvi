@@ -5,6 +5,11 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <algorithm>
+#include <iterator>
+#include <utility>
+#include <vector>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -29,11 +34,35 @@ void ClearCacheActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLEAR_READING_CACHE));
 
   if (state == WARNING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 60, tr(STR_CLEAR_CACHE_WARNING_1), true);
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 30, tr(STR_CLEAR_CACHE_WARNING_2), true,
-                              EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CLEAR_CACHE_WARNING_3), true);
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 30, tr(STR_CLEAR_CACHE_WARNING_4), true);
+    const int textWidth = std::max(1, pageWidth - metrics.contentSidePadding * 2);
+    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    const int paragraphGap = std::max(4, metrics.verticalSpacing / 2);
+    std::vector<std::pair<const char*, EpdFontFamily::Style>> paragraphs = {
+        {tr(STR_CLEAR_CACHE_WARNING_1), EpdFontFamily::REGULAR},
+        {tr(STR_CLEAR_CACHE_WARNING_2), EpdFontFamily::BOLD},
+        {tr(STR_CLEAR_CACHE_WARNING_3), EpdFontFamily::REGULAR},
+        {tr(STR_CLEAR_CACHE_WARNING_4), EpdFontFamily::REGULAR},
+    };
+    std::vector<std::pair<std::string, EpdFontFamily::Style>> lines;
+    for (const auto& paragraph : paragraphs) {
+      const auto wrapped = renderer.wrappedText(UI_10_FONT_ID, paragraph.first, textWidth, 2, paragraph.second);
+      std::transform(wrapped.begin(), wrapped.end(), std::back_inserter(lines),
+                     [&paragraph](const std::string& line) { return std::make_pair(line, paragraph.second); });
+      if (&paragraph != &paragraphs.back()) lines.emplace_back(std::string{}, EpdFontFamily::REGULAR);
+    }
+    const int totalHeight = static_cast<int>(lines.size()) * lineHeight +
+                            static_cast<int>(std::count_if(lines.begin(), lines.end(),
+                                                           [](const auto& line) { return line.first.empty(); })) *
+                                (paragraphGap - lineHeight);
+    int y = std::max(metrics.topPadding + metrics.headerHeight + 8, (pageHeight - totalHeight) / 2);
+    for (const auto& line : lines) {
+      if (line.first.empty()) {
+        y += paragraphGap;
+        continue;
+      }
+      renderer.drawCenteredText(UI_10_FONT_ID, y, line.first.c_str(), true, line.second);
+      y += lineHeight;
+    }
 
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CLEAR_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -64,7 +93,13 @@ void ClearCacheActivity::render(RenderLock&&) {
   if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 20, tr(STR_CLEAR_CACHE_FAILED), true,
                               EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CHECK_SERIAL_OUTPUT));
+    if (clearedCount > 0 || failedCount > 0) {
+      const std::string resultText = std::to_string(clearedCount) + " " + std::string(tr(STR_ITEMS_REMOVED)) + ", " +
+                                     std::to_string(failedCount) + " " + std::string(tr(STR_FAILED_LOWER));
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, resultText.c_str());
+    } else {
+      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CHECK_SERIAL_OUTPUT));
+    }
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -89,34 +124,37 @@ void ClearCacheActivity::clearCache() {
   clearedCount = 0;
   failedCount = 0;
   char name[128];
+  std::vector<std::string> cachePaths;
 
-  // Iterate through all entries in the directory
+  // Collect paths first. The preservation helper creates a sibling staging
+  // directory, so do not mutate this directory while its iterator is open.
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-    file.getName(name, sizeof(name));
-    String itemName(name);
+    const bool isDirectory = file.isDirectory();
+    const size_t nameLength = file.getName(name, sizeof(name));
+    file.close();
 
-    // Only delete directories matching known book cache names.
-    if (file.isDirectory() && isBookCacheDirectoryName(itemName.c_str())) {
-      String fullPath = "/.crosspoint/" + itemName;
-      LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
-
-      file.close();  // Close before attempting to delete
-
-      if (Storage.removeDir(fullPath.c_str())) {
-        clearedCount++;
-      } else {
-        LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
-        failedCount++;
-      }
-    } else {
-      file.close();
+    if (isDirectory && nameLength > 0 && nameLength < sizeof(name) && isBookCacheDirectoryName(name)) {
+      cachePaths.emplace_back(std::string("/.crosspoint/") + name);
     }
   }
   root.close();
 
+  for (const std::string& fullPath : cachePaths) {
+    LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
+    if (clearBookCacheDirectoryPreservingUserState(fullPath)) {
+      clearedCount++;
+    } else {
+      LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
+      failedCount++;
+    }
+  }
+
   LOG_DBG("CLEAR_CACHE", "Cache cleared: %d removed, %d failed", clearedCount, failedCount);
 
-  state = SUCCESS;
+  // Do not report a partially failed SD operation as successful. Some derived
+  // caches may already be gone, but all preserved user state remains staged or
+  // restored by the per-book helper.
+  state = failedCount == 0 ? SUCCESS : FAILED;
   requestUpdate();
 }
 

@@ -224,6 +224,14 @@ TEST(MixedDirection, SpaceCountPreserved) {
   EXPECT_EQ(visual.size(), 11u);  // 9 letters + 2 spaces, nothing absorbed or invented
 }
 
+TEST(MixedDirection, NumericWordsInRtlParagraphUseFullBidiOrdering) {
+  const std::vector<std::string> words{"123", "abc", "456"};
+  std::vector<uint16_t> visualOrder;
+
+  ASSERT_TRUE(BidiUtils::computeVisualWordOrder(words, /*paragraphIsRtl=*/true, visualOrder));
+  EXPECT_EQ(visualOrder, (std::vector<uint16_t>{1, 2, 0}));
+}
+
 /* ── Regression: existing behaviour unchanged ────────────────────────── */
 
 // Hebrew reorders but never shapes.

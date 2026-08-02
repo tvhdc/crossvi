@@ -278,12 +278,9 @@ class XPathParagraphResolver final : public Print {
     path.push_back({name, siblingIndex});
     parentStates.emplace_back();
 
-    // Count both <p> and <li> as paragraph-like positions, matching how the section
-    // layout tracks them (xpathParagraphIndex and xpathListItemIndex). This ensures
-    // KOReader progress in list items maps to the correct XPath.
+    // The section cache stores <p> and <li> in separate LUTs. This resolver is
+    // called with the paragraph LUT, so list items must not consume an index.
     if (name == "p") {
-      paragraphCount++;
-    } else if (name == "li") {
       paragraphCount++;
     }
     if (paragraphCount == targetParagraph) {

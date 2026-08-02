@@ -878,7 +878,9 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
   }
   if (!resolvedIntra) {
     const size_t bytesIn = (targetBytes > prevCum) ? (targetBytes - prevCum) : 0;
-    intra = std::max(0.0f, std::min(1.0f, static_cast<float>(bytesIn) / static_cast<float>(spineSize)));
+    intra = spineSize == 0
+                ? 0.0f
+                : std::max(0.0f, std::min(1.0f, static_cast<float>(bytesIn) / static_cast<float>(spineSize)));
   }
 
   result.pageNumber = std::max(

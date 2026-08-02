@@ -4,13 +4,14 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
-#include <esp_task_wdt.h>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TaskWatchdog.h"
+#include "util/WifiLifecycle.h"
 
 namespace {
 constexpr const char* HOSTNAME = "crosspoint";
@@ -52,11 +53,10 @@ void CalibreConnectActivity::onEnter() {
 void CalibreConnectActivity::onExit() {
   Activity::onExit();
 
+  stopWebServer();
   MDNS.end();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (!WifiLifecycle::shutDown()) {
     silentRestart();
   }
 }
@@ -110,12 +110,13 @@ void CalibreConnectActivity::loop() {
       LOG_DBG("CAL", "WARNING: %lu ms gap since last handleClient", timeSinceLastHandleClient);
     }
 
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
+    WiFi.setSleep(false);
     constexpr int MAX_ITERATIONS = 80;
     for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
       webServer->handleClient();
       if ((i & 0x07) == 0x07) {
-        esp_task_wdt_reset();
+        resetTaskWatchdogIfSubscribed();
       }
       if ((i & 0x0F) == 0x0F) {
         yield();
@@ -125,6 +126,7 @@ void CalibreConnectActivity::loop() {
         }
       }
     }
+    WiFi.setSleep(true);
     lastHandleClientTime = millis();
 
     const auto status = webServer->getWsUploadStatus();

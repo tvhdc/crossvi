@@ -14,6 +14,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ClockSyncPolicy.h"
 
 void WifiSelectionActivity::onEnter() {
   Activity::onEnter();
@@ -258,7 +259,7 @@ void WifiSelectionActivity::promptHiddenSsid() {
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_SSID),
                                                                  "",  // No initial text
                                                                  32,  // Max SSID length (IEEE 802.11: 32 bytes)
-                                                                 InputType::Text),
+                                                                 InputType::Identifier),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
                              state = WifiSelectionState::NETWORK_LIST;
@@ -354,10 +355,15 @@ void WifiSelectionActivity::attemptConnection() {
   WiFi.disconnect(true, true);  // Abort any in-progress SDK auto-connect and clear NVS-saved SSID
   delay(100);
 
-  // Set hostname so routers show "CrossPoint-Reader-AABBCCDDEEFF" instead of "esp32-XXXXXXXXXXXX"
+  // A full channel scan lets the ESP select the strongest BSSID when a mesh or
+  // repeater exposes the same SSID from more than one access point.
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+
+  // Set hostname so routers show "CrossVi-AABBCCDDEEFF" instead of "esp32-XXXXXXXXXXXX"
   String mac = WiFi.macAddress();
   mac.replace(":", "");
-  String hostname = "CrossPoint-Reader-" + mac;
+  String hostname = "CrossVi-" + mac;
   WiFi.setHostname(hostname.c_str());
 
   if (selectedRequiresPassword && !enteredPassword.empty()) {
@@ -382,10 +388,9 @@ void WifiSelectionActivity::checkConnectionStatus() {
     connectedIP = ipStr;
     autoConnecting = false;
 
-    // Sync RTC from NTP on the first successful WiFi connection only. The DS3231
-    // drifts ~2 ppm so one sync is enough; users can force a re-sync from
-    // Settings > Customise Status Bar > Sync clock now.
-    if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
+    // A persisted "synced once" flag cannot prove that this boot's system
+    // clock is valid (X4 has no external RTC; X3 may have lost RTC validity).
+    if (ClockSyncPolicy::shouldSyncFromNetwork(SETTINGS.clockHasBeenSynced, halClock.isSystemTimeValid())) {
       if (halClock.syncFromNTP()) {
         SETTINGS.clockHasBeenSynced = 1;
         SETTINGS.saveToFile();

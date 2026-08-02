@@ -1,10 +1,12 @@
 #include "BootActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
+#include <Version.h>
 
 #include "fontIds.h"
-#include "images/Logo120.h"
+#include "images/DefaultSleepScreens.h"
 
 void BootActivity::onEnter() {
   Activity::onEnter();
@@ -13,9 +15,31 @@ void BootActivity::onEnter() {
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
-  renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_BOOTING));
+  if (minimalWakeScreen_) {
+    const int bootingY = (pageHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+    renderer.drawCenteredText(UI_10_FONT_ID, bootingY, tr(STR_BOOTING), true, EpdFontFamily::BOLD);
+    renderer.displayBuffer();
+    return;
+  }
+
+  const bool isX3 = gpio.deviceIsX3();
+  const bool hasBundledScreen =
+      (isX3 && pageWidth == DEFAULT_SLEEP_X3_WIDTH && pageHeight == DEFAULT_SLEEP_X3_HEIGHT) ||
+      (!isX3 && pageWidth == DEFAULT_SLEEP_X4_WIDTH && pageHeight == DEFAULT_SLEEP_X4_HEIGHT);
+  if (hasBundledScreen) {
+    if (isX3) {
+      drawBundledDefaultScreen(renderer, DEFAULT_SLEEP_X3_WIDTH, DEFAULT_SLEEP_X3_HEIGHT, DefaultSleepX3Rows,
+                               DefaultSleepX3Runs);
+    } else {
+      drawBundledDefaultScreen(renderer, DEFAULT_SLEEP_X4_WIDTH, DEFAULT_SLEEP_X4_HEIGHT, DefaultSleepX4Rows,
+                               DefaultSleepX4Runs);
+    }
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 70, tr(STR_BOOTING));
+  } else {
+    // Keep a text-only fallback for an unexpected orientation or panel.
+    renderer.drawCenteredText(UI_10_FONT_ID, (pageHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2, tr(STR_BOOTING),
+                              true, EpdFontFamily::BOLD);
+  }
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, CROSSPOINT_VERSION);
   renderer.displayBuffer();
 }

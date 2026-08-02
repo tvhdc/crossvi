@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <cstring>
 
+#include "FontStorageContract.h"
+#include "ReaderFontSize.h"
+
 // --- SdCardFontFamilyInfo helpers ---
 
 const SdCardFontFileInfo* SdCardFontFamilyInfo::findFile(uint8_t size, uint8_t style) const {
@@ -15,58 +18,44 @@ const SdCardFontFileInfo* SdCardFontFamilyInfo::findFile(uint8_t size, uint8_t s
   return nullptr;
 }
 
-const SdCardFontFileInfo* SdCardFontFamilyInfo::findClosestReaderSize(const uint8_t fontSizeEnum,
-                                                                      const uint8_t style) const {
+const SdCardFontFileInfo* SdCardFontFamilyInfo::findClosestPointSize(const uint8_t targetPointSize,
+                                                                     const uint8_t style) const {
   if (files.empty()) return nullptr;
 
-  // Collect sizes matching the requested style, sorted ascending.
-  std::vector<uint8_t> sizes;
-  for (const auto& f : files) {
-    if (f.style != style) continue;
-    sizes.push_back(f.pointSize);
-  }
-  if (sizes.empty()) return nullptr;
-  std::sort(sizes.begin(), sizes.end());
-
-  // When the family provides at least 4 sizes, use ordinal (index-based)
-  // selection so custom-built font sets (e.g. 10/12/14/16) map SMALL to
-  // the smallest file, not to a hardcoded 12pt target.
-  if (sizes.size() >= 4) {
-    uint8_t idx = fontSizeEnum;
-    if (idx >= sizes.size()) idx = sizes.size() - 1;
-    return findFile(sizes[idx], style);
-  }
-
-  // Fewer sizes than enum slots (e.g. CJK packs with only 2-3 sizes):
-  // fall back to closest-match against the built-in reader targets.
-  uint8_t target = 14;
-  switch (fontSizeEnum) {
-    case 0:
-      target = 12;
-      break;
-    case 2:
-      target = 16;
-      break;
-    case 3:
-      target = 18;
-      break;
-    case 1:
-    default:
-      target = 14;
-      break;
-  }
-
   const SdCardFontFileInfo* best = nullptr;
-  uint8_t bestDelta = 255;
+  uint8_t bestDelta = UINT8_MAX;
   for (const auto& f : files) {
     if (f.style != style) continue;
-    const uint8_t delta = f.pointSize > target ? f.pointSize - target : target - f.pointSize;
+    const uint8_t delta = f.pointSize > targetPointSize ? f.pointSize - targetPointSize : targetPointSize - f.pointSize;
     if (!best || delta < bestDelta || (delta == bestDelta && f.pointSize < best->pointSize)) {
       best = &f;
       bestDelta = delta;
     }
   }
   return best;
+}
+
+const SdCardFontFileInfo* SdCardFontFamilyInfo::findClosestReaderSize(const uint8_t fontSizeEnum,
+                                                                      const uint8_t style) const {
+  return findClosestPointSize(ReaderFontSize::pointSize(fontSizeEnum), style);
+}
+
+int SdCardFontFamilyInfo::findClosestReaderSizeEnum(const uint8_t targetPointSize, const uint8_t style) const {
+  int bestEnum = -1;
+  uint8_t bestPointSize = 0;
+  uint8_t bestDelta = UINT8_MAX;
+  for (const uint8_t logicalSize : availableReaderSizeEnums(style)) {
+    const auto* mapped = findClosestReaderSize(logicalSize, style);
+    if (!mapped) continue;
+    const uint8_t delta =
+        mapped->pointSize > targetPointSize ? mapped->pointSize - targetPointSize : targetPointSize - mapped->pointSize;
+    if (bestEnum < 0 || delta < bestDelta || (delta == bestDelta && mapped->pointSize < bestPointSize)) {
+      bestEnum = logicalSize;
+      bestPointSize = mapped->pointSize;
+      bestDelta = delta;
+    }
+  }
+  return bestEnum;
 }
 
 bool SdCardFontFamilyInfo::hasSize(uint8_t size) const {
@@ -90,6 +79,37 @@ std::vector<uint8_t> SdCardFontFamilyInfo::availableSizes() const {
   }
   std::sort(sizes.begin(), sizes.end());
   return sizes;
+}
+
+std::vector<uint8_t> SdCardFontFamilyInfo::availableReaderSizeEnums(const uint8_t style) const {
+  std::vector<uint8_t> result;
+  result.reserve(ReaderFontSize::COUNT);
+  std::vector<uint8_t> physicalSizes;
+  for (const auto& file : files) {
+    if (file.style == style &&
+        std::find(physicalSizes.begin(), physicalSizes.end(), file.pointSize) == physicalSizes.end()) {
+      physicalSizes.push_back(file.pointSize);
+    }
+  }
+  std::sort(physicalSizes.begin(), physicalSizes.end());
+
+  for (const uint8_t physicalSize : physicalSizes) {
+    uint8_t representative = UINT8_MAX;
+    uint8_t bestDelta = UINT8_MAX;
+    for (uint8_t index = 0; index < ReaderFontSize::COUNT; ++index) {
+      const uint8_t target = ReaderFontSize::pointSize(index);
+      const auto* selected = findClosestPointSize(target, style);
+      if (!selected || selected->pointSize != physicalSize) continue;
+      const uint8_t delta = physicalSize > target ? physicalSize - target : target - physicalSize;
+      if (delta < bestDelta) {
+        representative = index;
+        bestDelta = delta;
+      }
+    }
+    if (representative != UINT8_MAX) result.push_back(representative);
+  }
+  std::sort(result.begin(), result.end());
+  return result;
 }
 
 // --- SdCardFontRegistry ---
@@ -148,6 +168,7 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
 
     // Skip macOS resource fork files (._*) and other hidden files
     if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
+    if (!FontStorageContract::isValidCpfontFilename(nameBuffer)) continue;
 
     uint8_t size, style;
     if (!parseFilename(nameBuffer, size, style)) continue;
@@ -170,6 +191,10 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
 
     SdCardFontFileInfo info;
     info.path = std::string(dirPath) + "/" + nameBuffer;
+    if (info.path.size() >= FontStorageContract::FONT_PATH_CAPACITY) {
+      LOG_ERR("SDREG", "Font path is too long — skipping %s", nameBuffer);
+      continue;
+    }
     info.pointSize = size;
     info.style = style;
     family.files.push_back(std::move(info));
@@ -200,6 +225,10 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
 
       // Skip hidden/system directories inside the root (macOS ._*, .Trashes, etc.)
       if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
+      if (!FontStorageContract::isValidFamilyName(nameBuffer)) {
+        LOG_ERR("SDREG", "Invalid font family name — skipping");
+        continue;
+      }
 
       // De-dup by family name across roots.
       bool exists = false;
@@ -250,11 +279,13 @@ bool SdCardFontRegistry::discover() {
 }
 
 const char* SdCardFontRegistry::findFamilyRoot(const char* familyName) {
-  if (!familyName || !*familyName) return nullptr;
-  char path[160];
-  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_HIDDEN, familyName);
+  if (!FontStorageContract::isValidFamilyName(familyName)) return nullptr;
+  char path[FontStorageContract::FONT_PATH_CAPACITY];
+  int written = snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_HIDDEN, familyName);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(path)) return nullptr;
   if (Storage.exists(path)) return FONTS_DIR_HIDDEN;
-  snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_VISIBLE, familyName);
+  written = snprintf(path, sizeof(path), "%s/%s", FONTS_DIR_VISIBLE, familyName);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(path)) return nullptr;
   if (Storage.exists(path)) return FONTS_DIR_VISIBLE;
   return nullptr;
 }

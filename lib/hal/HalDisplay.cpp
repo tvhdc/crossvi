@@ -29,7 +29,11 @@ void HalDisplay::begin(bool seamless) {
   const auto wakeupReason = gpio.getWakeupReason();
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton || wakeupReason == HalGPIO::WakeupReason::AfterFlash ||
       wakeupReason == HalGPIO::WakeupReason::Other) {
-    einkDisplay.requestResync();
+    // The retained sleep frame can remain visible through parts of the first
+    // X3 wake paint. One post-condition pass settles the newly displayed frame
+    // before normal differential updates resume. Other controllers ignore the
+    // pass count and keep their existing resync behavior.
+    einkDisplay.requestResync(1);
   }
 }
 

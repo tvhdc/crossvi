@@ -3,24 +3,39 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
 
+#include <atomic>
 #include <optional>
 
+#include "BookReadingStats.h"
 #include "BookmarkEntry.h"
 #include "EndOfBookOptions.h"
 #include "EpubReaderMenuActivity.h"
+#include "GlobalReadingStats.h"
+#include "PerBookReaderSettings.h"
 #include "ProgressMapper.h"
+#include "ReaderUtils.h"
+#include "ReadingSessionTracker.h"
 #include "activities/Activity.h"
+#include "clippings/ClippingPageTools.h"
+#include "clippings/ClippingStore.h"
 
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
+  enum class CoverSkipDirection : uint8_t { Forward, Backward };
+  CoverSkipDirection coverSkipDirection = CoverSkipDirection::Forward;
+  uint8_t coverSkipHops = 0;
+  static constexpr uint8_t MAX_COVER_SKIP_HOPS = 8;
   std::optional<uint16_t> pendingPageJump;
   // Set when navigating to a footnote href with a fragment (e.g. #note1).
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
   int pagesUntilFullRefresh = 0;
+  // Image pages use a dedicated double-FAST path, so retain a manual refresh
+  // request until renderContents can issue its clean base pass.
+  bool forcedRefreshPending = false;
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   unsigned long lastPageTurnTime = 0UL;
@@ -30,8 +45,10 @@ class EpubReaderActivity final : public Activity {
   bool pendingPercentJump = false;
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
-  bool pendingScreenshot = false;
+  std::atomic<bool> pendingScreenshot{false};
   bool pendingSyncSaveError = false;
+  bool pendingFinishedMoveSyncError = false;
+  bool pendingKOReaderCredentialsNotice = false;
   // Consecutive page-load failures. Each failure drops the section and rebuilds on the next render,
   // which recovers a transiently corrupt cache; capped so a persistently bad page can't spin forever.
   uint8_t pageLoadRetryCount = 0;
@@ -43,9 +60,13 @@ class EpubReaderActivity final : public Activity {
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
+  ReaderUtils::HoldGestureState confirmHold;
+  ReaderUtils::PageTurnGestureState pageTurnGesture;
   bool currentPageBookmarked = false;
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
+  bool bookmarksWritable = false;
+  bool pendingBookmarkStorageError = false;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
   bool recentsEntryRemoved = false;
@@ -55,6 +76,95 @@ class EpubReaderActivity final : public Activity {
   bool pendingReadFolderMove = false;
   // Next-book suggestion menu for the End-of-Book screen
   EndOfBookOptions endOfBookOptions;
+
+  // SETTINGS is temporarily overlaid while this EPUB is active. The global
+  // defaults are restored on every exit path, including sleep and sync.
+  PerBookReaderSettings globalReaderSettings;
+  PerBookReaderSettings bookReaderSettings;
+  bool bookSettingsWritable = true;
+  uint8_t autoPageTurnSeconds = 0;
+  bool pendingBookSettingsSaveError = false;
+  bool pendingBookStylesApplyError = false;
+  bool pendingExternalCssWarning = false;
+  bool pendingCacheClearError = false;
+  std::atomic<bool> safeModePromptRequested{false};
+  std::atomic<bool> pendingSafeModeFailureNotice{false};
+  std::atomic<bool> pendingSafeModePersistence{false};
+  bool pendingSafeModeEnabledNotice = false;
+
+  // Optional cover work begins only after the first reading page reached the
+  // panel. It advances one bounded step from loop(), never before book open.
+  bool deferredCoverRequested = false;
+  bool deferredCoverFirstPageVisible = false;
+  bool deferredCoverStarted = false;
+  bool deferredCoverFinished = false;
+  Epub::ThumbnailPreparationStatus deferredCoverStatus = Epub::ThumbnailPreparationStatus::NotNeeded;
+
+  ClippingStore clippingStore;
+  enum class ClippingNotice : uint8_t {
+    None,
+    Saved,
+    LimitReached,
+    SaveFailed,
+    Unavailable,
+    NewerFormat,
+    JumpUnavailable,
+    ReanchorFailed,
+  };
+  ClippingNotice pendingClippingNotice = ClippingNotice::None;
+  bool pendingClippingHighlightsTruncatedNotice = false;
+  std::optional<ClippingJumpResult> initialClippingJump;
+  std::optional<ProgressChangeResult> initialBookmarkJump;
+  struct PendingClippingJump {
+    uint16_t clippingIndex = 0;
+    uint16_t spineIndex = 0;
+    uint16_t page = 0;
+    uint16_t pageCount = 1;
+    uint16_t paragraphIndex = UINT16_MAX;
+    uint32_t pageFingerprint = 0;
+    uint32_t layoutFingerprint = 0;
+    uint16_t searchFirstPage = 0;
+    uint16_t searchLastPage = 0;
+    int fallbackSpineIndex = 0;
+    int fallbackPage = 0;
+    int fallbackCachedSpineIndex = 0;
+    int fallbackCachedChapterPageCount = 0;
+  };
+  std::optional<PendingClippingJump> pendingClippingJump;
+  std::atomic<bool> pendingClippingReanchorLaunch{false};
+  ClippingPageTools::HighlightNoticeTracker clippingHighlightNotices;
+
+  BookReadingStats bookReadingStats;
+  GlobalReadingStats globalReadingStats;
+  // Read trust and write permission are deliberately separate. A pending
+  // transaction can make valid statistics read-only; corrupt/newer files are
+  // neither writable nor safe to present as real zeroes.
+  bool bookReadingStatsTrusted = true;
+  bool globalReadingStatsTrusted = true;
+  bool bookReadingStatsWritable = true;
+  bool globalReadingStatsWritable = true;
+  // Prevent a broken/newer stats file or transient SD failure from causing an
+  // unbounded completion retry on every loop tick. Leaving the end screen
+  // permits one deliberate retry; reopening the book naturally resets it.
+  bool completionAttemptBlocked = false;
+  bool pendingStatsCompletionError = false;
+  ReadingSessionTracker readingSessionTracker;
+  uint32_t sessionReadingSeconds = 0;
+  // Time-bucket/history changes are accumulated per actually visible page
+  // interval and merged only if the session passes the 10-second noise filter.
+  BookReadingStats pendingBookReadingSpans;
+  GlobalReadingStats pendingGlobalReadingSpans;
+  ReadingStatsDateTime activeReadingSpanStartLocalDateTime;
+  bool hasActiveReadingSpanStartLocalDateTime = false;
+  ReadingStatsDateTime sessionStartLocalDateTime;
+  bool hasSessionStartLocalDateTime = false;
+  bool readingSessionCommitted = false;
+  bool bookReadingStatsDirty = false;
+  bool globalReadingStatsDirty = false;
+  // render() runs on the display task; loop()/lifecycle own the tracker and
+  // consume this tiny last-event-wins handoff on the main task.
+  std::atomic<int8_t> pendingReadingViewSignal{0};  // -1 hidden, +1 visible
+  std::atomic<uint32_t> pendingReadingViewAtMs{0};
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
@@ -75,20 +185,47 @@ class EpubReaderActivity final : public Activity {
   // tick; the blocking extension in render() remains the fallback past the watermark.
   bool partialRebuildStartFailed = false;
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  enum class DebugSectionCacheStatus : uint8_t { Unknown, Miss, Partial, Hit };
+  struct DebugIndexMetrics {
+    int spineIndex = -1;
+    uint32_t openStartedMs = 0;
+    uint32_t openStartFreeHeap = 0;
+    uint32_t synchronousPages = 0;
+    uint32_t backgroundPages = 0;
+    uint32_t lastReportedBackgroundPages = 0;
+    DebugSectionCacheStatus cacheStatus = DebugSectionCacheStatus::Unknown;
+    bool waitingForVisiblePage = false;
+    bool includesSwitchWait = false;
+  } debugIndexMetrics;
+
+  void debugBeginSectionOpen(bool includesSwitchWait);
+  void debugSetSectionCacheStatus(DebugSectionCacheStatus status);
+  void debugRecordSectionBuild(uint16_t before, bool background);
+  void debugReportVisibleSection();
+  void debugReportCompletedBuild() const;
+#endif
+
   // Last position persisted by render()'s saveProgress, used to skip redundant
   // writeAtomic calls on no-op re-renders (menu/bookmark/screenshot).
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
   int lastSavedPageCount = -1;
 
-  void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
-                      int orientedMarginBottom, int orientedMarginLeft);
+  bool renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
+                      int orientedMarginBottom, int orientedMarginLeft, uint32_t* pageFingerprintOut);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Kept small so a
   // background build chunk never noticeably delays input or a pending render.
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
+  // Background parsing grows vectors/strings through throwing allocation
+  // paths. Defer optional build ticks before fragmented heap reaches OOM.
+  static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
+  static constexpr size_t BACKGROUND_BUILD_MIN_MAX_ALLOC = 16 * 1024;
+  bool buildTickHeapGate();
+  bool buildHeapPaused = false;
   // How many pages to keep laid out ahead of the reader for a still-building section. A page
   // turn is ~1s on e-ink and a page builds in ~30ms, so the reader can't out-click the builder
   // -- a tiny buffer is enough. The background build stops once the watermark is this far
@@ -126,30 +263,95 @@ class EpubReaderActivity final : public Activity {
   // Returns true if sync acted (launched, or surfaced a save error); false if it was a no-op
   // because no KOReader credentials are stored.
   bool launchKOReaderSync();
+  bool launchNearbyPositionSync();
   void applyOrientation(uint8_t orientation);
-  void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
+  void openBookReaderSettings();
+  void openReadingStats();
+  void openClippingSelection();
+  void openClippings();
+  void openSavedItems();
+  void applyBookmarkJump(const ProgressChangeResult& progress);
+  uint32_t currentClippingLayoutFingerprint() const;
+  bool validateClippingJump(const ClippingJumpResult& jump) const;
+  void armClippingJump(const ClippingJumpResult& jump);
+  bool abortPendingClippingJump(bool showNotice = true);
+  // Returns true when an invalid target restored the previous section and this
+  // render must restart there. The page fingerprint is intentionally checked
+  // later against the exact Page instance that will be rendered.
+  bool preparePendingClippingJump();
+  void launchPendingClippingReanchor();
+  bool persistBookReaderSettings();
+  bool queueSafeModePromptIfEligible(EpubBuildStatus status);
+  void invalidateReaderLayout();
+  void applyAutoPageTurnRuntime(uint8_t seconds, bool active);
+  void updateAutoPageTurnFromMenu(uint8_t seconds);
   void pageTurn(bool isForwardTurn);
+  bool moveOnePageWithoutRendering(bool forward);
+  bool skipCoverPageIfNeeded(const Page& page);
   void loadCachedBookmarks();
-  void addBookmark();
+  bool addBookmark();
   void updateBookmarkFlag();
+
+  void signalReadingPageVisible();
+  void signalReadingPageHidden();
+  void consumeReadingViewSignal();
+  void pumpDeferredCoverPreparation();
+  void stopReadingPage(bool forwardPageTurn, uint32_t nowMs);
+  void recordReadingSample(const ReadingSessionSample& sample);
+  void commitReadingSession();
+  void saveReadingStats();
+  bool refreshEstimatedTimeLeft();
+  void markBookCompleted();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
 
  public:
-  explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub)
-      : Activity("EpubReader", renderer, mappedInput), epub(std::move(epub)) {}
+  explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub,
+                              PerBookReaderSettings globalReaderSettings, PerBookReaderSettings bookReaderSettings,
+                              bool bookSettingsWritable,
+                              std::optional<ClippingJumpResult> initialClippingJump = std::nullopt,
+                              std::optional<ProgressChangeResult> initialBookmarkJump = std::nullopt,
+                              int initialRefreshCountdown = 0, bool deferCoverPreparation = false)
+      : Activity("EpubReader", renderer, mappedInput),
+        epub(std::move(epub)),
+        pagesUntilFullRefresh(initialRefreshCountdown),
+        globalReaderSettings(std::move(globalReaderSettings)),
+        bookReaderSettings(std::move(bookReaderSettings)),
+        bookSettingsWritable(bookSettingsWritable),
+        deferredCoverRequested(deferCoverPreparation),
+        initialClippingJump(std::move(initialClippingJump)),
+        initialBookmarkJump(std::move(initialBookmarkJump)) {}
   void onEnter() override;
   void onExit() override;
+  void onPause() override;
+  void onResume() override;
   void loop() override;
   void render(RenderLock&& lock) override;
-  // Full CPU speed + fast loop ticks while a section build runs: at the low-power
-  // frequency a giant chapter's background rebuild stretches from ~40s to many
-  // minutes, so the reader exits before it can finalize and the next open restarts
-  // it from page 0. Reverts to normal power behavior the moment the build finishes.
-  bool skipLoopDelay() override { return section && section->isBuilding(); }
+  // Full CPU speed only while the incremental builder can make progress. Once
+  // the five-page window is full, normal loop delay saves power until the
+  // reader advances and opens more work for the builder.
+  bool skipLoopDelay() override {
+    const bool building =
+        section && section->isBuilding() &&
+        (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+        !buildHeapPaused;
+    const bool preparingCover = deferredCoverRequested && deferredCoverFirstPageVisible && !deferredCoverFinished;
+    return building || preparingCover;
+  }
   bool isReaderActivity() const override { return true; }
+  bool handleForcedRefresh() override {
+    {
+      RenderLock lock(*this);
+      pagesUntilFullRefresh = 1;
+      forcedRefreshPending = true;
+    }
+    requestUpdate();
+    return true;
+  }
+  bool handleGlobalShortcut(GlobalShortcut shortcut) override { return handleSafeGlobalShortcut(shortcut); }
+  bool handleReaderShortcut(uint8_t function) override;
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;
 };

@@ -14,17 +14,25 @@ class SdCardFontSystem {
   SdCardFontSystem() = default;
   SdCardFontSystem(const SdCardFontSystem&) = delete;
   SdCardFontSystem& operator=(const SdCardFontSystem&) = delete;
-  /// Discover SD card fonts and load user's saved selection. Call once during setup.
-  void begin(GfxRenderer& renderer);
+  /// Discover SD card fonts. The user's saved family is loaded lazily by
+  /// ensureLoaded(). Call once during setup.
+  void begin();
 
   /// Ensure the correct SD font family is loaded for the current settings.
   /// Call before entering the reader or after settings change.
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
-  void ensureLoaded(GfxRenderer& renderer);
+  void ensureLoaded(GfxRenderer& renderer, bool persistInvalidSelection = true);
 
   /// Resolve an SD card font ID from family name + fontSize enum.
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
   int resolveFontId(const char* familyName, uint8_t fontSizeEnum) const;
+
+  uint8_t currentPointSize() const { return manager_.currentPointSize(); }
+  bool currentSupportsVietnamese() const { return manager_.currentSupportsVietnamese(); }
+
+  /// Point size that a family would use for a reader size
+  /// settings, or 0 when the family/size is unavailable.
+  uint8_t selectedPointSize(const char* familyName, uint8_t fontSizeEnum) const;
 
   /// Access the registry (e.g. for settings UI to enumerate available fonts).
   const SdCardFontRegistry& registry() const { return registry_; }

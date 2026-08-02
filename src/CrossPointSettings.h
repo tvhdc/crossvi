@@ -1,6 +1,10 @@
 #pragma once
-#include <HalStorage.h>
 
+#include <Epub/EpubRenderMode.h>
+#include <HalStorage.h>
+#include <ReaderFontSize.h>
+
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <mutex>
@@ -8,6 +12,7 @@
 class CrossPointSettings {
  private:
   mutable std::mutex _mutex;
+  mutable bool persistenceWritable = true;
 
   // Private constructor for singleton
   CrossPointSettings() = default;
@@ -25,6 +30,9 @@ class CrossPointSettings {
   std::mutex& getMutex() const { return _mutex; }
 
   enum SLEEP_SCREEN_MODE {
+    // Values 1, 4 and 6 are retained for compatibility with settings written
+    // by older firmware. The settings UI exposes only Default, Cover, Custom
+    // and Blank through the compact selection helpers below.
     DARK = 0,
     LIGHT = 1,
     CUSTOM = 2,
@@ -34,6 +42,42 @@ class CrossPointSettings {
     QUICK_RESUME = 6,
     SLEEP_SCREEN_MODE_COUNT
   };
+  enum SLEEP_SCREEN_SELECTION {
+    SLEEP_SCREEN_DEFAULT = 0,
+    SLEEP_SCREEN_COVER = 1,
+    SLEEP_SCREEN_CUSTOM = 2,
+    SLEEP_SCREEN_BLANK = 3,
+    SLEEP_SCREEN_SELECTION_COUNT
+  };
+  static constexpr uint8_t sleepScreenSelection(const uint8_t mode) {
+    switch (mode) {
+      case COVER:
+      case COVER_CUSTOM:
+        return SLEEP_SCREEN_COVER;
+      case CUSTOM:
+        return SLEEP_SCREEN_CUSTOM;
+      case BLANK:
+        return SLEEP_SCREEN_BLANK;
+      case DARK:
+      case LIGHT:
+      case QUICK_RESUME:
+      default:
+        return SLEEP_SCREEN_DEFAULT;
+    }
+  }
+  static constexpr uint8_t sleepScreenMode(const uint8_t selection) {
+    switch (selection) {
+      case SLEEP_SCREEN_COVER:
+        return COVER;
+      case SLEEP_SCREEN_CUSTOM:
+        return CUSTOM;
+      case SLEEP_SCREEN_BLANK:
+        return BLANK;
+      case SLEEP_SCREEN_DEFAULT:
+      default:
+        return LIGHT;
+    }
+  }
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_FILTER {
     NO_FILTER = 0,
@@ -72,7 +116,12 @@ class CrossPointSettings {
     XTC_STATUS_BAR_MODE_COUNT
   };
 
-  enum STATUS_BAR_CLOCK_MODE { STATUS_BAR_CLOCK_HIDE = 0, STATUS_BAR_CLOCK_RIGHT = 1, STATUS_BAR_CLOCK_LEFT = 2 };
+  enum STATUS_BAR_CLOCK_MODE {
+    STATUS_BAR_CLOCK_HIDE = 0,
+    STATUS_BAR_CLOCK_RIGHT = 1,
+    STATUS_BAR_CLOCK_LEFT = 2,
+    STATUS_BAR_CLOCK_MODE_COUNT
+  };
 
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
@@ -111,7 +160,20 @@ class CrossPointSettings {
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
-  enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
+  enum FONT_SIZE {
+    SMALL = 0,
+    MEDIUM = 1,
+    LARGE = 2,
+    EXTRA_LARGE = 3,
+    SIZE_20 = 4,
+    SIZE_22 = 5,
+    SIZE_24 = 6,
+    SIZE_26 = 7,
+    SIZE_28 = 8,
+    FONT_SIZE_COUNT = ReaderFontSize::COUNT
+  };
+  static_assert(SMALL == 0 && MEDIUM == 1 && LARGE == 2 && EXTRA_LARGE == 3,
+                "Existing font-size settings must retain their stored meaning");
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
@@ -154,8 +216,71 @@ class CrossPointSettings {
     LP_MENU_DISABLED = 1,
     LP_MENU_BOOKMARK = 2,
     LP_MENU_DICTIONARY = 3,
+    LP_MENU_READING_STATS = 4,
+    LP_MENU_AUTO_PAGE_TURN = 5,
+    LP_MENU_HIGHLIGHT = 6,
+    LP_MENU_SCREENSHOT = 7,
     LONG_PRESS_MENU_FUNCTION_COUNT
   };
+
+  enum DOUBLE_POWER_ACTION {
+    DOUBLE_POWER_DISABLED = 0,
+    DOUBLE_POWER_HOME = 1,
+    DOUBLE_POWER_RESUME = 2,
+    DOUBLE_POWER_REFRESH = 3,
+    DOUBLE_POWER_SCREENSHOT = 4,
+    DOUBLE_POWER_ACTION_COUNT
+  };
+
+  enum TEXT_DARKNESS {
+    TEXT_DARKNESS_NORMAL = 0,
+    TEXT_DARKNESS_DARK = 1,
+    TEXT_DARKNESS_EXTRA_DARK = 2,
+    TEXT_DARKNESS_COUNT
+  };
+
+  enum LIBRARY_VIEW { LIBRARY_LIST = 0, LIBRARY_COVERS = 1, LIBRARY_VIEW_COUNT };
+  // Ordering for the All tab. Recent remains recency-ordered by RecentBooksStore.
+  // Keep the numeric values stable because they are persisted in settings.json.
+  enum LIBRARY_SORT {
+    LIBRARY_SORT_DATE_ADDED_DESC = 0,
+    LIBRARY_SORT_TITLE_ASC = 1,
+    LIBRARY_SORT_AUTHOR_ASC = 2,
+    LIBRARY_SORT_COUNT
+  };
+  // homeLayoutVersion migrates the former value 2 (Carousel) to Style 4. Keep
+  // these canonical values stable after that one-time migration.
+  enum HOME_LAYOUT {
+    HOME_LAYOUT_STYLE_1 = 0,
+    HOME_LAYOUT_STYLE_2 = 1,
+    HOME_LAYOUT_STYLE_3 = 2,
+    HOME_LAYOUT_STYLE_4 = 3,
+    HOME_LAYOUT_COUNT
+  };
+  static constexpr uint8_t HOME_LAYOUT_VERSION = 2;
+  static constexpr uint8_t canonicalHomeLayout(const int rawValue, const uint8_t storedVersion) {
+    if (storedVersion < HOME_LAYOUT_VERSION && rawValue == HOME_LAYOUT_STYLE_3) return HOME_LAYOUT_STYLE_4;
+    return rawValue >= 0 && rawValue < HOME_LAYOUT_COUNT ? static_cast<uint8_t>(rawValue) : HOME_LAYOUT_STYLE_2;
+  }
+  static_assert(HOME_LAYOUT_STYLE_1 == 0 && HOME_LAYOUT_STYLE_2 == 1 && HOME_LAYOUT_STYLE_3 == 2 &&
+                HOME_LAYOUT_STYLE_4 == 3);
+  static constexpr bool needsSharedCoverThumbnail(const uint8_t homeLayout, const uint8_t libraryView) {
+    return homeLayout != HOME_LAYOUT_STYLE_1 || libraryView == LIBRARY_COVERS;
+  }
+  static constexpr bool needsCarouselCoverThumbnail(const uint8_t homeLayout) {
+    return homeLayout == HOME_LAYOUT_STYLE_4;
+  }
+  // Home style 1 has no cover surface of its own. Only an open from a
+  // coverless launcher may skip cache generation, and only when the library
+  // itself is configured as a list. If the library displays covers, opening
+  // from Home must prepare both shared and carousel thumbnails.
+  static constexpr bool skipReaderCoverCacheBuild(const uint8_t homeLayout, const uint8_t libraryView,
+                                                  const bool openedFromCoverlessSurface) {
+    return openedFromCoverlessSurface && homeLayout == HOME_LAYOUT_STYLE_1 && libraryView == LIBRARY_LIST;
+  }
+  // The 4x3 value is retained only so older settings can be decoded.  New
+  // firmware exposes one shared 3x2 cover layout for both library tabs.
+  enum LIBRARY_GRID { LIBRARY_GRID_3X2 = 0, LIBRARY_GRID_4X3 = 1, LIBRARY_GRID_COUNT = 1 };
 
   // Hide battery percentage
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
@@ -168,13 +293,13 @@ class CrossPointSettings {
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 
-  // UI Theme
-  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3 };
-
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
-  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_NVERTED = 2, TILT_PAGE_TURN_COUNT };
+  // The UI is now a simple off/on switch. Value 2 remains reserved for
+  // settings files written by older firmware and keeps their inverted
+  // direction working at runtime.
+  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_ON = 1, TILT_LEGACY_LEFT_NEXT = 2, TILT_PAGE_TURN_COUNT };
 
   enum QUICK_RESUME_SLEEP_SCREEN {
     QUICK_RESUME_NEVER = 0,
@@ -183,7 +308,7 @@ class CrossPointSettings {
   };
 
   // Sleep screen settings
-  uint8_t sleepScreen = DARK;
+  uint8_t sleepScreen = LIGHT;
   // Sleep screen cover mode settings
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
@@ -199,6 +324,9 @@ class CrossPointSettings {
   uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
   // Clock display in status bar (X3 only, requires DS3231 RTC)
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
+  // Clock display in headers outside the reader (X3 only, requires DS3231 RTC).
+  // Uses the same hide/right/left values as statusBarClock.
+  uint8_t outsideReaderClock = STATUS_BAR_CLOCK_HIDE;
   // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
   // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
   // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
@@ -210,9 +338,19 @@ class CrossPointSettings {
   uint8_t clockHasBeenSynced = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
+  uint8_t forceParagraphIndents = 0;
   uint8_t textAntiAliasing = 1;
+  // Reader-only inverse page mode. Menus and the rest of the UI stay light.
+  uint8_t readerDarkMode = 0;
+  // Global glyph weight adjustment for 2-bit anti-aliased reader text only.
+  uint8_t textDarkness = TEXT_DARKNESS_NORMAL;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
+  // Optional global double-click action for the power button.
+  uint8_t doublePowerAction = DOUBLE_POWER_DISABLED;
+  // Optional reader shortcut invoked by a double-click while a reader is visible.
+  // Uses the same persisted indices as longPressMenuFunction.
+  uint8_t doublePowerReadingFunction = LP_MENU_DISABLED;
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
@@ -231,6 +369,11 @@ class CrossPointSettings {
   uint8_t fontSize = MEDIUM;
   uint8_t lineSpacing = NORMAL;
   uint8_t paragraphAlignment = JUSTIFIED;
+  // EPUB render mode and Safe Mode are transient per-book overlays. They are
+  // persisted only by PerBookReaderSettings, never in global settings.json.
+  uint8_t epubRenderMode = static_cast<uint8_t>(EpubRenderMode::Balanced);
+  uint8_t epubRenderModeOverride = 0;
+  uint8_t epubSafeMode = 0;
   // Auto-sleep timeout setting (default 10 minutes). Legacy sleepTimeout enum values are migration-only.
   uint8_t sleepTimeoutMinutes = 10;
   // E-ink refresh frequency (default 15 pages)
@@ -249,13 +392,25 @@ class CrossPointSettings {
   uint8_t opdsFilenameFormat = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
+  // "Your Books" display preferences are shared by Recent and All.  The old
+  // per-tab fields are intentionally not retained: JsonSettingsIO migrates
+  // their values into these two fields before the next save.
+  uint8_t libraryView = LIBRARY_LIST;
+  uint8_t libraryGrid = LIBRARY_GRID_3X2;
+  uint8_t librarySort = LIBRARY_SORT_DATE_ADDED_DESC;
+  // Hide plain-text books from the Your Books library (enabled by default).
+  uint8_t hideTxtBooks = 1;
+  uint8_t homeLayout = HOME_LAYOUT_STYLE_1;
   // Long-press page turn button behavior
   uint8_t longPressButtonBehavior = OFF;
-  // Long-press Confirm function in EPUB reader (cycles through LONG_PRESS_MENU_FUNCTION values).
+  // Long-press Confirm function while reading (cycles through LONG_PRESS_MENU_FUNCTION values).
   // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
   uint8_t longPressMenuFunction = LP_MENU_DISABLED;
-  // UI Theme
-  uint8_t uiTheme = LYRA;
+  // Local display name shown by the CrossVi Home theme. It does not change
+  // protocol identities or Nearby Sync device binding.
+  char deviceDisplayName[64] = "";
+  // Show the local device name in the Home header.
+  uint8_t showDeviceNameOnHome = 1;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // Power button return from footnotes (1 = enabled, 0 = disabled)
@@ -265,7 +420,8 @@ class CrossPointSettings {
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t focusReadingEnabled = 0;
   // SD card font family name (empty = use built-in fontFamily)
-  char sdFontFamilyName[32] = "";
+  static constexpr size_t SD_FONT_FAMILY_NAME_CAPACITY = 32;
+  char sdFontFamilyName[SD_FONT_FAMILY_NAME_CAPACITY] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
@@ -278,6 +434,9 @@ class CrossPointSettings {
   uint8_t backShortToFileBrowser = 0;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
+  // Skip EPUB pages that contain only the declared cover image while reading.
+  // This is global because it changes reader navigation, not typography.
+  uint8_t skipEpubCoverPage = 1;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
   // Language setting (Language enum index, default 0 = EN)
@@ -293,7 +452,6 @@ class CrossPointSettings {
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
   static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;
-
   // Callback to resolve SD card font IDs. Set by SdCardFontSystem::begin().
   // Returns font ID or 0 if not found.
   using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t fontSize);
@@ -310,6 +468,8 @@ class CrossPointSettings {
 
   bool saveToFile() const;
   bool loadFromFile();
+  void markReadOnlyForRecovery() { persistenceWritable = false; }
+  bool isPersistenceWritable() const { return persistenceWritable; }
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
   static uint8_t sleepTimeoutEnumToMinutes(uint8_t legacyValue);
@@ -323,6 +483,35 @@ class CrossPointSettings {
   unsigned long getSleepTimeoutMs() const;
   int getRefreshFrequency() const;
 };
+
+static_assert(CrossPointSettings::canonicalHomeLayout(2, 0) == CrossPointSettings::HOME_LAYOUT_STYLE_4);
+static_assert(CrossPointSettings::canonicalHomeLayout(2, CrossPointSettings::HOME_LAYOUT_VERSION) ==
+              CrossPointSettings::HOME_LAYOUT_STYLE_3);
+static_assert(CrossPointSettings::canonicalHomeLayout(3, CrossPointSettings::HOME_LAYOUT_VERSION) ==
+              CrossPointSettings::HOME_LAYOUT_STYLE_4);
+static_assert(CrossPointSettings::canonicalHomeLayout(99, CrossPointSettings::HOME_LAYOUT_VERSION) ==
+              CrossPointSettings::HOME_LAYOUT_STYLE_2);
+static_assert(!CrossPointSettings::needsSharedCoverThumbnail(CrossPointSettings::HOME_LAYOUT_STYLE_1,
+                                                             CrossPointSettings::LIBRARY_LIST));
+static_assert(CrossPointSettings::needsSharedCoverThumbnail(CrossPointSettings::HOME_LAYOUT_STYLE_1,
+                                                            CrossPointSettings::LIBRARY_COVERS));
+static_assert(CrossPointSettings::needsSharedCoverThumbnail(CrossPointSettings::HOME_LAYOUT_STYLE_2,
+                                                            CrossPointSettings::LIBRARY_LIST));
+static_assert(CrossPointSettings::needsSharedCoverThumbnail(CrossPointSettings::HOME_LAYOUT_STYLE_3,
+                                                            CrossPointSettings::LIBRARY_LIST));
+static_assert(CrossPointSettings::needsSharedCoverThumbnail(CrossPointSettings::HOME_LAYOUT_STYLE_4,
+                                                            CrossPointSettings::LIBRARY_LIST));
+static_assert(CrossPointSettings::needsCarouselCoverThumbnail(CrossPointSettings::HOME_LAYOUT_STYLE_4));
+static_assert(CrossPointSettings::skipReaderCoverCacheBuild(CrossPointSettings::HOME_LAYOUT_STYLE_1,
+                                                            CrossPointSettings::LIBRARY_LIST, true));
+static_assert(!CrossPointSettings::skipReaderCoverCacheBuild(CrossPointSettings::HOME_LAYOUT_STYLE_1,
+                                                             CrossPointSettings::LIBRARY_COVERS, true));
+static_assert(!CrossPointSettings::skipReaderCoverCacheBuild(CrossPointSettings::HOME_LAYOUT_STYLE_1,
+                                                             CrossPointSettings::LIBRARY_LIST, false));
+static_assert(!CrossPointSettings::skipReaderCoverCacheBuild(CrossPointSettings::HOME_LAYOUT_STYLE_2,
+                                                             CrossPointSettings::LIBRARY_LIST, true));
+static_assert(!CrossPointSettings::skipReaderCoverCacheBuild(CrossPointSettings::HOME_LAYOUT_STYLE_4,
+                                                             CrossPointSettings::LIBRARY_LIST, true));
 
 // Helper macro to access settings
 #define SETTINGS CrossPointSettings::getInstance()

@@ -3,6 +3,8 @@
 #include <vector>
 
 #include "./FileBrowserActivity.h"
+#include "HomeBookSummary.h"
+#include "HomeMenuMapping.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
@@ -12,12 +14,14 @@ struct Rect;
 class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
-  bool recentsLoading = false;
-  bool recentsLoaded = false;
+  int carouselBookIndex = 0;
   bool firstRenderDone = false;
+  bool mediaAvailable = false;
   bool hasOpdsServers = false;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
+  bool coverPreparationAttempted = false;
+  uint32_t coverPreparationLastInputAt = 0;
   // Home can be entered while Back is still held (e.g. leaving Settings with
   // Back): ignore that stale release until a fresh press is seen here.
   bool backPressSeen = false;
@@ -31,46 +35,35 @@ class HomeActivity final : public Activity {
   int coverRectW = 0;
   int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
+  HomeBookSummary bookSummary;
   const HomeMenuItem initialMenuItem;
 
-  // Convert HomeMenuItem to menu index (used in onEnter)
-  static int menuItemToIndex(HomeMenuItem item, bool hasOpdsUrl) {
-    int i = 0;
-    if (item == HomeMenuItem::FILE_BROWSER) return i;
-    ++i;
-    if (item == HomeMenuItem::RECENTS) return i;
-    ++i;
-    if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
-    if (hasOpdsUrl) ++i;
-    if (item == HomeMenuItem::FILE_TRANSFER) return i;
-    ++i;
-    if (item == HomeMenuItem::SETTINGS_MENU) return i;
-    return 0;
-  }
-
   // Convert menu index to HomeMenuItem (used in loop)
-  static HomeMenuItem indexToMenuItem(int idx, bool hasOpdsUrl) {
-    int i = 0;
-    if (idx == i++) return HomeMenuItem::FILE_BROWSER;
-    if (idx == i++) return HomeMenuItem::RECENTS;
-    if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
-    if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
-    if (idx == i) return HomeMenuItem::SETTINGS_MENU;
-    return HomeMenuItem::NONE;
+  static HomeMenuItem indexToMenuItem(int idx, bool hasOpdsUrl, bool hasReadingStats) {
+    return HomeMenuMapping::actionAt(idx, hasOpdsUrl, hasReadingStats);
   }
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
-  void onRecentsOpen();
+  void onYourBooksOpen();
+  void onSavedItemsOpen();
   void onSettingsOpen();
   void onFileTransferOpen();
   void onOpdsBrowserOpen();
+  void onReadingStatsOpen();
+  bool hasReadingStatsShortcut() const;
+  bool loadRecentNonEpubReadingStats();
 
   int getMenuItemCount() const;
+  bool usesRecentListLayout() const;
+  bool usesTripleCoverLayout() const;
+  bool usesCarouselLayout() const;
+  bool usesMultiBookCoverLayout() const;
+  void selectHomeItem(int index);
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer
   void loadRecentBooks(int maxBooks);
-  void loadRecentCovers(int coverHeight);
+  void loadBookSummary();
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -80,4 +73,5 @@ class HomeActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool handleGlobalShortcut(GlobalShortcut shortcut) override { return handleSafeGlobalShortcut(shortcut); }
 };

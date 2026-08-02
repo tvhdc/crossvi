@@ -18,6 +18,11 @@ void utf8TruncateChars(std::string& str, size_t numChars);
 // stored in NFD (e.g. some EPUB chapter titles) otherwise renders broken.
 std::string utf8ComposeNfc(const std::string& in);
 
+// Dictionary lookup helpers for non-Latin scripts. They use compact range
+// checks instead of a Unicode-category dependency.
+bool utf8ContainsLookupCharacter(const std::string& text);
+std::string utf8CleanLookupWord(const std::string& text);
+
 // Truncate a raw char buffer to the last complete UTF-8 codepoint boundary.
 // Returns the new length (<= len). If the buffer ends mid-sequence, the
 // incomplete trailing bytes are excluded.

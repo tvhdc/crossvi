@@ -1,9 +1,12 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <functional>
 #include <vector>
 
 #include "MappedInputManager.h"
+#include "util/PressReleaseLatch.h"
 
 class ButtonNavigator final {
   using Callback = std::function<void()>;
@@ -12,9 +15,12 @@ class ButtonNavigator final {
   const uint16_t continuousStartMs;
   const uint16_t continuousIntervalMs;
   uint32_t lastContinuousNavTime = 0;
+  static constexpr size_t BUTTON_COUNT = static_cast<size_t>(MappedInputManager::Button::NavPrevious) + 1;
+  std::array<PressReleaseLatch, BUTTON_COUNT> pressLatches{};
   static const MappedInputManager* mappedInput;
 
-  [[nodiscard]] bool shouldNavigateContinuously() const;
+  [[nodiscard]] bool shouldNavigateContinuously(MappedInputManager::Button button) const;
+  PressReleaseLatch& latch(MappedInputManager::Button button) { return pressLatches[static_cast<size_t>(button)]; }
 
  public:
   explicit ButtonNavigator(const uint16_t continuousIntervalMs = 500, const uint16_t continuousStartMs = 500)

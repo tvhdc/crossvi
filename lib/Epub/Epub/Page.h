@@ -10,6 +10,8 @@
 #include "blocks/ImageBlock.h"
 #include "blocks/TextBlock.h"
 
+class BoundedFileReader;
+
 enum PageElementTag : uint8_t {
   TAG_PageLine = 1,
   TAG_PageImage = 2,
@@ -39,7 +41,7 @@ class PageLine final : public PageElement {
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageLine; }
-  static std::unique_ptr<PageLine> deserialize(HalFile& file);
+  static std::unique_ptr<PageLine> deserialize(BoundedFileReader& reader);
 };
 
 // New PageImage class
@@ -53,7 +55,7 @@ class PageImage final : public PageElement {
   void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset) const;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
-  static std::unique_ptr<PageImage> deserialize(HalFile& file);
+  static std::unique_ptr<PageImage> deserialize(BoundedFileReader& reader);
   const ImageBlock& getImageBlock() const { return *imageBlock; }
 };
 
@@ -68,7 +70,7 @@ class PageHorizontalRule final : public PageElement {
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageHorizontalRule; }
-  static std::unique_ptr<PageHorizontalRule> deserialize(HalFile& file);
+  static std::unique_ptr<PageHorizontalRule> deserialize(BoundedFileReader& reader);
 };
 
 class Page {
@@ -92,7 +94,7 @@ class Page {
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   bool serialize(HalFile& file) const;
-  static std::unique_ptr<Page> deserialize(HalFile& file);
+  static std::unique_ptr<Page> deserialize(BoundedFileReader& reader);
 
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {
@@ -105,6 +107,23 @@ class Page {
       return element->getTag() == TAG_PageImage &&
              static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
     });
+  }
+
+  // Used only for the optional EPUB opening-page skip. A page with no text,
+  // rule or footnote and one image is safe to classify from serialized
+  // metadata, before any image is extracted or decoded.
+  bool isImageOnly() const { return footnotes.empty() && elements.size() == 1 && hasImages(); }
+
+  // A strict cover-only page has no text/rule or second image. The source href
+  // is normalized by ChapterHtmlSlimParser and compared with OPF metadata, so
+  // ambiguous or malformed EPUBs fail open and keep their page visible.
+  bool isCoverOnly(const std::string& coverHref) const {
+    if (coverHref.empty() || !footnotes.empty() || elements.size() != 1 ||
+        elements.front()->getTag() != TAG_PageImage) {
+      return false;
+    }
+    const auto& image = static_cast<const PageImage&>(*elements.front()).getImageBlock();
+    return image.getSourcePath() == coverHref;
   }
 
   // Get bounding box of all images on the page (union of image rects)

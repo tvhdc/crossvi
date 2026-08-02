@@ -6,18 +6,48 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "GfxRenderer.h"
+#include "GlobalShortcut.h"
 #include "MappedInputManager.h"
+#include "home/HomeMenuMapping.h"
 #include "util/ScreenshotInfo.h"
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
+struct ClippingJumpResult;
+struct SavedBookmarkJumpResult;
 
-enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
+// Keep coverless opening surfaces explicit instead of inferring them from
+// return state or settings.
+enum class ReaderOpenOrigin : uint8_t {
+  Default,
+  HomeRecent,
+  SavedItems,
+};
+
+// Small, bounded state used to restore the library entry point after a reader
+// replaces the activity that opened it. It contains no catalog or cover data.
+struct YourBooksReturnState {
+  uint8_t tab = 0;
+  size_t selectedIndex = 0;
+  std::string selectedPath;
+  std::string searchQuery;
+};
+
+// Bounded state used when a reader was opened from the device-wide saved-items
+// list.  The reader replaces that activity, so keep only enough information to
+// restore the selected book after Back; never retain catalog or cover data.
+struct SavedClippingsReturnState {
+  size_t selectedIndex = 0;
+  std::string selectedPath;
+};
 
 /**
  * ActivityManager
@@ -30,7 +60,7 @@ enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSF
  * wifi network, and get back the selected network when the user is done.
  *
  * Main differences from Android's ActivityManager:
- * - No onPause/onResume, since we don't have a concept of background activities
+ * - onPause/onResume only bracket a child activity; there are no concurrently running background activities
  * - onActivityResult is implemented via a callback instead of a separate method, for simplicity
  */
 class ActivityManager {
@@ -57,6 +87,7 @@ class ActivityManager {
   // Set by requestUpdateAndWait(); read and cleared by the render task after render completes.
   // Note: only one waiting task is supported at a time
   TaskHandle_t waitingTaskHandle = nullptr;
+  uint32_t waitingRenderGeneration = 0;
 
   // Mutex to protect rendering operations from race conditions
   // Must only be used via RenderLock
@@ -65,6 +96,14 @@ class ActivityManager {
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
   std::atomic<bool> requestedUpdate{false};
+  // Incremented only after render() (including the blocking panel refresh)
+  // returns. Tilt page turning uses this acknowledgement so a second gesture
+  // cannot be accepted merely because the render task has not taken its mutex
+  // yet.
+  std::atomic<uint32_t> completedRenderGeneration{0};
+  std::atomic<uint32_t> requestedRenderGeneration{0};
+  std::optional<YourBooksReturnState> yourBooksReturnState;
+  std::optional<SavedClippingsReturnState> savedClippingsReturnState;
 
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -84,14 +123,27 @@ class ActivityManager {
   void goToFileTransfer();
   void goToSettings();
   void goToFileBrowser(std::string path = {});
-  void goToRecentBooks();
+  void goToYourBooks(std::optional<YourBooksReturnState> returnState = std::nullopt);
+  void goToSavedClippings(std::optional<SavedClippingsReturnState> returnState = std::nullopt);
   void goToBrowser();
-  void goToReader(std::string path);
+  void goToReader(std::string path, bool allowFastInitialRefresh = false,
+                  ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
+  void goToReader(std::string path, ClippingJumpResult clippingJump,
+                  ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
+  void goToReader(std::string path, SavedBookmarkJumpResult bookmarkJump,
+                  ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
   void goToSleep(bool fromTimeout = false);
-  void goToBoot();
+  void goToBoot(bool minimalWakeScreen = false);
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE);
+
+  void captureYourBooksReturnContext(uint8_t tab, size_t selectedIndex, std::string selectedPath,
+                                     std::string searchQuery = {});
+  void captureSavedClippingsReturnContext(size_t selectedIndex, std::string selectedPath);
+  bool hasYourBooksReturnContext() const { return yourBooksReturnState.has_value(); }
+  bool hasSavedClippingsReturnContext() const { return savedClippingsReturnState.has_value(); }
+  void returnFromReaderOrHome();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);
@@ -101,7 +153,15 @@ class ActivityManager {
   void popActivity();
 
   bool preventAutoSleep() const;
+  bool handleGlobalShortcut(GlobalShortcut shortcut);
+  bool handleReaderShortcut(uint8_t function);
+  // Called only by an Activity that explicitly opts into global navigation.
+  bool handleSafeGlobalShortcut(GlobalShortcut shortcut);
+  // True only when the currently visible activity is a page-turn reader.
+  // A paused reader below a modal does not qualify.
   bool isReaderActivity() const;
+  uint32_t getCompletedRenderGeneration() const { return completedRenderGeneration.load(std::memory_order_acquire); }
+  bool handleForcedRefresh();
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;
 

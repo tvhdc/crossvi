@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Settings - CrossPoint Reader</title>
+  <title>Settings - CrossVi</title>
   <style>
     :root {
       --font-color: #333;
@@ -41,6 +41,33 @@
       color: var(--title-color);
       border-bottom: 2px solid var(--accent-color);
       padding-bottom: 10px;
+    }
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .site-header h1 { margin: 0; border-bottom: 0; padding-bottom: 0; }
+    .site-subtitle { margin: 4px 0 0; color: var(--label-color); font-size: 0.86em; }
+    .language-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--label-color);
+      font-size: 0.86em;
+      white-space: nowrap;
+    }
+    .language-picker select { border: 0; background: transparent; color: var(--font-color); font: inherit; color-scheme: light; }
+    .language-picker select option { color: #1f2937; background: #fff; }
+    @media (max-width: 600px) {
+      .site-header { align-items: flex-start; flex-direction: column; }
+      .language-picker { align-self: flex-end; }
     }
     h2 {
       color: var(--title-color);
@@ -276,16 +303,47 @@
         width: unset;
       }
     }
+    /* Shared Web UI chrome: quiet paper surfaces, one compact navigation. */
+    body { max-width: 960px; padding: 20px; }
+    h1 { font-size: 1.65rem; letter-spacing: -.02em; border-bottom: 0; padding-bottom: 0; }
+    .site-header { gap: 12px; margin-bottom: 10px; }
+    .site-subtitle { font-size: .88em; }
+    .language-picker { border-radius: 6px; }
+    .card { border: 1px solid var(--border-color); box-shadow: none; border-radius: 6px; padding: 16px; margin: 12px 0; }
+    .nav-links { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 12px 0 16px; gap: 6px; }
+    .nav-links a { box-sizing: border-box; min-height: 38px; display: grid; place-items: center; border: 1px solid var(--border-color); background: var(--card-bg); padding: 8px; text-align: center; }
+    .nav-links a.active { border-color: var(--accent-color); background: var(--accent-color); color: white; }
+    @media (max-width: 600px) {
+        body { padding: 12px; font-size: 14px; }
+      .site-header { align-items: flex-start; flex-direction: column; gap: 6px; }
+      .language-picker { align-self: flex-end; margin-top: -2px; }
+      h1 { font-size: 1.45rem; }
+      .card { padding: 14px; }
+      .nav-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .nav-links a { font-size: .92em; }
+    }
   </style>
 </head>
 <body>
-  <h1>📚 CrossPoint Reader</h1>
+  <header class="site-header">
+    <div>
+      <h1 data-i18n="brand">📚 CrossVi</h1>
+      <p class="site-subtitle" data-i18n="subtitle">Reader tools for Xteink X3/X4</p>
+    </div>
+    <label class="language-picker" for="webLanguage">
+      <span data-i18n="language">Language</span>
+      <select id="webLanguage" onchange="setWebLanguage(this.value)">
+        <option value="en">English</option>
+        <option value="vi">Tiếng Việt</option>
+      </select>
+    </label>
+  </header>
 
   <div class="nav-links">
-    <a href="/">Home</a>
-    <a href="/files">File Manager</a>
-    <a href="/settings" class="active">Settings</a>
-    <a href="/fonts">Fonts</a>
+    <a href="/" data-i18n="home">Home</a>
+    <a href="/files" data-i18n="fileManager">File Manager</a>
+    <a href="/settings" class="active" data-i18n="settings">Settings</a>
+    <a href="/fonts" data-i18n="fonts">Fonts</a>
   </div>
 
   <div id="message" class="message"></div>
@@ -297,7 +355,7 @@
   </div>
 
   <div class="save-container" id="save-container" style="display:none;">
-    <button class="save-btn" id="saveBtn" onclick="saveSettings()">Save Settings</button>
+    <button class="save-btn" id="saveBtn" onclick="saveSettings()" data-i18n="saveSettings">Save Settings</button>
   </div>
 
   <div id="wifi-container"></div>
@@ -305,18 +363,64 @@
 
   <div class="card">
     <p style="text-align: center; color: #95a5a6; margin: 0;">
-      CrossPoint E-Reader • Open Source
+      CrossVi • Open Source
     </p>
   </div>
 
 <script>
+  const WEB_LANGUAGE_KEY = 'crossvi.webLanguage';
+  const WEB_TEXT = {
+    en: { language: 'Language', brand: '📚 CrossVi', subtitle: 'Reader tools for Xteink X3/X4', home: 'Home',
+      fileManager: 'File Manager', settings: 'Settings', fonts: 'Fonts', saveSettings: 'Save Settings',
+      saving: 'Saving...', loadingSettings: 'Failed to load settings', noChanges: 'No changes to save.',
+      saved: 'Settings saved successfully!', wifiNetworks: 'Wi-Fi Networks', noWifi: 'No Wi-Fi networks saved',
+      addNetwork: '+ Add Network', save: 'Save', delete: 'Delete', password: 'Password', lastConnected: 'Last connected network',
+      ssidRequired: 'SSID is required.', wifiSaved: 'Wi-Fi network saved!', wifiDeleted: 'Wi-Fi network deleted',
+      deleteWifi: 'Delete this Wi-Fi network?', opdsServers: 'OPDS Servers', noOpds: 'No OPDS servers configured',
+      addServer: '+ Add Server', serverName: 'Server Name', username: 'Username', url: 'URL', unchanged: '(unchanged)',
+      deleteOpds: 'Delete this OPDS server?', opdsSaved: 'OPDS server saved!', opdsDeleted: 'OPDS server deleted',
+      errorPrefix: 'Error: ' },
+    vi: { language: 'Ngôn ngữ', brand: '📚 CrossVi', subtitle: 'Công cụ đọc sách cho Xteink X3/X4', home: 'Trang chủ',
+      fileManager: 'Truyền tệp', settings: 'Cài đặt', fonts: 'Phông chữ', saveSettings: 'Lưu cài đặt',
+      saving: 'Đang lưu...', loadingSettings: 'Không thể tải cài đặt', noChanges: 'Không có thay đổi để lưu.',
+      saved: 'Đã lưu cài đặt!', wifiNetworks: 'Mạng Wi-Fi', noWifi: 'Chưa có mạng Wi-Fi đã lưu',
+      addNetwork: '+ Thêm mạng', save: 'Lưu', delete: 'Xóa', password: 'Mật khẩu', lastConnected: 'Mạng kết nối gần nhất',
+      ssidRequired: 'Cần nhập SSID.', wifiSaved: 'Đã lưu mạng Wi-Fi!', wifiDeleted: 'Đã xóa mạng Wi-Fi',
+      deleteWifi: 'Xóa mạng Wi-Fi này?', opdsServers: 'Máy chủ OPDS', noOpds: 'Chưa cấu hình máy chủ OPDS',
+      addServer: '+ Thêm máy chủ', serverName: 'Tên máy chủ', username: 'Tên người dùng', url: 'URL', unchanged: '(giữ nguyên)',
+      deleteOpds: 'Xóa máy chủ OPDS này?', opdsSaved: 'Đã lưu máy chủ OPDS!', opdsDeleted: 'Đã xóa máy chủ OPDS',
+      errorPrefix: 'Lỗi: ' }
+  };
+  let webLanguage = 'en';
+  function webText(key) { return (WEB_TEXT[webLanguage] && WEB_TEXT[webLanguage][key]) || WEB_TEXT.en[key] || key; }
+  function applyWebLanguage(language, persist = true) {
+    webLanguage = language === 'vi' ? 'vi' : 'en';
+    if (persist) localStorage.setItem(WEB_LANGUAGE_KEY, webLanguage);
+    document.documentElement.lang = webLanguage;
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const value = webText(el.dataset.i18n);
+      if (value) el.textContent = value;
+    });
+    const select = document.getElementById('webLanguage');
+    if (select) select.value = webLanguage;
+  }
+  function setWebLanguage(language) {
+    applyWebLanguage(language, true);
+    if (typeof renderWifiSection === 'function') renderWifiSection();
+    if (typeof renderOpdsSection === 'function') renderOpdsSection();
+    if (typeof loadSettings === 'function') loadSettings();
+  }
+  const savedWebLanguage = localStorage.getItem(WEB_LANGUAGE_KEY);
+  if (savedWebLanguage) applyWebLanguage(savedWebLanguage, false);
+  else fetch('/api/status').then(response => response.ok ? response.json() : null)
+    .then(data => {
+      applyWebLanguage(data && data.language === 'VI' ? 'vi' : 'en', false);
+      if (typeof loadSettings === 'function') loadSettings();
+    })
+    .catch(() => { if (typeof loadSettings === 'function') loadSettings(); });
+
   let allSettings = [];
   let originalValues = {};
-  let preserveQuickResumeTimeoutOn = false;
-  let quickResumeTimeoutAutoEnabled = false;
-  const SLEEP_SCREEN_MODE = {
-    QUICK_RESUME: 6
-  };
 
   function escapeHtml(unsafe) {
     return unsafe
@@ -416,69 +520,6 @@
     return el.value;
   }
 
-  function setControlValue(key, value) {
-    const setting = findSetting(key);
-    const el = getControl(key);
-    if (!setting || !el) return false;
-
-    if (setting.type === 'toggle') {
-      const checked = !!value;
-      if (el.checked === checked) return false;
-      el.checked = checked;
-      return true;
-    }
-
-    const nextValue = String(value);
-    if (el.value === nextValue) return false;
-    el.value = nextValue;
-    return true;
-  }
-
-  function isQuickResumeSleepScreenSelected() {
-    const sleepScreen = findSetting('sleepScreen');
-    const sleepScreenValue = getControlValue('sleepScreen');
-    if (!sleepScreen || sleepScreenValue === undefined || !Number.isFinite(sleepScreenValue)) return false;
-
-    let selectedValue = sleepScreenValue;
-    if (Array.isArray(sleepScreen.values)) {
-      selectedValue = Number(sleepScreen.values[sleepScreenValue]);
-    } else if (Array.isArray(sleepScreen.options)) {
-      const selectedOption = sleepScreen.options[sleepScreenValue];
-      if (selectedOption && typeof selectedOption === 'object' && 'value' in selectedOption) {
-        selectedValue = Number(selectedOption.value);
-      }
-    }
-
-    return selectedValue === SLEEP_SCREEN_MODE.QUICK_RESUME;
-  }
-
-  function syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged) {
-    const timeoutValue = getControlValue('quickResumeSleepScreen');
-    if (timeoutValue === undefined) return false;
-
-    let changed = false;
-    if (quickResumeTimeoutChanged) {
-      preserveQuickResumeTimeoutOn = timeoutValue === 1;
-      quickResumeTimeoutAutoEnabled = false;
-    }
-
-    if (isQuickResumeSleepScreenSelected()) {
-      if (timeoutValue !== 1) {
-        changed = setControlValue('quickResumeSleepScreen', 1);
-        quickResumeTimeoutAutoEnabled = !preserveQuickResumeTimeoutOn;
-      } else if (sleepScreenChanged && !preserveQuickResumeTimeoutOn) {
-        quickResumeTimeoutAutoEnabled = true;
-      }
-      return changed;
-    }
-
-    if (sleepScreenChanged && quickResumeTimeoutAutoEnabled && !preserveQuickResumeTimeoutOn) {
-      changed = setControlValue('quickResumeSleepScreen', 0);
-      quickResumeTimeoutAutoEnabled = false;
-    }
-    return changed;
-  }
-
   function updateSettingsVisibility() {
     const shortPwrBtnVal = getControlValue('shortPwrBtn');
     const pwrBtnFootnoteBackRow = document.getElementById('row-setting-pwrBtnFootnoteBack');
@@ -489,11 +530,39 @@
         pwrBtnFootnoteBackRow.style.display = 'none';
       }
     }
+
+    const quickResume = getControlValue('quickResumeSleepScreen') === 1;
+    const sleepScreen = getControlValue('sleepScreen');
+    const sleepScreenRow = document.getElementById('row-setting-sleepScreen');
+    const coverModeRow = document.getElementById('row-setting-sleepScreenCoverMode');
+    const coverFilterRow = document.getElementById('row-setting-sleepScreenCoverFilter');
+    if (sleepScreenRow) sleepScreenRow.style.display = quickResume ? 'none' : '';
+    const showCoverOptions = !quickResume && sleepScreen === 1;
+    if (coverModeRow) coverModeRow.style.display = showCoverOptions ? '' : 'none';
+    if (coverFilterRow) coverFilterRow.style.display = showCoverOptions ? '' : 'none';
+
+    const textDarknessRow = document.getElementById('row-setting-textDarkness');
+    if (textDarknessRow) {
+      const showTextDarkness = getControlValue('textAntiAliasing') === 1 &&
+        getControlValue('readerDarkMode') !== 1;
+      textDarknessRow.style.display = showTextDarkness ? '' : 'none';
+    }
+
+    const paragraphAlignment = getControl('paragraphAlignment');
+    if (paragraphAlignment && paragraphAlignment.options.length > 4) {
+      const bookAlignment = paragraphAlignment.options[4];
+      const embeddedStyleEnabled = getControlValue('embeddedStyle') === 1;
+      bookAlignment.disabled = !embeddedStyleEnabled;
+      // Keep a currently selected legacy value visible until the user chooses
+      // another alignment; otherwise hide the inapplicable option entirely.
+      bookAlignment.hidden = !embeddedStyleEnabled && paragraphAlignment.value !== '4';
+    }
   }
 
   function handleSettingChanged(key) {
-    syncQuickResumeTimeoutForSleepScreen(key === 'sleepScreen', key === 'quickResumeSleepScreen');
-    if (key === 'shortPwrBtn') {
+    if (key === 'shortPwrBtn' || key === 'sleepScreen' || key === 'quickResumeSleepScreen' ||
+        key === 'textAntiAliasing' || key === 'readerDarkMode' || key === 'embeddedStyle' ||
+        key === 'paragraphAlignment') {
       updateSettingsVisibility();
     }
     markChanged();
@@ -501,7 +570,7 @@
 
   async function loadSettings() {
     try {
-      const response = await fetch('/api/settings');
+      const response = await fetch('/api/settings?lang=' + encodeURIComponent(webLanguage));
       if (!response.ok) {
         throw new Error('Failed to load settings: ' + response.status);
       }
@@ -538,22 +607,17 @@
       updateSettingsVisibility();
       document.getElementById('save-container').style.display = '';
       document.getElementById('saveBtn').disabled = true;
-      preserveQuickResumeTimeoutOn = getControlValue('quickResumeSleepScreen') === 1;
-      quickResumeTimeoutAutoEnabled = false;
-      if (syncQuickResumeTimeoutForSleepScreen(true, false)) {
-        markChanged();
-      }
     } catch (e) {
       console.error(e);
       document.getElementById('settings-container').innerHTML =
-        '<div class="card"><p style="text-align:center;color:#e74c3c;">Failed to load settings</p></div>';
+        '<div class="card"><p style="text-align:center;color:#e74c3c;">' + webText('loadingSettings') + '</p></div>';
     }
   }
 
   async function saveSettings() {
     const btn = document.getElementById('saveBtn');
     btn.disabled = true;
-    btn.textContent = 'Saving...';
+    btn.textContent = webText('saving');
 
     // Collect only changed values
     const changes = {};
@@ -565,8 +629,8 @@
     });
 
     if (Object.keys(changes).length === 0) {
-      showMessage('No changes to save.', false);
-      btn.textContent = 'Save Settings';
+      showMessage(webText('noChanges'), false);
+      btn.textContent = webText('saveSettings');
       return;
     }
 
@@ -587,16 +651,16 @@
         originalValues[key] = changes[key];
       }
 
-      showMessage('Settings saved successfully!', false);
+      showMessage(webText('saved'), false);
     } catch (e) {
       console.error(e);
       showMessage('Error: ' + e.message, true);
     }
 
-    btn.textContent = 'Save Settings';
+    btn.textContent = webText('saveSettings');
   }
 
-  loadSettings();
+  if (savedWebLanguage) loadSettings();
 
   // --- Wi-Fi Network Management ---
   // Renders an editable list of saved Wi-Fi networks using /api/wifi endpoints.
@@ -608,7 +672,7 @@
     const isNew = idx === -1;
     const id = isNew ? 'new' : idx;
     const lastConnected = net.isLastConnected
-      ? '<div style="margin-top:8px;color:var(--label-color);font-size:0.9em;">Last connected network</div>'
+      ? '<div style="margin-top:8px;color:var(--label-color);font-size:0.9em;">' + webText('lastConnected') + '</div>'
       : '';
 
     return '<div class="opds-server" id="wifi-' + id + '">' +
@@ -617,23 +681,23 @@
         '<span class="setting-control"><input type="text" id="wifi-ssid-' + id + '" value="' + escapeHtml(net.ssid || '') + '"></span>' +
       '</div>' +
       '<div class="setting-row">' +
-        '<span class="setting-name">Password</span>' +
-        '<span class="setting-control"><input type="password" id="wifi-pass-' + id + '" placeholder="' + (net.hasPassword ? '(unchanged)' : '') + '"></span>' +
+        '<span class="setting-name">' + webText('password') + '</span>' +
+        '<span class="setting-control"><input type="password" id="wifi-pass-' + id + '" placeholder="' + (net.hasPassword ? webText('unchanged') : '') + '"></span>' +
       '</div>' +
       lastConnected +
       '<div class="opds-actions">' +
-        '<button class="btn-small btn-save-server" onclick="saveWifiNetwork(' + idx + ')">Save</button>' +
-        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteWifiNetwork(' + idx + ')">Delete</button>') +
+        '<button class="btn-small btn-save-server" onclick="saveWifiNetwork(' + idx + ')">' + webText('save') + '</button>' +
+        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteWifiNetwork(' + idx + ')">' + webText('delete') + '</button>') +
       '</div>' +
     '</div>';
   }
 
   function renderWifiSection() {
     const container = document.getElementById('wifi-container');
-    let html = '<div class="card"><h2>Wi-Fi Networks</h2>';
+    let html = '<div class="card"><h2>' + webText('wifiNetworks') + '</h2>';
 
     if (wifiNetworks.length === 0) {
-      html += '<p style="color:var(--label-color);text-align:center;">No Wi-Fi networks saved</p>';
+      html += '<p style="color:var(--label-color);text-align:center;">' + webText('noWifi') + '</p>';
     } else {
       wifiNetworks.forEach(function(net, idx) {
         html += renderWifiNetwork(net, idx);
@@ -641,7 +705,7 @@
     }
 
     html += '<div style="margin-top:12px;text-align:center;">' +
-      '<button class="btn-small btn-add" onclick="addWifiNetwork()">+ Add Network</button>' +
+      '<button class="btn-small btn-add" onclick="addWifiNetwork()">' + webText('addNetwork') + '</button>' +
     '</div></div>';
     container.innerHTML = html;
   }
@@ -670,7 +734,7 @@
     const id = idx === -1 ? 'new' : idx;
     const ssid = document.getElementById('wifi-ssid-' + id).value.trim();
     if (!ssid) {
-      showMessage('SSID is required.', true);
+      showMessage(webText('ssidRequired'), true);
       return;
     }
 
@@ -688,15 +752,15 @@
         body: JSON.stringify(data)
       });
       if (!resp.ok) throw new Error(await resp.text());
-      showMessage('Wi-Fi network saved!', false);
+      showMessage(webText('wifiSaved'), false);
       await loadWifiNetworks();
     } catch (e) {
-      showMessage('Error: ' + e.message, true);
+      showMessage(webText('errorPrefix') + e.message, true);
     }
   }
 
   async function deleteWifiNetwork(idx) {
-    if (!confirm('Delete this Wi-Fi network?')) return;
+    if (!confirm(webText('deleteWifi'))) return;
     try {
       const resp = await fetch('/api/wifi/delete', {
         method: 'POST',
@@ -704,10 +768,10 @@
         body: JSON.stringify({index: idx})
       });
       if (!resp.ok) throw new Error(await resp.text());
-      showMessage('Wi-Fi network deleted', false);
+      showMessage(webText('wifiDeleted'), false);
       await loadWifiNetworks();
     } catch (e) {
-      showMessage('Error: ' + e.message, true);
+      showMessage(webText('errorPrefix') + e.message, true);
     }
   }
 
@@ -722,34 +786,34 @@
     const id = isNew ? 'new' : idx;
     return '<div class="opds-server" id="opds-' + id + '">' +
       '<div class="setting-row">' +
-        '<span class="setting-name">Server Name</span>' +
+        '<span class="setting-name">' + webText('serverName') + '</span>' +
         '<span class="setting-control"><input type="text" id="opds-name-' + id + '" value="' + escapeHtml(srv.name || '') + '"></span>' +
       '</div>' +
       '<div class="setting-row">' +
-        '<span class="setting-name">URL</span>' +
+      '<span class="setting-name">' + webText('url') + '</span>' +
         '<span class="setting-control"><input type="text" id="opds-url-' + id + '" value="' + escapeHtml(srv.url || '') + '"></span>' +
       '</div>' +
       '<div class="setting-row">' +
-        '<span class="setting-name">Username</span>' +
+        '<span class="setting-name">' + webText('username') + '</span>' +
         '<span class="setting-control"><input type="text" id="opds-user-' + id + '" value="' + escapeHtml(srv.username || '') + '"></span>' +
       '</div>' +
       '<div class="setting-row">' +
-        '<span class="setting-name">Password</span>' +
-        '<span class="setting-control"><input type="password" id="opds-pass-' + id + '" placeholder="' + (srv.hasPassword ? '(unchanged)' : '') + '"></span>' +
+        '<span class="setting-name">' + webText('password') + '</span>' +
+        '<span class="setting-control"><input type="password" id="opds-pass-' + id + '" placeholder="' + (srv.hasPassword ? webText('unchanged') : '') + '"></span>' +
       '</div>' +
       '<div class="opds-actions">' +
-        '<button class="btn-small btn-save-server" onclick="saveOpdsServer(' + idx + ')">Save</button>' +
-        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteOpdsServer(' + idx + ')">Delete</button>') +
+        '<button class="btn-small btn-save-server" onclick="saveOpdsServer(' + idx + ')">' + webText('save') + '</button>' +
+        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteOpdsServer(' + idx + ')">' + webText('delete') + '</button>') +
       '</div>' +
     '</div>';
   }
 
   function renderOpdsSection() {
     const container = document.getElementById('opds-container');
-    let html = '<div class="card"><h2>OPDS Servers</h2>';
+    let html = '<div class="card"><h2>' + webText('opdsServers') + '</h2>';
 
     if (opdsServers.length === 0) {
-      html += '<p style="color:var(--label-color);text-align:center;">No OPDS servers configured</p>';
+      html += '<p style="color:var(--label-color);text-align:center;">' + webText('noOpds') + '</p>';
     } else {
       opdsServers.forEach(function(srv, idx) {
         html += renderOpdsServer(srv, idx);
@@ -757,7 +821,7 @@
     }
 
     html += '<div style="margin-top:12px;text-align:center;">' +
-      '<button class="btn-small btn-add" onclick="addOpdsServer()">+ Add Server</button>' +
+      '<button class="btn-small btn-add" onclick="addOpdsServer()">' + webText('addServer') + '</button>' +
     '</div></div>';
     container.innerHTML = html;
   }
@@ -802,15 +866,15 @@
         body: JSON.stringify(data)
       });
       if (!resp.ok) throw new Error(await resp.text());
-      showMessage('OPDS server saved!', false);
+      showMessage(webText('opdsSaved'), false);
       await loadOpdsServers();
     } catch (e) {
-      showMessage('Error: ' + e.message, true);
+      showMessage(webText('errorPrefix') + e.message, true);
     }
   }
 
   async function deleteOpdsServer(idx) {
-    if (!confirm('Delete this OPDS server?')) return;
+    if (!confirm(webText('deleteOpds'))) return;
     try {
       const resp = await fetch('/api/opds/delete', {
         method: 'POST',
@@ -818,10 +882,10 @@
         body: JSON.stringify({index: idx})
       });
       if (!resp.ok) throw new Error(await resp.text());
-      showMessage('OPDS server deleted', false);
+      showMessage(webText('opdsDeleted'), false);
       await loadOpdsServers();
     } catch (e) {
-      showMessage('Error: ' + e.message, true);
+      showMessage(webText('errorPrefix') + e.message, true);
     }
   }
 

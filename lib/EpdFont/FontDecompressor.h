@@ -8,6 +8,8 @@ class FontDecompressor {
  public:
   static constexpr uint16_t MAX_PAGE_GLYPHS = 512;
   static constexpr uint8_t MAX_PAGE_SLOTS = 4;  // One per font style (R/B/I/BI)
+  static constexpr uint16_t GLYPH_CACHE_BYTES = 8 * 1024;
+  static constexpr uint8_t GLYPH_CACHE_ENTRIES = 96;
 
   FontDecompressor() = default;
   ~FontDecompressor();
@@ -19,7 +21,10 @@ class FontDecompressor {
   // Checks the page buffer (from prewarm) first, then falls back to the hot group slot.
   const uint8_t* getBitmap(const EpdFontData* fontData, const EpdGlyph* glyph, uint32_t glyphIndex);
 
-  // Free all cached data (page buffer + hot group).
+  // Release page-scoped buffers while preserving the bounded glyph cache.
+  void releasePageCache();
+
+  // Free all cached data, including the persistent glyph cache.
   void clearCache();
 
   // Pre-scan UTF-8 text and extract needed glyph bitmaps into a flat page buffer.
@@ -30,6 +35,8 @@ class FontDecompressor {
   struct Stats {
     uint32_t cacheHits = 0;
     uint32_t cacheMisses = 0;
+    uint32_t persistentCacheHits = 0;
+    uint32_t decompressions = 0;
     uint32_t decompressTimeMs = 0;
     uint16_t uniqueGroupsAccessed = 0;
     uint32_t pageBufferBytes = 0;  // pageBuffer allocation
@@ -79,11 +86,30 @@ class FontDecompressor {
   uint8_t* hotGlyphBuf = nullptr;
   uint32_t hotGlyphBufCapacity = 0;
 
+  // Small cross-page ring for compressed built-in fonts. The 8 KiB bitmap
+  // allocation is lazy and optional: OOM simply keeps the existing prewarm/
+  // hot-group path. Metadata is fixed-size so the cache can never grow.
+  struct GlyphCacheEntry {
+    const EpdFontData* fontData = nullptr;
+    uint32_t glyphIndex = 0;
+    uint16_t offset = 0;
+    uint16_t length = 0;
+    uint32_t lastUse = 0;
+  };
+  GlyphCacheEntry glyphCache[GLYPH_CACHE_ENTRIES] = {};
+  uint8_t* glyphCacheBuffer = nullptr;
+  uint16_t glyphCacheWriteOffset = 0;
+  uint32_t glyphCacheClock = 0;
+
   // Grow (never shrink) an owned buffer to at least `needed` bytes; false on OOM, buffer freed.
   static bool ensureCapacity(uint8_t*& buf, uint32_t& capacity, uint32_t needed);
 
   void freePageBuffer();
   void freeHotGroup();
+  void freeGlyphCache();
+  const uint8_t* findCachedGlyph(const EpdFontData* fontData, uint32_t glyphIndex);
+  const uint8_t* cacheGlyph(const EpdFontData* fontData, uint32_t glyphIndex, const EpdGlyph* glyph,
+                            const uint8_t* bitmap, bool sourceIsPacked);
   uint16_t getGroupIndex(const EpdFontData* fontData, uint32_t glyphIndex);
   uint32_t getAlignedOffset(const EpdFontData* fontData, uint16_t groupIndex, uint32_t glyphIndex);
   bool decompressGroup(const EpdFontData* fontData, uint16_t groupIndex, uint8_t* outBuf, uint32_t outSize);

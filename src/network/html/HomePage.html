@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CrossPoint Reader</title>
+    <title>CrossVi</title>
     <style>
       :root {
         --font-color: #333;
@@ -40,6 +40,29 @@
         border-bottom: 2px solid var(--accent-color);
         padding-bottom: 10px;
       }
+      .site-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+      .site-header h1 { margin: 0; border-bottom: 0; padding-bottom: 0; }
+      .site-subtitle { margin: 4px 0 0; color: var(--label-color); font-size: 0.86em; }
+      .language-picker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: var(--card-bg);
+        color: var(--label-color);
+        font-size: 0.86em;
+        white-space: nowrap;
+      }
+      .language-picker select { border: 0; background: transparent; color: var(--font-color); font: inherit; color-scheme: light; }
+      .language-picker select option { color: #1f2937; background: #fff; }
       h2 {
         color: var(--title-color);
         margin-top: 0;
@@ -95,48 +118,118 @@
         background-color: var(--accent-hover-color);
         color: white;
       }
+      @media (max-width: 600px) {
+        body { padding: 12px; font-size: 15px; }
+        .site-header { align-items: flex-start; flex-direction: column; gap: 6px; }
+        .site-header h1 { font-size: 1.55rem; }
+        .language-picker { align-self: flex-end; margin-top: -2px; }
+        .nav-links { margin: 12px 0; gap: 6px; flex-wrap: wrap; }
+        .nav-links a { flex: 1 1 calc(50% - 6px); box-sizing: border-box; padding: 9px 8px; text-align: center; font-size: .92em; }
+        .card { padding: 14px; margin: 10px 0; }
+        .info-row { gap: 10px; flex-wrap: wrap; }
+        .label, .value { overflow-wrap: anywhere; }
+      }
+      /* Shared Web UI chrome: quiet paper surfaces, one compact navigation. */
+      body { max-width: 960px; padding: 20px; }
+      h1 { font-size: 1.65rem; letter-spacing: -.02em; border-bottom: 0; padding-bottom: 0; }
+      .site-header { gap: 12px; margin-bottom: 10px; }
+      .site-subtitle { font-size: .88em; }
+      .language-picker { border-radius: 6px; }
+      .card { border: 1px solid var(--border-color); box-shadow: none; border-radius: 6px; padding: 16px; margin: 12px 0; }
+      .nav-links { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 12px 0 16px; gap: 6px; }
+      .nav-links a { box-sizing: border-box; min-height: 38px; display: grid; place-items: center; border: 1px solid var(--border-color); background: var(--card-bg); padding: 8px; text-align: center; }
+      .nav-links a.active { border-color: var(--accent-color); background: var(--accent-color); color: white; }
+      @media (max-width: 600px) {
+        body { padding: 12px; font-size: 14px; }
+        .site-header { align-items: flex-start; flex-direction: column; gap: 6px; }
+        .language-picker { align-self: flex-end; margin-top: -2px; }
+        h1 { font-size: 1.45rem; }
+        .card { padding: 14px; }
+        .nav-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .nav-links a { font-size: .92em; }
+      }
     </style>
   </head>
   <body>
-    <h1>📚 CrossPoint Reader</h1>
+    <header class="site-header">
+      <div>
+        <h1 data-i18n="brand">📚 CrossVi</h1>
+        <p class="site-subtitle" data-i18n="subtitle">Reader tools for Xteink X3/X4</p>
+      </div>
+      <label class="language-picker" for="webLanguage">
+        <span data-i18n="language">Language</span>
+        <select id="webLanguage" onchange="setWebLanguage(this.value)">
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt</option>
+        </select>
+      </label>
+    </header>
 
     <div class="nav-links">
-      <a href="/" class="active">Home</a>
-      <a href="/files">File Manager</a>
-      <a href="/settings">Settings</a>
-      <a href="/fonts">Fonts</a>
+      <a href="/" class="active" data-i18n="home">Home</a>
+      <a href="/files" data-i18n="fileManager">File Manager</a>
+      <a href="/settings" data-i18n="settings">Settings</a>
+      <a href="/fonts" data-i18n="fonts">Fonts</a>
     </div>
 
     <div class="card">
-      <h2>Device Status</h2>
+      <h2 data-i18n="deviceStatus">Device Status</h2>
       <div class="info-row">
-        <span class="label">Serial #</span>
+        <span class="label" data-i18n="serial">Serial #</span>
         <span class="value" id="serial"></span>
       </div>
       <div class="info-row">
-        <span class="label">Version</span>
+        <span class="label" data-i18n="version">Version</span>
         <span class="value" id="version"></span>
       </div>
       <div class="info-row">
-        <span class="label">WiFi Status</span>
-        <span class="status">Connected</span>
+        <span class="label" data-i18n="wifiStatus">WiFi Status</span>
+        <span class="status" data-i18n="connected">Connected</span>
       </div>
       <div class="info-row">
-        <span class="label">IP Address</span>
+        <span class="label" data-i18n="ipAddress">IP Address</span>
         <span class="value" id="ip-address"></span>
       </div>
       <div class="info-row">
-        <span class="label">Free Memory</span>
+        <span class="label" data-i18n="freeMemory">Free Memory</span>
         <span class="value" id="free-heap"></span>
       </div>
     </div>
 
     <div class="card">
       <p style="text-align: center; color: #95a5a6; margin: 0">
-        CrossPoint E-Reader • Open Source
+        <span data-i18n="openSource">CrossVi • Open Source</span><br />
+        <small data-i18n="communityFork">Independent community fork of CrossPoint Reader</small>
       </p>
     </div>
   <script>
+    const WEB_LANGUAGE_KEY = 'crossvi.webLanguage';
+    const WEB_TEXT = {
+      en: { language: 'Language', brand: '📚 CrossVi', subtitle: 'Reader tools for Xteink X3/X4', home: 'Home',
+        fileManager: 'File Manager', settings: 'Settings', fonts: 'Fonts', deviceStatus: 'Device Status',
+        serial: 'Serial #', version: 'Version', wifiStatus: 'WiFi Status', connected: 'Connected',
+        ipAddress: 'IP Address', freeMemory: 'Free Memory', openSource: 'CrossVi • Open Source',
+        communityFork: 'Independent community fork of CrossPoint Reader' },
+      vi: { language: 'Ngôn ngữ', brand: '📚 CrossVi', subtitle: 'Công cụ đọc sách cho Xteink X3/X4', home: 'Trang chủ',
+        fileManager: 'Truyền tệp', settings: 'Cài đặt', fonts: 'Phông chữ', deviceStatus: 'Trạng thái thiết bị',
+        serial: 'Số sê-ri', version: 'Phiên bản', wifiStatus: 'Trạng thái Wi-Fi', connected: 'Đã kết nối',
+        ipAddress: 'Địa chỉ IP', freeMemory: 'Bộ nhớ trống', openSource: 'CrossVi • Mã nguồn mở',
+        communityFork: 'Fork cộng đồng độc lập của CrossPoint Reader' }
+    };
+    let webLanguage = 'en';
+    function applyWebLanguage(language, persist = true) {
+      webLanguage = language === 'vi' ? 'vi' : 'en';
+      if (persist) localStorage.setItem(WEB_LANGUAGE_KEY, webLanguage);
+      document.documentElement.lang = webLanguage;
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const value = WEB_TEXT[webLanguage][el.dataset.i18n];
+        if (value) el.textContent = value;
+      });
+      const select = document.getElementById('webLanguage');
+      if (select) select.value = webLanguage;
+    }
+    function setWebLanguage(language) { applyWebLanguage(language, true); }
+
     async function fetchStatus() {
       try {
         const response = await fetch('/api/status');
@@ -144,6 +237,7 @@
           throw new Error('Failed to fetch status: ' + response.status + ' ' + response.statusText);
         }
         const data = await response.json();
+        if (!localStorage.getItem(WEB_LANGUAGE_KEY)) applyWebLanguage(data.language === 'VI' ? 'vi' : 'en', false);
         document.getElementById('version').textContent = data.version || 'N/A';
         document.getElementById('serial').textContent = data.serial;
         document.getElementById('ip-address').textContent = data.ip || 'N/A';
@@ -156,7 +250,11 @@
     }
 
     // Fetch status on page load
-    window.onload = fetchStatus;
+    window.onload = () => {
+      const saved = localStorage.getItem(WEB_LANGUAGE_KEY);
+      if (saved) applyWebLanguage(saved, false);
+      fetchStatus();
+    };
   </script>
   </body>
 </html>

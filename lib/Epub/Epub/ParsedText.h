@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -13,13 +14,18 @@
 class GfxRenderer;
 
 class ParsedText {
-  std::vector<std::string> words;
+  // Long CJK paragraphs can contain thousands of per-character tokens. A
+  // deque avoids one large contiguous reallocation of std::string objects.
+  std::deque<std::string> words;
   std::vector<EpdFontFamily::Style> wordStyles;
   std::vector<bool> wordContinues;      // true = word attaches to previous with no break
   std::vector<bool> wordNoSpaceBefore;  // true = may break before token, but no synthetic space when joined
   std::vector<bool> wordIsFocusSuffix;  // true = token is the regular tail of a focus bold-prefix split
+  std::vector<uint32_t> wordSourceStarts;
+  std::vector<uint16_t> wordSourceLengths;
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
+  bool forceParagraphIndents;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
   bool isNaturalAlign;
@@ -30,6 +36,8 @@ class ParsedText {
   std::vector<bool> reorderedContinuesScratch;
   std::vector<bool> reorderedNoSpaceBeforeScratch;
   std::vector<bool> reorderedFocusSuffixScratch;
+  std::vector<uint32_t> reorderedSourceStartsScratch;
+  std::vector<uint16_t> reorderedSourceLengthsScratch;
   std::vector<uint16_t> visualOrderScratch;
 
   int resolveFirstLineIndent(bool isFirstLine, const GfxRenderer& renderer, int fontId) const;
@@ -49,17 +57,22 @@ class ParsedText {
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
 
  public:
-  explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
-                      const bool focusReadingEnabled = false, const BlockStyle& blockStyle = BlockStyle())
+  explicit ParsedText(const bool extraParagraphSpacing, const bool forceParagraphIndents = false,
+                      const bool hyphenationEnabled = false, const bool focusReadingEnabled = false,
+                      const BlockStyle& blockStyle = BlockStyle())
       : blockStyle(blockStyle),
         extraParagraphSpacing(extraParagraphSpacing),
+        forceParagraphIndents(forceParagraphIndents),
         hyphenationEnabled(hyphenationEnabled),
         focusReadingEnabled(focusReadingEnabled),
         isNaturalAlign(false),
         hasRtlWord(false) {}
   ~ParsedText() = default;
 
-  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);
+  // Returns the byte length contributed to the canonical chapter text. A
+  // UINT32_MAX sourceStart marks synthetic text (for example list bullets).
+  size_t addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false,
+                 bool attachToPrevious = false, uint32_t sourceStart = UINT32_MAX);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }

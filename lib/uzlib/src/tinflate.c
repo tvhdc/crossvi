@@ -307,9 +307,18 @@ static int tinf_decode_symbol(TINF_DATA *d, TINF_TREE *t)
 static int tinf_decode_trees(TINF_DATA *d, TINF_TREE *lt, TINF_TREE *dt)
 {
    /* code lengths for 288 literal/len symbols and 32 dist symbols */
-   unsigned char lengths[288+32];
+   /*
+    * Keep this table off the caller's stack.  Font prewarming can reach the
+    * inflater from the activity render task, whose stack is deliberately
+    * small; the 320-byte automatic array used to trip the stack canary while
+    * rendering a TXT page.  The table is short-lived and is freed on every
+    * exit path, so this does not retain any decompressor state.
+    */
+   unsigned char *lengths = (unsigned char *)malloc(288 + 32);
+   if (!lengths) return TINF_DATA_ERROR;
    unsigned int hlit, hdist, hclen, hlimit;
    unsigned int i, num, length;
+   int result = TINF_OK;
 
    /* get 5 bits HLIT (257-286) */
    hlit = tinf_read_bits(d, 5, 257);
@@ -343,13 +352,19 @@ static int tinf_decode_trees(TINF_DATA *d, TINF_TREE *lt, TINF_TREE *dt)
       int lbits, lbase = 3;
 
       /* error decoding */
-      if (sym < 0) return sym;
+      if (sym < 0) {
+         result = sym;
+         goto cleanup;
+      }
 
       switch (sym)
       {
       case 16:
          /* copy previous code length 3-6 times (read 2 bits) */
-         if (num == 0) return TINF_DATA_ERROR;
+         if (num == 0) {
+            result = TINF_DATA_ERROR;
+            goto cleanup;
+         }
          fill_value = lengths[num - 1];
          lbits = 2;
          break;
@@ -371,7 +386,10 @@ static int tinf_decode_trees(TINF_DATA *d, TINF_TREE *lt, TINF_TREE *dt)
 
       /* special code length 16-18 are handled here */
       length = tinf_read_bits(d, lbits, lbase);
-      if (num + length > hlimit) return TINF_DATA_ERROR;
+      if (num + length > hlimit) {
+         result = TINF_DATA_ERROR;
+         goto cleanup;
+      }
       for (; length; --length)
       {
          lengths[num++] = fill_value;
@@ -388,7 +406,8 @@ static int tinf_decode_trees(TINF_DATA *d, TINF_TREE *lt, TINF_TREE *dt)
    #if UZLIB_CONF_PARANOID_CHECKS
    /* Check that there's "end of block" symbol */
    if (lengths[256] == 0) {
-      return TINF_DATA_ERROR;
+      result = TINF_DATA_ERROR;
+      goto cleanup;
    }
    #endif
 
@@ -396,7 +415,9 @@ static int tinf_decode_trees(TINF_DATA *d, TINF_TREE *lt, TINF_TREE *dt)
    tinf_build_tree(lt, lengths, hlit);
    tinf_build_tree(dt, lengths + hlit, hdist);
 
-   return TINF_OK;
+cleanup:
+   free(lengths);
+   return result;
 }
 
 /* ----------------------------- *

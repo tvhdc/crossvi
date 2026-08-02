@@ -19,6 +19,22 @@ void FontCacheManager::clearCache() {
   }
 }
 
+void FontCacheManager::releasePageCache() {
+  if (fontDecompressor_) fontDecompressor_->releasePageCache();
+  // SD fonts keep their existing page-scoped behavior. Only the new bounded
+  // built-in glyph ring survives across page turns.
+  for (auto& [id, font] : sdCardFonts_) {
+    font->clearCache();
+  }
+}
+
+void FontCacheManager::clearAllCaches() {
+  clearCache();
+  for (auto& [id, font] : sdCardFonts_) {
+    font->clearPersistentCache();
+  }
+}
+
 void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask) {
   // SD card font prewarm path: prewarm all requested styles in one call
   auto it = sdCardFonts_.find(fontId);
@@ -78,7 +94,7 @@ void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::S
 
 FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manager_(&manager) {
   manager_->scanMode_ = ScanMode::Scanning;
-  manager_->clearCache();
+  manager_->releasePageCache();
   manager_->resetStats();
   manager_->scanText_.clear();
   manager_->scanText_.reserve(2048);  // Pre-allocate to avoid heap fragmentation from repeated concat
@@ -107,7 +123,7 @@ void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
 FontCacheManager::PrewarmScope::~PrewarmScope() {
   if (active_) {
     endScanAndPrewarm();  // no-op if already called (scanText_ is empty)
-    manager_->clearCache();
+    manager_->releasePageCache();
   }
 }
 

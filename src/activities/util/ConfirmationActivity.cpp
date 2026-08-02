@@ -2,12 +2,19 @@
 
 #include <I18n.h>
 
+#include <utility>
+
 #include "HalDisplay.h"
 #include "components/UITheme.h"
 
 ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                           const std::string& heading, const std::string& body)
-    : Activity("Confirmation", renderer, mappedInput), heading(heading), body(body) {}
+                                           const std::string& heading, const std::string& body,
+                                           std::string negativeLabel, std::string positiveLabel)
+    : Activity("Confirmation", renderer, mappedInput),
+      heading(heading),
+      body(body),
+      negativeLabel(std::move(negativeLabel)),
+      positiveLabel(std::move(positiveLabel)) {}
 
 void ConfirmationActivity::onEnter() {
   Activity::onEnter();
@@ -49,7 +56,9 @@ void ConfirmationActivity::render(RenderLock&& lock) {
   }
 
   // Draw UI Elements
-  const auto labels = mappedInput.mapLabels("", "", I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM));
+  const char* cancel = negativeLabel.empty() ? I18N.get(StrId::STR_CANCEL) : negativeLabel.c_str();
+  const char* confirm = positiveLabel.empty() ? I18N.get(StrId::STR_CONFIRM) : positiveLabel.c_str();
+  const auto labels = mappedInput.mapLabels("", "", cancel, confirm);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);

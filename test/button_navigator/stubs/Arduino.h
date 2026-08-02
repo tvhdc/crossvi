@@ -1,0 +1,6 @@
+#pragma once
+
+#include <cstdint>
+
+inline uint32_t testMillis = 0;
+inline unsigned long millis() { return testMillis; }

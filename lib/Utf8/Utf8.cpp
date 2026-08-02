@@ -21,6 +21,33 @@ uint32_t utf8ComposePair(const uint32_t base, const uint32_t mark) {
   }
   return 0;
 }
+
+bool isLookupBoundary(const uint32_t cp) {
+  if (cp <= 0x7F) {
+    return !((cp >= '0' && cp <= '9') || (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'));
+  }
+  if ((cp >= 0x80 && cp <= 0xA0) || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || (cp >= 0x2028 && cp <= 0x202F) ||
+      cp == 0x205F || cp == 0x3000) {
+    return true;
+  }
+  if (cp >= 0x00A1 && cp <= 0x00BF) return true;
+  if ((cp >= 0x2000 && cp <= 0x2BFF) || (cp >= 0x2E00 && cp <= 0x2E7F) || (cp >= 0x3000 && cp <= 0x303F) ||
+      (cp >= 0xFE10 && cp <= 0xFE6F) || (cp >= 0x1F000 && cp <= 0x1FAFF)) {
+    return true;
+  }
+  if ((cp >= 0xFF01 && cp <= 0xFF0F) || (cp >= 0xFF1A && cp <= 0xFF20) || (cp >= 0xFF3B && cp <= 0xFF40) ||
+      (cp >= 0xFF5B && cp <= 0xFF65) || (cp >= 0xFFE0 && cp <= 0xFFEE)) {
+    return true;
+  }
+  return cp == 0x037E || cp == 0x0387 || (cp >= 0x055A && cp <= 0x055F) || cp == 0x0589 || cp == 0x058A ||
+         cp == 0x05BE || cp == 0x05C0 || cp == 0x05C3 || cp == 0x05C6 || (cp >= 0x0609 && cp <= 0x060D) ||
+         cp == 0x061B || (cp >= 0x061D && cp <= 0x061F) || (cp >= 0x066A && cp <= 0x066D) || cp == 0x06D4 ||
+         (cp >= 0x0700 && cp <= 0x070D) || cp == 0x0964 || cp == 0x0965;
+}
+
+bool isLookupCoreCharacter(const uint32_t cp) {
+  return cp != 0 && cp != REPLACEMENT_GLYPH && !utf8IsCombiningMark(cp) && !isLookupBoundary(cp);
+}
 }  // namespace
 
 std::string utf8ComposeNfc(const std::string& in) {
@@ -66,6 +93,36 @@ std::string utf8ComposeNfc(const std::string& in) {
   }
   if (haveBase) utf8AppendCodepoint(base, out);
   return out;
+}
+
+bool utf8ContainsLookupCharacter(const std::string& text) {
+  const auto* cursor = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (*cursor) {
+    if (isLookupCoreCharacter(utf8NextCodepoint(&cursor))) return true;
+  }
+  return false;
+}
+
+std::string utf8CleanLookupWord(const std::string& text) {
+  const auto* begin = reinterpret_cast<const unsigned char*>(text.c_str());
+  const auto* cursor = begin;
+  size_t firstCore = std::string::npos;
+  size_t lastKeptEnd = 0;
+
+  while (*cursor) {
+    const auto* codepointStart = cursor;
+    const uint32_t cp = utf8NextCodepoint(&cursor);
+    if (isLookupCoreCharacter(cp)) {
+      if (firstCore == std::string::npos) firstCore = static_cast<size_t>(codepointStart - begin);
+      lastKeptEnd = static_cast<size_t>(cursor - begin);
+    } else if (firstCore != std::string::npos && utf8IsCombiningMark(cp) &&
+               static_cast<size_t>(codepointStart - begin) == lastKeptEnd) {
+      lastKeptEnd = static_cast<size_t>(cursor - begin);
+    }
+  }
+
+  if (firstCore == std::string::npos) return {};
+  return utf8ComposeNfc(text.substr(firstCore, lastKeptEnd - firstCore));
 }
 
 int utf8CodepointLen(const unsigned char c) {
@@ -155,7 +212,7 @@ int utf8SafeTruncateBuffer(const char* buf, int len) {
   int expectedLen = utf8CodepointLen(static_cast<unsigned char>(buf[leadPos]));
   int actualLen = len - leadPos;
 
-  if (actualLen < expectedLen && leadPos > 0) {
+  if (actualLen < expectedLen) {
     // Incomplete UTF-8 sequence at the end — exclude it
     return leadPos;
   }

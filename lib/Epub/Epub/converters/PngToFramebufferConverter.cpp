@@ -43,7 +43,11 @@ struct PngContext {
 // File I/O callbacks use pFile->fHandle to access the HalFile*,
 // avoiding the need for global file state.
 void* pngOpenWithHandle(const char* filename, int32_t* size) {
-  HalFile* f = new HalFile();
+  HalFile* f = new (std::nothrow) HalFile();
+  if (!f) {
+    LOG_ERR("PNG", "Out of memory opening image: %s", filename);
+    return nullptr;
+  }
   if (!Storage.openFileForRead("PNG", std::string(filename), *f)) {
     delete f;
     return nullptr;
@@ -102,12 +106,13 @@ int bytesPerPixelFromType(int pixelType) {
 int packedRowBytes(int srcWidth, int bitsPerSample) { return (srcWidth * bitsPerSample + 7) / 8; }
 
 int requiredPngInternalBufferBytes(int srcWidth, int pixelType, int bitsPerSample) {
-  // +1 filter byte per scanline, *2 for current+previous lines, +32 for alignment margin.
+  // +1 filter byte per scanline, *2 for current+previous lines. PNGdec can add
+  // at most 15 bytes before each line, so 30 is the exact alignment ceiling.
   int pitch = srcWidth * bytesPerPixelFromType(pixelType);
   if ((pixelType == PNG_PIXEL_GRAYSCALE || pixelType == PNG_PIXEL_INDEXED) && bitsPerSample < 8) {
     pitch = packedRowBytes(srcWidth, bitsPerSample);
   }
-  return ((pitch + 1) * 2) + 32;
+  return ((pitch + 1) * 2) + 30;
 }
 
 bool isSupportedBitDepth(int pixelType, int bitsPerSample) {

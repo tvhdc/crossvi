@@ -5,10 +5,11 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
-#include <esp_task_wdt.h>
 
 #include <cstddef>
+#include <new>
 
+#include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
@@ -17,10 +18,12 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/QrUtils.h"
+#include "util/TaskWatchdog.h"
+#include "util/WifiLifecycle.h"
 
 namespace {
 // AP Mode configuration
-constexpr const char* AP_SSID = "CrossPoint-Reader";
+constexpr const char* AP_SSID = "CrossVi";
 constexpr const char* AP_PASSWORD = nullptr;  // Open network for ease of use
 constexpr const char* AP_HOSTNAME = "crosspoint";
 constexpr uint8_t AP_CHANNEL = 1;
@@ -72,6 +75,10 @@ void CrossPointWebServerActivity::onEnter() {
   connectedIP.clear();
   connectedSSID.clear();
   lastHandleClientTime = 0;
+  lastReceivedName.clear();
+  lastReceivedPath.clear();
+  lastReceivedAt = 0;
+  restartToReader = false;
   requestUpdate();
 
   // Launch network mode selection subactivity
@@ -92,17 +99,24 @@ void CrossPointWebServerActivity::onExit() {
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
+  if (webServer) {
+    webServer->stop();
+    webServer.reset();
+  }
   stopDnsServer();
   MDNS.end();
 
-  // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
+  // Opening a received book still uses the established restart-to-reader path.
+  // Ordinary Back exits now tear Wi-Fi down in place and return immediately.
+  if (restartToReader && WiFi.getMode() != WIFI_MODE_NULL) {
     if (isApMode) {
       WiFi.softAPdisconnect(true);
     } else {
       WiFi.disconnect(false);
     }
     delay(30);
+    silentRestartToReader();
+  } else if (!WifiLifecycle::shutDown()) {
     silentRestart();
   }
 
@@ -231,10 +245,16 @@ void CrossPointWebServerActivity::startAccessPoint() {
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
   stopDnsServer();
-  dnsServer = new DNSServer();
-  dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
-  dnsServer->start(DNS_PORT, "*", apIP);
-  LOG_DBG("WEBACT", "DNS server started for captive portal");
+  dnsServer = new (std::nothrow) DNSServer();
+  if (dnsServer) {
+    dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer->start(DNS_PORT, "*", apIP);
+    LOG_DBG("WEBACT", "DNS server started for captive portal");
+  } else {
+    // File transfer still works through the displayed IP address when the
+    // optional captive-portal redirect cannot be allocated.
+    LOG_ERR("WEBACT", "Out of memory starting captive-portal DNS");
+  }
 
   LOG_DBG("WEBACT", "Free heap after AP start: %d bytes", ESP.getFreeHeap());
 
@@ -246,7 +266,12 @@ void CrossPointWebServerActivity::startWebServer() {
   LOG_DBG("WEBACT", "Starting web server...");
 
   // Create the web server instance
-  webServer.reset(new CrossPointWebServer());
+  webServer.reset(new (std::nothrow) CrossPointWebServer());
+  if (!webServer) {
+    LOG_ERR("WEBACT", "Out of memory starting web server");
+    onGoHome();
+    return;
+  }
   webServer->begin();
 
   if (webServer->isRunning()) {
@@ -328,16 +353,24 @@ void CrossPointWebServerActivity::loop() {
       }
 
       // Reset watchdog BEFORE processing - HTTP header parsing can be slow
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
 
-      // Process HTTP requests in tight loop for maximum throughput
-      // More iterations = more data processed per main loop cycle
-      constexpr int MAX_ITERATIONS = 500;
-      for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
+      // A client that is only browsing (or an idle keep-alive) needs a few
+      // iterations per main-loop cycle; the full burst is reserved for active
+      // transfers, which also keep the radio awake for the duration.
+      const bool transferActive = webServer->hasActiveTransfer();
+      if (!isApMode && transferActive) WiFi.setSleep(false);
+
+      // Process HTTP requests in a bounded loop.
+      // More iterations = more data processed per main loop cycle.
+      constexpr int TRANSFER_ITERATIONS = 500;
+      constexpr int IDLE_ITERATIONS = 12;
+      const int maxIterations = transferActive ? TRANSFER_ITERATIONS : IDLE_ITERATIONS;
+      for (int i = 0; i < maxIterations && webServer->isRunning(); i++) {
         webServer->handleClient();
         // Reset watchdog every 32 iterations
         if ((i & 0x1F) == 0x1F) {
-          esp_task_wdt_reset();
+          resetTaskWatchdogIfSubscribed();
         }
         // Yield and check for exit button every 64 iterations
         if ((i & 0x3F) == 0x3F) {
@@ -352,7 +385,21 @@ void CrossPointWebServerActivity::loop() {
           }
         }
       }
+      if (!isApMode) WiFi.setSleep(true);
       lastHandleClientTime = millis();
+
+      const auto uploadStatus = webServer->getWsUploadStatus();
+      if (uploadStatus.lastCompleteAt != 0 && uploadStatus.lastCompleteAt != lastReceivedAt) {
+        lastReceivedAt = uploadStatus.lastCompleteAt;
+        lastReceivedName = uploadStatus.lastCompleteName;
+        lastReceivedPath = uploadStatus.lastCompletePath;
+        requestUpdate();
+      }
+      std::string openPath;
+      if (webServer->takeOpenRequest(openPath)) {
+        openReceivedBook(openPath);
+        return;
+      }
     }
 
     // Handle exit on Back button (also check outside loop)
@@ -360,7 +407,25 @@ void CrossPointWebServerActivity::loop() {
       onGoHome();
       return;
     }
+    if (!lastReceivedPath.empty() && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      openReceivedBook(lastReceivedPath);
+      return;
+    }
   }
+}
+
+void CrossPointWebServerActivity::openReceivedBook(const std::string& path) {
+  if (path.empty()) return;
+  const std::string previousPath = APP_STATE.openEpubPath;
+  APP_STATE.openEpubPath = path;
+  if (!APP_STATE.saveToFile()) {
+    APP_STATE.openEpubPath = previousPath;
+    LOG_ERR("WEBACT", "Could not persist Inbox open request");
+    requestUpdate();
+    return;
+  }
+  restartToReader = true;
+  onGoHome();
 }
 
 void CrossPointWebServerActivity::render(RenderLock&&) {
@@ -463,7 +528,13 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
+  if (!lastReceivedName.empty()) {
+    const int footerY = renderer.getScreenHeight() - metrics.buttonHintsHeight - renderer.getLineHeight(SMALL_FONT_ID) -
+                        metrics.verticalSpacing;
+    const std::string received = std::string(tr(STR_LAST_RECEIVED)) + ": " + lastReceivedName;
+    renderer.drawCenteredText(SMALL_FONT_ID, footerY, received.c_str(), true);
+  }
+  const auto labels = mappedInput.mapLabels(tr(STR_EXIT), lastReceivedPath.empty() ? "" : tr(STR_OPEN_NOW), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

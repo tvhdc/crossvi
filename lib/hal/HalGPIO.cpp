@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <XteinkDetect.h>
 #include <esp_sleep.h>
 
 // Global HalGPIO instance
@@ -118,6 +119,7 @@ namespace {
 constexpr char HW_NAMESPACE[] = "cphw";
 constexpr char NVS_KEY_DEV_OVERRIDE[] = "dev_ovr";  // 0=auto, 1=x4, 2=x3
 constexpr char NVS_KEY_DEV_CACHED[] = "dev_det";    // 0=unknown, 1=x4, 2=x3
+constexpr unsigned long X3_USB_POLL_INTERVAL_MS = 500;
 
 enum class NvsDeviceValue : uint8_t { Unknown = 0, X4 = 1, X3 = 2 };
 
@@ -188,25 +190,89 @@ HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
   return HalGPIO::DeviceType::X4;
 }
 
+// Newer X3 production units use a UC8279d panel controller on the same board,
+// glass, and pins. Probe it before SPI owns the EPD pins. The persisted values
+// reuse the device enum encoding: X4=UC8253 and X3=UC8279.
+constexpr char NVS_KEY_EPD_OVERRIDE[] = "epd_ovr";  // 0=auto, 1=uc8253, 2=uc8279
+constexpr char NVS_KEY_EPD_CACHED[] = "epd_det";    // 0=unknown, 1=uc8253, 2=uc8279
+
+bool detectX3DisplayIsUc8279() {
+  const NvsDeviceValue overrideValue = readNvsDeviceValue(NVS_KEY_EPD_OVERRIDE, NvsDeviceValue::Unknown);
+  if (overrideValue != NvsDeviceValue::Unknown) {
+    LOG_INF("HW", "EPD controller override active: %s", overrideValue == NvsDeviceValue::X3 ? "UC8279" : "UC8253");
+    return overrideValue == NvsDeviceValue::X3;
+  }
+
+  const NvsDeviceValue cachedValue = readNvsDeviceValue(NVS_KEY_EPD_CACHED, NvsDeviceValue::Unknown);
+  if (cachedValue != NvsDeviceValue::Unknown) {
+    LOG_INF("HW", "Using cached EPD controller: %s", cachedValue == NvsDeviceValue::X3 ? "UC8279" : "UC8253");
+    return cachedValue == NvsDeviceValue::X3;
+  }
+
+  uint8_t ver[5] = {0};
+  uint8_t flg = 0;
+  const freeink::X3DisplayVerdict verdict = freeink::detectX3DisplayController(ver, &flg);
+  LOG_INF("HW", "EPD probe: ver=%02X %02X %02X %02X %02X flg=%02X verdict=%u", ver[0], ver[1], ver[2], ver[3], ver[4],
+          flg, static_cast<unsigned>(verdict));
+  if (verdict == freeink::X3DisplayVerdict::Uc8279Confirmed) {
+    writeNvsDeviceValue(NVS_KEY_EPD_CACHED, NvsDeviceValue::X3);
+    return true;
+  }
+  if (verdict == freeink::X3DisplayVerdict::Uc8253Assumed) {
+    writeNvsDeviceValue(NVS_KEY_EPD_CACHED, NvsDeviceValue::X4);
+  }
+  // An inconclusive probe uses the established UC8253 driver but is not
+  // persisted, so a later cold boot can try again.
+  return false;
+}
+
 }  // namespace
 
 void HalGPIO::begin() {
-  inputMgr.begin();
-  SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
-
   _deviceType = detectDeviceTypeWithFingerprint();
+  const bool x3IsUc8279 = deviceIsX3() && detectX3DisplayIsUc8279();
+  BoardConfig::selectDevice(!deviceIsX3() ? BoardConfig::Board::XteinkX4
+                            : x3IsUc8279  ? BoardConfig::Board::XteinkX3Uc8279
+                                          : BoardConfig::Board::XteinkX3);
+
+  SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
 
   if (deviceIsX4()) {
     pinMode(BAT_GPIO0, INPUT);
     pinMode(UART0_RXD, INPUT);
   }
+  inputMgr.begin();
 }
 
 void HalGPIO::update() {
   inputMgr.update();
-  const bool connected = isUsbConnected();
-  usbStateChanged = (connected != lastUsbConnected);
-  lastUsbConnected = connected;
+  usbStateChanged = false;
+
+  const unsigned long now = millis();
+  for (size_t button = 0; button < BUTTON_COUNT; ++button) {
+    if (inputMgr.wasPressed(button)) {
+      buttonPressStart[button] = now;
+      buttonPressFinish[button] = now;
+    }
+    if (inputMgr.wasReleased(button)) {
+      buttonPressFinish[button] = now;
+    }
+  }
+
+  if (deviceIsX3() && usbPollAttempted && now - lastUsbPollMs < X3_USB_POLL_INTERVAL_MS) {
+    return;
+  }
+
+  usbPollAttempted = true;
+  lastUsbPollMs = now;
+  bool connected = false;
+  if (!readUsbConnectedNow(connected)) {
+    return;
+  }
+
+  usbStateChanged = usbSampleValid && connected != usbConnected.load(std::memory_order_relaxed);
+  usbConnected.store(connected, std::memory_order_relaxed);
+  usbSampleValid = true;
 }
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
@@ -223,6 +289,12 @@ bool HalGPIO::wasAnyReleased() const { return inputMgr.wasAnyReleased(); }
 
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
 
+unsigned long HalGPIO::getHeldTime(const uint8_t buttonIndex) const {
+  if (buttonIndex >= BUTTON_COUNT) return 0;
+  if (inputMgr.isPressed(buttonIndex)) return millis() - buttonPressStart[buttonIndex];
+  return buttonPressFinish[buttonIndex] - buttonPressStart[buttonIndex];
+}
+
 unsigned long HalGPIO::getPowerButtonHeldTime() const { return inputMgr.getPowerButtonHeldTime(); }
 
 bool HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed) {
@@ -230,65 +302,68 @@ bool HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
     // Fast path - no duration check needed
     return true;
   }
-  // TODO: Intermittent edge case remains: a single tap followed by another single tap
-  // can still power on the device. Tighten wake debounce/state handling here.
 
-  // Calibrate: subtract boot time already elapsed, assuming button held since boot.
-  const unsigned long calibration = millis();
-  const unsigned long calibratedDuration = (calibration < requiredDurationMs) ? (requiredDurationMs - calibration) : 1;
-
-  const auto start = millis();
-  inputMgr.update();
-  // inputMgr.isPressed() may take up to ~500ms to return correct state
-  while (!inputMgr.isPressed(BTN_POWER) && millis() - start < 1000) {
-    delay(10);
-    inputMgr.update();
-  }
-  if (inputMgr.isPressed(BTN_POWER)) {
-    do {
-      delay(10);
-      inputMgr.update();
-    } while (inputMgr.isPressed(BTN_POWER) && inputMgr.getPowerButtonHeldTime() < calibratedDuration);
-    if (inputMgr.getPowerButtonHeldTime() < calibratedDuration) {
-      return false;
-    }
-  } else {
+  // A wake may only be authorized by the physical press that is still held
+  // when verification begins. Reading the raw state first prevents a later
+  // tap from being mistaken for the original wake press while the debouncer is
+  // waiting for a new edge.
+  constexpr uint8_t POWER_MASK = 1U << BTN_POWER;
+  if ((inputMgr.getState() & POWER_MASK) == 0) {
     return false;
   }
-  return true;
+
+  const unsigned long holdStarted = millis();
+  while (true) {
+    inputMgr.update();
+    if ((inputMgr.getState() & POWER_MASK) == 0) {
+      return false;
+    }
+    if (millis() - holdStarted >= requiredDurationMs) {
+      return true;
+    }
+    delay(10);
+  }
 }
 
-bool HalGPIO::isUsbConnected() const {
+bool HalGPIO::readUsbConnectedNow(bool& connected) const {
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).
     // Positive current means charging.
-    for (uint8_t attempt = 0; attempt < 2; ++attempt) {
-      int16_t currentMa = 0;
-      if (X3GPIO::readBQ27220CurrentMA(&currentMa)) {
-        return currentMa > 0;
-      }
-      delay(2);
-    }
-    return false;
+    int16_t currentMa = 0;
+    if (!X3GPIO::readBQ27220CurrentMA(&currentMa)) return false;
+    connected = currentMa > 0;
+    return true;
   }
   // U0RXD/GPIO20 reads HIGH when USB is connected
-  return digitalRead(UART0_RXD) == HIGH;
+  connected = digitalRead(UART0_RXD) == HIGH;
+  return true;
 }
+
+bool HalGPIO::isUsbConnected() const { return usbConnected.load(std::memory_order_relaxed); }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
 
-  const bool usbConnected = isUsbConnected();
+  // Boot classification must not depend on a potentially stale runtime cache.
+  // Seed the cache here so UI reads stay I2C-free after setup.
+  bool connected = usbConnected.load(std::memory_order_relaxed);
+  usbPollAttempted = true;
+  lastUsbPollMs = millis();
+  if (readUsbConnectedNow(connected)) {
+    usbConnected.store(connected, std::memory_order_relaxed);
+    usbSampleValid = true;
+  }
+  const bool usbConnectedNow = usbSampleValid && usbConnected.load(std::memory_order_relaxed);
 
-  if ((wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected) ||
-      (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP && usbConnected)) {
+  if ((wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnectedNow) ||
+      (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP && usbConnectedNow)) {
     return WakeupReason::PowerButton;
   }
-  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_UNKNOWN && usbConnected) {
+  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_UNKNOWN && usbConnectedNow) {
     return WakeupReason::AfterFlash;
   }
-  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && usbConnected) {
+  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && usbConnectedNow) {
     return WakeupReason::AfterUSBPower;
   }
   return WakeupReason::Other;

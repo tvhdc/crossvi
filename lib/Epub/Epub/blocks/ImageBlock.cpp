@@ -6,9 +6,13 @@
 #include <Serialization.h>
 
 #include <cstdlib>
+#include <new>
 
+#include "Epub/BoundedFileReader.h"
+#include "Epub/SectionCacheValidator.h"
 #include "Epub/converters/DirectPixelWriter.h"
 #include "Epub/converters/ImageDecoderFactory.h"
+#include "PixelCacheValidation.h"
 
 // Cache file format:
 // - uint16_t width
@@ -17,6 +21,21 @@
 
 ImageBlock::ImageBlock(const std::string& imagePath, int16_t width, int16_t height)
     : imagePath(imagePath), width(width), height(height) {}
+
+ImageBlock::ImageBlock(const std::string& imagePath, const std::string& sourcePath, const int16_t width,
+                       const int16_t height)
+    : imagePath(imagePath),
+      sourcePath(sourcePath.size() <= SectionCacheValidation::MAX_IMAGE_PATH_BYTES ? sourcePath : std::string{}),
+      width(width),
+      height(height) {}
+
+void* ImageBlock::extractContext = nullptr;
+ImageBlock::ExtractFn ImageBlock::extractFn = nullptr;
+
+void ImageBlock::setExtractor(void* context, const ExtractFn extractor) {
+  extractContext = context;
+  extractFn = extractor;
+}
 
 bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str()); }
 
@@ -37,15 +56,8 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
     return false;
   }
 
-  const int widthDiff = abs(cachedWidth - expectedWidth);
-  const int heightDiff = abs(cachedHeight - expectedHeight);
-  if (widthDiff > 1 || heightDiff > 1) {
-    return false;
-  }
-
-  const size_t bytesPerRow = (cachedWidth + 3) / 4;
-  const size_t expectedSize = 4 + bytesPerRow * cachedHeight;
-  return cacheFile.size() >= expectedSize;
+  return pixel_cache_validation::valid(cachedWidth, cachedHeight, expectedWidth, expectedHeight,
+                                       cacheFile.fileSize64());
 }
 
 // Pages are deserialized afresh on each visit. Keep a bounded, allocation-free
@@ -81,6 +93,9 @@ void rememberImageFailure(const std::string& path) {
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
                      int expectedHeight) {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  const uint32_t cacheRenderStartedMs = static_cast<uint32_t>(millis());
+#endif
   HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
     return false;
@@ -155,7 +170,13 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   }
 
   free(readBuffer);
-  LOG_DBG("IMG", "Cache render complete");
+  LOG_DBG("IMG", "Cache render complete: %s elapsed_ms=%u rows_per_read=%d", cachePath.c_str(),
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - cacheRenderStartedMs),
+#else
+          0U,
+#endif
+          rowsPerRead);
   return true;
 }
 
@@ -192,8 +213,6 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   FontCacheManager* fcm = renderer.getFontCacheManager();
   if (fcm && fcm->isScanning()) return;
 
-  LOG_DBG("IMG", "Rendering image at %d,%d: %s (%dx%d)", x, y, imagePath.c_str(), width, height);
-
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
 
@@ -219,6 +238,8 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     return;
   }
 
+  LOG_DBG("IMG", "Rendering image at %d,%d: %s (%dx%d)", x, y, imagePath.c_str(), width, height);
+
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath);
   if (renderFromCache(renderer, cachePath, x, y, width, height)) {
@@ -228,6 +249,21 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // No cache - need to decode the image
   // Check if image file exists
   HalFile file;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  const uint32_t materializeStartedMs = static_cast<uint32_t>(millis());
+#endif
+  if (!Storage.exists(imagePath.c_str()) && !sourcePath.empty() && extractFn) {
+    if (!extractFn(extractContext, sourcePath.c_str(), imagePath.c_str())) {
+      LOG_ERR("IMG", "Failed to extract lazy image: %s", sourcePath.c_str());
+      rememberImageFailure(imagePath);
+      renderPlaceholder(renderer, x, y);
+      return;
+    }
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    LOG_DBG("IMGT", "lazy_extract source=%s elapsed_ms=%u", sourcePath.c_str(),
+            static_cast<unsigned>(static_cast<uint32_t>(millis()) - materializeStartedMs));
+#endif
+  }
   if (!Storage.openFileForRead("IMG", imagePath, file)) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
@@ -267,7 +303,14 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   LOG_DBG("IMG", "Using %s decoder", decoder->getFormatName());
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  const uint32_t decodeStartedMs = static_cast<uint32_t>(millis());
+#endif
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  LOG_DBG("IMGT", "decode path=%s elapsed_ms=%u ok=%u", imagePath.c_str(),
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - decodeStartedMs), success ? 1U : 0U);
+#endif
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
@@ -279,17 +322,28 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 }
 
 bool ImageBlock::serialize(HalFile& file) {
+  if (imagePath.empty() || imagePath.size() > SectionCacheValidation::MAX_IMAGE_PATH_BYTES ||
+      sourcePath.size() > SectionCacheValidation::MAX_IMAGE_PATH_BYTES || width <= 0 || height <= 0) {
+    LOG_ERR("IMG", "Serialization failed: invalid image block");
+    return false;
+  }
   serialization::writeString(file, imagePath);
+  serialization::writeString(file, sourcePath);
   serialization::writePod(file, width);
   serialization::writePod(file, height);
   return true;
 }
 
-std::unique_ptr<ImageBlock> ImageBlock::deserialize(HalFile& file) {
+std::unique_ptr<ImageBlock> ImageBlock::deserialize(BoundedFileReader& reader) {
   std::string path;
-  serialization::readString(file, path);
-  int16_t w, h;
-  serialization::readPod(file, w);
-  serialization::readPod(file, h);
-  return std::unique_ptr<ImageBlock>(new ImageBlock(path, w, h));
+  std::string source;
+  int16_t w = 0;
+  int16_t h = 0;
+  if (!reader.readString(path, SectionCacheValidation::MAX_IMAGE_PATH_BYTES, false) ||
+      !reader.readString(source, SectionCacheValidation::MAX_IMAGE_PATH_BYTES, true) || !reader.readPod(w) ||
+      !reader.readPod(h) || w <= 0 || h <= 0) {
+    LOG_ERR("IMG", "Deserialization failed: invalid image block");
+    return nullptr;
+  }
+  return std::unique_ptr<ImageBlock>(new (std::nothrow) ImageBlock(path, source, w, h));
 }

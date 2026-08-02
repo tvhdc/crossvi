@@ -1,6 +1,7 @@
 #pragma once
 #include <Logging.h>
 
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <string>
@@ -9,6 +10,7 @@
 #include "ActivityManager.h"  // for using the ActivityManager singleton
 #include "ActivityResult.h"
 #include "GfxRenderer.h"
+#include "GlobalShortcut.h"
 #include "MappedInputManager.h"
 #include "RenderLock.h"
 #include "util/ScreenshotInfo.h"
@@ -23,6 +25,16 @@ class Activity {
 
   ActivityResultHandler resultHandler;
   ActivityResult result;
+  std::atomic_bool openingBook{false};
+  std::atomic_bool exitingReader{false};
+
+  // Opt-in helper for screens where global navigation is safe.
+  bool handleSafeGlobalShortcut(GlobalShortcut shortcut);
+
+  void openBookWithFeedback(const std::string& path, ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
+  bool renderBookLoadingOverlay();
+  void showReaderExitFeedback();
+  bool renderReaderExitOverlay();
 
  public:
   explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -30,6 +42,10 @@ class Activity {
   virtual ~Activity() = default;
   virtual void onEnter();
   virtual void onExit();
+  // Called while this activity remains alive underneath a child activity.
+  // Readers use these hooks to exclude menus and dialogs from active reading time.
+  virtual void onPause() {}
+  virtual void onResume() {}
   virtual void loop() {}
 
   virtual void render(RenderLock&&) {}
@@ -44,6 +60,11 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  // Returns true when the activity scheduled a rerender for a clean refresh.
+  virtual bool handleForcedRefresh() { return false; }
+  virtual bool handleGlobalShortcut(GlobalShortcut) { return false; }
+  // Reader-only shortcut dispatch used by the power-button double-click.
+  virtual bool handleReaderShortcut(uint8_t) { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 
   // Start a new activity without destroying the current one

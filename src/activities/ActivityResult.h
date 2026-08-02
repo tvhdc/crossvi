@@ -7,6 +7,8 @@
 #include <utility>
 #include <variant>
 
+#include "activities/reader/PerBookReaderSettings.h"
+
 struct WifiResult {
   bool connected = false;
   std::string ssid;
@@ -20,7 +22,8 @@ struct KeyboardResult {
 struct MenuResult {
   int action = -1;
   uint8_t orientation = 0;
-  uint8_t pageTurnOption = 0;
+  uint8_t autoPageTurnSeconds = 0;
+  bool autoPageTurnChanged = false;
 };
 
 struct ChapterResult {
@@ -38,6 +41,69 @@ struct IntervalResult {
 
 struct PageResult {
   uint32_t page = 0;
+  uint64_t bookmarkFingerprint = 0;
+  bool hasBookmarkFingerprint = false;
+};
+
+struct ReaderSettingsResult {
+  PerBookReaderSettings settings;
+};
+
+struct ClippingSelectionResult {
+  std::string text;
+  uint16_t startWordIndex = 0;
+  uint16_t endWordIndex = 0;
+  uint16_t startPage = 0;
+  uint16_t endPage = 0;
+  uint16_t pageCount = 1;
+  uint16_t startPageWordIndex = 0;
+  uint16_t endPageWordIndex = 0;
+  uint16_t paragraphIndex = UINT16_MAX;
+  uint16_t wordCount = 0;
+  // Exact identity of startPage. A multi-page selection may safely reopen at
+  // its start without pretending that one CRC identifies every later page.
+  uint32_t pageFingerprint = 0;
+  // Identity of the pagination inputs shared by every page in the section.
+  // Unlike pageFingerprint, this deliberately excludes page content so a
+  // multi-page highlight can be replayed across its complete saved range.
+  uint32_t layoutFingerprint = 0;
+  bool hasTextAnchor = false;
+  uint32_t textSourceStart = 0;
+  uint32_t textSourceEnd = 0;
+};
+
+struct ClippingJumpResult {
+  // Complete in-memory identity of the store entry selected by the user. The
+  // reader must re-open the store and compare every field before changing the
+  // reading position; none of these values is a trusted navigation command on
+  // its own.
+  std::string bookTitle;
+  std::string bookAuthor;
+  std::string bookPath;
+  std::string bookType;
+  std::string storePath;
+  std::string chapterTitle;
+  uint32_t storeFileLength = 0;
+  uint8_t storeFormat = UINT8_MAX;
+  uint16_t clippingIndex = 0;
+  uint16_t spineIndex = 0;
+  uint16_t startPage = 0;
+  uint16_t endPage = 0;
+  uint16_t pageCount = 1;
+  uint16_t startWordIndex = 0;
+  uint16_t endWordIndex = 0;
+  uint16_t wordCount = 0;
+  uint16_t paragraphIndex = UINT16_MAX;
+  uint32_t timestamp = 0;
+  uint32_t textOffset = 0;
+  uint16_t textLength = 0;
+  uint32_t textCrc32 = 0;
+  // Exact identity of startPage; later pages are never matched by guessing.
+  uint32_t pageFingerprint = 0;
+  uint32_t layoutFingerprint = 0;
+  bool hasTextAnchor = false;
+  uint32_t textSourceStart = 0;
+  uint32_t textSourceEnd = 0;
 };
 
 struct ProgressChangeResult {
@@ -47,6 +113,22 @@ struct ProgressChangeResult {
   std::string xpath;
   float percentage = 0.0f;
   bool hasSavedProgress = false;
+  uint32_t textByteOffset = 0;
+  bool hasTextByteOffset = false;
+  uint64_t bookmarkFingerprint = 0;
+  bool hasBookmarkFingerprint = false;
+};
+
+// Navigation request produced by the device-wide Saved screen. The book path
+// and type are validated again before ReaderActivity consumes the target.
+struct SavedBookmarkJumpResult {
+  std::string bookPath;
+  std::string bookType;
+  ProgressChangeResult progress;
+  uint32_t page = 0;
+  bool hasFixedPage = false;
+  uint64_t bookmarkFingerprint = 0;
+  bool hasBookmarkFingerprint = false;
 };
 
 enum class NetworkMode;
@@ -63,9 +145,16 @@ struct FilePathResult {
   std::string path;
 };
 
-using ResultVariant =
-    std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, IntervalResult,
-                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult>;
+struct ReadingStatsActionResult {
+  enum class Action : uint8_t { EditBookDates, BackupDeviceStats, RestoreDeviceStats };
+
+  Action action = Action::EditBookDates;
+};
+
+using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
+                                   IntervalResult, PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult,
+                                   FilePathResult, ReaderSettingsResult, ClippingSelectionResult, ClippingJumpResult,
+                                   SavedBookmarkJumpResult, ReadingStatsActionResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

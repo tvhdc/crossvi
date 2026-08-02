@@ -1,0 +1,68 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+#include "ReadingStatsUtils.h"
+
+// Per-book reading statistics, persisted in a CRC-protected CrossVi envelope
+// at stats_v6.bin. Versions 1-5 remain readable for CrossInk migration.
+struct BookReadingStats {
+  static constexpr uint8_t CURRENT_FILE_VERSION = 6;
+  static constexpr size_t CURRENT_FILE_SIZE = 77;
+  static constexpr uint16_t MAX_PACE_SAMPLE_COUNT = 1000;
+  static constexpr uint16_t INVALID_MINUTE_OF_DAY = UINT16_MAX;
+
+  uint16_t sessionCount = 0;
+  uint32_t totalReadingSeconds = 0;
+  uint32_t totalPagesTurned = 0;
+  bool isCompleted = false;
+  uint16_t avgSecondsPerForwardPage = 0;
+  uint16_t paceSampleCount = 0;
+  uint32_t estimatedTimeLeftSeconds = 0;
+  bool startDateManual = false;
+  bool finishedDateManual = false;
+  ReadingStatsDate startDate;
+  ReadingStatsDate finishedDate;
+  uint16_t startMinuteOfDay = INVALID_MINUTE_OF_DAY;
+  uint16_t finishedMinuteOfDay = INVALID_MINUTE_OF_DAY;
+  std::array<uint32_t, READING_TIME_BUCKET_COUNT> timeOfDaySeconds{};
+  std::array<uint32_t, READING_DAY_OF_WEEK_COUNT> dayOfWeekSeconds{};
+
+  enum class LoadStatus : uint8_t {
+    Ok,
+    Missing,
+    RecoveredBackup,
+    RecoveredTemp,
+    LoadedLegacy,
+    Invalid,
+    NewerFormat,
+    IoError,
+  };
+
+  static constexpr bool isTrustedLoadStatus(const LoadStatus status) {
+    return status == LoadStatus::Ok || status == LoadStatus::Missing || status == LoadStatus::RecoveredBackup ||
+           status == LoadStatus::RecoveredTemp || status == LoadStatus::LoadedLegacy;
+  }
+
+  bool hasRecordedReading() const {
+    return sessionCount != 0 || totalReadingSeconds != 0 || totalPagesTurned != 0 || isCompleted ||
+           paceSampleCount != 0 || startDate.isValid() || finishedDate.isValid();
+  }
+
+  static BookReadingStats load(const std::string& cachePath, LoadStatus* status = nullptr);
+  // Non-mutating storage preflight used before publishing a cross-file
+  // completion marker.
+  static bool canPublish(const std::string& cachePath);
+  bool save(const std::string& cachePath) const;
+  // Ensures both the canonical primary and backup contain this payload. Used
+  // before completing multi-file transactions and explicit reset tombstones.
+  bool saveRedundant(const std::string& cachePath) const;
+  static bool remove(const std::string& cachePath);
+
+  void recordForwardPageRead(uint32_t seconds);
+  void recordReadingSpan(const ReadingStatsDateTime& localStart, uint32_t seconds);
+  static void formatDuration(uint32_t seconds, char* buffer, size_t length);
+};

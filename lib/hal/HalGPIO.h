@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include <InputManager.h>
 
+#include <array>
+#include <atomic>
+
 // Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
 #define EPD_SCLK 8   // SPI Clock
 #define EPD_MOSI 10  // SPI MOSI (Master Out Slave In)
@@ -43,14 +46,22 @@ class HalGPIO {
   InputManager inputMgr;
 #endif
 
-  bool lastUsbConnected = false;
   bool usbStateChanged = false;
+  mutable std::atomic<bool> usbConnected{false};
+  mutable bool usbSampleValid = false;
+  mutable bool usbPollAttempted = false;
+  mutable unsigned long lastUsbPollMs = 0;
+  static constexpr size_t BUTTON_COUNT = 7;
+  std::array<unsigned long, BUTTON_COUNT> buttonPressStart{};
+  std::array<unsigned long, BUTTON_COUNT> buttonPressFinish{};
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
 
  private:
   DeviceType _deviceType = DeviceType::X4;
+
+  bool readUsbConnectedNow(bool& connected) const;
 
  public:
   HalGPIO() = default;
@@ -70,6 +81,7 @@ class HalGPIO {
   bool wasReleased(uint8_t buttonIndex) const;
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
+  unsigned long getHeldTime(uint8_t buttonIndex) const;
   unsigned long getPowerButtonHeldTime() const;
 
   // Verify power button was held long enough after wakeup.
@@ -77,7 +89,7 @@ class HalGPIO {
   // Should only be called when wakeup reason is PowerButton.
   bool verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed);
 
-  // Check if USB is connected
+  // Return the latest sampled USB state without performing hardware I/O.
   bool isUsbConnected() const;
 
   // Returns true once per edge (plug or unplug) since the last update()

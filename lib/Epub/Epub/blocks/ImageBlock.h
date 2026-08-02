@@ -6,12 +6,16 @@
 
 #include "Block.h"
 
+class BoundedFileReader;
+
 class ImageBlock final : public Block {
  public:
   ImageBlock(const std::string& imagePath, int16_t width, int16_t height);
+  ImageBlock(const std::string& imagePath, const std::string& sourcePath, int16_t width, int16_t height);
   ~ImageBlock() override = default;
 
   const std::string& getImagePath() const { return imagePath; }
+  const std::string& getSourcePath() const { return sourcePath; }
   int16_t getWidth() const { return width; }
   int16_t getHeight() const { return height; }
 
@@ -21,15 +25,22 @@ class ImageBlock final : public Block {
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearSessionRenderFailures();
 
+  using ExtractFn = bool (*)(void* context, const char* sourcePath, const char* destinationPath);
+  static void setExtractor(void* context, ExtractFn extractor);
+
   BlockType getType() override { return IMAGE_BLOCK; }
   bool isEmpty() override { return false; }
 
   void render(GfxRenderer& renderer, const int x, const int y);
   bool serialize(HalFile& file);
-  static std::unique_ptr<ImageBlock> deserialize(HalFile& file);
+  static std::unique_ptr<ImageBlock> deserialize(BoundedFileReader& reader);
 
  private:
   std::string imagePath;
+  std::string sourcePath;
   int16_t width;
   int16_t height;
+
+  static void* extractContext;
+  static ExtractFn extractFn;
 };

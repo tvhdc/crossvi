@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 #include "Epub/css/CssStyle.h"
 
@@ -14,6 +15,14 @@ struct BlockStyle {
   // cap, effectiveWidth collapses to 1-2 words per line and justification dumps
   // the remaining space into a single gap.
   static constexpr float MAX_HORIZONTAL_INSET_EM = 2.0f;
+
+  [[nodiscard]] static constexpr int16_t saturatingAdd(const int16_t left, const int16_t right) {
+    const int32_t sum = static_cast<int32_t>(left) + static_cast<int32_t>(right);
+    return sum > std::numeric_limits<int16_t>::max()
+               ? std::numeric_limits<int16_t>::max()
+               : (sum < std::numeric_limits<int16_t>::min() ? std::numeric_limits<int16_t>::min()
+                                                            : static_cast<int16_t>(sum));
+  }
 
   CssTextAlign alignment = CssTextAlign::Justify;
 
@@ -38,11 +47,11 @@ struct BlockStyle {
   bool fromBrElement = false;
 
   // Combined insets (margin + padding)
-  [[nodiscard]] int16_t leftInset() const { return marginLeft + paddingLeft; }
-  [[nodiscard]] int16_t rightInset() const { return marginRight + paddingRight; }
-  [[nodiscard]] int16_t totalHorizontalInset() const { return leftInset() + rightInset(); }
-  [[nodiscard]] int16_t topInset() const { return marginTop + paddingTop; }
-  [[nodiscard]] int16_t bottomInset() const { return marginBottom + paddingBottom; }
+  [[nodiscard]] int16_t leftInset() const { return saturatingAdd(marginLeft, paddingLeft); }
+  [[nodiscard]] int16_t rightInset() const { return saturatingAdd(marginRight, paddingRight); }
+  [[nodiscard]] int16_t totalHorizontalInset() const { return saturatingAdd(leftInset(), rightInset()); }
+  [[nodiscard]] int16_t topInset() const { return saturatingAdd(marginTop, paddingTop); }
+  [[nodiscard]] int16_t bottomInset() const { return saturatingAdd(marginBottom, paddingBottom); }
 
   // Return a copy with bottom margins/padding zeroed out.
   [[nodiscard]] BlockStyle withoutBottom() const {
@@ -52,12 +61,20 @@ struct BlockStyle {
     return result;
   }
 
+  // Return a copy with top margins/padding zeroed out.
+  [[nodiscard]] BlockStyle withoutTop() const {
+    BlockStyle result = *this;
+    result.marginTop = 0;
+    result.paddingTop = 0;
+    return result;
+  }
+
   // Return a copy with bottom margins/padding collapsed (max) with the source's.
   // Uses CSS margin collapsing: adjacent parent-child margins resolve to the larger value.
   [[nodiscard]] BlockStyle addBottom(const BlockStyle& source) const {
     BlockStyle result = *this;
     result.marginBottom = std::max(marginBottom, source.marginBottom);
-    result.paddingBottom = static_cast<int16_t>(paddingBottom + source.paddingBottom);
+    result.paddingBottom = saturatingAdd(paddingBottom, source.paddingBottom);
     return result;
   }
 
@@ -72,10 +89,10 @@ struct BlockStyle {
     BlockStyle result = child;
 
     if (axis == CombineAxis::Horizontal) {
-      result.marginLeft = static_cast<int16_t>(child.marginLeft + marginLeft);
-      result.marginRight = static_cast<int16_t>(child.marginRight + marginRight);
-      result.paddingLeft = static_cast<int16_t>(child.paddingLeft + paddingLeft);
-      result.paddingRight = static_cast<int16_t>(child.paddingRight + paddingRight);
+      result.marginLeft = saturatingAdd(child.marginLeft, marginLeft);
+      result.marginRight = saturatingAdd(child.marginRight, marginRight);
+      result.paddingLeft = saturatingAdd(child.paddingLeft, paddingLeft);
+      result.paddingRight = saturatingAdd(child.paddingRight, paddingRight);
       if (!child.textIndentDefined && textIndentDefined) {
         result.textIndent = textIndent;
         result.textIndentDefined = true;
@@ -87,8 +104,8 @@ struct BlockStyle {
     } else {
       result.marginTop = std::max(child.marginTop, marginTop);
       result.marginBottom = std::max(child.marginBottom, marginBottom);
-      result.paddingTop = static_cast<int16_t>(child.paddingTop + paddingTop);
-      result.paddingBottom = static_cast<int16_t>(child.paddingBottom + paddingBottom);
+      result.paddingTop = saturatingAdd(child.paddingTop, paddingTop);
+      result.paddingBottom = saturatingAdd(child.paddingBottom, paddingBottom);
     }
 
     // Direction is not axis-specific. Inherit from parent when child doesn't define it.

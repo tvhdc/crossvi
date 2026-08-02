@@ -35,6 +35,21 @@ class HalStorage::StorageLock {
   ~StorageLock() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
 };
 
+uint64_t HalStorage::totalBytes() const {
+  StorageLock lock;
+  return SDCard.sdTotalBytes();
+}
+
+uint64_t HalStorage::usedBytes() {
+  StorageLock lock;
+  return SDCard.sdUsedBytes();
+}
+
+bool HalStorage::probeMedia() {
+  StorageLock lock;
+  return SDCard.probeMedia();
+}
+
 #define HAL_STORAGE_WRAPPED_CALL(method, ...) \
   HalStorage::StorageLock lock;               \
   return SDCard.method(__VA_ARGS__);
@@ -99,8 +114,11 @@ bool HalStorage::rmdir(const char* path) { HAL_STORAGE_WRAPPED_CALL(rmdir, path)
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function
-  FsFile fsFile;
-  bool ok = SDCard.openFileForRead(moduleName, path, fsFile);
+  // SdFat's open() already fails cleanly for a missing path. The SDK helper
+  // first calls exists(), causing a second FAT lookup and open/close.
+  FsFile fsFile = SDCard.open(path, O_RDONLY);
+  const bool ok = static_cast<bool>(fsFile);
+  if (!ok) LOG_DBG(moduleName, "File does not exist or cannot be opened: %s", path);
   file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
   return ok;
 }
@@ -145,6 +163,7 @@ bool HalStorage::removeDir(const char* path) { HAL_STORAGE_WRAPPED_CALL(removeDi
   return impl->file.method(__VA_ARGS__);
 
 void HalFile::flush() { HAL_FILE_WRAPPED_CALL(flush, ); }
+bool HalFile::sync() { HAL_FILE_WRAPPED_CALL(sync, ); }
 size_t HalFile::getName(char* name, size_t len) { HAL_FILE_WRAPPED_CALL(getName, name, len); }
 size_t HalFile::size() { HAL_FILE_FORWARD_CALL(size, ); }              // already thread-safe, no need to wrap
 size_t HalFile::fileSize() { HAL_FILE_FORWARD_CALL(fileSize, ); }      // already thread-safe, no need to wrap
@@ -155,7 +174,22 @@ bool HalFile::seekCur(int64_t offset) { HAL_FILE_WRAPPED_CALL(seekCur, offset); 
 bool HalFile::seekSet(size_t offset) { HAL_FILE_WRAPPED_CALL(seekSet, offset); }
 int HalFile::available() const { HAL_FILE_WRAPPED_CALL(available, ); }
 size_t HalFile::position() const { HAL_FILE_WRAPPED_CALL(position, ); }
-int HalFile::read(void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(read, buf, count); }
+uint8_t HalFile::getError() const { HAL_FILE_WRAPPED_CALL(getError, ); }
+bool HalFile::getCreateDateTime(uint16_t* date, uint16_t* time) const {
+  HAL_FILE_WRAPPED_CALL(getCreateDateTime, date, time);
+}
+bool HalFile::getModifyDateTime(uint16_t* date, uint16_t* time) const {
+  HAL_FILE_WRAPPED_CALL(getModifyDateTime, date, time);
+}
+int HalFile::read(void* buf, size_t count) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  const int bytesRead = impl->file.read(buf, count);
+  // SdFat reports block-read failures as -1. Most consumers use the result as
+  // a byte count, so expose a consistent zero-byte failure instead of letting
+  // an implicit conversion turn -1 into SIZE_MAX.
+  return bytesRead < 0 ? 0 : bytesRead;
+}
 int HalFile::read() { HAL_FILE_WRAPPED_CALL(read, ); }
 size_t HalFile::write(const void* buf, size_t count) { HAL_FILE_WRAPPED_CALL(write, buf, count); }
 size_t HalFile::write(uint8_t b) { HAL_FILE_WRAPPED_CALL(write, b); }

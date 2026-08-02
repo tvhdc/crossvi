@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide helps you build and run CrossPoint locally.
+This guide helps you build and run CrossVi locally.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ This guide helps you build and run CrossPoint locally.
 - Python 3.8+
 - `clang-format` 21+ in your `PATH` (CI uses clang-format 21)
 - USB-C cable
-- Xteink X4 device for hardware testing
+- Xteink X3 or X4 device for hardware testing
 
 If `./bin/clang-format-fix` fails with either of these errors, install clang-format 21:
 
@@ -43,8 +43,8 @@ The reported major version must be 21 or newer.
 ## Clone and initialize
 
 ```sh
-git clone --recursive https://github.com/crosspoint-reader/crosspoint-reader
-cd crosspoint-reader
+git clone --recursive https://github.com/tvhdc/crossvi
+cd crossvi
 ```
 
 If you already cloned without submodules:
@@ -66,7 +66,19 @@ chmod +x .githooks/pre-commit
 pio run
 ```
 
+To run the firmware UI without a device, continue with the
+[desktop simulator guide](./simulator.md).
+
 ## Flash
+
+For a first CrossVi installation, follow the Web Flasher procedure in the
+[README](../../README.md#installation) and continue only after
+**Validate partition table** succeeds. Do not use PlatformIO upload for that
+first installation: its ESP32 target writes the bootloader, partition table,
+`otadata` helper and application image rather than only the inactive OTA slot.
+
+On a Developer Edition device whose USB access and matching CrossVi partition
+layout have already been verified, the normal development upload command is:
 
 ```sh
 pio run --target upload

@@ -1,6 +1,11 @@
 # Testing and Debugging
 
-CrossPoint runs on real hardware, so debugging usually combines local build checks and on-device logs.
+CrossVi runs on real hardware, so debugging usually combines local build checks and on-device logs.
+
+For layout and interaction work without hardware, use the
+[X3/X4 desktop UI simulator](./simulator.md). It runs the production renderer
+and Activities with clickable controls and exact model-specific framebuffer
+dimensions.
 
 ## Local checks
 
@@ -11,11 +16,18 @@ If needed, see [Getting Started](./getting-started.md).
 ./bin/clang-format-fix
 pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 pio run
+python3 scripts/test_simulator.py
 ```
 
 ## Flash and monitor
 
-Flash firmware:
+Do not use PlatformIO upload for the first CrossVi installation. Use the Web
+Flasher procedure in the [README](../../README.md#installation)
+and require **Validate partition table** to pass first; PlatformIO's ESP32 upload
+target also writes the bootloader, partition table and `otadata` helper.
+
+For a Developer Edition device whose matching partition layout and recovery
+path have already been verified, flash a development build with:
 
 ```sh
 pio run --target upload
@@ -40,7 +52,7 @@ python3 scripts/debugging_monitor.py
 - Exact steps to reproduce
 - Expected vs actual behavior
 - Serial logs from boot through failure
-- Whether issue reproduces after clearing `.crosspoint/` cache on SD card
+- Whether the issue reproduces after using the firmware's book-cache command or moving aside only the affected book's generated `sections/` directory (after an SD-card backup)
 
 ## Common troubleshooting references
 

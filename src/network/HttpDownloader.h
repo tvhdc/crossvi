@@ -39,9 +39,20 @@ class HttpDownloader {
                        const std::string& password = "");
 
   /**
-   * Download a file to the SD card with optional credentials.
+   * Fetch a public GitHub release asset and require its API-provided SHA-256.
+   * The verified digest permits the signed CDN hop to use plain HTTP on
+   * low-memory devices that cannot verify the CDN's RSA certificate.
+   */
+  static bool fetchGithubReleaseAsset(const std::string& url, const std::string& expectedSha256,
+                                      const DataCallback& onData);
+
+  /**
+   * Download a file to the SD card with optional credentials. Set
+   * overwriteExisting=false for caller-reserved transaction paths: an existing
+   * file is then preserved and FILE_ERROR is returned.
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
-                                      const std::string& username = "", const std::string& password = "");
+                                      const std::string& username = "", const std::string& password = "",
+                                      bool overwriteExisting = true);
 };

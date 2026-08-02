@@ -44,29 +44,41 @@ class OptionPopup {
     active = true;
   }
 
-  bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
+  bool handleInput(const MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
 
-    const int count = static_cast<int>(ownedStrings.size());
-    if (input.wasPressed(MappedInputManager::Button::Up) || input.wasPressed(MappedInputManager::Button::Left)) {
-      selectedIndex = (selectedIndex - 1 + count) % count;
-      requestUpdate();
-      return true;
-    } else if (input.wasPressed(MappedInputManager::Button::Down) ||
-               input.wasPressed(MappedInputManager::Button::Right)) {
-      selectedIndex = (selectedIndex + 1) % count;
-      requestUpdate();
-      return true;
-    } else if (input.wasPressed(MappedInputManager::Button::Confirm)) {
-      active = false;
-      if (onSelectCallback) onSelectCallback(selectedIndex);
-      requestUpdate();
-      return true;
-    } else if (input.wasPressed(MappedInputManager::Button::Back)) {
-      active = false;
-      requestUpdate();
-      return true;
+    if (input.wasPressed(MappedInputManager::Button::NavPrevious)) {
+      return moveSelection(-1, requestUpdate);
+    } else if (input.wasPressed(MappedInputManager::Button::NavNext)) {
+      return moveSelection(1, requestUpdate);
+    } else if (input.wasReleased(MappedInputManager::Button::Confirm)) {
+      return selectCurrent(requestUpdate);
+    } else if (input.wasReleased(MappedInputManager::Button::Back)) {
+      return dismiss(requestUpdate);
     }
+    return true;
+  }
+
+  bool moveSelection(const int delta, const std::function<void()>& requestUpdate) {
+    if (!active || ownedStrings.empty() || delta == 0) return false;
+    const int count = static_cast<int>(ownedStrings.size());
+    selectedIndex = ((selectedIndex + delta) % count + count) % count;
+    requestUpdate();
+    return true;
+  }
+
+  bool selectCurrent(const std::function<void()>& requestUpdate) {
+    if (!active) return false;
+    active = false;
+    if (onSelectCallback) onSelectCallback(selectedIndex);
+    requestUpdate();
+    return true;
+  }
+
+  bool dismiss(const std::function<void()>& requestUpdate) {
+    if (!active) return false;
+    active = false;
+    requestUpdate();
     return true;
   }
 

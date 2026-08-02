@@ -18,9 +18,16 @@ struct Info {
   bool valid = false;
 };
 
-bool parse(HalFile& file, Info* info);
+enum class ExtractError : uint8_t {
+  None,
+  LowMemory,
+  ReadError,
+  Decompress,
+};
+
+bool parse(HalFile& file, Info* info, ExtractError* outError = nullptr);
 
 // Decompress the uncompressed byte range [offset, offset+size) into outFile.
-bool extractEntry(const char* path, uint32_t offset, uint32_t size, HalFile& outFile);
+bool extractEntry(const char* path, uint32_t offset, uint32_t size, HalFile& outFile, ExtractError* outError = nullptr);
 
 }  // namespace DictZip

@@ -41,6 +41,6 @@ class CalibreConnectActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool skipLoopDelay() override { return webServer && webServer->isRunning(); }
+  bool skipLoopDelay() override { return webServer && webServer->hasActiveTransfer(); }
   bool preventAutoSleep() override { return webServer && webServer->isRunning(); }
 };

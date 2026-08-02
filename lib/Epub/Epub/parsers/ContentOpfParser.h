@@ -31,6 +31,8 @@ class ContentOpfParser final : public Print {
   BookMetadataCache* cache;
   HalFile tempItemStore;
   std::string coverItemId;
+  std::string currentAuthor;
+  bool hasExplicitStartReference = false;
 
   // Index for fast idref→href lookup (binary search over .items.bin)
   struct ItemIndexEntry {
@@ -40,6 +42,11 @@ class ContentOpfParser final : public Print {
   };
   std::deque<ItemIndexEntry> itemIndex;
   bool useItemIndex = false;
+  bool ioFailed = false;
+
+  bool writeItemRecord(const std::string& itemId, const std::string& href);
+  bool readItemRecord(uint32_t offset, uint16_t expectedIdLength, std::string& itemId, std::string& href);
+  bool closeItemStore();
 
   // FNV-1a hash function
   static uint32_t fnvHash(const std::string& s) {
@@ -72,6 +79,7 @@ class ContentOpfParser final : public Print {
   ~ContentOpfParser() override;
 
   bool setup();
+  [[nodiscard]] bool succeeded() const { return !ioFailed && parser != nullptr && remainingSize == 0; }
 
   size_t write(uint8_t) override;
   size_t write(const uint8_t* buffer, size_t size) override;

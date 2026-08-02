@@ -2,6 +2,9 @@
 
 #include <Logging.h>
 
+#include "TiltLifecyclePolicy.h"
+#include "TiltPageTurnPolicy.h"
+
 HalTiltSensor halTiltSensor;  // Singleton instance
 
 bool HalTiltSensor::writeReg(uint8_t reg, uint8_t val) const {
@@ -25,9 +28,9 @@ bool HalTiltSensor::readReg(uint8_t reg, uint8_t* val) const {
   return true;
 }
 
-bool HalTiltSensor::readGyro(float& gx, float& gy, float& gz) const {
+bool HalTiltSensor::readAccelerometer(float& ax, float& ay, float& az) const {
   Wire.beginTransmission(_i2cAddr);
-  Wire.write(REG_GX_L);  // Start reading at Gyro X Low
+  Wire.write(REG_AX_L);
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
@@ -38,16 +41,15 @@ bool HalTiltSensor::readGyro(float& gx, float& gy, float& gz) const {
   }
 
   auto readInt16 = [&]() -> int16_t {
-    const uint8_t lo = Wire.read();
-    const uint8_t hi = Wire.read();
-    return static_cast<int16_t>((hi << 8) | lo);
+    const uint8_t high = Wire.read();
+    const uint8_t low = Wire.read();
+    return TiltPageTurnPolicy::decodeBigEndian(high, low);
   };
 
-  // If Full Scale is ±512 dps, the scale factor is 32768 / 512 = 64 LSB/dps
-  constexpr float SCALE = 1.0f / 64.0f;
-  gx = readInt16() * SCALE;
-  gy = readInt16() * SCALE;
-  gz = readInt16() * SCALE;
+  constexpr float SCALE = 1.0f / 16384.0f;  // ±2 g
+  ax = readInt16() * SCALE;
+  ay = readInt16() * SCALE;
+  az = readInt16() * SCALE;
   return true;
 }
 
@@ -71,7 +73,7 @@ void HalTiltSensor::begin() {
 
   LOG_INF("GYR", "QMI8658 IMU found at 0x%02X", _i2cAddr);
 
-  if (!writeReg(REG_CTRL7, CTRL7_DISABLE_ALL) || !writeReg(REG_CTRL3, CTRL3_FS_512DPS | CTRL3_ODR_28HZ) ||
+  if (!writeReg(REG_CTRL7, CTRL7_DISABLE_ALL) || !writeReg(REG_CTRL2, CTRL2_FS_2G | CTRL2_ODR_11HZ_LOW_POWER) ||
       !writeReg(REG_CTRL1, CTRL1_BASE | CTRL1_SENSOR_DISABLE)) {
     LOG_ERR("GYR", "QMI8658 register configuration failed");
     _available = false;
@@ -81,7 +83,7 @@ void HalTiltSensor::begin() {
   _available = true;
   _initMs = millis();
   _lastPollMs = millis();
-  LOG_INF("GYR", "QMI8658 gyro initialized and put to sleep");
+  LOG_INF("GYR", "QMI8658 accelerometer initialized and put to sleep");
 }
 
 bool HalTiltSensor::wake() {
@@ -94,10 +96,10 @@ bool HalTiltSensor::wake() {
     return false;
   }
 
-  if (writeReg(REG_CTRL1, CTRL1_BASE) && writeReg(REG_CTRL7, CTRL7_GYRO_ENABLE)) {
+  if (writeReg(REG_CTRL1, CTRL1_BASE) && writeReg(REG_CTRL7, CTRL7_ACCEL_ENABLE)) {
     _lastPollMs = millis();
-    _lastTiltMs = millis();
     _wakeMs = millis();
+    _gesture.requireNeutral();
     LOG_INF("GYR", "QMI8658 woke up");
     return true;
   } else {
@@ -118,7 +120,7 @@ bool HalTiltSensor::deepSleep() {
   if (writeReg(REG_CTRL7, CTRL7_DISABLE_ALL) && writeReg(REG_CTRL1, CTRL1_BASE | CTRL1_SENSOR_DISABLE)) {
     // Clear any residual state so it doesn't immediately trigger upon waking
     clearPendingEvents();
-    _inTilt = false;
+    _gesture.requireNeutral();
     LOG_INF("GYR", "QMI8658 entered sleep mode");
     return true;
   } else {
@@ -127,22 +129,30 @@ bool HalTiltSensor::deepSleep() {
   }
 }
 
-void HalTiltSensor::update(const uint8_t mode, const uint8_t orientation, const bool inReader) {
+void HalTiltSensor::update(const uint8_t mode, const uint8_t orientation, const bool inReader, const bool pageReady,
+                           const uint32_t completedRenderGeneration) {
   if (!_available) {
     return;
   }
 
-  // State machine: wake up or sleep based on the enabled flag
-  if ((mode != CrossPointTiltPageTurn::TILT_OFF) && !_isAwake) {
+  const bool shouldBeAwake = TiltLifecyclePolicy::shouldBeAwake(mode, inReader);
+  if (shouldBeAwake && !_isAwake) {
     _isAwake = wake();
     return;
-  } else if ((mode == CrossPointTiltPageTurn::TILT_OFF) && _isAwake) {
+  } else if (!shouldBeAwake && _isAwake) {
+    clearPendingEvents();
     _isAwake = !deepSleep();
     return;
   }
 
-  // If disabled, skip the rest of the polling logic and avoid unnecessary I2C traffic in non-reader activities
-  if ((mode == CrossPointTiltPageTurn::TILT_OFF) || !inReader) {
+  if (!shouldBeAwake) {
+    clearPendingEvents();
+    return;
+  }
+
+  if (!pageReady) {
+    clearPendingEvents();
+    _gesture.requireNeutral();
     return;
   }
 
@@ -157,54 +167,25 @@ void HalTiltSensor::update(const uint8_t mode, const uint8_t orientation, const 
   }
   _lastPollMs = now;
 
-  float gx, gy, gz;
-  if (!readGyro(gx, gy, gz)) {
+  float ax, ay, az;
+  if (!readAccelerometer(ax, ay, az)) {
     return;
   }
 
-  // Map the gyro axis to left/right tilt based on reader orientation.
+  // Map the gravity axis to left/right tilt based on reader orientation.
   // On the X3 PCB: X axis = left/right in portrait, Y axis = left/right in landscape.
-  float tiltAxis;
-  switch (orientation) {
-    case CrossPointOrientation::PORTRAIT:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? -gx : gx;
-      break;
-    case CrossPointOrientation::INVERTED:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? gx : -gx;
-      break;
-    case CrossPointOrientation::LANDSCAPE_CW:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? gy : -gy;
-      break;
-    case CrossPointOrientation::LANDSCAPE_CCW:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? -gy : gy;
-      break;
-    default:
-      tiltAxis = gx;
-      break;
-  }
+  const float tiltAxis = TiltPageTurnPolicy::selectedAxis(ax, ay, orientation, mode);
 
-  if (_inTilt) {
-    // Wait for device to return to neutral before allowing next trigger
-    if (fabsf(tiltAxis) < NEUTRAL_RATE_DPS) {
-      _inTilt = false;
-    }
-  } else {
-    // Check for new tilt gesture (with cooldown)
-    if ((now - _lastTiltMs) >= COOLDOWN_MS) {
-      if (tiltAxis > RATE_THRESHOLD_DPS) {
-        _tiltForwardEvent = true;
-        _hadActivity = true;
-        _inTilt = true;
-        _lastTiltMs = now;
-        LOG_INF("GYR", "Forward Trigger=(%.1f) dps", tiltAxis);
-      } else if (tiltAxis < -RATE_THRESHOLD_DPS) {
-        _tiltBackEvent = true;
-        _hadActivity = true;
-        _inTilt = true;
-        _lastTiltMs = now;
-        LOG_INF("GYR", "Backward Trigger=(%.1f) dps", tiltAxis);
-      }
-    }
+  const auto direction = TiltPageTurnPolicy::updateGesture(_gesture, tiltAxis, static_cast<uint32_t>(now), true,
+                                                           completedRenderGeneration);
+  if (direction == TiltPageTurnPolicy::Direction::Forward) {
+    _tiltForwardEvent = true;
+    _hadActivity = true;
+    LOG_INF("GYR", "Tilt page turn=(%.2f) g", tiltAxis);
+  } else if (direction == TiltPageTurnPolicy::Direction::Back) {
+    _tiltBackEvent = true;
+    _hadActivity = true;
+    LOG_INF("GYR", "Tilt page back=(%.2f) g", tiltAxis);
   }
 }
 
@@ -230,5 +211,5 @@ void HalTiltSensor::clearPendingEvents() {
   _tiltForwardEvent = false;
   _tiltBackEvent = false;
   _hadActivity = false;
-  // Intentionally preserve _inTilt so a held tilt doesn't retrigger on next poll
+  // Intentionally preserve gesture state so a held tilt cannot retrigger.
 }

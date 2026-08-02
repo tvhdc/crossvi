@@ -2,7 +2,9 @@
 
 #include <HalStorage.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "BitmapHelpers.h"
 
@@ -42,6 +44,7 @@ enum class BmpReaderError : uint8_t {
   Ok = 0,
   FileInvalid,
   SeekStartFailed,
+  ShortReadHeader,
 
   NotBMP,
   DIBTooSmall,
@@ -53,6 +56,7 @@ enum class BmpReaderError : uint8_t {
   BadDimensions,
   ImageTooLarge,
   PaletteTooLarge,
+  PixelDataOutOfBounds,
 
   SeekPixelDataFailed,
   BufferTooSmall,
@@ -60,14 +64,25 @@ enum class BmpReaderError : uint8_t {
   ShortReadRow,
 };
 
+enum class BitmapFileStatus : uint8_t { Missing, Valid, Invalid, IoError };
+enum class BitmapCacheState : uint8_t { Ready, Generate, IoError };
+
 class Bitmap {
  public:
   static const char* errorToString(BmpReaderError err);
+  static BitmapFileStatus inspectFile(const char* path);
+  static BitmapCacheState inspectDerivedCache(const std::string& finalPath);
+  static bool validateFile(const char* path, void* context = nullptr);
 
   explicit Bitmap(HalFile& file, bool dithering = false) : file(file), dithering(dithering) {}
   ~Bitmap();
   BmpReaderError parseHeaders();
   BmpReaderError readNextRow(uint8_t* data, uint8_t* rowBuffer) const;
+  // Read a 1-bit bitmap's packed pixel rows in one contiguous operation. The
+  // regular row API is intentionally kept for scaled/filtered images, while
+  // small cached cover thumbnails use this path to avoid one SD read per row.
+  BmpReaderError readPackedRows(uint8_t* data, size_t capacity) const;
+  uint8_t paletteLuminance(uint8_t index) const { return index < 256 ? paletteLum[index] : 255; }
   BmpReaderError rewindToData() const;
   int getWidth() const { return width; }
   int getHeight() const { return height; }
@@ -78,8 +93,8 @@ class Bitmap {
   uint16_t getBpp() const { return bpp; }
 
  private:
-  static uint16_t readLE16(HalFile& f);
-  static uint32_t readLE32(HalFile& f);
+  static bool readLE16(HalFile& f, uint16_t& value);
+  static bool readLE32(HalFile& f, uint32_t& value);
 
   HalFile& file;
   bool dithering = false;

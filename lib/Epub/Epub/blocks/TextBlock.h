@@ -9,6 +9,8 @@
 #include "Block.h"
 #include "BlockStyle.h"
 
+class BoundedFileReader;
+
 // Represents a line of text on a page.
 //
 // All per-word data lives in ONE flat heap allocation (the arena) instead of
@@ -19,6 +21,8 @@
 // Arena layout, in order (2-byte alignment holds by construction: all 16-bit
 // arrays come first and the arena base is allocator-aligned; RISC-V faults on
 // unaligned multi-byte access):
+//   uint32_t sourceStart[wordCount]    canonical chapter-text byte offset
+//   uint16_t sourceLength[wordCount]   zero means no stable source anchor
 //   uint16_t textOff[wordCount]        byte offset of word i's text in text[]
 //   int16_t  xpos[wordCount]
 //   uint16_t focusSuffixX[wordCount]   present only when focusPresent
@@ -49,6 +53,8 @@ class TextBlock final : public Block {
   // Typed views into the arena, bound once after the arena is filled. All
   // 16-bit bases sit at even offsets, so direct dereference is alignment-safe.
   const uint16_t* textOffArr = nullptr;
+  const uint32_t* sourceStartArr = nullptr;
+  const uint16_t* sourceLengthArr = nullptr;
   const int16_t* xposArr = nullptr;
   const uint16_t* focusSuffixXArr = nullptr;  // null when !focusPresent
   const uint8_t* stylesArr = nullptr;
@@ -63,6 +69,12 @@ class TextBlock final : public Block {
   // Flatten-on-construct: copies the layout-time vectors into the arena; the
   // vectors die with the caller. On arena OOM the block is empty and valid()
   // is false -- callers must check and fail the line instead of using it.
+  explicit TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
+                     const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
+                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint32_t>& sourceStarts,
+                     const std::vector<uint16_t>& sourceLengths, const BlockStyle& blockStyle = BlockStyle());
+  // Non-EPUB callers keep their anchors out-of-band. Preserve that path while
+  // marking every token in this shared block representation as unanchored.
   explicit TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
                      const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle = BlockStyle());
@@ -85,9 +97,14 @@ class TextBlock final : public Block {
   EpdFontFamily::Style wordStyle(const uint16_t i) const { return static_cast<EpdFontFamily::Style>(stylesArr[i]); }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }
+  bool hasSourceAnchor(const uint16_t i) const {
+    return sourceLengthArr[i] != 0 && sourceStartArr[i] <= UINT32_MAX - sourceLengthArr[i];
+  }
+  uint32_t sourceStart(const uint16_t i) const { return sourceStartArr[i]; }
+  uint32_t sourceEnd(const uint16_t i) const { return sourceStartArr[i] + sourceLengthArr[i]; }
 
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(HalFile& file) const;
-  static std::unique_ptr<TextBlock> deserialize(HalFile& file);
+  static std::unique_ptr<TextBlock> deserialize(BoundedFileReader& reader);
 };

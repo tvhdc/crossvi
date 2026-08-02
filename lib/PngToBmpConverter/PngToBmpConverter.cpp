@@ -7,8 +7,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "BitmapHelpers.h"
+#include "PngImageSafety.h"
 
 // ============================================================================
 // IMAGE PROCESSING OPTIONS - Same as JpegToBmpConverter for consistency
@@ -219,7 +221,7 @@ static bool findNextIdatChunk(PngDecodeContext& ctx) {
 
     // Skip this chunk's data + 4-byte CRC
     // Use seek to skip efficiently
-    if (!ctx.file->seekCur(chunkLen + 4)) return false;
+    if (!ctx.file->seekCur(static_cast<int64_t>(chunkLen) + 4)) return false;
 
     // If we hit IEND, there are no more chunks
     if (memcmp(chunkType, "IEND", 4) == 0) {
@@ -405,6 +407,10 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
   // Read IHDR chunk
   uint32_t ihdrLen;
   if (!readBE32(pngFile, ihdrLen)) return false;
+  if (ihdrLen != 13) {
+    LOG_ERR("PNG", "Invalid IHDR length: %u", ihdrLen);
+    return false;
+  }
 
   uint8_t ihdrType[4];
   if (pngFile.read(ihdrType, 4) != 4 || memcmp(ihdrType, "IHDR", 4) != 0) {
@@ -425,26 +431,12 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
   uint8_t interlace = ihdrRest[4];
 
   // Skip IHDR CRC
-  pngFile.seekCur(4);
+  if (!pngFile.seekCur(4)) return false;
 
   LOG_DBG("PNG", "Image: %ux%u, depth=%u, color=%u, interlace=%u", width, height, bitDepth, colorType, interlace);
 
-  if (compression != 0 || filter != 0) {
-    LOG_ERR("PNG", "Unsupported compression/filter method");
-    return false;
-  }
-
-  if (interlace != 0) {
-    LOG_ERR("PNG", "Interlaced PNGs not supported");
-    return false;
-  }
-
-  // Safety limits
-  constexpr int MAX_IMAGE_WIDTH = 2048;
-  constexpr int MAX_IMAGE_HEIGHT = 3072;
-
-  if (width > MAX_IMAGE_WIDTH || height > MAX_IMAGE_HEIGHT || width == 0 || height == 0) {
-    LOG_ERR("PNG", "Image too large or zero (%ux%u)", width, height);
+  if (!png_image_safety::validIhdr(ihdrLen, width, height, bitDepth, colorType, compression, filter, interlace)) {
+    LOG_ERR("PNG", "Invalid or unsupported IHDR");
     return false;
   }
 
@@ -493,6 +485,21 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     return false;
   }
 
+  int outWidth = 0;
+  int outHeight = 0;
+  if (!png_image_safety::calculateOutputDimensions(width, height, targetWidth, targetHeight, crop, outWidth,
+                                                   outHeight)) {
+    LOG_ERR("PNG", "Output dimensions exceed safety limits");
+    return false;
+  }
+  const bool needsScaling = static_cast<uint32_t>(outWidth) != width || static_cast<uint32_t>(outHeight) != height;
+  const uint32_t scaleX_fp = needsScaling ? (width << 16) / static_cast<uint32_t>(outWidth) : 65536;
+  const uint32_t scaleY_fp = needsScaling ? (height << 16) / static_cast<uint32_t>(outHeight) : 65536;
+  if (needsScaling) {
+    LOG_DBG("PNG", "Scaling %ux%u -> %dx%d (target %dx%d)", width, height, outWidth, outHeight, targetWidth,
+            targetHeight);
+  }
+
   // Initialize decode context
   PngDecodeContext ctx = {};
   ctx.file = &pngFile;
@@ -529,10 +536,10 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       if (entries > 256) entries = 256;
       ctx.paletteSize = entries;
       size_t palBytes = entries * 3;
-      pngFile.read(ctx.palette, palBytes);
+      if (pngFile.read(ctx.palette, palBytes) != static_cast<int>(palBytes)) break;
       // Skip any remaining palette data
-      if (chunkLen > palBytes) pngFile.seekCur(chunkLen - palBytes);
-      pngFile.seekCur(4);  // CRC
+      if (chunkLen > palBytes && !pngFile.seekCur(static_cast<int64_t>(chunkLen - palBytes))) break;
+      if (!pngFile.seekCur(4)) break;  // CRC
     } else if (memcmp(chunkType, "IDAT", 4) == 0) {
       ctx.chunkBytesRemaining = chunkLen;
       foundIdat = true;
@@ -540,7 +547,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
       break;
     } else {
       // Skip unknown chunk
-      pngFile.seekCur(chunkLen + 4);
+      if (!pngFile.seekCur(static_cast<int64_t>(chunkLen) + 4)) break;
     }
   }
 
@@ -562,47 +569,14 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
   // PNG IDAT data is zlib-wrapped (2-byte header + trailing adler32)
   ctx.reader.setZlibWrapped();
 
-  // Calculate output dimensions (same logic as JpegToBmpConverter)
-  int outWidth = width;
-  int outHeight = height;
-  uint32_t scaleX_fp = 65536;
-  uint32_t scaleY_fp = 65536;
-  bool needsScaling = false;
-
-  if (targetWidth > 0 && targetHeight > 0 &&
-      (static_cast<int>(width) != targetWidth || static_cast<int>(height) != targetHeight)) {
-    const float scaleToFitWidth = static_cast<float>(targetWidth) / width;
-    const float scaleToFitHeight = static_cast<float>(targetHeight) / height;
-    float scale = 1.0;
-    if (crop) {
-      scale = (scaleToFitWidth > scaleToFitHeight) ? scaleToFitWidth : scaleToFitHeight;
-    } else {
-      scale = (scaleToFitWidth < scaleToFitHeight) ? scaleToFitWidth : scaleToFitHeight;
-    }
-
-    outWidth = static_cast<int>(width * scale);
-    outHeight = static_cast<int>(height * scale);
-    if (outWidth < 1) outWidth = 1;
-    if (outHeight < 1) outHeight = 1;
-
-    scaleX_fp = (width << 16) / outWidth;
-    scaleY_fp = (height << 16) / outHeight;
-    needsScaling = true;
-
-    LOG_DBG("PNG", "Scaling %ux%u -> %dx%d (target %dx%d)", width, height, outWidth, outHeight, targetWidth,
-            targetHeight);
-  }
-
-  // Write BMP header
+  // Calculate BMP row size. The header is written only after every working
+  // allocation succeeds, so an OOM cannot leave a plausible partial BMP.
   int bytesPerRow;
   if (USE_8BIT_OUTPUT && !oneBit) {
-    writeBmpHeader8bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth + 3) / 4 * 4;
   } else if (oneBit) {
-    writeBmpHeader1bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth + 31) / 32 * 4;
   } else {
-    writeBmpHeader2bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth * 2 + 31) / 32 * 4;
   }
 
@@ -621,13 +595,28 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
   Atkinson1BitDitherer* atkinson1BitDitherer = nullptr;
 
   if (oneBit) {
-    atkinson1BitDitherer = new Atkinson1BitDitherer(outWidth);
+    atkinson1BitDitherer = new (std::nothrow) Atkinson1BitDitherer(outWidth, std::nothrow);
   } else if (!USE_8BIT_OUTPUT) {
     if (USE_ATKINSON) {
-      atkinsonDitherer = new AtkinsonDitherer(outWidth);
+      atkinsonDitherer = new (std::nothrow) AtkinsonDitherer(outWidth, std::nothrow);
     } else if (USE_FLOYD_STEINBERG) {
-      fsDitherer = new FloydSteinbergDitherer(outWidth);
+      fsDitherer = new (std::nothrow) FloydSteinbergDitherer(outWidth, std::nothrow);
     }
+  }
+
+  const bool dithererValid = oneBit                             ? atkinson1BitDitherer && atkinson1BitDitherer->valid()
+                             : !USE_8BIT_OUTPUT && USE_ATKINSON ? atkinsonDitherer && atkinsonDitherer->valid()
+                             : !USE_8BIT_OUTPUT && USE_FLOYD_STEINBERG ? fsDitherer && fsDitherer->valid()
+                                                                       : true;
+  if (!dithererValid) {
+    LOG_ERR("PNG", "Failed to allocate ditherer");
+    delete atkinsonDitherer;
+    delete fsDitherer;
+    delete atkinson1BitDitherer;
+    free(rowBuffer);
+    free(ctx.currentRow);
+    free(ctx.previousRow);
+    return false;
   }
 
   // Scaling accumulators
@@ -637,8 +626,20 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
   uint32_t nextOutY_srcStart = 0;
 
   if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint16_t[outWidth]();
+    rowAccum = new (std::nothrow) uint32_t[outWidth]();
+    rowCount = new (std::nothrow) uint16_t[outWidth]();
+    if (!rowAccum || !rowCount) {
+      LOG_ERR("PNG", "Failed to allocate scaling buffers");
+      delete[] rowAccum;
+      delete[] rowCount;
+      delete atkinsonDitherer;
+      delete fsDitherer;
+      delete atkinson1BitDitherer;
+      free(rowBuffer);
+      free(ctx.currentRow);
+      free(ctx.previousRow);
+      return false;
+    }
     nextOutY_srcStart = scaleY_fp;
   }
 
@@ -656,6 +657,14 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     free(ctx.currentRow);
     free(ctx.previousRow);
     return false;
+  }
+
+  if (USE_8BIT_OUTPUT && !oneBit) {
+    writeBmpHeader8bit(bmpOut, outWidth, outHeight);
+  } else if (oneBit) {
+    writeBmpHeader1bit(bmpOut, outWidth, outHeight);
+  } else {
+    writeBmpHeader2bit(bmpOut, outWidth, outHeight);
   }
 
   bool success = true;
@@ -829,6 +838,6 @@ bool PngToBmpConverter::pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpO
 }
 
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth,
-                                                       int targetMaxHeight) {
-  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
+                                                       int targetMaxHeight, const bool crop) {
+  return pngFileToBmpStreamInternal(pngFile, bmpOut, targetMaxWidth, targetMaxHeight, true, crop);
 }

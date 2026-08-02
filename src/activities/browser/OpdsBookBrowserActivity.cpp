@@ -16,10 +16,13 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "network/UploadPathGuard.h"
 #include "util/BookCacheUtils.h"
+#include "util/BookPathMoveUtils.h"
 #include "util/OpdsFilename.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
+#include "util/WifiLifecycle.h"
 
 namespace {
 constexpr int PAGE_ITEMS = 23;
@@ -50,9 +53,7 @@ void OpdsBookBrowserActivity::onExit() {
   entries.clear();
   navigationHistory.clear();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (!WifiLifecycle::shutDown()) {
     silentRestart();
   }
 }
@@ -286,6 +287,14 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   // no std::string copy. exists()/mkdir() take const char*.
   const char* folder = SETTINGS.opdsDownloadFolder;  // "" => SD root
   bool haveFolder = folder[0] != '\0';
+  const std::string folderPath = haveFolder ? folder : "/";
+  if (!UploadPathGuard::isSafeAbsolutePath(folderPath.c_str())) {
+    LOG_ERR("OPDS", "Unsafe download folder rejected: %s", folder);
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_DOWNLOAD_FAILED);
+    requestUpdate();
+    return;
+  }
   if (haveFolder && !Storage.exists(folder) && !Storage.mkdir(folder)) {
     // exists()-guard first: mkdir's return-on-existing is unconfirmed, and every
     // existing caller checks exists() before mkdir. On real failure, fall back
@@ -303,11 +312,19 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   filename += '/';
   filename += opdsBookFilename(book.author, book.title, static_cast<OpdsFilenameFormat>(SETTINGS.opdsFilenameFormat));
   LOG_DBG("OPDS", "Downloading: %s -> %s", downloadUrl.c_str(), filename.c_str());
+  const std::string stagingPath = hiddenBookFileSibling(filename, ".crossvi-download.tmp");
+  if (Storage.exists(stagingPath.c_str())) {
+    LOG_ERR("OPDS", "Existing download transaction requires manual recovery: %s", stagingPath.c_str());
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_DOWNLOAD_FAILED);
+    requestUpdate();
+    return;
+  }
 
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = 0;
   const auto result = HttpDownloader::downloadToFile(
-      downloadUrl, filename,
+      downloadUrl, stagingPath,
       [this, &lastRenderedPercent, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
         downloadProgress = downloaded;
         downloadTotal = total;
@@ -321,11 +338,18 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
           requestUpdate(true);
         }
       },
-      nullptr, server.username, server.password);
+      nullptr, server.username, server.password, false);
 
   if (result == HttpDownloader::OK) {
-    clearBookCache(filename);
-    state = BrowserState::BROWSING;
+    const BookFilePublishResult published = publishStagedBookFile(stagingPath, filename);
+    if (published == BookFilePublishResult::Published || published == BookFilePublishResult::Unchanged) {
+      state = BrowserState::BROWSING;
+    } else {
+      Storage.remove(stagingPath.c_str());
+      LOG_ERR("OPDS", "Could not safely publish download: %u", static_cast<unsigned>(published));
+      state = BrowserState::ERROR;
+      errorMessage = tr(STR_DOWNLOAD_FAILED);
+    }
   } else {
     LOG_ERR("OPDS", "Download failed: %d", static_cast<int>(result));
     state = BrowserState::ERROR;

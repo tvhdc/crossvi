@@ -1,12 +1,22 @@
 #include "HalPowerManager.h"
 
+#include <BoardConfig.h>
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
+#include <esp_task_wdt.h>
 
 #include <cassert>
 
 #include "HalGPIO.h"
+
+namespace {
+void feedTaskWatchdogIfSubscribed() {
+  if (esp_task_wdt_status(nullptr) == ESP_OK) {
+    esp_task_wdt_reset();
+  }
+}
+}  // namespace
 
 HalPowerManager powerManager;  // Singleton instance
 
@@ -26,7 +36,7 @@ void HalPowerManager::begin() {
 }
 
 void HalPowerManager::setPowerSaving(bool enabled) {
-  if (normalFreq <= 0) {
+  if (normalFreq <= 0 || !modeMutex) {
     return;  // invalid state
   }
 
@@ -36,14 +46,17 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     enabled = false;
   }
 
-  // Note: We don't use mutex here to avoid too much overhead,
-  // it's not very important if we read a slightly stale value for currentLockMode
+  // Keep the mode decision and frequency transition atomic with Lock
+  // construction. A stale None here can otherwise lower the X3 to 10 MHz
+  // after the render task has already acquired its normal-speed lock.
+  xSemaphoreTake(modeMutex, portMAX_DELAY);
   const LockMode mode = currentLockMode;
 
   if (mode == None && enabled && !isLowPower) {
     LOG_DBG("PWR", "Going to low-power mode");
     if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
+      xSemaphoreGive(modeMutex);
       return;
     }
     isLowPower = true;
@@ -52,19 +65,26 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     LOG_DBG("PWR", "Restoring normal CPU frequency");
     if (!setCpuFrequencyMhz(normalFreq)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
+      xSemaphoreGive(modeMutex);
       return;
     }
     isLowPower = false;
   }
 
   // Otherwise, no change needed
+  xSemaphoreGive(modeMutex);
 }
 
-void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
-  // Ensure that the power button has been released to avoid immediately turning back on if you're holding it
-  while (gpio.isPressed(HalGPIO::BTN_POWER)) {
-    delay(50);
-    gpio.update();
+void HalPowerManager::startDeepSleep(HalGPIO&) const {
+  const auto& powerInput = BoardConfig::ACTIVE.input;
+  const int pressedLevel = powerInput.powerActiveHigh ? HIGH : LOW;
+  pinMode(powerInput.power, powerInput.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+
+  // Use the physical level here rather than the debounced button state. A fast
+  // release followed by a new wake press must not look like one continuous hold.
+  while (digitalRead(powerInput.power) == pressedLevel) {
+    feedTaskWatchdogIfSubscribed();
+    delay(5);
   }
 
 #ifdef ENABLE_SERIAL_LOG
@@ -84,12 +104,13 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   esp_sleep_config_gpio_isolate();
   gpio_deep_sleep_hold_en();
   gpio_hold_en(GPIO_SPIWP);
-  pinMode(InputManager::POWER_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(powerInput.power, powerInput.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   // Arm the wakeup trigger *after* the button is released
   // Note: this is only useful for waking up on USB power. On battery, the MCU will be completely powered off, so the
   // power button is hard-wired to briefly provide power to the MCU, waking it up regardless of the wakeup source
   // configuration
-  esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << powerInput.power,
+                                    powerInput.powerActiveHigh ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
   // Enter Deep Sleep
   esp_deep_sleep_start();
 }

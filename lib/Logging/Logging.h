@@ -19,15 +19,15 @@ special formatting), use the underlying logSerial object directly:
     logSerial.printf("Special case: %d\n", value);
     logSerial.write(binaryData, length);
 
-The logSerial reference (defined below) points to the real Serial object and
-won't trigger deprecation warnings.
+The logSerial reference (defined below) points to the configured Serial
+backend (USB CDC or UART) and won't trigger deprecation warnings.
 */
 
 #ifndef LOG_LEVEL
 #define LOG_LEVEL 0
 #endif
 
-static HWCDC& logSerial = Serial;
+static auto& logSerial = Serial;
 
 void logPrintf(const char* level, const char* origin, const char* format, ...);
 

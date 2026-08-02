@@ -8,9 +8,14 @@
 
 #include <cstring>
 
+#include "Epub/BoundedFileReader.h"
+#include "Epub/SectionCacheValidator.h"
+
 size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const uint16_t textBytes) {
-  // Layout documented in TextBlock.h: 16-bit arrays first, then 8-bit arrays, then text.
-  size_t size = static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
+  // Layout documented in TextBlock.h: aligned source/geometry arrays first,
+  // then 8-bit arrays and text.
+  size_t size = static_cast<size_t>(wordCount) *
+                (sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
   if (hasFocus) {
     size += static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(uint8_t));
   }
@@ -20,9 +25,11 @@ size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const
 void TextBlock::bindArenaPointers() {
   uint8_t* base = arena.get();
   const size_t wc = numWords;
-  textOffArr = reinterpret_cast<const uint16_t*>(base);
-  xposArr = reinterpret_cast<const int16_t*>(base + wc * 2);
-  size_t off = wc * 4;
+  sourceStartArr = reinterpret_cast<const uint32_t*>(base);
+  sourceLengthArr = reinterpret_cast<const uint16_t*>(base + wc * 4);
+  textOffArr = reinterpret_cast<const uint16_t*>(base + wc * 6);
+  xposArr = reinterpret_cast<const int16_t*>(base + wc * 8);
+  size_t off = wc * 10;
   if (focusPresent) {
     focusSuffixXArr = reinterpret_cast<const uint16_t*>(base + off);
     off += wc * 2;
@@ -38,17 +45,19 @@ void TextBlock::bindArenaPointers() {
 
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
-                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle)
+                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint32_t>& sourceStarts,
+                     const std::vector<uint16_t>& sourceLengths, const BlockStyle& blockStyle)
     : blockStyle(blockStyle) {
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !focusBoundary.empty();
-  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() > 10000 ||
+  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() != sourceStarts.size() ||
+      words.size() != sourceLengths.size() || words.size() > SectionCacheValidation::MAX_TEXT_BLOCK_WORDS ||
       (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size()))) {
-    LOG_ERR("TXB", "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u)",
+    LOG_ERR("TXB", "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, anchors=%u/%u)",
             static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
-            static_cast<uint32_t>(wordStyles.size()), static_cast<uint32_t>(focusBoundary.size()),
-            static_cast<uint32_t>(focusSuffixX.size()));
+            static_cast<uint32_t>(wordStyles.size()), static_cast<uint32_t>(sourceStarts.size()),
+            static_cast<uint32_t>(sourceLengths.size()));
     isValid = false;
     return;
   }
@@ -86,11 +95,20 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
 
   // Pass 2: fill. Mutable aliases of the const views bound above.
   auto* textOff = const_cast<uint16_t*>(textOffArr);
+  auto* sourceStart = const_cast<uint32_t*>(sourceStartArr);
+  auto* sourceLength = const_cast<uint16_t*>(sourceLengthArr);
   auto* xpos = const_cast<int16_t*>(xposArr);
   auto* styles = const_cast<uint8_t*>(stylesArr);
   auto* text = const_cast<char*>(textArr);
   uint16_t off = 0;
   for (uint16_t i = 0; i < numWords; i++) {
+    if (sourceLengths[i] != 0 && sourceStarts[i] > UINT32_MAX - sourceLengths[i]) {
+      LOG_ERR("TXB", "Construction failed: source anchor overflow");
+      isValid = false;
+      return;
+    }
+    sourceStart[i] = sourceStarts[i];
+    sourceLength[i] = sourceLengths[i];
     textOff[i] = off;
     xpos[i] = wordXpos[i];
     styles[i] = static_cast<uint8_t>(wordStyles[i]);
@@ -107,6 +125,12 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
     }
   }
 }
+
+TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
+                     const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
+                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle)
+    : TextBlock(words, wordXpos, wordStyles, focusBoundary, focusSuffixX,
+                std::vector<uint32_t>(words.size(), UINT32_MAX), std::vector<uint16_t>(words.size(), 0), blockStyle) {}
 
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   if (!isValid) {
@@ -274,21 +298,19 @@ bool TextBlock::serialize(HalFile& file) const {
   return true;
 }
 
-std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
-  uint16_t wc;
-  uint8_t hasFocus;
-  uint16_t textBytes;
-  serialization::readPod(file, wc);
-  serialization::readPod(file, hasFocus);
-  serialization::readPod(file, textBytes);
+std::unique_ptr<TextBlock> TextBlock::deserialize(BoundedFileReader& reader) {
+  uint16_t wc = 0;
+  uint8_t hasFocus = 0;
+  uint16_t textBytes = 0;
+  if (!reader.readPod(wc) || !reader.readPod(hasFocus) || !reader.readPod(textBytes)) return nullptr;
 
   // Sanity checks: cap the arena allocation and reject impossible geometry
   // (every word carries at least its NUL terminator).
-  if (wc > 10000) {
+  if (wc > SectionCacheValidation::MAX_TEXT_BLOCK_WORDS || hasFocus > 1) {
     LOG_ERR("TXB", "Deserialization failed: word count %u exceeds maximum", wc);
     return nullptr;
   }
-  if ((wc == 0 && textBytes != 0) || (wc > 0 && textBytes < wc)) {
+  if ((wc == 0 && (hasFocus != 0 || textBytes != 0)) || (wc > 0 && textBytes < wc)) {
     LOG_ERR("TXB", "Deserialization failed: bad text size %u for %u words", textBytes, wc);
     return nullptr;
   }
@@ -304,12 +326,19 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
 
   if (wc > 0) {
     const size_t size = arenaSize(wc, block->focusPresent, textBytes);
+    constexpr size_t SERIALIZED_BLOCK_STYLE_BYTES =
+        sizeof(uint8_t) + sizeof(bool) + 9 * sizeof(int16_t) + 3 * sizeof(bool);
+    static_assert(SERIALIZED_BLOCK_STYLE_BYTES == 23, "Section cache validator style layout mismatch");
+    if (size > reader.remaining() || SERIALIZED_BLOCK_STYLE_BYTES > reader.remaining() - size) {
+      LOG_ERR("TXB", "Deserialization failed: arena exceeds page boundary");
+      return nullptr;
+    }
     block->arena = makeUniqueNoThrow<uint8_t[]>(size);
     if (!block->arena) {
       LOG_ERR("TXB", "OOM: arena %u bytes", static_cast<uint32_t>(size));
       return nullptr;
     }
-    if (file.read(block->arena.get(), size) != size) {
+    if (!reader.readBytes(block->arena.get(), size)) {
       LOG_ERR("TXB", "Deserialization failed: arena read (%u bytes)", static_cast<uint32_t>(size));
       return nullptr;
     }
@@ -330,24 +359,29 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
         return nullptr;
       }
     }
+    for (uint16_t i = 0; i < wc; ++i) {
+      if ((block->stylesArr[i] & ~0x3FU) != 0 || (block->focusPresent && block->focusBoundaryArr[i] > 36U) ||
+          (block->sourceLengthArr[i] != 0 && block->sourceStartArr[i] > UINT32_MAX - block->sourceLengthArr[i])) {
+        LOG_ERR("TXB", "Deserialization failed: invalid word metadata %u", i);
+        return nullptr;
+      }
+    }
   }
 
   // Style (alignment + margins/padding/indent)
   BlockStyle& blockStyle = block->blockStyle;
-  serialization::readPod(file, blockStyle.alignment);
-  serialization::readPod(file, blockStyle.textAlignDefined);
-  serialization::readPod(file, blockStyle.marginTop);
-  serialization::readPod(file, blockStyle.marginBottom);
-  serialization::readPod(file, blockStyle.marginLeft);
-  serialization::readPod(file, blockStyle.marginRight);
-  serialization::readPod(file, blockStyle.paddingTop);
-  serialization::readPod(file, blockStyle.paddingBottom);
-  serialization::readPod(file, blockStyle.paddingLeft);
-  serialization::readPod(file, blockStyle.paddingRight);
-  serialization::readPod(file, blockStyle.textIndent);
-  serialization::readPod(file, blockStyle.textIndentDefined);
-  serialization::readPod(file, blockStyle.isRtl);
-  serialization::readPod(file, blockStyle.directionDefined);
+  uint8_t alignment = 0;
+  if (!reader.readPod(alignment) || alignment > static_cast<uint8_t>(CssTextAlign::None)) return nullptr;
+  blockStyle.alignment = static_cast<CssTextAlign>(alignment);
+  if (!reader.readBool(blockStyle.textAlignDefined) || !reader.readPod(blockStyle.marginTop) ||
+      !reader.readPod(blockStyle.marginBottom) || !reader.readPod(blockStyle.marginLeft) ||
+      !reader.readPod(blockStyle.marginRight) || !reader.readPod(blockStyle.paddingTop) ||
+      !reader.readPod(blockStyle.paddingBottom) || !reader.readPod(blockStyle.paddingLeft) ||
+      !reader.readPod(blockStyle.paddingRight) || !reader.readPod(blockStyle.textIndent) ||
+      !reader.readBool(blockStyle.textIndentDefined) || !reader.readBool(blockStyle.isRtl) ||
+      !reader.readBool(blockStyle.directionDefined)) {
+    return nullptr;
+  }
 
   return block;
 }

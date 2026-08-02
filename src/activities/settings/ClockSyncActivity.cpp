@@ -14,6 +14,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/WifiLifecycle.h"
 
 void ClockSyncActivity::onEnter() {
   Activity::onEnter();
@@ -32,9 +33,7 @@ void ClockSyncActivity::onEnter() {
 void ClockSyncActivity::onExit() {
   Activity::onExit();
 
-  if (shouldTearDownWifiOnExit && WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (shouldTearDownWifiOnExit && !WifiLifecycle::shutDown()) {
     silentRestart();
   }
 }

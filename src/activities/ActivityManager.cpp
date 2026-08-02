@@ -2,10 +2,13 @@
 
 #include <FontCacheManager.h>
 #include <HalPowerManager.h>
+#include <HalStorage.h>
 
 #include <algorithm>
 
 #include "OpdsServerStore.h"
+#include "RecentBooksStore.h"
+#include "RenderGeneration.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
@@ -15,6 +18,7 @@
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
+#include "reader/SavedClippingsActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -40,6 +44,7 @@ void ActivityManager::renderTaskTrampoline(void* param) {
 void ActivityManager::renderTaskLoop() {
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const uint32_t targetGeneration = requestedRenderGeneration.load(std::memory_order_acquire);
     // Acquire the lock before reading currentActivity to avoid a TOCTOU race
     // where the main task deletes the activity between the null-check and render().
     RenderLock lock;
@@ -50,8 +55,12 @@ void ActivityManager::renderTaskLoop() {
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
     TaskHandle_t waiter = nullptr;
     taskENTER_CRITICAL(&activityManagerSpinlock);
-    waiter = waitingTaskHandle;
-    waitingTaskHandle = nullptr;
+    completedRenderGeneration.store(targetGeneration, std::memory_order_release);
+    if (waitingTaskHandle && RenderGeneration::reached(targetGeneration, waitingRenderGeneration)) {
+      waiter = waitingTaskHandle;
+      waitingTaskHandle = nullptr;
+      waitingRenderGeneration = 0;
+    }
     taskEXIT_CRITICAL(&activityManagerSpinlock);
     if (waiter) {
       xTaskNotify(waiter, 1, eIncrement);
@@ -75,6 +84,11 @@ void ActivityManager::loop() {
         pendingAction = PendingAction::None;
         continue;
       }
+
+      // Probe before every pop, including nested Settings activities. Their
+      // onExit/result handlers may persist state; after card removal those
+      // writes must fail fast instead of each waiting for an SD timeout.
+      Storage.probeMedia();
 
       ActivityResult pendingResult = std::move(currentActivity->result);
 
@@ -105,6 +119,10 @@ void ActivityManager::loop() {
 
         // Request an update to ensure the popped activity gets re-rendered
         if (pendingAction == PendingAction::None) {
+          // Match onPause() from the Push path. Run without the render lock so
+          // activities may safely perform their normal resume work.
+          lock.unlock();
+          currentActivity->onResume();
           requestUpdate();
         }
 
@@ -125,6 +143,9 @@ void ActivityManager::loop() {
           stackActivities.pop_back();
         }
       } else if (pendingAction == PendingAction::Push) {
+        // The current activity stays alive, but is no longer visible while the
+        // child is on top of it.
+        currentActivity->onPause();
         // Move current activity to stack
         stackActivities.push_back(std::move(currentActivity));
         LOG_DBG("ACT", "Pushed to activity stack, new size = %zu", stackActivities.size());
@@ -144,6 +165,7 @@ void ActivityManager::loop() {
     // Using direct notification to signal the render task to update
     // Increment counter so multiple rapid calls won't be lost
     if (renderTaskHandle) {
+      requestedRenderGeneration.fetch_add(1, std::memory_order_release);
       xTaskNotify(renderTaskHandle, 1, eIncrement);
     }
   }
@@ -172,17 +194,40 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
 }
 
 void ActivityManager::goToFileTransfer() {
+  yourBooksReturnState.reset();
+  savedClippingsReturnState.reset();
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
 }
 
-void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
+void ActivityManager::goToSettings() {
+  yourBooksReturnState.reset();
+  savedClippingsReturnState.reset();
+  replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput));
+}
 
 void ActivityManager::goToFileBrowser(std::string path) {
+  yourBooksReturnState.reset();
+  savedClippingsReturnState.reset();
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
-void ActivityManager::goToRecentBooks() {
+void ActivityManager::goToYourBooks(std::optional<YourBooksReturnState> returnState) {
+  if (returnState.has_value()) {
+    replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput, std::move(returnState)));
+    return;
+  }
+  yourBooksReturnState.reset();
+  savedClippingsReturnState.reset();
   replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));
+}
+
+void ActivityManager::goToSavedClippings(std::optional<SavedClippingsReturnState> returnState) {
+  if (returnState.has_value()) {
+    replaceActivity(std::make_unique<SavedClippingsActivity>(renderer, mappedInput, std::move(returnState)));
+    return;
+  }
+  savedClippingsReturnState.reset();
+  replaceActivity(std::make_unique<SavedClippingsActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToBrowser() {
@@ -195,8 +240,21 @@ void ActivityManager::goToBrowser() {
   }
 }
 
-void ActivityManager::goToReader(std::string path) {
-  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
+void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh,
+                                 const ReaderOpenOrigin openOrigin) {
+  replaceActivity(
+      std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), allowFastInitialRefresh, openOrigin));
+}
+
+void ActivityManager::goToReader(std::string path, ClippingJumpResult clippingJump, const ReaderOpenOrigin openOrigin) {
+  replaceActivity(
+      std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), std::move(clippingJump), openOrigin));
+}
+
+void ActivityManager::goToReader(std::string path, SavedBookmarkJumpResult bookmarkJump,
+                                 const ReaderOpenOrigin openOrigin) {
+  replaceActivity(
+      std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), std::move(bookmarkJump), openOrigin));
 }
 
 void ActivityManager::goToSleep(bool fromTimeout) {
@@ -204,19 +262,29 @@ void ActivityManager::goToSleep(bool fromTimeout) {
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
-void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }
+void ActivityManager::goToBoot(const bool minimalWakeScreen) {
+  replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput, minimalWakeScreen));
+}
 
 void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {
   replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
 }
 
 void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
+  yourBooksReturnState.reset();
+  savedClippingsReturnState.reset();
+  // Probe before the current activity's onExit() runs. If the card was
+  // removed, persistence calls then fail immediately instead of each waiting
+  // for a separate SD timeout before Home can appear.
+  Storage.probeMedia();
   if (initialMenuItem == HomeMenuItem::NONE && currentActivity) {
     const auto& activityName = currentActivity->name;
     if (activityName == "FileBrowser") {
       initialMenuItem = HomeMenuItem::FILE_BROWSER;
-    } else if (activityName == "RecentBooks") {
+    } else if (activityName == "YourBooks") {
       initialMenuItem = HomeMenuItem::RECENTS;
+    } else if (activityName == "SavedClippings") {
+      initialMenuItem = HomeMenuItem::SAVED_ITEMS;
     } else if (activityName == "OpdsBookBrowser") {
       initialMenuItem = HomeMenuItem::OPDS_BROWSER;
     } else if (activityName == "CrossPointWebServer") {
@@ -226,6 +294,37 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
     }
   }
   replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem));
+}
+
+void ActivityManager::captureYourBooksReturnContext(const uint8_t tab, const size_t selectedIndex,
+                                                    std::string selectedPath, std::string searchQuery) {
+  constexpr size_t MAX_RETURN_PATH_BYTES = 511;
+  constexpr size_t MAX_RETURN_QUERY_BYTES = 64;
+  if (selectedPath.size() > MAX_RETURN_PATH_BYTES) selectedPath.resize(MAX_RETURN_PATH_BYTES);
+  if (searchQuery.size() > MAX_RETURN_QUERY_BYTES) searchQuery.resize(MAX_RETURN_QUERY_BYTES);
+  yourBooksReturnState = YourBooksReturnState{tab, selectedIndex, std::move(selectedPath), std::move(searchQuery)};
+}
+
+void ActivityManager::captureSavedClippingsReturnContext(const size_t selectedIndex, std::string selectedPath) {
+  constexpr size_t MAX_RETURN_PATH_BYTES = 511;
+  if (selectedPath.size() > MAX_RETURN_PATH_BYTES) selectedPath.resize(MAX_RETURN_PATH_BYTES);
+  savedClippingsReturnState = SavedClippingsReturnState{selectedIndex, std::move(selectedPath)};
+}
+
+void ActivityManager::returnFromReaderOrHome() {
+  if (savedClippingsReturnState.has_value()) {
+    auto state = std::move(savedClippingsReturnState);
+    savedClippingsReturnState.reset();
+    goToSavedClippings(std::move(state));
+    return;
+  }
+  if (!yourBooksReturnState.has_value()) {
+    goHome();
+    return;
+  }
+  auto state = std::move(yourBooksReturnState);
+  yourBooksReturnState.reset();
+  goToYourBooks(std::move(state));
 }
 void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
 
@@ -250,17 +349,61 @@ void ActivityManager::popActivity() {
 
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
-bool ActivityManager::isReaderActivity() const {
-  return std::any_of(stackActivities.begin(), stackActivities.end(),
-                     [](const auto& activity) { return activity->isReaderActivity(); }) ||
-         (currentActivity && currentActivity->isReaderActivity());
+bool ActivityManager::handleGlobalShortcut(const GlobalShortcut shortcut) {
+  if (shortcut == GlobalShortcut::RefreshScreen) {
+    if (!handleForcedRefresh()) {
+      RenderLock lock;
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
+    return true;
+  }
+  return currentActivity && currentActivity->handleGlobalShortcut(shortcut);
 }
+
+bool ActivityManager::handleReaderShortcut(const uint8_t function) {
+  return currentActivity && currentActivity->isReaderActivity() && currentActivity->handleReaderShortcut(function);
+}
+
+bool ActivityManager::handleForcedRefresh() { return currentActivity && currentActivity->handleForcedRefresh(); }
+
+bool ActivityManager::handleSafeGlobalShortcut(const GlobalShortcut shortcut) {
+  if (shortcut == GlobalShortcut::GoHome) {
+    if (currentActivity && currentActivity->name == "Home") return true;
+    goHome();
+    return true;
+  }
+  if (shortcut != GlobalShortcut::ResumeReading) return false;
+
+  if (currentActivity && currentActivity->isReaderActivity()) return true;
+  if (!stackActivities.empty() && stackActivities.back()->isReaderActivity()) {
+    popActivity();
+    return true;
+  }
+
+  for (const auto& book : RECENT_BOOKS.getBooks()) {
+    if (!book.path.empty() && Storage.exists(book.path.c_str())) {
+      goToReader(book.path);
+      return true;
+    }
+  }
+  goHome();
+  return true;
+}
+
+bool ActivityManager::isReaderActivity() const { return currentActivity && currentActivity->isReaderActivity(); }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
 ScreenshotInfo ActivityManager::getScreenshotInfo() const {
   if (currentActivity) {
-    return currentActivity->getScreenshotInfo();
+    const ScreenshotInfo info = currentActivity->getScreenshotInfo();
+    if (info.readerType != ScreenshotInfo::ReaderType::None) return info;
+  }
+  for (auto it = stackActivities.rbegin(); it != stackActivities.rend(); ++it) {
+    if (*it) {
+      const ScreenshotInfo info = (*it)->getScreenshotInfo();
+      if (info.readerType != ScreenshotInfo::ReaderType::None) return info;
+    }
   }
   return {};
 }
@@ -268,6 +411,7 @@ ScreenshotInfo ActivityManager::getScreenshotInfo() const {
 void ActivityManager::requestUpdate(bool immediate) {
   if (immediate) {
     if (renderTaskHandle) {
+      requestedRenderGeneration.fetch_add(1, std::memory_order_release);
       xTaskNotify(renderTaskHandle, 1, eIncrement);
     }
   } else {
@@ -281,29 +425,36 @@ void ActivityManager::requestUpdateAndWait() {
     return;
   }
 
-  // Atomic section to perform checks
-  taskENTER_CRITICAL(&activityManagerSpinlock);
   auto currTaskHandler = xTaskGetCurrentTaskHandle();
   auto mutexHolder = xSemaphoreGetMutexHolder(renderingMutex);
   bool isRenderTask = (currTaskHandler == renderTaskHandle);
-  bool alreadyWaiting = (waitingTaskHandle != nullptr);
   bool holdingRenderLock = (mutexHolder == currTaskHandler);
-  if (!alreadyWaiting && !isRenderTask && !holdingRenderLock) {
-    waitingTaskHandle = currTaskHandler;
-  }
-  taskEXIT_CRITICAL(&activityManagerSpinlock);
 
   // Render task cannot call requestUpdateAndWait() or it will cause a deadlock
   assert(!isRenderTask && "Render task cannot call requestUpdateAndWait()");
+  // Cannot call while holding RenderLock or it will cause a deadlock
+  assert(!holdingRenderLock && "Cannot call requestUpdateAndWait() while holding RenderLock");
+  if (isRenderTask || holdingRenderLock) return;
+
+  uint32_t targetGeneration = 0;
+  bool alreadyWaiting = false;
+  taskENTER_CRITICAL(&activityManagerSpinlock);
+  alreadyWaiting = waitingTaskHandle != nullptr;
+  if (!alreadyWaiting) {
+    targetGeneration = requestedRenderGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    waitingTaskHandle = currTaskHandler;
+    waitingRenderGeneration = targetGeneration;
+  }
+  taskEXIT_CRITICAL(&activityManagerSpinlock);
 
   // There should never be the case where 2 tasks are waiting for a render at the same time
   assert(!alreadyWaiting && "Already waiting for a render to complete");
-
-  // Cannot call while holding RenderLock or it will cause a deadlock
-  assert(!holdingRenderLock && "Cannot call requestUpdateAndWait() while holding RenderLock");
+  if (alreadyWaiting) return;
 
   xTaskNotify(renderTaskHandle, 1, eIncrement);
-  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  do {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  } while (!RenderGeneration::reached(completedRenderGeneration.load(std::memory_order_acquire), targetGeneration));
 }
 
 // RenderLock
@@ -312,6 +463,8 @@ RenderLock::RenderLock() {
   xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);
   isLocked = true;
 }
+
+RenderLock::RenderLock(std::try_to_lock_t) { isLocked = xSemaphoreTake(activityManager.renderingMutex, 0) == pdTRUE; }
 
 RenderLock::RenderLock([[maybe_unused]] Activity&) {
   xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);

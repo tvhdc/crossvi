@@ -10,10 +10,14 @@
 #include <cstdint>
 #include <string>
 
+#include "CrossPointSettings.h"
 #include "I18n.h"
 #include "RecentBooksStore.h"
+#include "activities/home/HomeBookSummary.h"
 #include "components/UITheme.h"
 #include "components/icons/bookmark.h"
+#include "components/icons/pin.h"
+#include "components/themes/HomeMenuLayout.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -39,6 +43,17 @@ void drawBookmarkStatusIcon(const GfxRenderer& renderer, const int x, const int 
       const uint8_t byte = BookmarkStatusIcon[(row + bookmarkStatusIconTopCrop) * bytesPerRow + col / 8];
       const uint8_t mask = 1U << (7 - (col % 8));
       renderer.drawPixel(x + col, y + row, (byte & mask) != 0);
+    }
+  }
+}
+
+void drawPinStatusIcon(const GfxRenderer& renderer, const int x, const int y) {
+  for (int row = 0; row < 16; ++row) {
+    const uint8_t* bits = &PinStatusIcon[row * 2];
+    for (int col = 0; col < 16; ++col) {
+      if ((bits[col >> 3] & (1U << (7 - (col & 7)))) == 0) {
+        renderer.drawPixel(x + col, y + row);
+      }
     }
   }
 }
@@ -260,7 +275,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<std::string(int index)>& rowSubtitle,
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
-                         const std::function<bool(int index)>& rowDimmed) const {
+                         const std::function<bool(int index)>& rowDimmed,
+                         const std::function<bool(int index)>& rowBadge, const int pageAnchorIndex,
+                         const std::function<int(int index)>& rowValueReservedWidth) const {
   int rowHeight =
       (rowSubtitle != nullptr) ? BaseMetrics::values.listWithSubtitleRowHeight : BaseMetrics::values.listRowHeight;
   int pageItems = rect.height / rowHeight;
@@ -299,20 +316,26 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   constexpr int minValueGap = 10;
 
   // Draw all items
-  const auto pageStartIndex = selectedIndex / pageItems * pageItems;
+  const int pageIndex = pageAnchorIndex >= 0 ? pageAnchorIndex : selectedIndex;
+  const auto pageStartIndex = pageIndex < 0 ? 0 : pageIndex / pageItems * pageItems;
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int itemY = rect.y + (i % pageItems) * rowHeight;
 
     int rowTextWidth = contentWidth - BaseMetrics::values.contentSidePadding * 2;
     std::string valueText;
+    int valueWidth = 0;
     if (rowValue != nullptr) {
       valueText = rowValue(i);
       if (!valueText.empty()) {
         int maxValW = std::max(0, rowTextWidth - 40 - minValueGap);
         valueText = renderer.truncatedText(UI_10_FONT_ID, valueText.c_str(), maxValW);
-        int valueWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str()) + minValueGap;
-        rowTextWidth -= valueWidth;
+        valueWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str()) + minValueGap;
       }
+    }
+    if (rowValueReservedWidth != nullptr) valueWidth = std::max(valueWidth, rowValueReservedWidth(i));
+    rowTextWidth = std::max(0, rowTextWidth - valueWidth);
+    if (rowBadge && rowBadge(i)) {
+      rowTextWidth = std::max(0, rowTextWidth - bookmarkStatusIconWidth - minValueGap);
     }
 
     auto itemName = rowTitle(i);
@@ -347,6 +370,10 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       }
       renderer.drawText(UI_10_FONT_ID, rect.x + contentWidth - BaseMetrics::values.contentSidePadding - valueTextWidth,
                         valueY, valueText.c_str(), i != selectedIndex);
+    }
+    if (rowBadge && rowBadge(i)) {
+      drawPinStatusIcon(
+          renderer, rect.x + rect.width - BaseMetrics::values.contentSidePadding - bookmarkStatusIconWidth, itemY + 4);
     }
   }
 }
@@ -662,30 +689,41 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   }
 }
 
+void BaseTheme::drawHomeContent(GfxRenderer& renderer, const Rect rect, const std::vector<RecentBook>& recentBooks,
+                                const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
+                                bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                const HomeBookSummary& summary) const {
+  (void)summary;
+  drawRecentBookCover(renderer, rect, recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+                      std::move(storeCoverBuffer));
+}
+
 void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
+  (void)rowIcon;
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const HomeMenuLayout::Fit layout =
+      HomeMenuLayout::fit(rect.height, buttonCount, 1, metrics.menuRowHeight, metrics.menuSpacing, lineHeight + 8);
   for (int i = 0; i < buttonCount; ++i) {
-    const int tileY = BaseMetrics::values.verticalSpacing + rect.y +
-                      static_cast<int>(i) * (BaseMetrics::values.menuRowHeight + BaseMetrics::values.menuSpacing);
+    const int tileY = rect.y + layout.yOffset(i, 1);
 
     const bool selected = selectedIndex == i;
 
     if (selected) {
-      renderer.fillRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
-                        rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
+      renderer.fillRect(rect.x + metrics.contentSidePadding, tileY, rect.width - metrics.contentSidePadding * 2,
+                        layout.rowHeight);
     } else {
-      renderer.drawRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
-                        rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
+      renderer.drawRect(rect.x + metrics.contentSidePadding, tileY, rect.width - metrics.contentSidePadding * 2,
+                        layout.rowHeight);
     }
 
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, label);
     const int textX = rect.x + (rect.width - textWidth) / 2;
-    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-    const int textY =
-        tileY + (BaseMetrics::values.menuRowHeight - lineHeight) / 2;  // vertically centered assuming y is top of text
+    const int textY = tileY + (layout.rowHeight - lineHeight) / 2;
     // Invert text when the tile is selected, to contrast with the filled background
     renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
   }
@@ -769,16 +807,16 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     // Right aligned text for progress counter
     char progressStr[32];
 
-    // Prefix the page count with "~" while a still-building spine only yields an estimated total.
+    // Prefix only the total with "~": the current page is exact while the spine total is estimated.
     const char* estimatePrefix = pageCountEstimated ? "~" : "";
 
     if (SETTINGS.statusBarBookProgressPercentage && SETTINGS.statusBarChapterPageCount) {
-      snprintf(progressStr, sizeof(progressStr), "%s%d/%d  %.0f%%", estimatePrefix, currentPage, pageCount,
+      snprintf(progressStr, sizeof(progressStr), "%d/%s%d  %.0f%%", currentPage, estimatePrefix, pageCount,
                bookProgress);
     } else if (SETTINGS.statusBarBookProgressPercentage) {
       snprintf(progressStr, sizeof(progressStr), "%.0f%%", bookProgress);
     } else {
-      snprintf(progressStr, sizeof(progressStr), "%s%d/%d", estimatePrefix, currentPage, pageCount);
+      snprintf(progressStr, sizeof(progressStr), "%d/%s%d", currentPage, estimatePrefix, pageCount);
     }
 
     int progressTextWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);

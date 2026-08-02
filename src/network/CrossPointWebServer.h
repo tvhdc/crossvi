@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "network/JsonBodyBuffer.h"
+
 // Structure to hold file information
 struct FileInfo {
   String name;
@@ -25,6 +27,7 @@ class CrossPointWebServer {
     size_t total = 0;
     std::string filename;
     std::string lastCompleteName;
+    std::string lastCompletePath;
     size_t lastCompleteSize = 0;
     unsigned long lastCompleteAt = 0;
   };
@@ -34,7 +37,9 @@ class CrossPointWebServer {
     HalFile file;
     String fileName;
     String path = "/";
+    String stagingPath;
     size_t size = 0;
+    bool ownsStagingFile = false;
     bool success = false;
     String error = "";
 
@@ -62,8 +67,10 @@ class CrossPointWebServer {
 
   // Check if server is running
   bool isRunning() const { return running; }
+  bool hasActiveTransfer() const;
 
   WsUploadStatus getWsUploadStatus() const;
+  bool takeOpenRequest(std::string& path);
 
   // Get the port number
   uint16_t getPort() const { return port; }
@@ -72,19 +79,27 @@ class CrossPointWebServer {
   std::unique_ptr<WebServer> server = nullptr;
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
   bool running = false;
+  bool watchdogTaskRegistered = false;
   bool apMode = false;  // true when running in AP mode, false for STA mode
   uint16_t port = 80;
   uint16_t wsPort = 81;  // WebSocket port
   NetworkUDP udp;
   bool udpActive = false;
+  std::string lastCompletePath;
+  std::string pendingOpenPath;
+
+  static constexpr size_t MAX_JSON_BODY_SIZE = 8192;
+  JsonBodyBuffer::State jsonBody;
 
   // WebSocket upload state
   void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
   static void wsEventCallback(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
   void abortWsUpload(const char* tag);
+  bool clearStaleBookUploadStaging(const String& stagingPath);
 
   // File scanning
-  void scanFiles(const char* path, const std::function<void(FileInfo)>& callback) const;
+  using FileVisitor = void (*)(const FileInfo& info, void* context);
+  void scanFiles(const char* path, FileVisitor visitor, void* context) const;
   String formatFileSize(size_t bytes) const;
   bool isEpubFile(const String& filename) const;
 
@@ -96,12 +111,15 @@ class CrossPointWebServer {
   void handleFileList() const;
   void handleFileListData() const;
   void handleDownload() const;
-  void handleUpload(UploadState& state) const;
+  void handleUpload(UploadState& state);
   void handleUploadPost(UploadState& state) const;
+  void handleInboxOpen();
   void handleCreateFolder() const;
   void handleRename() const;
   void handleMove() const;
   void handleDelete() const;
+  void handleJsonBody();
+  std::unique_ptr<uint8_t[]> takeJsonBody(const char* errorContentType = "text/plain");
 
   // Settings handlers
   void handleSettingsPage() const;
@@ -114,14 +132,36 @@ class CrossPointWebServer {
   void handleFontUpload();
   void handleFontUploadData();
   void handleFontDelete();
+  void abortFontUpload(const char* tag);
+  bool publishFontUpload();
 
   // Font upload state
   struct FontUploadState {
+    enum class Error : uint8_t {
+      None,
+      InvalidFamily,
+      InvalidFilename,
+      CreateDirectory,
+      PathTooLong,
+      Recovery,
+      OpenStaging,
+      ShortWrite,
+      SyncClose,
+      SizeMismatch,
+      InvalidFont,
+      Publish,
+      Aborted,
+    };
+
     HalFile file;
     std::string familyName;
-    std::string filePath;
+    std::string finalPath;
+    std::string stagingPath;
+    std::string backupPath;
     bool valid = false;
-    bool magicChecked = false;
+    bool published = false;
+    bool writeOk = false;
+    Error error = Error::None;
     size_t bytesWritten = 0;
     static constexpr size_t BUFFER_SIZE = 4096;
     std::vector<uint8_t> buffer;

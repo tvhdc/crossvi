@@ -13,7 +13,7 @@ class ClockSyncActivity final : public Activity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  bool skipLoopDelay() override { return true; }
+  bool skipLoopDelay() override { return state == SYNCING; }
   void render(RenderLock&&) override;
 
  private:

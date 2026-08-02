@@ -11,6 +11,7 @@ struct DictLocation {
   uint32_t offset = 0;  // byte offset in .dict data
   uint32_t size = 0;    // byte length in .dict data
   bool found = false;
+  bool readError = false;
 };
 
 // Slim StarDict reader: exact-match lookup with a mini stemming fallback.
@@ -22,6 +23,20 @@ struct DictLocation {
 // index is held in RAM.
 class Dictionary {
  public:
+  enum class LookupResult : uint8_t {
+    Found,
+    NotFound,
+    LowMemory,
+    Decompress,
+    ReadError,
+  };
+
+  enum class IndexResult : uint8_t {
+    Ok,
+    LowMemory,
+    ReadError,
+  };
+
   // Resolve the dictionary folder and validate its files. Rejects
   // dictionaries with 64-bit index offsets (idxoffsetbits=64 in .ifo).
   bool open(const char* folderName);
@@ -33,12 +48,17 @@ class Dictionary {
 
   // One streaming pass over .idx writing the .qidx sidecar. yieldFn (optional)
   // is called every ~64KB consumed to feed the watchdog / repaint the UI.
-  bool buildIndex(void (*yieldFn)(void*) = nullptr, void* ctx = nullptr);
+  bool buildIndex(void (*yieldFn)(void*) = nullptr, void* ctx = nullptr, IndexResult* outResult = nullptr);
 
   // Clean the word, look it up, and on a miss retry mini stem variants
   // (-'s/-s/-es/-ies/-ed/-ing). On a hit fills the definition text (capped at
   // MAX_DEFINITION_BYTES) and the headword as stored in the index.
-  bool lookup(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut);
+  bool lookup(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut,
+              LookupResult* outResult = nullptr);
+
+  // Exact lookup without the English stemming fallback.
+  bool lookupExact(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut,
+                   LookupResult* outResult = nullptr);
 
   static std::string cleanWord(const char* word);
 
@@ -47,8 +67,18 @@ class Dictionary {
  private:
   static constexpr uint32_t SAMPLE_INTERVAL = 256;
 
-  DictLocation locate(const char* target, std::string* matchedHeadwordOut);
-  bool readDefinition(const DictLocation& location, std::string& out);
+  struct LookupSession {
+    HalFile indexFile;
+    HalFile quickIndexFile;
+    uint32_t indexFileSize = 0;
+    uint32_t quickIndexSampleCount = 0;
+  };
+
+  bool openLookupSession(LookupSession& session);
+  DictLocation locate(LookupSession& session, const char* target, std::string* matchedHeadwordOut);
+  DictLocation locateOrdinal(LookupSession& session, uint32_t ordinal, std::string* matchedHeadwordOut);
+  DictLocation locateWithSynonyms(LookupSession& session, const char* target, std::string* matchedHeadwordOut);
+  bool readDefinition(const DictLocation& location, std::string& out, LookupResult* outResult = nullptr);
   static void stemVariants(const std::string& word, std::vector<std::string>& out);
 
   // Read a null-terminated word from an open file into buf (max bufSize-1

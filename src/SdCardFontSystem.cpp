@@ -4,6 +4,7 @@
 #include <Logging.h>
 
 #include "CrossPointSettings.h"
+#include "FontInstaller.h"
 
 namespace {
 
@@ -13,9 +14,21 @@ static uint8_t fontSizeEnumFromSettings() {
   return e;
 }
 
+bool normalizeBuiltinFontSize() {
+  if (SETTINGS.fontSize < ReaderFontSize::BUILTIN_COUNT) return false;
+  SETTINGS.fontSize = CrossPointSettings::EXTRA_LARGE;
+  return true;
+}
+
 }  // namespace
 
-void SdCardFontSystem::begin(GfxRenderer& renderer) {
+void SdCardFontSystem::begin() {
+  if (SETTINGS.sdFontFamilyName[0] != '\0') {
+    FontInstaller installer(registry_);
+    if (!installer.recoverInterruptedFamilyDownload(SETTINGS.sdFontFamilyName)) {
+      LOG_ERR("SDFS", "Failed to recover interrupted font update: %s", SETTINGS.sdFontFamilyName);
+    }
+  }
   registry_.discover();
 
   // Register this system as the SD font ID resolver in settings.
@@ -25,28 +38,14 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
   };
   SETTINGS.sdFontResolverCtx = this;
 
-  // If user has a saved SD font selection, load it
-  if (SETTINGS.sdFontFamilyName[0] != '\0') {
-    const auto* family = registry_.findFamily(SETTINGS.sdFontFamilyName);
-    if (family) {
-      if (manager_.loadFamily(*family, renderer, fontSizeEnumFromSettings())) {
-        LOG_DBG("SDFS", "Loaded SD card font family: %s", SETTINGS.sdFontFamilyName);
-      } else {
-        LOG_ERR("SDFS", "Failed to load SD font family: %s (clearing)", SETTINGS.sdFontFamilyName);
-        SETTINGS.sdFontFamilyName[0] = '\0';
-        SETTINGS.saveToFile();
-      }
-    } else {
-      LOG_DBG("SDFS", "SD font family not found on card: %s (clearing)", SETTINGS.sdFontFamilyName);
-      SETTINGS.sdFontFamilyName[0] = '\0';
-      SETTINGS.saveToFile();
-    }
-  }
-
+  // The saved family (and any invalid-selection repair) is deliberately not
+  // loaded here: loadFamily() reads the whole .cpfont over SD, which would
+  // stall every boot. ensureLoaded() covers it before the reader lays out, and
+  // nothing outside the reader/settings needs the loaded family.
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
 
-void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
+void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInvalidSelection) {
   // If the web server (or another task) installed/deleted fonts, re-discover.
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file
@@ -65,6 +64,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
     if (!currentFamily.empty()) {
       manager_.unloadAll(renderer);
     }
+    if (normalizeBuiltinFontSize() && persistInvalidSelection) SETTINGS.saveToFile();
     return;
   }
 
@@ -78,7 +78,8 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
       LOG_DBG("SDFS", "SD font family disappeared: %s (clearing)", wantedFamily);
       manager_.unloadAll(renderer);
       SETTINGS.sdFontFamilyName[0] = '\0';
-      SETTINGS.saveToFile();
+      normalizeBuiltinFontSize();
+      if (persistInvalidSelection) SETTINGS.saveToFile();
       return;
     }
     const auto* selected = family->findClosestReaderSize(sizeEnum);
@@ -99,12 +100,14 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
     } else {
       LOG_ERR("SDFS", "Failed to load SD font family: %s (clearing)", wantedFamily);
       SETTINGS.sdFontFamilyName[0] = '\0';
-      SETTINGS.saveToFile();
+      normalizeBuiltinFontSize();
+      if (persistInvalidSelection) SETTINGS.saveToFile();
     }
   } else {
     LOG_DBG("SDFS", "SD font family not found: %s (clearing)", wantedFamily);
     SETTINGS.sdFontFamilyName[0] = '\0';
-    SETTINGS.saveToFile();
+    normalizeBuiltinFontSize();
+    if (persistInvalidSelection) SETTINGS.saveToFile();
   }
 }
 
@@ -113,4 +116,12 @@ int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEn
   // enum is implicit — always return the single loaded font ID for this family.
   // ensureLoaded() must have been called with the current settings before this.
   return manager_.getFontId(familyName);
+}
+
+uint8_t SdCardFontSystem::selectedPointSize(const char* familyName, const uint8_t fontSizeEnum) const {
+  if (!familyName || familyName[0] == '\0') return 0;
+  const auto* family = registry_.findFamily(familyName);
+  if (!family) return 0;
+  const auto* selected = family->findClosestReaderSize(fontSizeEnum);
+  return selected ? selected->pointSize : 0;
 }

@@ -2,53 +2,13 @@
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
-#include <Logging.h>
 
-#include <memory>
-
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "components/themes/BaseTheme.h"
-#include "components/themes/lyra/Lyra3CoversTheme.h"
-#include "components/themes/lyra/LyraTheme.h"
-#include "components/themes/roundedraff/RoundedRaffTheme.h"
 
 UITheme UITheme::instance;
-
-UITheme::UITheme() {
-  auto themeType = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  setTheme(themeType);
-}
-
-void UITheme::reload() {
-  auto themeType = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  setTheme(themeType);
-}
-
-void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
-  switch (type) {
-    case CrossPointSettings::UI_THEME::CLASSIC:
-      LOG_DBG("UI", "Using Classic theme");
-      currentTheme = std::make_unique<BaseTheme>();
-      currentMetrics = &BaseMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::LYRA:
-      LOG_DBG("UI", "Using Lyra theme");
-      currentTheme = std::make_unique<LyraTheme>();
-      currentMetrics = &LyraMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::ROUNDEDRAFF:
-      LOG_DBG("UI", "Using RoundedRaff theme");
-      currentTheme = std::make_unique<RoundedRaffTheme>();
-      currentMetrics = &RoundedRaffMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
-      LOG_DBG("UI", "Using Lyra 3 Covers theme");
-      currentTheme = std::make_unique<Lyra3CoversTheme>();
-      currentMetrics = &Lyra3CoversMetrics::values;
-      break;
-  }
-}
 
 int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,
                                      bool hasSubtitle, int extraReservedHeight) {
@@ -79,24 +39,24 @@ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButton
   switch (orientation) {
     case GfxRenderer::Orientation::Portrait:
       if (hasFrontButtonHints) {
-        safeArea.height -= currentMetrics->buttonHintsHeight;
+        safeArea.height -= CrossViMetrics::values.buttonHintsHeight;
       }
       break;
     case GfxRenderer::Orientation::LandscapeClockwise:
       if (hasFrontButtonHints) {
-        safeArea.x += currentMetrics->buttonHintsHeight;
-        safeArea.width -= currentMetrics->buttonHintsHeight;
+        safeArea.x += CrossViMetrics::values.buttonHintsHeight;
+        safeArea.width -= CrossViMetrics::values.buttonHintsHeight;
       }
       break;
     case GfxRenderer::Orientation::PortraitInverted:
       if (hasFrontButtonHints) {
-        safeArea.y += currentMetrics->buttonHintsHeight;
-        safeArea.height -= currentMetrics->buttonHintsHeight;
+        safeArea.y += CrossViMetrics::values.buttonHintsHeight;
+        safeArea.height -= CrossViMetrics::values.buttonHintsHeight;
       }
       break;
     case GfxRenderer::Orientation::LandscapeCounterClockwise:
       if (hasFrontButtonHints) {
-        safeArea.width -= currentMetrics->buttonHintsHeight;
+        safeArea.width -= CrossViMetrics::values.buttonHintsHeight;
       }
       break;
   }

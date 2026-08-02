@@ -9,8 +9,10 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <limits>
 
 #include "FontCacheManager.h"
+#include "TextDarkness.h"
 
 namespace {
 
@@ -97,7 +99,12 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_
   }
 }
 
-void GfxRenderer::ensureSdCardFontReady(int fontId, const std::vector<std::string>& words, bool includeHyphen,
+bool GfxRenderer::hasSdCardAdvanceTable(const int fontId) const {
+  const auto it = sdCardFonts_.find(fontId);
+  return it != sdCardFonts_.end() && it->second->hasAdvanceTable();
+}
+
+void GfxRenderer::ensureSdCardFontReady(int fontId, const std::deque<std::string>& words, bool includeHyphen,
                                         uint8_t styleMask) const {
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {
@@ -352,7 +359,9 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
                            const bool pixelState, const EpdFontFamily::Style style) {
   const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) {
-    LOG_ERR("GFX", "No glyph for codepoint %d", cp);
+    // EpdFont already tried U+FFFD. Silently skip when even the replacement
+    // glyph is absent; logging here runs once per render pass/pixel band and
+    // can flood serial output for an otherwise safely handled bad font.
     return;
   }
 
@@ -415,17 +424,22 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
           const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
 
-          if (renderMode == GfxRenderer::BW && bmpVal < 3) {
-            // Black (also paints over the grays in BW mode)
-            renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
-            // Light gray (also mark the MSB if it's going to be a dark gray too)
-            // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
-            // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
-            renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
-            // Dark gray
-            renderer.drawPixel(screenX, screenY, false);
+          if (renderMode == GfxRenderer::BW) {
+            if (bmpVal < 3) {
+              // Black (also paints over the grays in BW mode)
+              renderer.drawPixel(screenX, screenY, pixelState);
+            }
+          } else {
+            const uint8_t adjustedBmpVal = GlyphDarkness::mapLevel(bmpVal, renderer.getTextDarkness());
+            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (adjustedBmpVal == 1 || adjustedBmpVal == 2)) {
+              // Light gray (also mark the MSB if it's going to be a dark gray too)
+              // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
+              // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
+              renderer.drawPixel(screenX, screenY, false);
+            } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && adjustedBmpVal == 1) {
+              // Dark gray
+              renderer.drawPixel(screenX, screenY, false);
+            }
           }
         }
       }
@@ -1332,6 +1346,83 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
     isScaled = true;
   }
 
+  // A cached cover is a 1-bit BMP. Read all packed rows once and sample the
+  // output pixels directly. The old path performed one SD read per source row
+  // and then plotted every source pixel, so a large uncropped cover could hold
+  // the render lock long enough to look like a frozen X3. This path is used for
+  // both native-size and downscaled covers; the row path below remains the
+  // fallback for strip/grayscale rendering or an allocation/read failure.
+  if (!_stripActive && frameBuffer) {
+    const uint64_t packedBytes64 =
+        static_cast<uint64_t>(bitmap.getRowBytes()) * static_cast<uint64_t>(bitmap.getHeight());
+    if (packedBytes64 > 0 && packedBytes64 <= std::numeric_limits<size_t>::max()) {
+      const size_t packedBytes = static_cast<size_t>(packedBytes64);
+      auto* packedRows = static_cast<uint8_t*>(malloc(packedBytes));
+      if (packedRows && bitmap.readPackedRows(packedRows, packedBytes) == BmpReaderError::Ok) {
+        const int outputWidth = isScaled
+                                    ? std::max(1, static_cast<int>(std::floor((bitmap.getWidth() - 1) * scale)) + 1)
+                                    : bitmap.getWidth();
+        const int outputHeight = isScaled
+                                     ? std::max(1, static_cast<int>(std::floor((bitmap.getHeight() - 1) * scale)) + 1)
+                                     : bitmap.getHeight();
+
+        int phyXBase = 0;
+        int phyYBase = 0;
+        int phyXStepX = 0;
+        int phyYStepX = 0;
+        int phyXStepY = 0;
+        int phyYStepY = 0;
+        switch (orientation) {
+          case Portrait:
+            phyYBase = panelHeight - 1;
+            phyXStepY = 1;
+            phyYStepX = -1;
+            break;
+          case LandscapeClockwise:
+            phyXBase = panelWidth - 1;
+            phyYBase = panelHeight - 1;
+            phyXStepX = -1;
+            phyYStepY = -1;
+            break;
+          case PortraitInverted:
+            phyXBase = panelWidth - 1;
+            phyXStepY = -1;
+            phyYStepX = 1;
+            break;
+          case LandscapeCounterClockwise:
+            phyXStepX = 1;
+            phyYStepY = 1;
+            break;
+        }
+
+        for (int outputY = 0; outputY < outputHeight; ++outputY) {
+          const int sampledY =
+              isScaled ? std::min(bitmap.getHeight() - 1, static_cast<int>(std::floor(outputY / scale))) : outputY;
+          const int sourceY = bitmap.isTopDown() ? sampledY : bitmap.getHeight() - 1 - sampledY;
+          const uint8_t* sourceRow = packedRows + static_cast<size_t>(sourceY) * bitmap.getRowBytes();
+          const int logicalY = y + outputY;
+          const int rowPhyXBase = phyXBase + logicalY * phyXStepY;
+          const int rowPhyYBase = phyYBase + logicalY * phyYStepY;
+          for (int outputX = 0; outputX < outputWidth; ++outputX) {
+            const int sourceX =
+                isScaled ? std::min(bitmap.getWidth() - 1, static_cast<int>(std::floor(outputX / scale))) : outputX;
+            const uint8_t paletteIndex = (sourceRow[sourceX / 8] >> (7 - (sourceX % 8))) & 0x1;
+            if (bitmap.paletteLuminance(paletteIndex) >= 192) continue;
+            const int phyX = rowPhyXBase + (x + outputX) * phyXStepX;
+            const int phyY = rowPhyYBase + (x + outputX) * phyYStepX;
+            if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) continue;
+            const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
+            frameBuffer[byteIndex] &= static_cast<uint8_t>(~(1U << (7 - (phyX % 8))));
+          }
+        }
+        free(packedRows);
+        return;
+      }
+      free(packedRows);
+      bitmap.rewindToData();
+    }
+  }
+
   // For 1-bit BMP, output is still 2-bit packed (for consistency with readNextRow)
   const int outputRowSize = (bitmap.getWidth() + 3) / 4;
   auto* outputRow = static_cast<uint8_t*>(malloc(outputRowSize));
@@ -1495,8 +1586,43 @@ bool GfxRenderer::glyphIntersectsStrip(int x0, int y0, int x1, int y1) const {
 }
 
 void GfxRenderer::invertScreen() const {
+  if (!frameBuffer) return;
   for (uint32_t i = 0; i < frameBufferSize; i++) {
     frameBuffer[i] = ~frameBuffer[i];
+  }
+}
+
+void GfxRenderer::invertRect(const int x, const int y, const int width, const int height) const {
+  if (!frameBuffer || width <= 0 || height <= 0) return;
+
+  const int lx0 = std::max(0, x);
+  const int ly0 = std::max(0, y);
+  const int lx1 = std::min(getScreenWidth(), x + width);
+  const int ly1 = std::min(getScreenHeight(), y + height);
+  if (lx0 >= lx1 || ly0 >= ly1) return;
+
+  int paX, paY, pbX, pbY;
+  rotateCoordinates(orientation, lx0, ly0, &paX, &paY, panelWidth, panelHeight);
+  rotateCoordinates(orientation, lx1 - 1, ly1 - 1, &pbX, &pbY, panelWidth, panelHeight);
+
+  const int phyX0 = std::min(paX, pbX);
+  const int phyX1 = std::max(paX, pbX);
+  const int phyY0 = std::min(paY, pbY);
+  const int phyY1 = std::max(paY, pbY);
+  const int byteStart = phyX0 >> 3;
+  const int byteEnd = phyX1 >> 3;
+  const uint8_t headMask = static_cast<uint8_t>(0xFFu >> (phyX0 & 7));
+  const uint8_t tailMask = static_cast<uint8_t>(0xFFu << (7 - (phyX1 & 7)));
+
+  for (int py = phyY0; py <= phyY1; ++py) {
+    uint8_t* row = frameBuffer + static_cast<int32_t>(py) * panelWidthBytes;
+    if (byteStart == byteEnd) {
+      row[byteStart] ^= headMask & tailMask;
+      continue;
+    }
+    row[byteStart] ^= headMask;
+    for (int byte = byteStart + 1; byte < byteEnd; ++byte) row[byte] ^= 0xFFu;
+    row[byteEnd] ^= tailMask;
   }
 }
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Files - CrossPoint Reader</title>
+  <title>Files - CrossVi</title>
   <script src="/js/jszip.min.js"></script>
   <style>
     :root {
@@ -41,6 +41,47 @@
       color: var(--title-color);
       border-bottom: 2px solid var(--accent-color);
       padding-bottom: 10px;
+    }
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .site-header h1 {
+      margin: 0;
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+    .site-subtitle {
+      margin: 4px 0 0;
+      color: var(--label-color);
+      font-size: 0.86em;
+    }
+    .language-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--label-color);
+      font-size: 0.86em;
+      white-space: nowrap;
+    }
+    .language-picker select {
+      border: 0;
+      background: transparent;
+      color: var(--font-color);
+      font: inherit;
+      color-scheme: light;
+    }
+    .language-picker select option { color: #1f2937; background: #fff; }
+    @media (max-width: 600px) {
+      .site-header { align-items: flex-start; flex-direction: column; }
+      .language-picker { align-self: flex-end; }
     }
     h2 {
       color: var(--title-color);
@@ -1071,6 +1112,19 @@
     .move-btn:hover {
       background-color: #e6f7f4;
     }
+    .optimize-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 1.1em;
+      padding: 4px 8px;
+      border-radius: 4px;
+      color: #8e44ad;
+      transition: all 0.15s;
+    }
+    .optimize-btn:hover {
+      background-color: #f5eafa;
+    }
     .actions-col {
       width: 140px;
       text-align: center;
@@ -1202,6 +1256,29 @@
     }
     .delete-btn-cancel:hover {
       background-color: var(--label-color);
+    }
+    #delete-progress-container {
+      display: none;
+      margin: 12px 0 2px;
+    }
+    #delete-progress-bar {
+      width: 100%;
+      height: 14px;
+      background-color: #e0e0e0;
+      border-radius: 7px;
+      overflow: hidden;
+    }
+    #delete-progress-fill {
+      height: 100%;
+      width: 0%;
+      background-color: #e74c3c;
+      transition: width 0.15s ease;
+    }
+    #delete-progress-text {
+      margin-top: 5px;
+      color: var(--label-color);
+      text-align: center;
+      font-size: 0.9em;
     }
     .rename-btn-confirm {
       background-color: #3498db;
@@ -1498,38 +1575,70 @@
     .log-summary-table .increased {
       color: #f39c12;
     }
+    /* Shared Web UI chrome: quiet paper surfaces, one compact navigation. */
+    body { max-width: 960px; padding: 20px; }
+    h1 { font-size: 1.65rem; letter-spacing: -.02em; border-bottom: 0; padding-bottom: 0; }
+    .site-header { gap: 12px; margin-bottom: 10px; }
+    .site-subtitle { font-size: .88em; }
+    .language-picker { border-radius: 6px; }
+    .card { border: 1px solid var(--border-color); box-shadow: none; border-radius: 6px; padding: 16px; margin: 12px 0; }
+    .nav-links { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 12px 0 16px; gap: 6px; }
+    .nav-links a { box-sizing: border-box; min-height: 38px; display: grid; place-items: center; border: 1px solid var(--border-color); background: var(--card-bg); padding: 8px; text-align: center; }
+    .nav-links a.active { border-color: var(--accent-color); background: var(--accent-color); color: white; }
+    @media (max-width: 600px) {
+        body { padding: 12px; font-size: 14px; }
+      .site-header { align-items: flex-start; flex-direction: column; gap: 6px; }
+      .language-picker { align-self: flex-end; margin-top: -2px; }
+      h1 { font-size: 1.45rem; }
+      .card { padding: 14px; }
+      .nav-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .nav-links a { font-size: .92em; }
+    }
   </style>
 </head>
 <body>
-<h1>📚 CrossPoint Reader</h1>
+<header class="site-header">
+  <div>
+    <h1 data-i18n="brand">📚 CrossVi</h1>
+    <p class="site-subtitle" data-i18n="subtitle">Reader tools for Xteink X3/X4</p>
+  </div>
+  <label class="language-picker" for="webLanguage">
+    <span data-i18n="language">Language</span>
+    <select id="webLanguage" onchange="setWebLanguage(this.value)">
+      <option value="en">English</option>
+      <option value="vi">Tiếng Việt</option>
+    </select>
+  </label>
+</header>
 
 <div class="nav-links">
-  <a href="/">Home</a>
-  <a href="/files" class="active">File Manager</a>
-  <a href="/settings">Settings</a>
-  <a href="/fonts">Fonts</a>
+  <a href="/" data-i18n="home">Home</a>
+  <a href="/files" class="active" data-i18n="fileManager">File Manager</a>
+  <a href="/settings" data-i18n="settings">Settings</a>
+  <a href="/fonts" data-i18n="fonts">Fonts</a>
 </div>
 
 <div class="page-header">
   <div class="page-header-left">
-    <h2>📁 File Manager</h2>
+    <h2 data-i18n="fileManagerTitle">📁 File Manager</h2>
   </div>
 
   <div class="action-buttons">
-    <button class="action-btn upload-action-btn" onclick="openUploadModal()">📤 Upload</button>
-    <button class="action-btn folder-action-btn" onclick="openFolderModal()">📁 New Folder</button>
-    <button class="action-btn delete-action-btn" onclick="openDeleteSelectedModal()">🗑️ Delete Selected</button>
+    <button class="action-btn upload-action-btn" onclick="openInboxUpload()" data-i18n="sendInbox">📥 Send to Inbox</button>
+    <button class="action-btn upload-action-btn" onclick="openUploadModal()" data-i18n="upload">📤 Upload</button>
+    <button class="action-btn folder-action-btn" onclick="openFolderModal()" data-i18n="newFolder">📁 New Folder</button>
+    <button class="action-btn delete-action-btn" onclick="openDeleteSelectedModal()" data-i18n="deleteSelected">🗑️ Delete Selected</button>
   </div>
 </div>
 
 <!-- Failed Uploads Banner -->
 <div class="failed-uploads-banner" id="failedUploadsBanner">
   <div class="failed-uploads-header">
-    <h3 class="failed-uploads-title">⚠️ Some files failed to upload</h3>
+    <h3 class="failed-uploads-title" data-i18n="someUploadsFailed">⚠️ Some files failed to upload</h3>
     <button class="dismiss-btn" onclick="dismissFailedUploads()" title="Dismiss">&times;</button>
   </div>
   <div id="failedFilesList"></div>
-  <button class="retry-all-btn" onclick="retryAllFailedUploads()">Retry All Failed Uploads</button>
+  <button class="retry-all-btn" onclick="retryAllFailedUploads()" data-i18n="retryFailed">Retry All Failed Uploads</button>
 </div>
 
 <div class="card">
@@ -1547,7 +1656,7 @@
 
 <div class="card">
   <p style="text-align: center; color: #95a5a6; margin: 0;">
-    CrossPoint E-Reader • Open Source
+    CrossVi • Open Source
   </p>
 </div>
 
@@ -1555,205 +1664,73 @@
 <div class="modal-overlay" id="uploadModal">
   <div class="modal">
     <button class="modal-close" id="uploadModalClose" onclick="closeUploadModal()">&times;</button>
-    <h3>📤 Upload file</h3>
+    <h3 data-i18n="uploadFile">📤 Upload file</h3>
     <div class="upload-form">
-      <p class="file-info">Select a file to upload to <strong id="uploadPathDisplay"></strong></p>
+      <p class="file-info"><span data-i18n="selectFile">Select a file to upload to</span> <strong id="uploadPathDisplay"></strong></p>
       <div class="drop-zone" id="dropZone">
         <input type="file" id="fileInput" onchange="validateFile()" multiple>
-        <p class="drop-zone-hint">⬇ Drop files here — or click to browse</p>
+        <p class="drop-zone-hint" data-i18n="dropHint">⬇ Drop files here — or click to browse</p>
       </div>
       <div class="picker-columns" id="pickerColumns">
         <div class="convert-options" id="convertOptions" style="display:none;">
           <div class="convert-row">
             <label class="convert-checkbox">
-              <input type="checkbox" id="convertBeforeUpload" onchange="toggleConvertOptions()">
-              <span>Optimize EPUB</span>
+              <input type="checkbox" id="convertBeforeUpload" checked onchange="toggleConvertOptions()">
+              <span data-i18n="optimizeEpub">Optimize EPUB</span>
             </label>
-            <span class="convert-separator">—</span>
-            <span class="advanced-options-toggle" id="advancedOptionsToggle" onclick="toggleAdvancedOptions()">
-              <span class="advanced-options-arrow" id="advancedOptionsArrow">▶</span>
-              <span class="advanced-options-text">Advanced Mode</span>
-            </span>
           </div>
-
-          <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;">
-          </div>
-
-          <div class="advanced-setting-row">
-            <div class="setting-label">
-              <div class="setting-title">Rename from Book Metadata</div>
-              <div class="setting-desc">Use Title - Author.epub when available</div>
-            </div>
-            <div class="setting-controls">
-              <label class="toggle-switch">
-                <input type="checkbox" id="renameFromMetadataToggle" onchange="updateUploadSettingsPersistence()">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-
+          <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;"></div>
           <div class="convert-settings" id="convertSettings" style="display:block;">
-            <span>⚫ True-Grayscale</span>
-          <span id="convertSizeSummary">📏 Max 480×800px</span>
-          <span>📦 85% JPEG</span>
-          <span>🔧 Fix SVG</span>
+            <span data-i18n="trueGrayscale">⚫ True-Grayscale</span>
+            <span id="convertSizeSummary">📏 X3/X4 size</span>
+            <span data-i18n="jpegQuality">📦 85% JPEG</span>
+            <span data-i18n="fixSvg">🔧 Fix SVG</span>
+          </div>
         </div>
-        <!-- Advanced Settings Content -->
-        <div class="advanced-settings-content" id="advancedSettingsContent">
-          <!-- JPEG Quality -->
-          <div class="advanced-setting-row quality-row">
-            <div class="setting-title">📦 JPEG Quality</div>
-            <div class="quality-presets">
-              <button class="quality-preset" data-value="30" onclick="setQualityPreset(30)" title="Minimum quality">30%</button>
-              <button class="quality-preset" data-value="45" onclick="setQualityPreset(45)" title="Low quality">45%</button>
-              <button class="quality-preset" data-value="60" onclick="setQualityPreset(60)" title="Medium-low quality">60%</button>
-              <button class="quality-preset" data-value="75" onclick="setQualityPreset(75)" title="Medium quality">75%</button>
-              <button class="quality-preset active" data-value="85" onclick="setQualityPreset(85)" title="High quality">85%</button>
-              <button class="quality-preset" data-value="95" onclick="setQualityPreset(95)" title="Maximum quality">95%</button>
-            </div>
-            <!-- Hidden inputs to maintain compatibility -->
-            <input type="hidden" id="qualitySlider" value="85">
-            <input type="hidden" id="qualityInput" value="85">
-          </div>
-          <!-- Grayscale Toggle (commented for e-ink optimization, kept for compatibility with other devices/web apps)
-          <div class="advanced-setting-row" style="display:none;">
-            <div class="setting-toggle">
-              <div>
-                <div class="setting-title">⚫ True-Grayscale</div>
-                <div class="setting-desc">BT.601 luminance formula (recommended for e-ink)</div>
-              </div>
-              <label class="toggle-switch">
-                <input type="checkbox" id="grayscaleToggle" checked onchange="updateQualitySettings()">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-          -->
-          <!-- Auto-crop Margins -->
-          <div class="advanced-setting-row">
-            <div class="setting-label">
-              <div class="setting-title">✂ Auto-crop Margins</div>
-              <div class="setting-desc">Trim uniform borders and scale image content to fit</div>
-            </div>
-            <div class="setting-controls">
-              <label class="toggle-switch">
-                <input type="checkbox" id="autoCropToggle" onchange="updateQualitySettings()">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-          <!-- Target Device -->
-          <div class="advanced-setting-row" id="deviceSettingRow">
-            <div class="setting-title">📱 Target Device</div>
-            <div class="setting-controls">
-              <div class="rotation-buttons">
-                <button class="rotation-btn device-btn active" data-value="auto" onclick="setDeviceTarget('auto')">
-                  <span id="deviceAutoLabel">Auto</span>
-                </button>
-                <button class="rotation-btn device-btn" data-value="X4" onclick="setDeviceTarget('X4')">X4</button>
-                <button class="rotation-btn device-btn" data-value="X3" onclick="setDeviceTarget('X3')">X3</button>
-              </div>
-            </div>
-          </div>
-          <!-- Rotation Direction -->
-          <div class="advanced-setting-row" id="rotationSettingRow">
-            <div class="setting-title">↻ Rotation Direction</div>
-            <div class="setting-controls">
-              <div class="rotation-buttons">
-                <button class="rotation-btn" id="rotationCCW" onclick="setHandedness('left')">
-                  <span class="rot-icon">↺</span> CCW
-                </button>
-                <button class="rotation-btn active" id="rotationCW" onclick="setHandedness('right')">
-                  <span class="rot-icon">↻</span> CW
-                </button>
-              </div>
-            </div>
-          </div>
-          <!-- Overlap Settings -->
-          <div class="advanced-setting-row" id="overlapSettingRow">
-            <div class="setting-title">📐 Min Overlap</div>
-            <div class="setting-controls">
-              <div class="overlap-selector">
-                <button class="overlap-btn active" data-value="5" onclick="setOverlap(5)">5%</button>
-                <button class="overlap-btn" data-value="10" onclick="setOverlap(10)">10%</button>
-                <button class="overlap-btn" data-value="15" onclick="setOverlap(15)">15%</button>
-              </div>
-            </div>
-          </div>
-          <!-- Conversion Log Export -->
-          <div class="advanced-setting-row">
-            <div class="setting-label">
-              <div class="setting-title">📥 Auto-download Log</div>
-              <div class="setting-desc">Export detailed log with statistics</div>
-            </div>
-            <div class="setting-controls">
-              <label class="toggle-switch">
-                <input type="checkbox" id="export-log-checkbox" onchange="updateUploadSettingsPersistence()">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-          <div class="advanced-setting-row">
-            <div class="setting-label">
-              <div class="setting-title">Remember Settings</div>
-              <div class="setting-desc">Store these upload options in this browser</div>
-            </div>
-            <div class="setting-controls">
-              <label class="toggle-switch">
-                <input type="checkbox" id="rememberUploadSettings" onchange="updateUploadSettingsPersistence()">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-          </div><!-- advanced-settings-content -->
-      </div><!-- end convert-options -->
       <!-- Image Picker Section - in picker-columns for two-column layout -->
       <div class="image-picker-section" id="imagePickerSection" style="display:none;">
         <div class="image-picker-header">
-          <span class="image-picker-title">🖼️ Image Processing Options</span>
+          <span class="image-picker-title" data-i18n="imageOptions">🖼️ Image Processing Options</span>
           <span class="image-picker-count" id="imagePickerCount">0 images</span>
         </div>
         <div class="state-legend">
           <div class="legend-item locked">
             <span>🔒</span>
-            <span>Cover</span>
+            <span data-i18n="cover">Cover</span>
           </div>
           <div class="legend-item locked">
             <span style="color:#1abc9c">✦</span>
-            <span>Separator</span>
+            <span data-i18n="separator">Separator</span>
           </div>
           <button class="legend-btn" style="--btn-color:var(--label-color)" onclick="applyStateToAll(0)">
             <div class="legend-color"></div>
-            <span>Normal</span>
+            <span data-i18n="normal">Normal</span>
           </button>
           <button class="legend-btn" style="--btn-color:#3498db" onclick="applyStateToAll(1)">
             <div class="legend-color"></div>
-            <span>H-Split</span>
+            <span data-i18n="hSplit">H-Split</span>
           </button>
           <button class="legend-btn" style="--btn-color:#e74c3c" onclick="applyStateToAll(2)">
             <div class="legend-color"></div>
-            <span>V-Split</span>
+            <span data-i18n="vSplit">V-Split</span>
           </button>
           <button class="legend-btn" style="--btn-color:#9b59b6" onclick="applyStateToAll(3)">
             <div class="legend-color"></div>
-            <span>Rotate</span>
+            <span data-i18n="rotate">Rotate</span>
           </button>
         </div>
         <div class="image-grid" id="imageGrid"></div>
       </div>
       </div><!-- end picker-columns -->
-      <!-- Sync compatibility warning - outside picker-columns -->
-      <div class="convert-warning" id="convertWarning" style="display:none;" role="alert" aria-live="polite">
-        ⚠️ Converting will modify files and can break hash‑based sync. ⚠️<br>
-        Please back up or disable sync before proceeding.
-      </div>
-      <!-- Optimize & Upload button - shown when picker is visible, replaces Upload -->
-      <button id="startConversionBtn" class="upload-btn optimize" style="display:none;" onclick="startConversionWithImageStates()">Optimize & Upload</button>
-      <button id="uploadBtn" class="upload-btn" onclick="uploadFile()" disabled>Upload</button>
-      <button class="delete-btn-cancel" onclick="handleCancelUploadModal()">Cancel</button>
+      <button id="uploadBtn" class="upload-btn" onclick="uploadFile()" disabled data-i18n="upload">Upload</button>
+      <button class="delete-btn-cancel" onclick="handleCancelUploadModal()" data-i18n="cancel">Cancel</button>
       <div id="progress-container">
         <div id="progress-bar"><div id="progress-fill"></div></div>
         <div id="progress-text"></div>
+      </div>
+      <div id="inboxCompleteActions" style="display:none; gap:10px; margin-top:12px;">
+        <button class="upload-btn" onclick="openLatestInboxUpload()" data-i18n="openLatest">Open latest on reader</button>
+        <button class="delete-btn-cancel" onclick="viewInbox()" data-i18n="viewInbox">View Inbox</button>
       </div>
       <div class="log-section" id="log-section">
         <div class="log-header">
@@ -1769,12 +1746,12 @@
 <div class="modal-overlay" id="folderModal">
   <div class="modal">
     <button class="modal-close" onclick="closeFolderModal()">&times;</button>
-    <h3>📁 New Folder</h3>
+    <h3 data-i18n="newFolderTitle">📁 New Folder</h3>
     <div class="folder-form">
-      <p class="file-info">Create a new folder in <strong id="folderPathDisplay"></strong></p>
-      <input type="text" id="folderName" class="folder-input" placeholder="Folder name..." oninput="document.getElementById('createFolderBtn').disabled = !this.value.trim();">
-      <button class="folder-btn" id="createFolderBtn" onclick="createFolder()" disabled>Create Folder</button>
-      <button class="delete-btn-cancel" onclick="closeFolderModal()">Cancel</button>
+      <p class="file-info"><span data-i18n="createFolderIn">Create a new folder in</span> <strong id="folderPathDisplay"></strong></p>
+      <input type="text" id="folderName" class="folder-input" placeholder="Folder name..." data-i18n-placeholder="folderName" oninput="document.getElementById('createFolderBtn').disabled = !this.value.trim();">
+      <button class="folder-btn" id="createFolderBtn" onclick="createFolder()" disabled data-i18n="createFolder">Create Folder</button>
+      <button class="delete-btn-cancel" onclick="closeFolderModal()" data-i18n="cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -1783,13 +1760,17 @@
 <div class="modal-overlay" id="deleteModal">
   <div class="modal">
     <button class="modal-close" onclick="closeDeleteModal()">&times;</button>
-    <h3>🗑️ Delete Item(s)</h3>
+    <h3 data-i18n="deleteItems">🗑️ Delete Item(s)</h3>
     <div class="folder-form">
-      <p class="delete-warning">⚠️ This action cannot be undone!</p>
-      <p class="file-info">Are you sure you want to delete the following item(s)?</p>
+      <p class="delete-warning" data-i18n="deleteWarning">⚠️ This action cannot be undone!</p>
+      <p class="file-info" data-i18n="deleteQuestion">Are you sure you want to delete the following item(s)?</p>
       <div id="deleteItemList" style="max-height:240px; overflow:auto; margin-bottom:10px;"></div>
-      <button class="delete-btn-confirm" onclick="confirmDelete()">Delete</button>
-      <button class="delete-btn-cancel" onclick="closeDeleteModal()">Cancel</button>
+      <div id="delete-progress-container" aria-live="polite">
+        <div id="delete-progress-bar"><div id="delete-progress-fill"></div></div>
+        <div id="delete-progress-text"></div>
+      </div>
+      <button class="delete-btn-confirm" onclick="confirmDelete()" data-i18n="delete">Delete</button>
+      <button class="delete-btn-cancel" onclick="closeDeleteModal()" data-i18n="cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -1798,13 +1779,13 @@
 <div class="modal-overlay" id="renameModal">
   <div class="modal">
     <button class="modal-close" onclick="closeRenameModal()">&times;</button>
-    <h3>✏️ Rename File</h3>
+    <h3 data-i18n="renameFile">✏️ Rename File</h3>
     <div class="folder-form">
-      <p class="file-info">Renaming <strong id="renameItemName"></strong></p>
-      <input type="text" id="renameNewName" class="folder-input" placeholder="New file name...">
+      <p class="file-info"><span data-i18n="renaming">Renaming</span> <strong id="renameItemName"></strong></p>
+      <input type="text" id="renameNewName" class="folder-input" placeholder="New file name..." data-i18n-placeholder="newFileName">
       <input type="hidden" id="renameItemPath">
-      <button class="rename-btn-confirm" onclick="confirmRename()">Rename</button>
-      <button class="delete-btn-cancel" onclick="closeRenameModal()">Cancel</button>
+      <button class="rename-btn-confirm" onclick="confirmRename()" data-i18n="rename">Rename</button>
+      <button class="delete-btn-cancel" onclick="closeRenameModal()" data-i18n="cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -1813,14 +1794,14 @@
 <div class="modal-overlay" id="moveModal">
   <div class="modal">
     <button class="modal-close" onclick="closeMoveModal()">&times;</button>
-    <h3>📂 Move File</h3>
+    <h3 data-i18n="moveFile">📂 Move File</h3>
     <div class="folder-form">
-      <p class="file-info">Moving <strong id="moveItemName"></strong></p>
-      <input type="text" id="moveDestPath" class="folder-input" list="moveFolderOptions" placeholder="/Destination/Folder">
+      <p class="file-info"><span data-i18n="moving">Moving</span> <strong id="moveItemName"></strong></p>
+      <input type="text" id="moveDestPath" class="folder-input" list="moveFolderOptions" placeholder="/Destination/Folder" data-i18n-placeholder="destinationFolder">
       <datalist id="moveFolderOptions"></datalist>
       <input type="hidden" id="moveItemPath">
-      <button class="move-btn-confirm" onclick="confirmMove()">Move</button>
-      <button class="delete-btn-cancel" onclick="closeMoveModal()">Cancel</button>
+      <button class="move-btn-confirm" onclick="confirmMove()" data-i18n="move">Move</button>
+      <button class="delete-btn-cancel" onclick="closeMoveModal()" data-i18n="cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -1829,13 +1810,13 @@
 <div class="modal-overlay" id="imagePreviewModal">
   <div class="modal image-preview-mode">
     <button class="modal-close" onclick="closeImagePreview()">&times;</button>
-    <h3>🖼️ Preview</h3>
+    <h3 data-i18n="preview">🖼️ Preview</h3>
     <div class="folder-form">
       <p class="file-info"><strong id="imagePreviewName"></strong></p>
       <div class="image-preview-stage">
         <img id="imagePreviewImg" alt="">
       </div>
-      <a id="imagePreviewDownload" class="move-btn-confirm" rel="noopener noreferrer" target="_blank" href="#">Download</a>
+      <a id="imagePreviewDownload" class="move-btn-confirm" rel="noopener noreferrer" target="_blank" href="#" data-i18n="download">Download</a>
     </div>
   </div>
 </div>
@@ -1843,10 +1824,112 @@
 <script>
   // get current path from query parameter
   const currentPath = decodeURIComponent(new URLSearchParams(window.location.search).get('path') || '/');
+  let uploadPath = currentPath;
 
   if (currentPath !== '/') {
     const leaf = currentPath.split('/').filter(Boolean).pop();
-    if (leaf) document.title = leaf + ' - Files - CrossPoint Reader';
+    if (leaf) document.title = leaf + ' - Files - CrossVi';
+  }
+
+  const WEB_LANGUAGE_KEY = 'crossvi.webLanguage';
+  const WEB_TEXT = {
+    en: {
+      language: 'Language', brand: '📚 CrossVi', subtitle: 'Reader tools for Xteink X3/X4', home: 'Home', fileManager: 'File Manager',
+      settings: 'Settings', fonts: 'Fonts', fileManagerTitle: '📁 File Manager',
+      sendInbox: '📥 Send to Inbox', upload: '📤 Upload', newFolder: '📁 New Folder',
+      deleteSelected: '🗑️ Delete Selected', uploadFile: '📤 Upload file',
+      selectFile: 'Select a file to upload to', dropHint: '⬇ Drop files here — or click to browse',
+      optimizeEpub: 'Optimize EPUB', trueGrayscale: '⚫ True-Grayscale',
+      jpegQuality: '📦 85% JPEG', fixSvg: '🔧 Fix SVG', cancel: 'Cancel',
+      optimizeInfo: 'Preparing an X3/X4-ready copy in your browser.',
+      optimizeButton: 'Optimize & Upload', uploadButton: 'Upload',
+      homeBreadcrumb: '🏠 Home', name: 'Name', type: 'Type', size: 'Size', actions: 'Actions',
+      folder: 'folder', folders: 'folders', file: 'file', files: 'files',
+      loadingError: 'An error occurred while loading the files', emptyFolder: 'This folder is empty',
+      allComplete: 'All uploads complete!', someUploadsFailed: '⚠️ Some files failed to upload',
+      retryFailed: 'Retry All Failed Uploads', openLatest: 'Open latest on reader', viewInbox: 'View Inbox',
+      imageOptions: '🖼️ Image Processing Options', cover: 'Cover', separator: 'Separator', normal: 'Normal',
+      hSplit: 'H-Split', vSplit: 'V-Split', rotate: 'Rotate', newFolderTitle: '📁 New Folder',
+      createFolderIn: 'Create a new folder in', folderName: 'Folder name...', createFolder: 'Create Folder',
+      deleteItems: '🗑️ Delete Item(s)', deleteWarning: '⚠️ This action cannot be undone!',
+      deleteQuestion: 'Are you sure you want to delete the following item(s)?', delete: 'Delete',
+      renameFile: '✏️ Rename File', renaming: 'Renaming', newFileName: 'New file name...', rename: 'Rename',
+      moveFile: '📂 Move File', moving: 'Moving', destinationFolder: '/Destination/Folder', move: 'Move',
+      preview: '🖼️ Preview', download: 'Download', networkRestored: 'Network connection restored',
+      networkLost: 'Network connection lost', jsZipUnavailable: 'JSZip is unavailable. Conversion will continue without the image picker.',
+      previewFailed: 'Failed to preview images: ', selectItemDelete: 'Please select at least one item to delete.',
+      deleteFailed: 'Failed to delete: ', deleteNetwork: 'Failed to delete - network error', selectFileRequired: 'Please select at least one file!',
+      inboxLimit: 'Inbox accepts at most 32 files per batch.', checkExistingFailed: 'Failed to check existing files: ',
+      uploadedSummary: ' uploaded.', failedSummary: ' Failed: ', converting: 'Converting', uploading: 'Uploading',
+      uploadComplete: 'Upload complete: ', conversionFallback: 'Conversion failed, uploading original ', openBookFailed: 'Could not open the book: ',
+      folderRequired: 'Please enter a folder name!', folderInvalid: 'Folder name cannot contain " * : < > ? / \\ | and must not be . or ..',
+      createFolderFailed: 'Failed to create folder: ', renameRequired: 'Please enter a new name.', slashInvalid: 'File name cannot include slashes.',
+      renameFailed: 'Failed to rename: ', destinationRequired: 'Please enter a destination folder.', moveFailed: 'Failed to move: ',
+      errorLabel: 'Error: ', retry: 'Retry', deletingItems: 'Deleting items',
+      deleteProgress: 'Deleted {done} of {total}', deleteCompleted: 'Deletion complete',
+      deletePartial: 'Some items could not be deleted: '
+    },
+    vi: {
+      language: 'Ngôn ngữ', brand: '📚 CrossVi', subtitle: 'Công cụ đọc sách cho Xteink X3/X4', home: 'Trang chủ', fileManager: 'Truyền tệp',
+      settings: 'Cài đặt', fonts: 'Phông chữ', fileManagerTitle: '📁 Truyền tệp',
+      sendInbox: '📥 Gửi vào Inbox', upload: '📤 Tải lên', newFolder: '📁 Thư mục mới',
+      deleteSelected: '🗑️ Xóa đã chọn', uploadFile: '📤 Tải tệp lên',
+      selectFile: 'Chọn tệp để tải vào', dropHint: '⬇ Thả tệp vào đây — hoặc bấm để chọn',
+      optimizeEpub: 'Tối ưu EPUB', trueGrayscale: '⚫ Thang xám chuẩn',
+      jpegQuality: '📦 JPEG 85%', fixSvg: '🔧 Sửa SVG', cancel: 'Hủy',
+      optimizeInfo: 'Đang chuẩn bị bản phù hợp cho X3/X4 trên trình duyệt.',
+      optimizeButton: 'Tối ưu và tải lên', uploadButton: 'Tải lên',
+      homeBreadcrumb: '🏠 Trang chủ', name: 'Tên', type: 'Loại', size: 'Kích thước', actions: 'Thao tác',
+      folder: 'thư mục', folders: 'thư mục', file: 'tệp', files: 'tệp',
+      loadingError: 'Không thể tải danh sách tệp', emptyFolder: 'Thư mục này trống',
+      allComplete: 'Đã tải lên tất cả!', someUploadsFailed: '⚠️ Một số tệp tải lên thất bại',
+      retryFailed: 'Thử lại các tệp lỗi', openLatest: 'Mở tệp mới nhất trên máy', viewInbox: 'Xem Inbox',
+      imageOptions: '🖼️ Tùy chọn xử lý ảnh', cover: 'Bìa', separator: 'Dấu phân cách', normal: 'Bình thường',
+      hSplit: 'Tách ngang', vSplit: 'Tách dọc', rotate: 'Xoay', newFolderTitle: '📁 Thư mục mới',
+      createFolderIn: 'Tạo thư mục mới trong', folderName: 'Tên thư mục...', createFolder: 'Tạo thư mục',
+      deleteItems: '🗑️ Xóa mục', deleteWarning: '⚠️ Thao tác này không thể hoàn tác!',
+      deleteQuestion: 'Bạn có chắc muốn xóa các mục sau không?', delete: 'Xóa',
+      renameFile: '✏️ Đổi tên tệp', renaming: 'Đang đổi tên', newFileName: 'Tên tệp mới...', rename: 'Đổi tên',
+      moveFile: '📂 Di chuyển tệp', moving: 'Đang di chuyển', destinationFolder: '/Thư mục/đích', move: 'Di chuyển',
+      preview: '🖼️ Xem trước', download: 'Tải xuống', networkRestored: 'Đã khôi phục kết nối mạng',
+      networkLost: 'Mất kết nối mạng', jsZipUnavailable: 'Không có thư viện JSZip. Sẽ tiếp tục xử lý mà không có bộ chọn ảnh.',
+      previewFailed: 'Không thể xem trước ảnh: ', selectItemDelete: 'Hãy chọn ít nhất một mục để xóa.',
+      deleteFailed: 'Xóa thất bại: ', deleteNetwork: 'Xóa thất bại — lỗi mạng', selectFileRequired: 'Hãy chọn ít nhất một tệp!',
+      inboxLimit: 'Inbox nhận tối đa 32 tệp mỗi lần.', checkExistingFailed: 'Không thể kiểm tra tệp hiện có: ',
+      uploadedSummary: ' đã tải lên.', failedSummary: ' Lỗi: ', converting: 'Đang xử lý', uploading: 'Đang tải lên',
+      uploadComplete: 'Đã tải lên: ', conversionFallback: 'Xử lý thất bại, đang tải bản gốc ', openBookFailed: 'Không thể mở sách: ',
+      folderRequired: 'Hãy nhập tên thư mục!', folderInvalid: 'Tên thư mục không được chứa " * : < > ? / \\ | và không được là . hoặc ..',
+      createFolderFailed: 'Tạo thư mục thất bại: ', renameRequired: 'Hãy nhập tên mới.', slashInvalid: 'Tên tệp không được chứa dấu gạch chéo.',
+      renameFailed: 'Đổi tên thất bại: ', destinationRequired: 'Hãy nhập thư mục đích.', moveFailed: 'Di chuyển thất bại: ',
+      errorLabel: 'Lỗi: ', retry: 'Thử lại', deletingItems: 'Đang xóa các mục',
+      deleteProgress: 'Đã xóa {done}/{total}', deleteCompleted: 'Đã xóa xong',
+      deletePartial: 'Một số mục không thể xóa: '
+    }
+  };
+  let webLanguage = 'en';
+
+  function webText(key) {
+    return (WEB_TEXT[webLanguage] && WEB_TEXT[webLanguage][key]) || WEB_TEXT.en[key] || key;
+  }
+
+  function applyWebLanguage(language, persist = true) {
+    webLanguage = language === 'vi' ? 'vi' : 'en';
+    if (persist) localStorage.setItem(WEB_LANGUAGE_KEY, webLanguage);
+    document.documentElement.lang = webLanguage;
+    document.querySelectorAll('[data-i18n]').forEach(element => {
+      element.textContent = webText(element.dataset.i18n);
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(element => {
+      element.placeholder = webText(element.dataset.i18nPlaceholder);
+    });
+    const selector = document.getElementById('webLanguage');
+    if (selector) selector.value = webLanguage;
+    const checkbox = document.getElementById('convertBeforeUpload');
+    if (checkbox) toggleConvertOptions();
+  }
+
+  function setWebLanguage(language) {
+    applyWebLanguage(language, true);
   }
 
   // Network status monitoring
@@ -1856,13 +1939,13 @@
   window.addEventListener('online', () => {
     console.log('[Network] Online event fired');
     isNetworkOnline = true;
-    showNotification('Network connection restored', 'success');
+    showNotification(webText('networkRestored'), 'success');
   });
 
   window.addEventListener('offline', () => {
     console.log('[Network] Offline event fired');
     isNetworkOnline = false;
-    showNotification('Network connection lost', 'warning');
+    showNotification(webText('networkLost'), 'warning');
   });
 
   // Initialize network status
@@ -1934,8 +2017,12 @@
   }
 
   async function hydrate() {
-    // Fetch CrossPoint version
-    fetchVersion();
+    const savedLanguage = localStorage.getItem(WEB_LANGUAGE_KEY);
+    if (savedLanguage) applyWebLanguage(savedLanguage, false);
+    // Resolve the device language before building dynamic breadcrumbs and the
+    // file table.  This keeps a Vietnamese firmware from briefly rendering
+    // those dynamic strings in English when the status request is fast.
+    await fetchVersion();
 
     // Close modals when clicking overlay - call proper cleanup functions
     document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
@@ -1981,9 +2068,9 @@
     };
 
     if (segments.length === 0) {
-      appendCurrent('🏠 Home');
+      appendCurrent(webText('homeBreadcrumb'));
     } else {
-      appendLink('🏠 Home', '/files');
+      appendLink(webText('homeBreadcrumb'), '/files');
       segments.forEach(function(segment, index) {
         appendSep();
         if (index === segments.length - 1) {
@@ -2004,7 +2091,7 @@
       files = await response.json();
     } catch (e) {
       console.error(e);
-      fileTable.innerHTML = '<div class="no-files">An error occurred while loading the files</div>';
+      fileTable.innerHTML = `<div class="no-files">${webText('loadingError')}</div>`;
       return;
     }
 
@@ -2016,17 +2103,17 @@
     });
 
     const fileCount = files.length - folderCount;
-    const folderLabel = folderCount === 1 ? 'folder' : 'folders';
-    const fileLabel = fileCount === 1 ? 'file' : 'files';
+    const folderLabel = folderCount === 1 ? webText('folder') : webText('folders');
+    const fileLabel = fileCount === 1 ? webText('file') : webText('files');
     document.getElementById('folder-summary').innerHTML = `${folderCount} ${folderLabel}, ${fileCount} ${fileLabel}, ${formatFileSize(totalSize)}`;
 
     if (files.length === 0) {
-      fileTable.innerHTML = '<div class="no-files">This folder is empty</div>';
+      fileTable.innerHTML = `<div class="no-files">${webText('emptyFolder')}</div>`;
     } else {
       let fileTableContent = '<table class="file-table">';
 
 				// Add select-all checkbox column
-      fileTableContent += '<tr><th style="width:40px"><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this)"></th><th>Name</th><th>Type</th><th>Size</th><th class="actions-col">Actions</th></tr>';
+      fileTableContent += `<tr><th style="width:40px"><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this)"></th><th>${webText('name')}</th><th>${webText('type')}</th><th>${webText('size')}</th><th class="actions-col">${webText('actions')}</th></tr>`;
 
 
       const sortedFiles = files.sort((a, b) => {
@@ -2050,7 +2137,9 @@
           fileTableContent += `<td><span class="file-icon">📁</span><a href="/files?path=${encodeURIComponent(folderPath)}" class="folder-link">${escapeHtml(file.name)}</a></td>`;
           fileTableContent += '<td><span class="folder-badge">FOLDER</span></td>';
           fileTableContent += '<td>-</td>';
-          fileTableContent += `<td class="actions-col"><div class="action-icon-group"><button class="delete-btn" onclick="openDeleteModal('${file.name.replaceAll("'", "\\'")}', '${folderPath.replaceAll("'", "\\'")}', true)" title="Delete folder">🗑️</button></div></td>`;
+          const encodedFolderName = encodeURIComponent(file.name).replaceAll("'", '%27');
+          const encodedFolderPath = encodeURIComponent(folderPath).replaceAll("'", '%27');
+          fileTableContent += `<td class="actions-col"><div class="action-icon-group"><button class="delete-btn" data-file-action="delete" data-file-name="${encodedFolderName}" data-file-path="${encodedFolderPath}" data-is-folder="true" title="Delete folder">🗑️</button></div></td>`;
           fileTableContent += '</tr>';
         } else {
           let filePath = currentPath;
@@ -2071,9 +2160,18 @@
           fileTableContent += file.isEpub ? '<td><span class="epub-badge">EPUB</span></td>' : `<td>${escapeHtml(file.name.split('.').pop().toUpperCase())}</td>`;
           fileTableContent += `<td>${formatFileSize(file.size)}</td>`;
           fileTableContent += `<td class="actions-col"><div class="action-icon-group">`;
-          fileTableContent += `<button class="move-btn" onclick="openMoveModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}' )" title="Move file">📂</button>`;
-          fileTableContent += `<button class="rename-btn" onclick="openRenameModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}' )" title="Rename file">✏️</button>`;
-          fileTableContent += `<button class="delete-btn" onclick="openDeleteModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}', false)" title="Delete file">🗑️</button>`;
+          if (file.isEpub) {
+            // Encode paths before placing them in data attributes. This keeps
+            // apostrophes and Unicode filenames out of inline JavaScript.
+            const optimizePath = encodeURIComponent(filePath).replaceAll("'", '%27');
+            const optimizeName = encodeURIComponent(file.name).replaceAll("'", '%27');
+            fileTableContent += `<button class="optimize-btn" data-optimize-path="${optimizePath}" data-optimize-name="${optimizeName}" title="Optimize an EPUB copy">🪄</button>`;
+          }
+          const encodedFilePath = encodeURIComponent(filePath).replaceAll("'", '%27');
+          const encodedFileName = encodeURIComponent(file.name).replaceAll("'", '%27');
+          fileTableContent += `<button class="move-btn" data-file-action="move" data-file-name="${encodedFileName}" data-file-path="${encodedFilePath}" title="Move file">📂</button>`;
+          fileTableContent += `<button class="rename-btn" data-file-action="rename" data-file-name="${encodedFileName}" data-file-path="${encodedFilePath}" title="Rename file">✏️</button>`;
+          fileTableContent += `<button class="delete-btn" data-file-action="delete" data-file-name="${encodedFileName}" data-file-path="${encodedFilePath}" data-is-folder="false" title="Delete file">🗑️</button>`;
           fileTableContent += `</div></td>`;
           fileTableContent += '</tr>';
         }
@@ -2093,6 +2191,80 @@
     return `/download?path=${encodeURIComponent(filePath)}`;
   }
 
+  // A device-side EPUB is downloaded into the browser, optimized locally,
+  // and uploaded as a new file. The firmware still creates its normal cover
+  // cache when the new EPUB is opened; this step only reduces the source image
+  // work it has to do.
+  let deviceOptimizationInProgress = false;
+
+  function makeOptimizedCopyName(name) {
+    const base = name.replace(/\.epub$/i, '');
+    return `${base}_crossvi.epub`;
+  }
+
+  async function prepareDeviceEpubOptimization(path, name) {
+    if (deviceOptimizationInProgress || isUploadInProgress) return;
+
+    deviceOptimizationInProgress = true;
+    showNotification(`Đang tải ${name} về điện thoại để tối ưu…`, 'info');
+    try {
+      const response = await fetch(downloadUrl(path), { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`Không tải được EPUB từ thiết bị (HTTP ${response.status})`);
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('EPUB tải về rỗng');
+
+      const file = new File([blob], makeOptimizedCopyName(name), {
+        type: 'application/epub+zip',
+        lastModified: Date.now()
+      });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+
+      openUploadModal(currentPath);
+      const fileInput = document.getElementById('fileInput');
+      fileInput.files = dataTransfer.files;
+      // This path must not silently upload the unoptimized original if the
+      // browser cannot parse or rewrite the EPUB.
+      requireConversionForUpload = true;
+      document.getElementById('convertBeforeUpload').checked = true;
+      validateFile();
+      showNotification('Đã tải xong. Nhấn “Optimize & Upload” để tạo bản sao.', 'success');
+    } catch (error) {
+      console.error('[EPUB] Device optimization preparation failed:', error);
+      showNotification(error.message || 'Không thể chuẩn bị EPUB để tối ưu', 'error');
+    } finally {
+      deviceOptimizationInProgress = false;
+    }
+  }
+
+  function installFileActionHandler() {
+    const fileTable = document.getElementById('file-table');
+    if (!fileTable) return;
+    fileTable.addEventListener('click', event => {
+      const actionButton = event.target.closest('[data-file-action]');
+      if (actionButton) {
+        event.preventDefault();
+        const action = actionButton.dataset.fileAction;
+        const path = decodeURIComponent(actionButton.dataset.filePath || '');
+        const name = decodeURIComponent(actionButton.dataset.fileName || '');
+        if (!path || !name) return;
+        if (action === 'delete') openDeleteModal(name, path, actionButton.dataset.isFolder === 'true');
+        if (action === 'move') openMoveModal(name, path);
+        if (action === 'rename') openRenameModal(name, path);
+        return;
+      }
+
+      const button = event.target.closest('.optimize-btn');
+      if (!button) return;
+      event.preventDefault();
+      const path = decodeURIComponent(button.dataset.optimizePath || '');
+      const name = decodeURIComponent(button.dataset.optimizeName || '');
+      if (path && name) prepareDeviceEpubOptimization(path, name);
+    });
+  }
+
   function openImagePreview(url, name) {
     const img = document.getElementById('imagePreviewImg');
     document.getElementById('imagePreviewName').textContent = name;
@@ -2109,7 +2281,11 @@
   }
 
   // Modal functions
-  function openUploadModal() {
+  function openUploadModal(targetPath = currentPath) {
+    uploadPath = targetPath;
+    uploadToInbox = uploadPath === '/Inbox';
+    completedUploadNames = [];
+    requireConversionForUpload = false;
     imageStates = {};
     restoreUploadSettingsFromStorage();
 
@@ -2125,8 +2301,20 @@
     const logContainer = document.getElementById('log-container');
     if (logContainer) logContainer.innerHTML = '';
 
-    document.getElementById('uploadPathDisplay').textContent = currentPath === '/' ? '/ 🏠' : currentPath;
+    const completeActions = document.getElementById('inboxCompleteActions');
+    if (completeActions) completeActions.style.display = 'none';
+    const fileInput = document.getElementById('fileInput');
+    if (uploadToInbox) {
+      fileInput.setAttribute('accept', '.epub,.xtc,.xtch,.txt,.md,.markdown');
+    } else {
+      fileInput.removeAttribute('accept');
+    }
+    document.getElementById('uploadPathDisplay').textContent = uploadPath === '/' ? '/ 🏠' : uploadPath;
     document.getElementById('uploadModal').classList.add('open');
+  }
+
+  function openInboxUpload() {
+    openUploadModal('/Inbox');
   }
 
   function handleCancelUploadModal() {
@@ -2152,7 +2340,7 @@
     progressFill.style.width = '0%';
     progressFill.style.backgroundColor = '#e74c3c';
     progressText.style.color = '#e74c3c';
-    progressText.textContent = 'Upload cancelled by User!';
+    progressText.textContent = webLanguage === 'vi' ? 'Đã hủy tải lên.' : 'Upload cancelled.';
     // Re-enable the action button (uploadBtn is always visible at this point;
     // its text is already "Upload" or "Optimize & Upload" depending on checkbox state)
     document.getElementById('uploadBtn').disabled = false;
@@ -2164,6 +2352,7 @@
       return;
     }
     document.getElementById('uploadModal').classList.remove('open');
+    requireConversionForUpload = false;
     const fileInput = document.getElementById('fileInput');
     fileInput.value = '';
     fileInput.classList.remove('has-files');
@@ -2171,16 +2360,16 @@
     const uploadBtn = document.getElementById('uploadBtn');
     uploadBtn.disabled = true;
     uploadBtn.style.display = 'block';
-    uploadBtn.textContent = 'Upload';
+    uploadBtn.textContent = webText('uploadButton');
     uploadBtn.classList.remove('optimize');
-    document.getElementById('startConversionBtn').style.display = 'none';
+    const startConversionBtn = document.getElementById('startConversionBtn');
+    if (startConversionBtn) startConversionBtn.style.display = 'none';
     document.getElementById('progress-container').style.display = 'none';
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-fill').style.backgroundColor = '#27ae60';
     const convertOptions = document.getElementById('convertOptions');
     if (convertOptions) convertOptions.style.display = 'none';
     document.getElementById('convertInfo').style.display = 'none';
-    document.getElementById('convertWarning').style.display = 'none';
     // Clear image picker cache and reset layout
     epubImagesCache = [];
     imageStates = {};
@@ -2192,15 +2381,6 @@
     document.getElementById('pickerColumns').classList.remove('picker-active');
     // Hide log section
     if (logSection) logSection.classList.remove('visible');
-    // Reset advanced options
-    const advancedSettingsContent = document.getElementById('advancedSettingsContent');
-    if (advancedSettingsContent) advancedSettingsContent.classList.remove('visible');
-    document.getElementById('advancedOptionsArrow').classList.remove('expanded');
-    const advancedOptionsToggle = document.getElementById('advancedOptionsToggle');
-    if (advancedOptionsToggle) {
-      advancedOptionsToggle.style.opacity = '0.5';
-      advancedOptionsToggle.style.pointerEvents = 'none';
-    }
     applyUploadSettings();
   }
 
@@ -2214,68 +2394,35 @@
   function toggleConvertOptions() {
     const checked = document.getElementById('convertBeforeUpload').checked;
     const uploadBtn = document.getElementById('uploadBtn');
-    document.getElementById('convertWarning').style.display = checked ? 'block' : 'none';
-    document.getElementById('convertInfo').style.display = checked ? 'block' : 'none';
+    const convertInfo = document.getElementById('convertInfo');
+    convertInfo.style.display = checked ? 'block' : 'none';
+    convertInfo.textContent = webText('optimizeInfo');
     // Update button text and style
     if (checked) {
-      uploadBtn.textContent = 'Optimize & Upload';
+      uploadBtn.textContent = webText('optimizeButton');
       uploadBtn.classList.add('optimize');
     } else {
-      uploadBtn.textContent = 'Upload';
+      uploadBtn.textContent = webText('uploadButton');
       uploadBtn.classList.remove('optimize');
       // Clear image picker when unchecking
       clearImagePicker();
     }
-    // Reset advanced options when toggling off
     if (!checked) {
-      const advancedSettingsContent = document.getElementById('advancedSettingsContent');
-      if (advancedSettingsContent) advancedSettingsContent.classList.remove('visible');
-      document.getElementById('advancedOptionsArrow').classList.remove('expanded');
-    }
-    // Disable/enable advanced mode toggle
-    const advancedOptionsToggle = document.getElementById('advancedOptionsToggle');
-    if (advancedOptionsToggle) {
-      advancedOptionsToggle.style.opacity = checked ? '1' : '0.5';
-      advancedOptionsToggle.style.pointerEvents = checked ? 'auto' : 'none';
+      clearImagePicker();
     }
     updateUploadSettingsPersistence();
   }
 
   function toggleAdvancedOptions() {
-    // Check if advanced options toggle is enabled (optimize EPUB must be checked)
-    const convertEnabled = document.getElementById('convertBeforeUpload').checked;
-    if (!convertEnabled) {
-      return; // Don't toggle if optimization is disabled
-    }
-
-    const content = document.getElementById('advancedSettingsContent');
-    const arrow = document.getElementById('advancedOptionsArrow');
-    const isExpanding = !content.classList.contains('visible');
-    
-    content.classList.toggle('visible');
-    arrow.classList.toggle('expanded');
-    
-    // When expanding, show image picker if an EPUB is selected
-    if (isExpanding) {
-      const fileInput = document.getElementById('fileInput');
-      const files = fileInput.files;
-      if (files.length === 1 && files[0].name.toLowerCase().endsWith('.epub')) {
-        showImagePicker(files[0]).catch(err => console.error('Image picker error:', err));
-      }
-    } else {
-      // When collapsing, hide the picker and startConversionBtn
-      document.getElementById('imagePickerSection').style.display = 'none';
-      document.getElementById('startConversionBtn').style.display = 'none';
-      document.getElementById('uploadBtn').style.display = 'block';
-      document.getElementById('uploadBtn').disabled = false;
-      document.querySelector('#uploadModal .modal').classList.remove('picker-mode');
-      document.getElementById('pickerColumns').classList.remove('picker-active');
-    }
+    // Kept as a no-op for old browser bookmarks/scripts.  The simple upload
+    // flow no longer exposes an Advanced Mode control.
   }
 
   function setQualityPreset(value) {
-    document.getElementById('qualitySlider').value = value;
-    document.getElementById('qualityInput').value = value;
+    const slider = document.getElementById('qualitySlider');
+    const input = document.getElementById('qualityInput');
+    if (slider) slider.value = value;
+    if (input) input.value = value;
     document.querySelectorAll('.quality-preset').forEach(btn => {
       btn.classList.toggle('active', parseInt(btn.dataset.value, 10) === value);
     });
@@ -2283,7 +2430,7 @@
   }
 
   function updateQualitySettings() {
-    const quality = document.getElementById('qualitySlider').value;
+    const quality = document.getElementById('qualitySlider')?.value || JPEG_QUALITY;
     const autoCropToggle = document.getElementById('autoCropToggle');
 
     // Update displays (if element exists)
@@ -2717,7 +2864,7 @@
     // Check if JSZip is available
     if (typeof JSZip === 'undefined') {
       console.error('JSZip not loaded');
-      alert('JSZip library not available. Conversion will proceed without image picker.');
+      alert(webText('jsZipUnavailable'));
       startConversionWithImageStates();
       return;
     }
@@ -2768,14 +2915,15 @@
       // Show picker, hide upload button, show start conversion button
       pickerSection.style.display = 'block';
       document.getElementById('uploadBtn').style.display = 'none';
-      document.getElementById('startConversionBtn').style.display = 'block';
+      const startConversionBtn = document.getElementById('startConversionBtn');
+      if (startConversionBtn) startConversionBtn.style.display = 'block';
       // Enable two-column layout
       document.querySelector('#uploadModal .modal').classList.add('picker-mode');
       document.getElementById('pickerColumns').classList.add('picker-active');
 
     } catch (error) {
       console.error('Failed to extract images:', error);
-      alert('Failed to preview images: ' + error.message + '\n\nConversion will proceed normally.');
+      alert(webText('previewFailed') + error.message + '\n\n' + webText('optimizeInfo'));
       // Fallback: start conversion directly
       startConversionWithImageStates();
     }
@@ -2796,6 +2944,7 @@
       const isCover = img.isCover;
       const isSeparator = img.isSeparator;
       const state = imageStates[img.path] || 0;
+      const safeImageName = escapeHtml(img.name);
 
       const item = document.createElement('div');
 
@@ -2805,8 +2954,8 @@
         item.title = `${img.width}×${img.height} - Cover image (locked)`;
         item.innerHTML = `
           <span class="image-state-badge cover-badge">🔒</span>
-          <img src="${img.dataUrl}" alt="${img.name}" loading="lazy">
-          <div class="image-name">${img.name}</div>
+          <img src="${img.dataUrl}" alt="${safeImageName}" loading="lazy">
+          <div class="image-name">${safeImageName}</div>
         `;
       } else if (isSeparator) {
         // Separator/ornament - locked, cannot be split
@@ -2814,8 +2963,8 @@
         item.title = `${img.width}×${img.height} - Separator (locked)`;
         item.innerHTML = `
           <span class="image-state-badge separator-badge">✦</span>
-          <img src="${img.dataUrl}" alt="${img.name}" loading="lazy">
-          <div class="image-name">${img.name}</div>
+          <img src="${img.dataUrl}" alt="${safeImageName}" loading="lazy">
+          <div class="image-name">${safeImageName}</div>
         `;
       } else {
         // All other images are selectable - all modes allowed
@@ -2872,8 +3021,8 @@
           <div class="image-preview-overlay">
             ${splitLinesHtml}
           </div>
-          <img src="${previewSrc}" alt="${img.name}" loading="lazy">
-          <div class="image-name">${img.name}</div>
+          <img src="${previewSrc}" alt="${safeImageName}" loading="lazy">
+          <div class="image-name">${safeImageName}</div>
         `;
       }
 
@@ -2939,8 +3088,8 @@
     const startConversionBtn = document.getElementById('startConversionBtn');
 
     // Hide picker and start conversion button, remove two-column layout
-    pickerSection.style.display = 'none';
-    startConversionBtn.style.display = 'none';
+    if (pickerSection) pickerSection.style.display = 'none';
+    if (startConversionBtn) startConversionBtn.style.display = 'none';
     document.querySelector('#uploadModal .modal').classList.remove('picker-mode');
     document.getElementById('pickerColumns').classList.remove('picker-active');
 
@@ -2975,18 +3124,10 @@
       e.preventDefault();
       openImagePreview(link.getAttribute('href'), link.textContent);
     });
+    installFileActionHandler();
 
     const qualitySlider = document.getElementById('qualitySlider');
     const qualityInput = document.getElementById('qualityInput');
-
-    // Initialize advanced mode toggle state based on Optimize EPUB checkbox
-    const convertCheckbox = document.getElementById('convertBeforeUpload');
-    const advancedToggle = document.getElementById('advancedOptionsToggle');
-    if (convertCheckbox && advancedToggle) {
-      const isOptimizeEnabled = convertCheckbox.checked;
-      advancedToggle.style.opacity = isOptimizeEnabled ? '1' : '0.5';
-      advancedToggle.style.pointerEvents = isOptimizeEnabled ? 'auto' : 'none';
-    }
 
     if (qualitySlider && qualityInput) {
       // Initialize converter variables with UI default values
@@ -3010,7 +3151,7 @@
         updateQualitySettings();
       };
       qualityInput.onchange = function() {
-        let v = Math.max(1, Math.min(95, parseInt(this.value, 10) || 85));
+        let v = Math.max(1, Math.min(95, parseInt(this.value, 10) || DEFAULT_JPEG_QUALITY));
         this.value = v;
         qualitySlider.value = v;
         deselectPresets();
@@ -3058,7 +3199,7 @@
   function openDeleteSelectedModal() {
     const items = getSelectedItems();
     if (items.length === 0) {
-      alert('Please select at least one item to delete.');
+      alert(webText('selectItemDelete'));
       return;
     }
     openDeleteModalForItems(items);
@@ -3070,6 +3211,7 @@
   }
 
   let deleteItemsGlobal = [];
+  let deleteInProgress = false;
 
   function openDeleteModalForItems(items) {
     deleteItemsGlobal = items;
@@ -3081,18 +3223,42 @@
       div.textContent = (it.isFolder ? '📁 ' : '📄 ') + it.path;
       listEl.appendChild(div);
     });
+    deleteInProgress = false;
+    const progress = document.getElementById('delete-progress-container');
+    if (progress) progress.style.display = 'none';
+    const fill = document.getElementById('delete-progress-fill');
+    if (fill) fill.style.width = '0%';
     document.getElementById('deleteModal').classList.add('open');
   }
 
   function closeDeleteModal() {
+    if (deleteInProgress) return;
     document.getElementById('deleteModal').classList.remove('open');
   }
 
-  function confirmDelete() {
+  function updateDeleteProgress(done, total) {
+    const progress = document.getElementById('delete-progress-container');
+    const fill = document.getElementById('delete-progress-fill');
+    const text = document.getElementById('delete-progress-text');
+    if (!progress || !fill || !text) return;
+    progress.style.display = 'block';
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const safeDone = Math.min(safeTotal, Math.max(0, Number(done) || 0));
+    fill.style.width = `${Math.round((safeDone / safeTotal) * 100)}%`;
+    text.textContent = webText('deleteProgress').replace('{done}', safeDone).replace('{total}', safeTotal);
+  }
+
+  function setDeleteButtonsDisabled(disabled) {
+    document.querySelectorAll('#deleteModal .delete-btn-confirm, #deleteModal .delete-btn-cancel, #deleteModal .modal-close')
+      .forEach(button => { button.disabled = disabled; button.style.opacity = disabled ? '0.55' : ''; });
+  }
+
+  async function confirmDelete() {
     if (!deleteItemsGlobal || deleteItemsGlobal.length === 0) {
       closeDeleteModal();
       return;
     }
+    if (deleteInProgress) return;
 
     const paths = deleteItemsGlobal.map(it => {
       // Ensure path starts with /
@@ -3101,23 +3267,66 @@
       return p;
     });
 
+    deleteInProgress = true;
+    setDeleteButtonsDisabled(true);
+    const total = paths.length;
+    updateDeleteProgress(0, total);
+    document.getElementById('delete-progress-text').textContent = `${webText('deletingItems')} (0/${total})`;
+
     const body = 'paths=' + encodeURIComponent(JSON.stringify(paths));
-    fetch('/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body
-    }).then(async res => {
-      if (res.ok) {
-        window.location.reload();
-      } else {
-        const text = await res.text();
-        alert('Failed to delete: ' + text);
-        closeDeleteModal();
+    try {
+      const res = await fetch('/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
       }
-    }).catch(() => {
-      alert('Failed to delete - network error');
+
+      let buffer = '';
+      let outcome = null;
+      const consumeLine = line => {
+        if (!line) return;
+        const fields = line.split(':');
+        if (fields[0] === 'START') {
+          updateDeleteProgress(0, Number(fields[1]) || total);
+        } else if (fields[0] === 'PROGRESS') {
+          updateDeleteProgress(Number(fields[1]) || 0, Number(fields[2]) || total);
+        } else if (fields[0] === 'DONE') {
+          outcome = fields[1] === 'OK' ? { ok: true } : { ok: false, detail: fields.slice(3).join(':') };
+        }
+      };
+
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          lines.forEach(consumeLine);
+        }
+        buffer += decoder.decode();
+      } else {
+        buffer = await res.text();
+      }
+      buffer.split('\n').forEach(consumeLine);
+
+      if (!outcome || !outcome.ok) {
+        throw new Error(outcome && outcome.detail ? outcome.detail : webText('deleteFailed'));
+      }
+      updateDeleteProgress(total, total);
+      document.getElementById('delete-progress-text').textContent = webText('deleteCompleted');
+      window.location.reload();
+    } catch (error) {
+      alert(webText('deleteFailed') + (error && error.message ? error.message : webText('deleteNetwork')));
+      deleteInProgress = false;
+      setDeleteButtonsDisabled(false);
       closeDeleteModal();
-    });
+    }
   }
 
   // Helper to clear image picker state
@@ -3231,25 +3440,18 @@
       toggleConvertOptions();
     } else {
       convertOptions.style.display = 'none';
-      uploadBtn.textContent = 'Upload';
+      uploadBtn.textContent = webText('uploadButton');
       uploadBtn.classList.remove('optimize');
       document.getElementById('convertInfo').style.display = 'none';
-      document.getElementById('convertWarning').style.display = 'none';
       if (files.length === 0) clearImagePicker();
     }
 
     if (files.length > 0) {
-      // If advanced settings is expanded and single EPUB, show image picker
-      const advancedContent = document.getElementById('advancedSettingsContent');
       const convertEnabled = document.getElementById('convertBeforeUpload').checked;
-      if (advancedContent.classList.contains('visible') && files.length === 1 && convertEnabled && files[0].name.toLowerCase().endsWith('.epub')) {
-        showImagePicker(files[0]).catch(err => console.error('Image picker error:', err));
-      } else {
-        // New selection no longer matches single-EPUB-with-advanced-expanded —
-        // tear down any picker from a previous file so the grid and picker-mode
-        // layout don't linger. clearImagePicker is idempotent.
-        clearImagePicker();
-      }
+      // The advanced image picker is intentionally not part of the simple
+      // upload flow.  Keep any stale picker state hidden when the selection
+      // changes.
+      clearImagePicker();
 
       // If multiple files with conversion, inform user about batch mode
       if (files.length > 1 && convertEnabled) {
@@ -3270,12 +3472,19 @@
 let failedUploadsGlobal = [];
 let wsConnection = null;
 let isUploadInProgress = false; // Prevent modal close during upload/conversion
+let requireConversionForUpload = false; // Device-copy flow must not fall back to the original EPUB
 let operationCancelled = false; // Set by Cancel to stop conversion loops and upload async handlers
 let uploadGeneration = 0;       // Incremented each uploadFile() call; guards stale restoreAfterCancel()
 let currentUploadWs = null;     // Active WebSocket reference for external abort
 let currentUploadXhr = null;    // Active XHR reference for external abort
-const WS_PORT = 81;
+let uploadToInbox = false;
+let completedUploadNames = [];
+// Hardware serves HTTP/WebSocket on 80/81. Simulator and reverse-proxy
+// development setups keep the same adjacent-port contract on mapped ports.
+const HTTP_PORT = Number(window.location.port || 80);
+const WS_PORT = HTTP_PORT + 1;
 const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
+const BATCH_UPLOAD_DELAY_MS = 500;
 
 // ============================================================================
 // EPUB Image Conversion Functions (from Baseline JPEG Converter)
@@ -3291,7 +3500,9 @@ const DEVICE_PROFILES = {
 const DEFAULT_DEVICE = 'X4';
 const DEFAULT_MAX_WIDTH = DEVICE_PROFILES[DEFAULT_DEVICE].width;
 const DEFAULT_MAX_HEIGHT = DEVICE_PROFILES[DEFAULT_DEVICE].height;
+// 85% preserves cover/text detail while remaining appropriate for X3/X4.
 const DEFAULT_JPEG_QUALITY = 85;
+const MAX_AUTO_OPTIMIZE_EPUB_BYTES = 10 * 1024 * 1024;
 const DEFAULT_ENABLE_GRAYSCALE = true;
 const DEFAULT_ENABLE_AUTO_CROP = false;
 // Auto-crop is opt-in because sparse title/logo pages can be zoomed aggressively.
@@ -3318,27 +3529,13 @@ let HANDEDNESS = 'right'; // 'right' = clockwise (right-handed), 'left' = counte
 let OVERLAP_PERCENT = 5; // Minimum overlap percentage for splits (5%, 10%, 15%)
 const UPLOAD_SETTINGS_STORAGE_KEY = 'crosspoint.files.uploadSettings.v1';
 const DEFAULT_UPLOAD_SETTINGS = Object.freeze({
-  convertBeforeUpload: false,
-  renameFromMetadata: false,
-  quality: DEFAULT_JPEG_QUALITY,
-  autoCrop: DEFAULT_ENABLE_AUTO_CROP,
-  deviceTarget: 'auto',
-  handedness: 'right',
-  overlap: 5,
-  exportLog: false
+  convertBeforeUpload: true
 });
 let suppressUploadSettingsSave = false;
 
 function getCurrentUploadSettings() {
   return {
-    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked,
-    renameFromMetadata: !!document.getElementById('renameFromMetadataToggle')?.checked,
-    quality: parseInt(document.getElementById('qualitySlider')?.value || JPEG_QUALITY, 10),
-    autoCrop: !!document.getElementById('autoCropToggle')?.checked,
-    deviceTarget: DEVICE_TARGET,
-    handedness: HANDEDNESS,
-    overlap: OVERLAP_PERCENT,
-    exportLog: !!document.getElementById('export-log-checkbox')?.checked
+    convertBeforeUpload: !!document.getElementById('convertBeforeUpload')?.checked
   };
 }
 
@@ -3347,15 +3544,6 @@ function applyUploadSettings(settings = {}) {
   suppressUploadSettingsSave = true;
   try {
     document.getElementById('convertBeforeUpload').checked = !!merged.convertBeforeUpload;
-    document.getElementById('renameFromMetadataToggle').checked = !!merged.renameFromMetadata;
-    document.getElementById('autoCropToggle').checked = !!merged.autoCrop;
-    document.getElementById('export-log-checkbox').checked = !!merged.exportLog;
-    document.getElementById('rememberUploadSettings').checked = !!settings.rememberSettings;
-
-    setQualityPreset(Math.max(1, Math.min(95, parseInt(merged.quality, 10) || DEFAULT_JPEG_QUALITY)));
-    setDeviceTarget(['auto', 'X3', 'X4'].includes(merged.deviceTarget) ? merged.deviceTarget : 'auto');
-    setHandedness(merged.handedness === 'left' ? 'left' : 'right');
-    setOverlap([5, 10, 15].includes(Number(merged.overlap)) ? Number(merged.overlap) : 5);
     toggleConvertOptions();
   } finally {
     suppressUploadSettingsSave = false;
@@ -3363,27 +3551,14 @@ function applyUploadSettings(settings = {}) {
 }
 
 function restoreUploadSettingsFromStorage() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(UPLOAD_SETTINGS_STORAGE_KEY) || 'null');
-    applyUploadSettings(saved?.rememberSettings ? saved : undefined);
-  } catch (e) {
-    console.warn('Could not read remembered upload settings:', e);
-    applyUploadSettings();
-  }
+  // Keep the upload flow deterministic for non-technical users.  Older
+  // remembered advanced settings are intentionally ignored.
+  applyUploadSettings();
 }
 
 function updateUploadSettingsPersistence() {
-  if (suppressUploadSettingsSave) return;
-  try {
-    if (!document.getElementById('rememberUploadSettings')?.checked) {
-      localStorage.removeItem(UPLOAD_SETTINGS_STORAGE_KEY);
-      return;
-    }
-    const settings = { ...getCurrentUploadSettings(), rememberSettings: true };
-    localStorage.setItem(UPLOAD_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-  } catch (e) {
-    console.warn('Could not save upload settings:', e);
-  }
+  // Kept for compatibility with older inline handlers; there is no advanced
+  // settings state to persist in the simplified uploader.
 }
 
 // ============================================================================
@@ -3405,7 +3580,7 @@ const logSection = document.getElementById('log-section');
 const logContainer = document.getElementById('log-container');
 const exportLogCheckbox = document.getElementById('export-log-checkbox');
 
-// CrossPoint version (fetched from API)
+// CrossVi version (fetched from API)
 let crosspointVersion = 'Unknown';
 
 // Fetch version from API
@@ -3415,6 +3590,9 @@ async function fetchVersion() {
     if (response.ok) {
       const data = await response.json();
       crosspointVersion = data.version || 'Unknown';
+      if (!localStorage.getItem(WEB_LANGUAGE_KEY)) {
+        applyWebLanguage(data.language === 'VI' ? 'vi' : 'en', false);
+      }
       if (data.device === 'X3' || data.device === 'X4') {
         DETECTED_DEVICE = data.device;
         applyDeviceTarget();
@@ -3752,7 +3930,7 @@ function exportLogToFile(filename = null, isBatch = false) {
   }
   // Extract text from log entries
   const entries = logContainer.querySelectorAll('.log-entry');
-  let logText = `CrossPoint Reader ${crosspointVersion} - EPUB Conversion Log\n`;
+  let logText = `CrossVi ${crosspointVersion} - EPUB Conversion Log\n`;
   logText += `Generated: ${new Date().toLocaleString()}\n`;
   logText += `${'='.repeat(60)}\n\n`;
 
@@ -3871,70 +4049,159 @@ async function findOPFPath(zip) {
   return fallback;
 }
 
-function sanitizeMetadataFilenamePart(value) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
-  return (text.normalize ? text.normalize('NFC') : text)
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/^[. ]+/g, '')
-    .replace(/[. ]+$/g, '')
-    .trim();
-}
-
-function buildMetadataFilename(title, author) {
-  title = sanitizeMetadataFilenamePart(title);
-  author = sanitizeMetadataFilenamePart(author);
-  if (!title) return '';
-  let base = author ? `${title} - ${author}` : title;
-  if (base.length > 180) base = base.substring(0, 180).replace(/\s+\S*$/g, '').trim() || base.substring(0, 180).trim();
-  return `${base}.epub`;
-}
-
-async function getMetadataFilenameForEpub(file) {
-  if (typeof JSZip === 'undefined') return '';
-  const zip = await JSZip.loadAsync(file);
-  const opfPath = await findOPFPath(zip);
-  if (!opfPath || !zip.files[opfPath]) return '';
-
-  const doc = new DOMParser().parseFromString(await safeReadText(zip.files[opfPath]), 'application/xml');
-  if (doc.querySelector('parsererror')) return '';
-
-  const title = doc.getElementsByTagNameNS('*', 'title')[0]?.textContent || '';
-  const creators = Array.from(doc.getElementsByTagNameNS('*', 'creator'));
-  const getCreatorRole = el => (
-    el.getAttribute('role') ||
-    el.getAttribute('opf:role') ||
-    el.getAttributeNS('http://www.idpf.org/2007/opf', 'role') ||
-    ''
-  ).toLowerCase();
-  const authorEl = creators.find(el => getCreatorRole(el) === 'aut') ||
-                   creators.find(el => !getCreatorRole(el));
-  const authorText = authorEl?.textContent?.trim();
-  const author = authorText ||
-                 authorEl?.getAttribute('file-as') ||
-                 authorEl?.getAttribute('opf:file-as') ||
-                 authorEl?.getAttributeNS('http://www.idpf.org/2007/opf', 'file-as') ||
-                 '';
-  return buildMetadataFilename(title, author);
-}
-
-async function maybeRenameEbookFile(file) {
-  const renameToggle = document.getElementById('renameFromMetadataToggle');
-  if (!renameToggle || !renameToggle.checked || !file.name.toLowerCase().endsWith('.epub')) {
-    return file;
+// Resolve the image that is already identified as the EPUB cover. This is
+// used only to add a small reader-native cache asset; OPF metadata is not
+// changed and firmware still retains its normal cover fallback.
+function normalizeZipEntryPath(path) {
+  const parts = [];
+  for (const part of String(path || '').replace(/^\/+/, '').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { parts.pop(); continue; }
+    parts.push(part);
   }
+  return parts.join('/');
+}
 
-  try {
-    const metadataName = await getMetadataFilenameForEpub(file);
-    if (!metadataName || metadataName === file.name) return file;
-    return new File([file], metadataName, {
-      type: file.type || 'application/epub+zip',
-      lastModified: file.lastModified
-    });
-  } catch (e) {
-    console.warn('Could not rename EPUB from metadata:', e);
-    return file;
+function resolveZipHref(basePath, href) {
+  const decoded = decodeHref(String(href || '').split('#')[0]);
+  if (!decoded) return '';
+  const baseDir = basePath && basePath.includes('/') ? basePath.substring(0, basePath.lastIndexOf('/')) : '';
+  return normalizeZipEntryPath(decoded.startsWith('/') ? decoded : `${baseDir}/${decoded}`);
+}
+
+function findZipEntryCaseInsensitive(zip, path) {
+  if (path && zip.files[path]) return path;
+  const wanted = String(path || '').toLowerCase();
+  return Object.keys(zip.files).find(candidate => candidate.toLowerCase() === wanted) || null;
+}
+
+async function findOptimizedCoverPath(zip, opfPath, opfContent) {
+  if (!opfPath || !opfContent) return null;
+  const manifest = {};
+  let coverId = null;
+  let match;
+  const itemRegex = /<item\b[^>]*>/gi;
+  while ((match = itemRegex.exec(opfContent)) !== null) {
+    const item = match[0];
+    const getAttr = name => {
+      const attr = item.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, 'i'));
+      return attr ? attr[1] : '';
+    };
+    const id = getAttr('id');
+    const href = getAttr('href');
+    const properties = getAttr('properties').split(/\s+/).filter(Boolean);
+    if (id && href) manifest[id] = resolveZipHref(opfPath, href);
+    if (id && properties.includes('cover-image')) coverId = id;
   }
+  const meta = opfContent.match(/<meta\b[^>]*\bname\s*=\s*["']cover["'][^>]*\bcontent\s*=\s*["']([^"']+)["']/i) ||
+               opfContent.match(/<meta\b[^>]*\bcontent\s*=\s*["']([^"']+)["'][^>]*\bname\s*=\s*["']cover["']/i);
+  if (!coverId && meta) coverId = meta[1];
+  let candidate = coverId && manifest[coverId] ? findZipEntryCaseInsensitive(zip, manifest[coverId]) : null;
+  if (candidate && /\.(?:jpe?g|png)$/i.test(candidate)) return candidate;
+
+  const guide = opfContent.match(/<(?:\w+:)?reference\b[^>]*\btype\s*=\s*["']cover["'][^>]*\bhref\s*=\s*["']([^"']+)["']/i) ||
+                opfContent.match(/<(?:\w+:)?reference\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\btype\s*=\s*["']cover["']/i);
+  if (!candidate && guide) candidate = findZipEntryCaseInsensitive(zip, resolveZipHref(opfPath, guide[1]));
+  if (candidate && zip.files[candidate] && /\.(?:xhtml?|html)$/i.test(candidate)) {
+    try {
+      const wrapper = await safeReadText(zip.files[candidate]);
+      const image = wrapper.match(/(?:src|xlink:href)\s*=\s*["']([^"']+)["']/i);
+      if (image) {
+        const resolved = findZipEntryCaseInsensitive(zip, resolveZipHref(candidate, image[1]));
+        if (resolved && /\.(?:jpe?g|png)$/i.test(resolved)) return resolved;
+      }
+    } catch (e) { /* leave direct-file fallback to firmware */ }
+  }
+  return candidate && /\.(?:jpe?g|png)$/i.test(candidate) ? candidate : null;
+}
+
+const CROSSVI_THUMB_WIDTH = 144;
+const CROSSVI_THUMB_HEIGHT = 240;
+const CROSSVI_THUMB_PATH = 'META-INF/crossvi/cover-144x240-v1.bmp';
+const CROSSVI_CAROUSEL_THUMB_WIDTH = 273;
+const CROSSVI_CAROUSEL_THUMB_HEIGHT = 456;
+const CROSSVI_CAROUSEL_THUMB_PATH = 'META-INF/crossvi/cover-273x456-v2.bmp';
+const CROSSVI_CAROUSEL_X4_THUMB_WIDTH = 249;
+const CROSSVI_CAROUSEL_X4_THUMB_HEIGHT = 415;
+const CROSSVI_CAROUSEL_X4_THUMB_PATH = 'META-INF/crossvi/cover-249x415-v2.bmp';
+const CROSSVI_LEGACY_CAROUSEL_THUMB_PATH = 'META-INF/crossvi/cover-273x456-v1.bmp';
+
+function isCrossViThumbnailPath(path) {
+  const low = path.toLowerCase();
+  return low === CROSSVI_THUMB_PATH.toLowerCase() ||
+         low === CROSSVI_CAROUSEL_THUMB_PATH.toLowerCase() ||
+         low === CROSSVI_CAROUSEL_X4_THUMB_PATH.toLowerCase() ||
+         low === CROSSVI_LEGACY_CAROUSEL_THUMB_PATH.toLowerCase();
+}
+
+function writeLe16(view, offset, value) { view.setUint16(offset, value, true); }
+function writeLe32(view, offset, value) { view.setUint32(offset, value >>> 0, true); }
+function writeLeSigned32(view, offset, value) { view.setInt32(offset, value, true); }
+
+function makeCrossViCoverThumbnail(canvas, targetWidth, targetHeight, fitWithin = false) {
+  if (!canvas || !canvas.width || !canvas.height) return null;
+  // Match the on-device converters: keep the source aspect ratio and let the
+  // renderer crop the shared cover frame, while carousel thumbnails fit
+  // entirely inside their maximum bounds.
+  const scale = fitWithin
+    ? Math.min(targetWidth / canvas.width, targetHeight / canvas.height)
+    : Math.max(targetWidth / canvas.width, targetHeight / canvas.height);
+  const outputWidth = Math.max(1, Math.round(canvas.width * scale));
+  const outputHeight = Math.max(1, Math.round(canvas.height * scale));
+  const scaled = document.createElement('canvas');
+  scaled.width = outputWidth;
+  scaled.height = outputHeight;
+  const ctx = scaled.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#FFF';
+  ctx.fillRect(0, 0, scaled.width, scaled.height);
+  ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, outputWidth, outputHeight);
+  const pixels = ctx.getImageData(0, 0, scaled.width, scaled.height).data;
+  const gray = new Float32Array(outputWidth * outputHeight);
+  for (let i = 0; i < gray.length; i++) {
+    const p = i * 4;
+    const alpha = pixels[p + 3] / 255;
+    gray[i] = (0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2]) * alpha + 255 * (1 - alpha);
+  }
+  const rowBytes = Math.ceil(outputWidth / 32) * 4;
+  const imageSize = rowBytes * outputHeight;
+  const result = new Uint8Array(62 + imageSize);
+  const view = new DataView(result.buffer);
+  view.setUint16(0, 0x4D42, true);
+  writeLe32(view, 2, result.length);
+  writeLe32(view, 10, 62);
+  writeLe32(view, 14, 40);
+  writeLeSigned32(view, 18, outputWidth);
+  writeLeSigned32(view, 22, -outputHeight);
+  writeLe16(view, 26, 1);
+  writeLe16(view, 28, 1);
+  writeLe32(view, 34, imageSize);
+  writeLe32(view, 38, 2835);
+  writeLe32(view, 42, 2835);
+  writeLe32(view, 46, 2);
+  writeLe32(view, 50, 2);
+  result.set([0, 0, 0, 0, 255, 255, 255, 0], 54);
+  for (let y = 0; y < outputHeight; y++) {
+    for (let x = 0; x < outputWidth; x++) {
+      const index = y * outputWidth + x;
+      const oldValue = gray[index];
+      const white = oldValue >= 128;
+      // Palette index 0 is black and index 1 is white, matching the firmware
+      // JPEG/PNG converters and Bitmap::paletteLuminance().
+      if (white) result[62 + y * rowBytes + (x >> 3)] |= 1 << (7 - (x & 7));
+      const error = oldValue - (white ? 255 : 0);
+      const distribute = (dx, dy) => {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && nx < outputWidth && ny < outputHeight) {
+          gray[ny * outputWidth + nx] += error / 8;
+        }
+      };
+      distribute(1, 0); distribute(2, 0); distribute(-1, 1);
+      distribute(0, 1); distribute(1, 1); distribute(0, 2);
+    }
+  }
+  return result;
 }
 
 function reserveAvailableUploadFilename(fileName, usedFileNames) {
@@ -3952,6 +4219,7 @@ function reserveAvailableUploadFilename(fileName, usedFileNames) {
 
   let candidateName;
   do {
+    if (nextSuffix > 999) return null;
     candidateName = `${baseName} (${nextSuffix})${extension}`;
     nextSuffix++;
   } while (usedFileNames.has(normalize(candidateName)));
@@ -3961,8 +4229,9 @@ function reserveAvailableUploadFilename(fileName, usedFileNames) {
 }
 
 async function fetchExistingUploadNames() {
-  const response = await fetch('/api/files?path=' + encodeURIComponent(currentPath) + '&_=' + Date.now());
+  const response = await fetch('/api/files?path=' + encodeURIComponent(uploadPath) + '&_=' + Date.now());
   if (!response.ok) {
+    if (uploadPath === '/Inbox' && response.status === 404) return new Set();
     throw new Error(response.status + ' ' + response.statusText);
   }
   const entries = await response.json();
@@ -4513,12 +4782,12 @@ function createAutoCroppedCanvas(img, imagePath, width, height, ignoreToggle = f
   sourceCtx.drawImage(img, 0, 0);
 
   if (shouldSkipAutoCrop(imagePath, width, height, ignoreToggle)) {
-    return { canvas: sourceCanvas, width, height };
+    return { canvas: sourceCanvas, originalCanvas: sourceCanvas, width, height };
   }
 
   const crop = findNonWhiteBounds(sourceCtx, width, height);
   if (!crop) {
-    return { canvas: sourceCanvas, width, height };
+    return { canvas: sourceCanvas, originalCanvas: sourceCanvas, width, height };
   }
 
   const croppedCanvas = document.createElement('canvas');
@@ -4529,12 +4798,12 @@ function createAutoCroppedCanvas(img, imagePath, width, height, ignoreToggle = f
   croppedCtx.fillRect(0, 0, crop.width, crop.height);
   croppedCtx.drawImage(sourceCanvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
 
-  return { canvas: croppedCanvas, width: crop.width, height: crop.height, crop };
+  return { canvas: croppedCanvas, originalCanvas: sourceCanvas, width: crop.width, height: crop.height, crop };
 }
 
 // Process single image - returns array of {data, suffix} objects
 const IMAGE_LOAD_TIMEOUT_MS = 30000; // 30 second timeout for image loading
-async function processImage(data, imageState = 0, imagePath = '') {
+async function processImage(data, imageState = 0, imagePath = '', isCover = false) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(new Blob([data]));
     const img = new Image();
@@ -4549,11 +4818,23 @@ async function processImage(data, imageState = 0, imagePath = '') {
       clearTimeout(timeoutId);
       URL.revokeObjectURL(url);
       const origW = img.width, origH = img.height;
-      const source = createAutoCroppedCanvas(img, imagePath, origW, origH);
+      const source = createAutoCroppedCanvas(img, imagePath, origW, origH, isCover);
       const sourceCanvas = source.canvas;
+      const thumbnailSourceCanvas = source.originalCanvas || sourceCanvas;
       const sourceW = source.width;
       const sourceH = source.height;
       const sourceWasCropped = !!source.crop;
+      const finish = value => {
+        if (isCover) {
+          value.coverThumbnail = makeCrossViCoverThumbnail(
+            thumbnailSourceCanvas, CROSSVI_THUMB_WIDTH, CROSSVI_THUMB_HEIGHT);
+          value.carouselThumbnail = makeCrossViCoverThumbnail(
+            thumbnailSourceCanvas, CROSSVI_CAROUSEL_THUMB_WIDTH, CROSSVI_CAROUSEL_THUMB_HEIGHT, true);
+          value.carouselX4Thumbnail = makeCrossViCoverThumbnail(
+            thumbnailSourceCanvas, CROSSVI_CAROUSEL_X4_THUMB_WIDTH, CROSSVI_CAROUSEL_X4_THUMB_HEIGHT, true);
+        }
+        resolve(value);
+      };
 
       // imageState: 0=Normal, 1=H-Split (CW/CCW), 2=V-Split, 3=Rotate & Fit
       // ========================================================================
@@ -4607,7 +4888,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
         if (rotW <= MAX_WIDTH) {
           const blob = await new Promise(res => rotCanvas.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
-          resolve({
+          finish({
             parts: [{ data: arrBuf, suffix: '', width: rotW, height: rotH, size: arrBuf.byteLength }],
             meta: { origW, origH, origSize, wasSplit: false, rotated: true, finalW: rotW, finalH: rotH, finalSize: arrBuf.byteLength, imageState: 1 }
           });
@@ -4676,7 +4957,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
           }
 
           const totalSize = parts.reduce((sum, p) => sum + p.size, 0);
-          resolve({
+          finish({
             parts,
             meta: { origW, origH, origSize, wasSplit: true, splitCount: numParts, rotated: true, finalW: parts[0].width, finalH: parts[0].height, finalSize: totalSize, imageState: 1 }
           });
@@ -4708,7 +4989,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
         if (scaledW <= MAX_WIDTH) {
           const blob = await new Promise(res => scaledCanvas.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
-          resolve({
+          finish({
             parts: [{ data: arrBuf, suffix: '', width: scaledW, height: scaledH, size: arrBuf.byteLength }],
             meta: { origW, origH, origSize, wasSplit: false, rotated: false, finalW: scaledW, finalH: scaledH, finalSize: arrBuf.byteLength, imageState: 2 }
           });
@@ -4764,7 +5045,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
           }
 
           const totalSize = parts.reduce((sum, p) => sum + p.size, 0);
-          resolve({
+          finish({
             parts,
             meta: { origW, origH, origSize, wasSplit: true, splitCount: numParts, rotated: false, finalW: parts[0].width, finalH: parts[0].height, finalSize: totalSize, imageState: 2 }
           });
@@ -4804,7 +5085,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
           applyGrayscale(rotCtx, rotW, rotH);
           const blob = await new Promise(res => rotCanvas.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
-          resolve({
+          finish({
             parts: [{ data: arrBuf, suffix: '', width: rotW, height: rotH, size: arrBuf.byteLength }],
             meta: { origW, origH, origSize, wasSplit: false, rotated: true, finalW: rotW, finalH: rotH, finalSize: arrBuf.byteLength, imageState: 3 }
           });
@@ -4827,7 +5108,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
 
           const blob = await new Promise(res => scaledCanvas.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
-          resolve({
+          finish({
             parts: [{ data: arrBuf, suffix: '', width: newW, height: newH, size: arrBuf.byteLength }],
             meta: { origW, origH, origSize, wasSplit: false, rotated: true, finalW: newW, finalH: newH, finalSize: arrBuf.byteLength, imageState: 3 }
           });
@@ -4853,7 +5134,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
 
           const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
-          resolve({
+          finish({
             parts: [{ data: arrBuf, suffix: '', width: sourceW, height: sourceH, size: arrBuf.byteLength }],
             meta: { origW, origH, origSize, wasSplit: false, rotated: false, finalW: sourceW, finalH: sourceH, finalSize: arrBuf.byteLength, imageState: 0 }
           });
@@ -4876,7 +5157,7 @@ async function processImage(data, imageState = 0, imagePath = '') {
 
           const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', JPEG_QUALITY / 100));
           const arrBuf = await blob.arrayBuffer();
-          resolve({
+          finish({
             parts: [{ data: arrBuf, suffix: '', width: newW, height: newH, size: arrBuf.byteLength }],
             meta: { origW, origH, origSize, wasSplit: false, rotated: false, finalW: newW, finalH: newH, finalSize: arrBuf.byteLength, imageState: 0 }
           });
@@ -4904,9 +5185,16 @@ async function convertEpubFile(file, progressCallback) {
   log(`Quality: ${JPEG_QUALITY}% | Overlap: ${OVERLAP_PERCENT}% | Rotation: ${HANDEDNESS === 'right' ? 'CW' : 'CCW'} | Grayscale: ${ENABLE_GRAYSCALE ? 'ON' : 'OFF'} | Auto-crop: ${ENABLE_AUTO_CROP ? 'ON' : 'OFF'}`, '', 'INFO');
 
   const zip = await JSZip.loadAsync(file);
+  const opfPath = await findOPFPath(zip);
+  const opfContent = opfPath ? await safeReadText(zip.files[opfPath]) : null;
+  const optimizedCoverPath = await findOptimizedCoverPath(zip, opfPath, opfContent);
+  let coverThumbnailData = null;
+  let carouselThumbnailData = null;
+  let carouselX4ThumbnailData = null;
   const renamed = {};
   zip.forEach(p => {
     const l = p.toLowerCase();
+    if (isCrossViThumbnailPath(l)) return;
     if (l.match(/\.(png|gif|webp|bmp|jpeg)$/)) {
       renamed[p] = p.replace(/\.(png|gif|webp|bmp|jpeg)$/i, '.jpg');
     }
@@ -4916,7 +5204,6 @@ async function convertEpubFile(file, progressCallback) {
   const entries = Object.entries(zip.files);
   const splitImages = {};
   const xhtmlFiles = {};
-  let opfPath = null, opfContent = null;
   let mainIdentifier = null;
 
   // Write mimetype FIRST per EPUB OCF spec
@@ -4931,6 +5218,7 @@ async function convertEpubFile(file, progressCallback) {
     const [path, fileObj] = entries[i];
     if (fileObj.dir || path === 'mimetype') continue;
     const low = path.toLowerCase();
+    if (isCrossViThumbnailPath(low)) continue;
 
     if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg)$/)) {
       const data = await fileObj.async('arraybuffer');
@@ -4938,7 +5226,7 @@ async function convertEpubFile(file, progressCallback) {
 
       let result;
       try {
-        result = await processImage(data, imageState, path);
+        result = await processImage(data, imageState, path, path === optimizedCoverPath);
       } catch (imageError) {
         // Log error but continue with original image
         console.error(`Failed to process image ${path}:`, imageError);
@@ -4970,6 +5258,15 @@ async function convertEpubFile(file, progressCallback) {
 
       const parts = result.parts;
       const meta = result.meta;
+      if (path === optimizedCoverPath && result.coverThumbnail instanceof Uint8Array) {
+        coverThumbnailData = result.coverThumbnail;
+      }
+      if (path === optimizedCoverPath && result.carouselThumbnail instanceof Uint8Array) {
+        carouselThumbnailData = result.carouselThumbnail;
+      }
+      if (path === optimizedCoverPath && result.carouselX4Thumbnail instanceof Uint8Array) {
+        carouselX4ThumbnailData = result.carouselX4Thumbnail;
+      }
 
       const baseName = path.replace(/\.[^.]+$/, '');
       const newExt = '.jpg';
@@ -5009,12 +5306,25 @@ async function convertEpubFile(file, progressCallback) {
       }
     } else if (low.match(/\.(xhtml|html|htm)$/)) {
       xhtmlFiles[path] = await safeReadText(fileObj);
-    } else if (low.endsWith('.opf')) {
-      opfPath = path;
-      opfContent = await safeReadText(fileObj);
     }
 
     if (progressCallback) progressCallback((i / entries.length) * 60);
+  }
+
+  // Replace any stale asset from a previous optimization. The entry is not in
+  // the OPF manifest, so readers that do not know it simply ignore it.
+  if (coverThumbnailData) {
+    out.file(CROSSVI_THUMB_PATH, coverThumbnailData, { compression: 'STORE', createFolders: false });
+    logFix('CrossVi cover thumbnail', '144x240 1-bit');
+  }
+  if (carouselThumbnailData) {
+    out.file(CROSSVI_CAROUSEL_THUMB_PATH, carouselThumbnailData, { compression: 'STORE', createFolders: false });
+    logFix('CrossVi carousel thumbnail', '273x456 1-bit');
+  }
+  if (carouselX4ThumbnailData) {
+    out.file(CROSSVI_CAROUSEL_X4_THUMB_PATH, carouselX4ThumbnailData,
+      { compression: 'STORE', createFolders: false });
+    logFix('CrossVi X4 carousel thumbnail', '249x415 1-bit');
   }
 
   // Second pass: update XHTML using DOMParser
@@ -5037,7 +5347,7 @@ async function convertEpubFile(file, progressCallback) {
         let modified = false;
 
         // Remove width/height attributes from ALL img tags (dimensions may have changed)
-        // This prevents CrossPoint and other readers from using wrong dimensions
+        // This prevents CrossVi and other readers from using wrong dimensions
         const allImgElements = doc.querySelectorAll('img');
         for (const img of allImgElements) {
           if (img.hasAttribute('width')) { img.removeAttribute('width'); modified = true; }
@@ -5198,6 +5508,19 @@ async function convertEpubFile(file, progressCallback) {
     if (operationCancelled) throw new Error('Cancelled by user');
     if (fileObj.dir || path === 'mimetype') continue;
     const low = path.toLowerCase();
+    // Replace an existing CrossVi asset only when this pass produced a fresh
+    // one. If cover detection failed, preserve a valid asset from an already
+    // optimized EPUB instead of silently deleting the fast path.
+    if (isCrossViThumbnailPath(low)) {
+      let replaced = true;
+      if (low === CROSSVI_THUMB_PATH.toLowerCase()) replaced = coverThumbnailData;
+      if (low === CROSSVI_CAROUSEL_THUMB_PATH.toLowerCase()) replaced = carouselThumbnailData;
+      if (low === CROSSVI_CAROUSEL_X4_THUMB_PATH.toLowerCase()) replaced = carouselX4ThumbnailData;
+      if (!replaced) {
+        out.file(path, await fileObj.async('arraybuffer'), { compression: 'STORE', createFolders: false });
+      }
+      continue;
+    }
     if (low.match(/\.(png|gif|webp|bmp|jpg|jpeg)$/) || low.match(/\.(xhtml|html|htm)$/) || low.endsWith('.opf')) continue;
 
     let data = await fileObj.async('arraybuffer');
@@ -5261,7 +5584,7 @@ function uploadFileWebSocket(file, onProgress, onComplete, onError) {
     ws.onopen = function() {
       console.log('[WS] Connected, starting upload:', file.name);
       // Send start message: START:<filename>:<size>:<path>
-      ws.send(`START:${file.name}:${file.size}:${currentPath}`);
+      ws.send(`START:${file.name}:${file.size}:${uploadPath}`);
     };
 
     ws.onmessage = async function(event) {
@@ -5364,7 +5687,7 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
 
     const xhr = new XMLHttpRequest();
     currentUploadXhr = xhr;
-    xhr.open('POST', '/upload?path=' + encodeURIComponent(currentPath), true);
+    xhr.open('POST', '/upload?path=' + encodeURIComponent(uploadPath), true);
 
     xhr.upload.onprogress = function(e) {
       if (e.lengthComputable && onProgress) {
@@ -5408,7 +5731,11 @@ async function uploadFile() {
   const convertEnabled = document.getElementById('convertBeforeUpload').checked;
 
   if (files.length === 0) {
-    alert('Please select at least one file!');
+    alert(webText('selectFileRequired'));
+    return;
+  }
+  if (uploadToInbox && files.length > 32) {
+    alert(webText('inboxLimit'));
     return;
   }
 
@@ -5418,7 +5745,7 @@ async function uploadFile() {
     usedFileNames = await fetchExistingUploadNames();
   } catch (error) {
     isUploadInProgress = false;
-    alert('Failed to check existing files: ' + error.message);
+    alert(webText('checkExistingFailed') + error.message);
     return;
   }
 
@@ -5439,9 +5766,28 @@ async function uploadFile() {
   let currentIndex = 0;
   const failedFiles = [];
   let useWebSocket = true; // Try WebSocket first
+  const useAggregateProgress = files.length > 1 && convertEnabled &&
+    files.some(file => file.name.toLowerCase().endsWith('.epub'));
+
+  function setAggregateProgress(fileProgress) {
+    const clampedProgress = Math.max(0, Math.min(1, fileProgress));
+    const overallPercent = Math.round(((currentIndex + clampedProgress) / files.length) * 100);
+    progressFill.style.width = overallPercent + '%';
+    return overallPercent;
+  }
+
+  function advanceUploadQueue() {
+    currentIndex++;
+    if (currentIndex < files.length) {
+      setTimeout(uploadNextFile, BATCH_UPLOAD_DELAY_MS);
+    } else {
+      uploadNextFile();
+    }
+  }
 
   // Check if we should use batch logging mode
-  const epubFilesToConvert = files.filter(f => f.name.toLowerCase().endsWith('.epub') && convertEnabled);
+  const epubFilesToConvert = files.filter(f => f.name.toLowerCase().endsWith('.epub') && convertEnabled &&
+    f.size <= MAX_AUTO_OPTIMIZE_EPUB_BYTES);
   const useBatchLog = epubFilesToConvert.length > 1 && exportLogCheckbox && exportLogCheckbox.checked;
 
   // Start batch log mode if needed
@@ -5451,15 +5797,29 @@ async function uploadFile() {
   }
 
   async function uploadNextFile() {
+    if (uploadGeneration !== myGeneration) return;
+    if (operationCancelled) {
+      restoreAfterCancel();
+      return;
+    }
+
     if (currentIndex >= files.length) {
       // All files processed - show summary
       if (failedFiles.length === 0) {
         progressFill.style.backgroundColor = '#4caf50';
-        progressText.textContent = 'All uploads complete!';
+        progressText.textContent = webText('allComplete');
 
         // Finalize batch log if in batch mode
         if (useBatchLog) {
           finalizeBatchLog();
+        }
+        if (uploadToInbox) {
+          isUploadInProgress = false;
+          document.getElementById('uploadModalClose').classList.remove('disabled');
+          fileInput.disabled = false;
+          document.getElementById('inboxCompleteActions').style.display = 'flex';
+          uploadBtn.style.display = 'none';
+        } else if (useBatchLog) {
           setTimeout(() => {
             window.location.reload();
           }, 2000);
@@ -5471,7 +5831,7 @@ async function uploadFile() {
       } else {
         progressFill.style.backgroundColor = '#e74c3c';
         const failedList = failedFiles.map(f => f.name).join(', ');
-        progressText.textContent = `${files.length - failedFiles.length}/${files.length} uploaded. Failed: ${failedList}`;
+        progressText.textContent = `${files.length - failedFiles.length}/${files.length}${webText('uploadedSummary')}${webText('failedSummary')}${failedList}`;
 
         // Add upload errors to batch log
         if (useBatchLog) {
@@ -5500,30 +5860,28 @@ async function uploadFile() {
     const originalFile = file;
     // Reset progress bar instantly without transition when starting a new file
     progressFill.classList.add('no-transition');
-    progressFill.style.width = '0%';
+    if (useAggregateProgress) setAggregateProgress(0);
+    else progressFill.style.width = '0%';
     progressFill.style.backgroundColor = '#27ae60';
     // Re-enable transition after a brief delay
     setTimeout(() => progressFill.classList.remove('no-transition'), 50);
 
     // Check if file is an EPUB and conversion is enabled
     const isEpub = file.name.toLowerCase().endsWith('.epub');
-    const needsConversion = isEpub && convertEnabled;
+    const needsConversion = isEpub && convertEnabled && originalFile.size <= MAX_AUTO_OPTIMIZE_EPUB_BYTES;
+    const optimizationSkippedForSize = isEpub && convertEnabled && !needsConversion;
     let conversionSucceeded = false;
     let conversionFailed = false;  // Track if conversion actually failed
     let convOriginalSize = 0;      // Picked-file size; 0 unless conversion succeeded
     let convNewSize = 0;           // Generated blob size; 0 unless conversion succeeded
 
-    if (isEpub && document.getElementById('renameFromMetadataToggle').checked) {
-      const originalName = file.name;
-      progressText.style.color = '';
-      progressText.textContent = `Reading metadata for ${file.name} (${currentIndex + 1}/${files.length})...`;
-      file = await maybeRenameEbookFile(file);
-      if (file.name !== originalName) {
-        console.log(`[Upload] Renamed from metadata: ${originalName} -> ${file.name}`);
-      }
-    }
-
     const availableName = reserveAvailableUploadFilename(file.name, usedFileNames);
+    if (!availableName) {
+      failedFiles.push({ name: file.name, error: 'Too many files with the same name', file: originalFile });
+      if (useAggregateProgress) setAggregateProgress(1);
+      advanceUploadQueue();
+      return;
+    }
     if (availableName !== file.name) {
       console.log(`[Upload] Renamed to avoid collision: ${file.name} -> ${availableName}`);
       file = new File([file], availableName, {
@@ -5533,17 +5891,28 @@ async function uploadFile() {
     }
 
     const methodText = useWebSocket ? ' [WS]' : ' [HTTP]';
-    const stageText = needsConversion ? 'Converting & uploading' : 'Uploading';
+    if (optimizationSkippedForSize) {
+      console.log(`[Upload] Skipping EPUB optimization above 10 MB: ${originalFile.name} (${originalFile.size} bytes)`);
+    }
+    const stageText = needsConversion ? `${webText('converting')} & ${webText('uploading').toLowerCase()}` : webText('uploading');
     progressText.style.color = '';
-    progressText.textContent = `${stageText} ${file.name} (${currentIndex + 1}/${files.length})${methodText}`;
+    progressText.textContent = useAggregateProgress
+      ? `${stageText} ${currentIndex + 1}/${files.length}${methodText} — ${setAggregateProgress(0)}%`
+      : `${stageText} ${file.name} (${currentIndex + 1}/${files.length})${methodText}`;
 
     const onProgress = (loaded, total) => {
       const uploadPercent = Math.round((loaded / total) * 100);
       // If conversion succeeded, display goes from 50-100%, otherwise 0-100%
       const displayPercent = conversionSucceeded ? 50 + Math.round(uploadPercent / 2) : uploadPercent;
-      progressFill.style.width = displayPercent + '%';
-      const prefix = conversionSucceeded ? 'Converting & uploading' : 'Uploading';
-      progressText.textContent = `${prefix} ${file.name} (${currentIndex + 1}/${files.length})${methodText} — ${uploadPercent}%`;
+      const prefix = conversionSucceeded ? `${webText('converting')} & ${webText('uploading').toLowerCase()}` : webText('uploading');
+      if (useAggregateProgress) {
+        const fileProgress = conversionSucceeded ? 0.5 + uploadPercent / 200 : uploadPercent / 100;
+        const overallPercent = setAggregateProgress(fileProgress);
+        progressText.textContent = `${prefix} ${currentIndex + 1}/${files.length}${methodText} — ${overallPercent}%`;
+      } else {
+        progressFill.style.width = displayPercent + '%';
+        progressText.textContent = `${prefix} ${file.name} (${currentIndex + 1}/${files.length})${methodText} — ${uploadPercent}%`;
+      }
     };
 
     const onComplete = () => {
@@ -5554,8 +5923,11 @@ async function uploadFile() {
         saveToFileBatchLog(file.name, ok, ok ? convOriginalSize : 0, ok ? convNewSize : 0);
       }
 
-      currentIndex++;
-      uploadNextFile();
+      completedUploadNames.push(file.name);
+      if (useAggregateProgress) setAggregateProgress(1);
+      // Give the reader time to finish the SD publish before opening the next
+      // connection. This also keeps multi-file uploads from arriving in a burst.
+      advanceUploadQueue();
     };
 
     const onError = (error) => {
@@ -5593,15 +5965,17 @@ async function uploadFile() {
         return; // Stop processing
       }
 
-      currentIndex++;
-      uploadNextFile();
+      if (useAggregateProgress) setAggregateProgress(1);
+      advanceUploadQueue();
     };
 
     try {
       // Convert EPUB if needed
       if (needsConversion) {
         progressFill.style.backgroundColor = '#9b59b6'; // Purple for conversion
-        progressText.textContent = `Converting ${file.name} (${currentIndex + 1}/${files.length})...`;
+        progressText.textContent = useAggregateProgress
+          ? `${webText('converting')} ${currentIndex + 1}/${files.length} — ${setAggregateProgress(0)}%`
+          : `${webText('converting')} ${file.name} (${currentIndex + 1}/${files.length})...`;
 
         // Clear log for single file mode, or just add separator for batch mode
         if (!useBatchLog) {
@@ -5616,7 +5990,12 @@ async function uploadFile() {
         try {
           const convertedBlob = await convertEpubFile(file, (percent) => {
             // Pass current quality setting to converter
-            progressFill.style.width = (percent * 0.5) + '%'; // Conversion takes first 50%
+            if (useAggregateProgress) {
+              const overallPercent = setAggregateProgress(percent / 200);
+              progressText.textContent = `${webText('converting')} ${currentIndex + 1}/${files.length} — ${overallPercent}%`;
+            } else {
+              progressFill.style.width = (percent * 0.5) + '%'; // Conversion takes first 50%
+            }
           });
 
           // Create new File from converted blob
@@ -5630,6 +6009,13 @@ async function uploadFile() {
           console.error('Conversion error:', convError);
           // Log the error
           logError(`Conversion failed: ${convError.message}`);
+          if (requireConversionForUpload) {
+            // A device-copy request must never silently upload an unchanged
+            // EPUB under the optimized name. Keep the source untouched and
+            // report the conversion failure through the normal retry banner.
+            onError(`EPUB optimization failed: ${convError.message}`);
+            return;
+          }
           log('Uploading original file instead...', 'warning', 'INFO');
           conversionFailed = true;
 
@@ -5641,10 +6027,13 @@ async function uploadFile() {
           }
 
           // If conversion fails, try uploading original file
-          progressText.textContent = `Conversion failed, uploading original ${file.name}...`;
+          progressText.textContent = useAggregateProgress
+            ? `${webText('conversionFallback')}${currentIndex + 1}/${files.length} — ${setAggregateProgress(0)}%`
+            : `${webText('conversionFallback')}${file.name}...`;
           progressFill.style.backgroundColor = '#e67e22'; // Orange for fallback
           // Reset progress bar to 0% for original file upload
-          progressFill.style.width = '0%';
+          if (useAggregateProgress) setAggregateProgress(0);
+          else progressFill.style.width = '0%';
         }
       }
 
@@ -5654,8 +6043,13 @@ async function uploadFile() {
         await uploadFileHTTP(file, onProgress, null, null);
       }
       // Ensure progress bar shows 100% before moving to next file
-      progressFill.style.width = '100%';
-      progressText.textContent = `Upload complete: ${file.name}`;
+      if (useAggregateProgress) {
+        const overallPercent = setAggregateProgress(1);
+        progressText.textContent = `${webText('uploading')} ${currentIndex + 1}/${files.length} — ${overallPercent}%`;
+      } else {
+        progressFill.style.width = '100%';
+        progressText.textContent = `${webText('uploadComplete')}${file.name}`;
+      }
       onComplete();
     } catch (error) {
       if (operationCancelled) { if (uploadGeneration === myGeneration) restoreAfterCancel(); return; }
@@ -5683,6 +6077,25 @@ async function uploadFile() {
   }
 
   uploadNextFile();
+}
+
+async function openLatestInboxUpload() {
+  const name = completedUploadNames[completedUploadNames.length - 1];
+  if (!name) return;
+  const response = await fetch('/api/inbox/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  if (!response.ok) {
+    alert(webText('openBookFailed') + await response.text());
+    return;
+  }
+  document.getElementById('progress-text').textContent = 'Opening on the reader…';
+}
+
+function viewInbox() {
+  window.location.href = '/files?path=' + encodeURIComponent('/Inbox');
 }
 
 function showFailedUploadsBanner() {
@@ -5766,14 +6179,14 @@ function retryAllFailedUploads() {
     const folderName = document.getElementById('folderName').value.trim();
 
     if (!folderName) {
-      alert('Please enter a folder name!');
+      alert(webText('folderRequired'));
       return;
     }
 
     // Validate folder name
     const validName = /^(?!\.{1,2}$)[^"*:<>?\/\\|]+$/.test(folderName);
     if (!validName) {
-      alert('Folder name cannot contain \" * : < > ? / \\ | and must not be . or ..');
+      alert(webText('folderInvalid'));
       return;
     }
 
@@ -5788,12 +6201,12 @@ function retryAllFailedUploads() {
       if (xhr.status === 200) {
         window.location.reload();
       } else {
-        alert('Failed to create folder: ' + xhr.responseText);
+        alert(webText('createFolderFailed') + xhr.responseText);
       }
     };
 
     xhr.onerror = function() {
-      alert('Failed to create folder - network error');
+      alert(webText('networkLost'));
     };
 
     xhr.send(formData);
@@ -5821,11 +6234,11 @@ function retryAllFailedUploads() {
     const newName = document.getElementById('renameNewName').value.trim();
 
     if (!newName) {
-      alert('Please enter a new name.');
+      alert(webText('renameRequired'));
       return;
     }
     if (newName.includes('/') || newName.includes('\\')) {
-      alert('File name cannot include slashes.');
+      alert(webText('slashInvalid'));
       return;
     }
 
@@ -5840,13 +6253,13 @@ function retryAllFailedUploads() {
       if (xhr.status === 200) {
         window.location.reload();
       } else {
-        alert('Failed to rename: ' + xhr.responseText);
+        alert(webText('renameFailed') + xhr.responseText);
       }
       closeRenameModal();
     };
 
     xhr.onerror = function() {
-      alert('Failed to rename - network error');
+      alert(webText('networkLost'));
       closeRenameModal();
     };
 
@@ -5935,7 +6348,7 @@ function retryAllFailedUploads() {
     const destPath = normalizePath(document.getElementById('moveDestPath').value);
 
     if (!destPath) {
-      alert('Please enter a destination folder.');
+      alert(webText('destinationRequired'));
       return;
     }
 
@@ -5950,13 +6363,13 @@ function retryAllFailedUploads() {
       if (xhr.status === 200) {
         window.location.reload();
       } else {
-        alert('Failed to move: ' + xhr.responseText);
+        alert(webText('moveFailed') + xhr.responseText);
       }
       closeMoveModal();
     };
 
     xhr.onerror = function() {
-      alert('Failed to move - network error');
+      alert(webText('networkLost'));
       closeMoveModal();
     };
 

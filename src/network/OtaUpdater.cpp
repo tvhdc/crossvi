@@ -11,14 +11,27 @@
 #include <esp_wifi.h>
 // clang-format on
 
+#include <SemanticVersion.h>
+#include <Version.h>
+
 #include <string>
 
+#include "HttpTransportPolicy.h"
+
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/tvhdc/crossvi/releases/latest";
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+
+  updateAvailable = false;
+  latestVersion.clear();
+  otaUrl.clear();
+  otaDigest.clear();
+  otaSize = 0;
+  processedSize = 0;
+  totalSize = 0;
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
@@ -35,8 +48,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return HTTP_ERROR;
   }
 
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no");
+  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s digest=%s", releaseParser.foundTag() ? "yes" : "no",
+          releaseParser.foundFirmware() ? "yes" : "no", releaseParser.foundFirmwareDigest() ? "yes" : "no");
 
   if (!releaseParser.foundTag()) {
     LOG_ERR("OTA", "No tag_name in release JSON");
@@ -47,10 +60,28 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     LOG_ERR("OTA", "No firmware.bin asset found");
     return NO_UPDATE;
   }
+  if (!releaseParser.foundFirmwareDigest()) {
+    LOG_ERR("OTA", "No valid SHA-256 digest for firmware.bin");
+    return JSON_PARSE_ERROR;
+  }
 
   latestVersion = releaseParser.getTagName();
   otaUrl = releaseParser.getFirmwareUrl();
+  otaDigest = releaseParser.getFirmwareDigest();
   otaSize = releaseParser.getFirmwareSize();
+  if (!ota_version::isValid(latestVersion) || !ota_version::isValid(CROSSPOINT_VERSION)) {
+    LOG_ERR("OTA", "Rejected invalid release version: %s", latestVersion.c_str());
+    return JSON_PARSE_ERROR;
+  }
+  if (otaSize == 0) {
+    LOG_ERR("OTA", "Rejected empty firmware asset");
+    return JSON_PARSE_ERROR;
+  }
+  if (!HttpTransportPolicy::isHttpsUrl(otaUrl)) {
+    LOG_ERR("OTA", "Rejected non-HTTPS firmware URL");
+    updateAvailable = false;
+    return JSON_PARSE_ERROR;
+  }
   totalSize = otaSize;
   updateAvailable = true;
 
@@ -63,69 +94,32 @@ bool OtaUpdater::isUpdateNewer() const {
   if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSPOINT_VERSION) {
     return false;
   }
-
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
-
-  const auto currentVersion = CROSSPOINT_VERSION;
-
-  // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
-
-  /*
-   * Compare major versions.
-   * If they differ, return true if latest major version greater than current major version
-   * otherwise return false.
-   */
-  if (latestMajor != currentMajor) return latestMajor > currentMajor;
-
-  /*
-   * Compare minor versions.
-   * If they differ, return true if latest minor version greater than current minor version
-   * otherwise return false.
-   */
-  if (latestMinor != currentMinor) return latestMinor > currentMinor;
-
-  /*
-   * Check patch versions.
-   */
-  if (latestPatch != currentPatch) return latestPatch > currentPatch;
-
-  // If we reach here, it means all segments are equal.
-  // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
-  // the segments are equal, since RC builds are pre-release versions.
-  if (strstr(currentVersion, "-rc") != nullptr) {
-    return true;
-  }
-
-  return false;
+  return ota_version::isNewer(latestVersion, CROSSPOINT_VERSION);
 }
 
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
 
 OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
-  if (!isUpdateNewer()) {
+  if (!isUpdateNewer() || !HttpTransportPolicy::isHttpsUrl(otaUrl) || otaDigest.size() != 64) {
     return UPDATE_OLDER_ERROR;
   }
 
-  // esp_https_ota is hardwired to esp-tls/mbedTLS, whose precompiled build on this
-  // package can't negotiate TLS 1.3 (see SecureClient.h). Drive the OTA partition
-  // ourselves and stream the firmware through HttpDownloader, which runs over
-  // wolfSSL when FREEINK_NET_WOLFSSL is set, reusing its redirect handling for the
+  // Drive the OTA partition ourselves and stream the firmware through
+  // HttpDownloader, reusing its verified TLS and redirect policy for the
   // GitHub -> CDN hop.
   const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
   if (!updatePartition) {
     LOG_ERR("OTA", "No OTA partition available");
     return INTERNAL_UPDATE_ERROR;
   }
-
-  esp_ota_handle_t otaHandle = 0;
-  esp_err_t esp_err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &otaHandle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_ota_begin failed: %s", esp_err_to_name(esp_err));
+  if (otaSize == 0 || otaSize > updatePartition->size) {
+    LOG_ERR("OTA", "Firmware size %u exceeds OTA partition %u", static_cast<unsigned>(otaSize),
+            static_cast<unsigned>(updatePartition->size));
     return INTERNAL_UPDATE_ERROR;
   }
+
+  esp_ota_handle_t otaHandle = 0;
+  bool otaStarted = false;
 
   /* For better timing and connectivity, we disable power saving for WiFi */
   esp_wifi_set_ps(WIFI_PS_NONE);
@@ -133,7 +127,25 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   processedSize = 0;
   int lastReportedPct = -1;
   bool flashOk = true;
-  const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+  const bool fetchOk = HttpDownloader::fetchGithubReleaseAsset(otaUrl, otaDigest, [&](const uint8_t* data, size_t len) {
+    // Establish and verify TLS before esp_ota_begin allocates its persistent
+    // state. X3 otherwise lacks a large enough contiguous block for GitHub's
+    // release-assets RSA certificate verification. The first body chunk stays
+    // owned by HttpDownloader while the destination is prepared here.
+    if (!otaStarted) {
+      const esp_err_t beginResult = esp_ota_begin(updatePartition, otaSize, &otaHandle);
+      if (beginResult != ESP_OK) {
+        LOG_ERR("OTA", "esp_ota_begin failed: %s", esp_err_to_name(beginResult));
+        flashOk = false;
+        return false;
+      }
+      otaStarted = true;
+    }
+    if (processedSize > otaSize || len > otaSize - processedSize) {
+      LOG_ERR("OTA", "Firmware response exceeds declared size");
+      flashOk = false;
+      return false;
+    }
     if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
       flashOk = false;
       return false;  // abort the transfer
@@ -155,13 +167,17 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
-  if (!fetchOk || !flashOk) {
+  if (!fetchOk || !flashOk || !otaStarted || processedSize != otaSize) {
+    if (fetchOk && processedSize != otaSize) {
+      LOG_ERR("OTA", "Firmware size mismatch: received %u, declared %u", static_cast<unsigned>(processedSize),
+              static_cast<unsigned>(otaSize));
+    }
     LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
-    esp_ota_abort(otaHandle);
+    if (otaStarted) esp_ota_abort(otaHandle);
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
   }
 
-  esp_err = esp_ota_end(otaHandle);  // verifies the written image
+  esp_err_t esp_err = esp_ota_end(otaHandle);  // verifies the written image
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_ota_end failed: %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;

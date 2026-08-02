@@ -1,7 +1,7 @@
 /**
  * Xtc.h
  *
- * Main XTC ebook class for CrossPoint Reader
+ * Main XTC ebook class for CrossVi
  * Provides EPUB-like interface for XTC file handling
  */
 
@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "Xtc/XtcPageLayout.h"
 #include "Xtc/XtcParser.h"
 #include "Xtc/XtcTypes.h"
 
@@ -64,15 +65,22 @@ class Xtc {
   std::string getCoverBmpPath() const;
   bool generateCoverBmp() const;
   // Thumbnail support (for Continue Reading card)
+  static constexpr int SHARED_THUMB_WIDTH = 144;
+  static constexpr int SHARED_THUMB_HEIGHT = 240;
   std::string getThumbBmpPath() const;
   std::string getThumbBmpPath(int height) const;
   bool generateThumbBmp(int height) const;
+  bool generateThumbBmp(int width, int height, bool crop) const;
+  // Builds the shared Library thumbnail and this device's Home carousel
+  // thumbnail from one first-page read. Existing valid siblings are retained.
+  bool generateThumbBmpPair(int carouselWidth, int carouselHeight) const;
 
   // Page access
   uint32_t getPageCount() const;
   uint16_t getPageWidth() const;
   uint16_t getPageHeight() const;
   uint8_t getBitDepth() const;  // 1 = XTC (1-bit), 2 = XTCH (2-bit)
+  bool getSourceIdentity(ZipFile::SourceIdentity& identity) const;
 
   /**
    * Load page bitmap data

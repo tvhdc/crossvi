@@ -2,6 +2,7 @@
 
 #include <BufferedFile.h>
 #include <HalStorage.h>
+#include <ZipFile.h>
 
 #include <algorithm>
 #include <deque>
@@ -10,6 +11,16 @@
 
 class BookMetadataCache {
  public:
+  enum class LoadStatus : uint8_t {
+    Loaded,
+    Missing,
+    LegacyVersion,
+    NewerVersion,
+    Invalid,
+    SourceMismatch,
+    IoError,
+  };
+
   struct BookMetadata {
     std::string title;
     std::string author;
@@ -47,10 +58,13 @@ class BookMetadataCache {
  private:
   std::string cachePath;
   uint32_t lutOffset;
+  size_t dataEndOffset;
+  size_t loadedFileSize;
   uint16_t spineCount;
   uint16_t tocCount;
   bool loaded;
   bool buildMode;
+  LoadStatus lastLoadStatus;
 
   HalFile bookFile;
   // Temp file handles during build
@@ -70,8 +84,11 @@ class BookMetadataCache {
   };
   std::deque<SpineHrefIndexEntry> spineHrefIndex;
   bool useSpineHrefIndex = false;
+  std::unique_ptr<uint32_t[]> spineCumulativeCache;
+  std::unique_ptr<int16_t[]> spineTocCache;
 
   static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
+  static constexpr uint16_t MAX_CACHED_SPINE_SUMMARIES = 2048;
 
   // FNV-1a 64-bit hash function
   static uint64_t fnvHash64(const std::string& s) {
@@ -92,7 +109,15 @@ class BookMetadataCache {
   BookMetadata coreMetadata;
 
   explicit BookMetadataCache(std::string cachePath)
-      : cachePath(std::move(cachePath)), lutOffset(0), spineCount(0), tocCount(0), loaded(false), buildMode(false) {}
+      : cachePath(std::move(cachePath)),
+        lutOffset(0),
+        dataEndOffset(0),
+        loadedFileSize(0),
+        spineCount(0),
+        tocCount(0),
+        loaded(false),
+        buildMode(false),
+        lastLoadStatus(LoadStatus::Missing) {}
   ~BookMetadataCache() = default;
 
   // Building phase (stream to disk immediately)
@@ -107,13 +132,17 @@ class BookMetadataCache {
   bool cleanupTmpFiles() const;
 
   // Post-processing to update mappings and sizes
-  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata);
+  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
+                    const ZipFile::SourceIdentity& sourceIdentity);
 
   // Reading phase (read mode)
-  bool load();
+  LoadStatus load(const ZipFile::SourceIdentity& expectedSourceIdentity);
   SpineEntry getSpineEntry(int index);
+  uint32_t getSpineCumulativeSize(int index);
+  int16_t getSpineTocIndex(int index);
   TocEntry getTocEntry(int index);
   int getSpineCount() const { return spineCount; }
   int getTocCount() const { return tocCount; }
   bool isLoaded() const { return loaded; }
+  LoadStatus getLastLoadStatus() const { return lastLoadStatus; }
 };

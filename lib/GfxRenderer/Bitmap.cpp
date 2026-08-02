@@ -1,5 +1,8 @@
 #include "Bitmap.h"
 
+#include <StagedFileTransaction.h>
+
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 
@@ -21,27 +24,62 @@ Bitmap::~Bitmap() {
   delete fsDitherer;
 }
 
-uint16_t Bitmap::readLE16(HalFile& f) {
-  const int c0 = f.read();
-  const int c1 = f.read();
-  const auto b0 = static_cast<uint8_t>(c0 < 0 ? 0 : c0);
-  const auto b1 = static_cast<uint8_t>(c1 < 0 ? 0 : c1);
-  return static_cast<uint16_t>(b0) | (static_cast<uint16_t>(b1) << 8);
+BitmapFileStatus Bitmap::inspectFile(const char* path) {
+  if (!path) return BitmapFileStatus::Invalid;
+  if (!Storage.exists(path)) return BitmapFileStatus::Missing;
+  HalFile candidate;
+  if (!Storage.openFileForRead("BMP", path, candidate)) return BitmapFileStatus::IoError;
+  Bitmap bitmap(candidate);
+  const BmpReaderError result = bitmap.parseHeaders();
+  const bool ioError = candidate.getError() != 0;
+  const bool closed = candidate.close();
+  if (ioError || !closed || result == BmpReaderError::FileInvalid || result == BmpReaderError::SeekStartFailed ||
+      result == BmpReaderError::SeekPixelDataFailed) {
+    return BitmapFileStatus::IoError;
+  }
+  return result == BmpReaderError::Ok ? BitmapFileStatus::Valid : BitmapFileStatus::Invalid;
 }
 
-uint32_t Bitmap::readLE32(HalFile& f) {
-  const int c0 = f.read();
-  const int c1 = f.read();
-  const int c2 = f.read();
-  const int c3 = f.read();
+bool Bitmap::validateFile(const char* path, void*) { return inspectFile(path) == BitmapFileStatus::Valid; }
 
-  const auto b0 = static_cast<uint8_t>(c0 < 0 ? 0 : c0);
-  const auto b1 = static_cast<uint8_t>(c1 < 0 ? 0 : c1);
-  const auto b2 = static_cast<uint8_t>(c2 < 0 ? 0 : c2);
-  const auto b3 = static_cast<uint8_t>(c3 < 0 ? 0 : c3);
+BitmapCacheState Bitmap::inspectDerivedCache(const std::string& finalPath) {
+  const std::string backupPath = finalPath + ".bak";
+  const BitmapFileStatus finalStatus = inspectFile(finalPath.c_str());
+  if (finalStatus == BitmapFileStatus::Valid) {
+    // A stale backup cleanup failure must not hide an already verified final.
+    StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateFile, nullptr);
+    return BitmapCacheState::Ready;
+  }
+  if (finalStatus == BitmapFileStatus::IoError) return BitmapCacheState::IoError;
 
-  return static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1) << 8) | (static_cast<uint32_t>(b2) << 16) |
-         (static_cast<uint32_t>(b3) << 24);
+  const BitmapFileStatus backupStatus = inspectFile(backupPath.c_str());
+  if (backupStatus == BitmapFileStatus::IoError) return BitmapCacheState::IoError;
+  if (backupStatus == BitmapFileStatus::Valid &&
+      StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateFile, nullptr) ==
+          StagedFileTransaction::Status::IoError) {
+    return BitmapCacheState::IoError;
+  }
+  if (backupStatus == BitmapFileStatus::Invalid && !Storage.remove(backupPath.c_str()))
+    return BitmapCacheState::IoError;
+
+  const BitmapFileStatus current = inspectFile(finalPath.c_str());
+  if (current == BitmapFileStatus::Valid) return BitmapCacheState::Ready;
+  return current == BitmapFileStatus::IoError ? BitmapCacheState::IoError : BitmapCacheState::Generate;
+}
+
+bool Bitmap::readLE16(HalFile& f, uint16_t& value) {
+  uint8_t bytes[2];
+  if (f.read(bytes, sizeof(bytes)) != static_cast<int>(sizeof(bytes))) return false;
+  value = static_cast<uint16_t>(bytes[0]) | (static_cast<uint16_t>(bytes[1]) << 8);
+  return true;
+}
+
+bool Bitmap::readLE32(HalFile& f, uint32_t& value) {
+  uint8_t bytes[4];
+  if (f.read(bytes, sizeof(bytes)) != static_cast<int>(sizeof(bytes))) return false;
+  value = static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8) |
+          (static_cast<uint32_t>(bytes[2]) << 16) | (static_cast<uint32_t>(bytes[3]) << 24);
+  return true;
 }
 
 const char* Bitmap::errorToString(BmpReaderError err) {
@@ -52,6 +90,8 @@ const char* Bitmap::errorToString(BmpReaderError err) {
       return "FileInvalid";
     case BmpReaderError::SeekStartFailed:
       return "SeekStartFailed";
+    case BmpReaderError::ShortReadHeader:
+      return "ShortReadHeader";
     case BmpReaderError::NotBMP:
       return "NotBMP (missing 'BM')";
     case BmpReaderError::DIBTooSmall:
@@ -68,6 +108,8 @@ const char* Bitmap::errorToString(BmpReaderError err) {
       return "ImageTooLarge (max 2048x3072)";
     case BmpReaderError::PaletteTooLarge:
       return "PaletteTooLarge";
+    case BmpReaderError::PixelDataOutOfBounds:
+      return "PixelDataOutOfBounds";
 
     case BmpReaderError::SeekPixelDataFailed:
       return "SeekPixelDataFailed";
@@ -85,26 +127,33 @@ const char* Bitmap::errorToString(BmpReaderError err) {
 BmpReaderError Bitmap::parseHeaders() {
   if (!file) return BmpReaderError::FileInvalid;
   if (!file.seek(0)) return BmpReaderError::SeekStartFailed;
+  const uint64_t fileSize = file.fileSize64();
 
   // --- BMP FILE HEADER ---
-  const uint16_t bfType = readLE16(file);
+  uint16_t bfType = 0;
+  uint32_t declaredFileSize = 0;
+  if (!readLE16(file, bfType) || !readLE32(file, declaredFileSize) || !file.seekCur(4) || !readLE32(file, bfOffBits)) {
+    return BmpReaderError::ShortReadHeader;
+  }
   if (bfType != 0x4D42) return BmpReaderError::NotBMP;
 
-  file.seekCur(8);
-  bfOffBits = readLE32(file);
-
   // --- DIB HEADER ---
-  const uint32_t biSize = readLE32(file);
+  uint32_t biSize = 0;
+  uint32_t rawWidth = 0;
+  uint32_t rawHeightBits = 0;
+  uint16_t planes = 0;
+  uint32_t comp = 0;
+  if (!readLE32(file, biSize)) return BmpReaderError::ShortReadHeader;
   if (biSize < 40) return BmpReaderError::DIBTooSmall;
-
-  width = static_cast<int32_t>(readLE32(file));
-  const auto rawHeight = static_cast<int32_t>(readLE32(file));
+  if (!readLE32(file, rawWidth) || !readLE32(file, rawHeightBits) || !readLE16(file, planes) || !readLE16(file, bpp) ||
+      !readLE32(file, comp)) {
+    return BmpReaderError::ShortReadHeader;
+  }
+  width = static_cast<int32_t>(rawWidth);
+  const auto rawHeight = static_cast<int32_t>(rawHeightBits);
+  if (rawHeight == INT32_MIN) return BmpReaderError::BadDimensions;
   topDown = rawHeight < 0;
   height = topDown ? -rawHeight : rawHeight;
-
-  const uint16_t planes = readLE16(file);
-  bpp = readLE16(file);
-  const uint32_t comp = readLE32(file);
   const bool validBpp = bpp == 1 || bpp == 2 || bpp == 4 || bpp == 8 || bpp == 24 || bpp == 32;
 
   if (planes != 1) return BmpReaderError::BadPlanes;
@@ -112,13 +161,13 @@ BmpReaderError Bitmap::parseHeaders() {
   // Allow BI_RGB (0) for all, and BI_BITFIELDS (3) for 32bpp which is common for BGRA masks.
   if (!(comp == 0 || (bpp == 32 && comp == 3))) return BmpReaderError::UnsupportedCompression;
 
-  file.seekCur(12);  // biSizeImage, biXPelsPerMeter, biYPelsPerMeter
-  colorsUsed = readLE32(file);
+  if (!file.seekCur(12) || !readLE32(file, colorsUsed) || !file.seekCur(4) ||
+      (biSize > 40 && !file.seekCur(static_cast<int64_t>(biSize - 40)))) {
+    return BmpReaderError::ShortReadHeader;
+  }
   // BMP spec: colorsUsed==0 means default (2^bpp for paletted formats)
   if (colorsUsed == 0 && bpp <= 8) colorsUsed = 1u << bpp;
   if (colorsUsed > 256u) return BmpReaderError::PaletteTooLarge;
-  file.seekCur(4);  // biClrImportant
-
   if (width <= 0 || height <= 0) return BmpReaderError::BadDimensions;
 
   // Safety limits to prevent memory issues on ESP32
@@ -128,14 +177,31 @@ BmpReaderError Bitmap::parseHeaders() {
     return BmpReaderError::ImageTooLarge;
   }
 
-  // Pre-calculate Row Bytes to avoid doing this every row
-  rowBytes = (width * bpp + 31) / 32 * 4;
+  const uint64_t rowBits = static_cast<uint64_t>(width) * bpp;
+  const uint64_t calculatedRowBytes = ((rowBits + 31U) / 32U) * 4U;
+  if (calculatedRowBytes == 0 || calculatedRowBytes > static_cast<uint64_t>(INT32_MAX)) {
+    return BmpReaderError::ImageTooLarge;
+  }
+  rowBytes = static_cast<int>(calculatedRowBytes);
+
+  const uint64_t paletteBytes = static_cast<uint64_t>(colorsUsed) * 4U;
+  const uint64_t paletteStart = 14U + static_cast<uint64_t>(biSize);
+  if (paletteStart > fileSize || paletteBytes > fileSize - paletteStart || bfOffBits < paletteStart + paletteBytes ||
+      bfOffBits > fileSize) {
+    return BmpReaderError::PixelDataOutOfBounds;
+  }
+  const uint64_t pixelBytes = calculatedRowBytes * static_cast<uint64_t>(height);
+  if (pixelBytes > fileSize - bfOffBits ||
+      (declaredFileSize != 0 &&
+       (declaredFileSize < bfOffBits || declaredFileSize > fileSize || pixelBytes > declaredFileSize - bfOffBits))) {
+    return BmpReaderError::PixelDataOutOfBounds;
+  }
 
   for (int i = 0; i < 256; i++) paletteLum[i] = static_cast<uint8_t>(i);
   if (colorsUsed > 0) {
     for (uint32_t i = 0; i < colorsUsed; i++) {
       uint8_t rgb[4];
-      file.read(rgb, 4);  // Read B, G, R, Reserved in one go
+      if (file.read(rgb, sizeof(rgb)) != static_cast<int>(sizeof(rgb))) return BmpReaderError::ShortReadHeader;
       paletteLum[i] = (77u * rgb[2] + 150u * rgb[1] + 29u * rgb[0]) >> 8;
     }
   }
@@ -280,6 +346,16 @@ BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
   if (bitShift != 6) *outPtr = currentOutByte;
 
   return BmpReaderError::Ok;
+}
+
+BmpReaderError Bitmap::readPackedRows(uint8_t* data, const size_t capacity) const {
+  if (bpp != 1 || !data) return BmpReaderError::BufferTooSmall;
+  const uint64_t bytes = static_cast<uint64_t>(rowBytes) * static_cast<uint64_t>(height);
+  if (bytes == 0 || bytes > capacity || bytes > static_cast<uint64_t>(INT_MAX)) {
+    return BmpReaderError::BufferTooSmall;
+  }
+  return file.read(data, static_cast<size_t>(bytes)) == static_cast<int>(bytes) ? BmpReaderError::Ok
+                                                                                : BmpReaderError::ShortReadRow;
 }
 
 BmpReaderError Bitmap::rewindToData() const {

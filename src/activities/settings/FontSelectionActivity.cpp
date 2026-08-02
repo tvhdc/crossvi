@@ -10,6 +10,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "ReaderFontSize.h"
 #include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -29,14 +30,31 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
 
   return fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? fontFamily : 0;
 }
+
+uint8_t currentEffectivePointSize(const SdCardFontRegistry* registry, const char* sdFontFamilyName,
+                                  const uint8_t fontSize) {
+  if (sdFontFamilyName[0] != '\0' && registry) {
+    if (const auto* family = registry->findFamily(sdFontFamilyName)) {
+      if (const auto* selected = family->findClosestReaderSize(fontSize)) return selected->pointSize;
+    }
+  }
+  return ReaderFontSize::pointSize(std::min<uint8_t>(fontSize, ReaderFontSize::BUILTIN_COUNT - 1));
+}
 }  // namespace
 
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const SdCardFontRegistry* registry)
-    : Activity("FontSelect", renderer, mappedInput), registry_(registry) {}
+                                             const SdCardFontRegistry* registry, const bool persistInvalidSelection)
+    : Activity("FontSelect", renderer, mappedInput),
+      registry_(registry),
+      persistInvalidSelection_(persistInvalidSelection) {}
 
 void FontSelectionActivity::onEnter() {
   Activity::onEnter();
+
+  // The preview renders with SETTINGS.getReaderFontId(), which resolves to the
+  // loaded SD font only after ensureLoaded() ran; without this the first frame
+  // shows the built-in fallback font.
+  sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
 
   // Get metrics and calculate layout dimensions
   metrics_ = UITheme::getInstance().getMetrics();
@@ -46,8 +64,10 @@ void FontSelectionActivity::onEnter() {
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
 
   originalFontFamily_ = SETTINGS.fontFamily;
+  originalFontSize_ = SETTINGS.fontSize;
   strncpy(originalSdFontFamilyName_, SETTINGS.sdFontFamilyName, sizeof(originalSdFontFamilyName_) - 1);
   originalSdFontFamilyName_[sizeof(originalSdFontFamilyName_) - 1] = '\0';
+  preferredPointSize_ = currentEffectivePointSize(registry_, originalSdFontFamilyName_, originalFontSize_);
 
   fonts_.clear();
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
@@ -71,33 +91,29 @@ void FontSelectionActivity::onEnter() {
 void FontSelectionActivity::onExit() { Activity::onExit(); }
 
 void FontSelectionActivity::loop() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    SETTINGS.fontFamily = originalFontFamily_;
-    strncpy(SETTINGS.sdFontFamilyName, originalSdFontFamilyName_, sizeof(SETTINGS.sdFontFamilyName) - 1);
-    SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-    sdFontSystem.ensureLoaded(renderer);
+  // Finish on release so the same physical press cannot be observed by the
+  // parent BookReaderSettingsActivity after this child is popped.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    {
+      // A pending preview render may still be reading the currently loaded SD
+      // font. Keep its buffers alive until that render has completed.
+      RenderLock lock(*this);
+      SETTINGS.fontFamily = originalFontFamily_;
+      SETTINGS.fontSize = originalFontSize_;
+      strncpy(SETTINGS.sdFontFamilyName, originalSdFontFamilyName_, sizeof(SETTINGS.sdFontFamilyName) - 1);
+      SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+      sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
+    }
     finish();
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (selectedIndex_ == previewFontIndex_) {
       handleSelection();
     } else {
       previewFontIndex_ = selectedIndex_;
-      const auto& font = fonts_[selectedIndex_];
-      if (font.isBuiltin) {
-        SETTINGS.fontFamily = font.settingIndex;
-        SETTINGS.sdFontFamilyName[0] = '\0';
-      } else if (registry_) {
-        const int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
-        const auto& families = registry_->getFamilies();
-        if (sdIdx < static_cast<int>(families.size())) {
-          strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
-          SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-          sdFontSystem.ensureLoaded(renderer);
-        }
-      }
+      applyFontSelection(selectedIndex_);
       requestUpdate();
     }
     return;
@@ -129,19 +145,33 @@ void FontSelectionActivity::loop() {
 }
 
 void FontSelectionActivity::handleSelection() {
-  const auto& font = fonts_[selectedIndex_];
+  applyFontSelection(selectedIndex_);
+  finish();
+}
+
+void FontSelectionActivity::applyFontSelection(const int index) {
+  // Font preview rendering runs on ActivityManagerRender. Loading another SD
+  // font unloads the current family, so serialize that ownership change with
+  // any in-flight render that may still be using its glyph and kern buffers.
+  RenderLock lock(*this);
+  const auto& font = fonts_[index];
   if (font.settingIndex < CrossPointSettings::BUILTIN_FONT_COUNT) {
     SETTINGS.fontFamily = font.settingIndex;
+    SETTINGS.fontSize = ReaderFontSize::closestIndex(preferredPointSize_, ReaderFontSize::BUILTIN_COUNT);
     SETTINGS.sdFontFamilyName[0] = '\0';
   } else if (registry_) {
     const int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
     const auto& families = registry_->getFamilies();
     if (sdIdx < static_cast<int>(families.size())) {
+      const auto& family = families[sdIdx];
+      const int logicalSize = family.findClosestReaderSizeEnum(preferredPointSize_);
+      if (logicalSize < 0) return;
+      SETTINGS.fontSize = static_cast<uint8_t>(logicalSize);
       strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
       SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
     }
   }
-  finish();
+  sdFontSystem.ensureLoaded(renderer, persistInvalidSelection_);
 }
 
 void FontSelectionActivity::renderPreviewPane(int top, int height, int fontId, const char* fontName) const {
@@ -168,20 +198,33 @@ void FontSelectionActivity::renderPreviewPane(int top, int height, int fontId, c
   const int maxLines = std::max(1, innerHeight / (lineH + 2));
 
   const char* previewText = I18N.get(StrId::STR_FONT_PREVIEW_TEXT);
+  const char* boldText = I18N.get(StrId::STR_FONT_PREVIEW_BOLD);
+  const char* italicText = I18N.get(StrId::STR_FONT_PREVIEW_ITALIC);
   if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearCache();
     char prewarmBuf[256];
-    snprintf(prewarmBuf, sizeof(prewarmBuf), "%s %s", previewText, ELLIPSIS_UTF8);
-    fcm->prewarmCache(fontId, prewarmBuf, 0x01);
+    snprintf(prewarmBuf, sizeof(prewarmBuf), "%s %s %s %s", previewText, boldText, italicText, ELLIPSIS_UTF8);
+    fcm->prewarmCache(fontId, prewarmBuf, 0x07);
   }
-
-  const auto lines = renderer.wrappedText(fontId, previewText, width, maxLines);
 
   int y = top + metrics_.previewPadding;
   const int textBottomLimit = top + height - labelReserved;
-  for (const auto& line : lines) {
+  const auto regularLines = renderer.wrappedText(fontId, previewText, width, std::max(1, maxLines - 2));
+  for (const auto& line : regularLines) {
     if (y + lineH > textBottomLimit) break;
     renderer.drawText(fontId, left, y, line.c_str());
     y += lineH + 2;
+  }
+  if (y + lineH <= textBottomLimit) {
+    renderer.drawText(fontId, left, y, boldText, true, EpdFontFamily::BOLD);
+    y += lineH + 2;
+  }
+  if (y + lineH <= textBottomLimit) {
+    renderer.drawText(fontId, left, y, italicText, true, EpdFontFamily::ITALIC);
+  }
+
+  if (SETTINGS.sdFontFamilyName[0] != '\0' && !sdFontSystem.currentSupportsVietnamese()) {
+    renderer.drawText(labelFontId, left, labelY - labelH - 2, tr(STR_FONT_MISSING_VIETNAMESE));
   }
 }
 
@@ -203,7 +246,7 @@ void FontSelectionActivity::render(RenderLock&&) {
                                     : nullptr;
   renderPreviewPane(previewTop, previewHeight, previewFontId, previewFontName);
 
-  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, pageWidth, listTop - metrics_.verticalSpacing / 2);
+  renderer.drawLine(0, listTop - metrics_.verticalSpacing / 2, pageWidth - 1, listTop - metrics_.verticalSpacing / 2);
 
   const int currentFontIndex = findCurrentFontIndex(registry_, originalSdFontFamilyName_, originalFontFamily_);
   GUI.drawList(
@@ -222,4 +265,5 @@ void FontSelectionActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
+  if (auto* fcm = renderer.getFontCacheManager()) fcm->clearCache();
 }

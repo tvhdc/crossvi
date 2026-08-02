@@ -11,31 +11,49 @@
 
 class EpubReaderMenuActivity final : public Activity {
  public:
+  enum class ReaderKind : uint8_t { Epub, PlainText, FixedLayout };
+
   // Menu actions available from the reader menu.
   enum class MenuAction {
     SELECT_CHAPTER,
     FOOTNOTES,
     GO_TO_PERCENT,
+    GO_TO_PAGE,
     AUTO_PAGE_TURN,
     ROTATE_SCREEN,
     BOOKMARKS,
     TOGGLE_BOOKMARK,
+    SAVED_ITEMS,
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
     SYNC,
+    NEARBY_POSITION_SYNC,
     DELETE_CACHE,
-    DICTIONARY
+    DICTIONARY,
+    BOOK_SETTINGS,
+    READING_STATS,
+    SEARCH_TEXT,
+    CREATE_CLIPPING,
+    VIEW_CLIPPINGS,
+    MARK_COMPLETE
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation, const bool hasFootnotes, bool hasBookmarks);
+                                  const uint8_t currentOrientation, const uint8_t currentAutoPageTurnSeconds,
+                                  bool autoPageTurnActive, const bool hasFootnotes, bool hasBookmarks,
+                                  bool currentPageBookmarked, ReaderKind readerKind = ReaderKind::Epub,
+                                  bool canCreateClipping = true, bool hasClippings = true, bool hasChapters = true,
+                                  bool bookCompleted = false);
 
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool handleGlobalShortcut(GlobalShortcut shortcut) override {
+    return !optionPopup.isActive() && handleSafeGlobalShortcut(shortcut);
+  }
 
  private:
   struct MenuItem {
@@ -43,7 +61,9 @@ class EpubReaderMenuActivity final : public Activity {
     StrId labelId;
   };
 
-  static std::vector<MenuItem> buildMenuItems(bool hasFootnotes, bool hasBookmarks);
+  static std::vector<MenuItem> buildMenuItems(ReaderKind readerKind, bool hasFootnotes, bool hasBookmarks,
+                                              bool currentPageBookmarked, bool canCreateClipping, bool hasClippings,
+                                              bool hasChapters, bool bookCompleted);
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;
@@ -54,11 +74,15 @@ class EpubReaderMenuActivity final : public Activity {
   OptionPopup optionPopup;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
-  uint8_t selectedPageTurnOption = 0;
+  uint8_t selectedAutoPageTurnSeconds = 0;
+  bool selectedAutoPageTurnActive = false;
+  bool autoPageTurnChanged = false;
   const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
                                                 StrId::STR_LANDSCAPE_CCW};
-  const std::vector<const char*> pageTurnLabels = {I18N.get(StrId::STR_STATE_OFF), "1", "3", "6", "12"};
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;
+  ReaderKind readerKind = ReaderKind::Epub;
+
+  std::string autoPageTurnValue() const;
 };

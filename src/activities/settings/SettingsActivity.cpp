@@ -1,7 +1,10 @@
 #include "SettingsActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalClock.h>
+#include <HalStorage.h>
 #include <Logging.h>
+#include <Version.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -10,8 +13,10 @@
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
+#include "DeviceInfoActivity.h"
 #include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
+#include "FontSizeSelectionActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
@@ -21,8 +26,10 @@
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
+#include "TimeSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -35,20 +42,57 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.clear();
   systemSettings.clear();
 
+  // The Settings screen opens on Display. Delay SD directory traversal until
+  // the Reader tab actually needs the dictionary selector.
+  if (selectedCategoryIndex == 1 && !dictionariesLoaded) {
+    DictionaryRegistry::discover(dictionaries);
+    dictionariesLoaded = true;
+  }
+
   // Pick up any fonts uploaded/deleted over the web server since the last
   // reader activity ran — otherwise the font-family picker shows stale list.
   sdFontSystem.refreshIfDirty();
 
-  // Rescan /dictionaries on every rebuild: cheap (one directory listing) and
-  // picks up dictionaries copied to the SD card since the last visit.
-  std::vector<DictionaryEntry> dictionaries;
-  DictionaryRegistry::discover(dictionaries);
-
-  for (auto& setting : getSettingsList(&sdFontSystem.registry(), &dictionaries)) {
+  for (auto& setting : getSettingsList(&sdFontSystem.registry(), dictionariesLoaded ? &dictionaries : nullptr)) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
+      if (setting.valuePtr == &CrossPointSettings::outsideReaderClock && !halClock.isAvailable()) {
+        continue;
+      }
+      const bool quickResume =
+          SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
+      if (quickResume && (setting.nameId == StrId::STR_SLEEP_SCREEN || setting.nameId == StrId::STR_SLEEP_COVER_MODE ||
+                          setting.nameId == StrId::STR_SLEEP_COVER_FILTER)) {
+        continue;
+      }
+      if ((setting.nameId == StrId::STR_SLEEP_COVER_MODE || setting.nameId == StrId::STR_SLEEP_COVER_FILTER) &&
+          SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::COVER) {
+        continue;
+      }
       displaySettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_READER) {
+      const bool supportsTextGrayscale = renderer.supportsStripGrayscale();
+      if (!supportsTextGrayscale &&
+          (setting.nameId == StrId::STR_TEXT_AA || setting.nameId == StrId::STR_TEXT_DARKNESS)) {
+        continue;
+      }
+      if (setting.nameId == StrId::STR_TEXT_DARKNESS && (!SETTINGS.textAntiAliasing || SETTINGS.readerDarkMode)) {
+        continue;
+      }
+      if (setting.nameId == StrId::STR_PARA_ALIGNMENT && !SETTINGS.embeddedStyle &&
+          setting.enumValues.size() == CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT) {
+        // "Book alignment" has no source style to follow while embedded styles
+        // are disabled. Present its effective Justified value without changing
+        // the saved preference, so re-enabling book formatting restores it.
+        setting.enumValues.pop_back();
+        setting.valuePtr = nullptr;
+        setting.valueGetter = [] {
+          return SETTINGS.paragraphAlignment == CrossPointSettings::BOOK_STYLE
+                     ? static_cast<uint8_t>(CrossPointSettings::JUSTIFIED)
+                     : SETTINGS.paragraphAlignment;
+        };
+        setting.valueSetter = [](const uint8_t value) { SETTINGS.paragraphAlignment = value; };
+      }
       readerSettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_CONTROLS) {
       if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
@@ -62,19 +106,37 @@ void SettingsActivity::rebuildSettingsLists() {
   }
 
   // Append device-only ACTION items
-  controlsSettings.insert(controlsSettings.begin(),
-                          SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
+  controlsSettings.push_back(SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
+  auto unorderedSystemSettings = std::move(systemSettings);
+  systemSettings.clear();
+  const auto appendSystemSetting = [this, &unorderedSystemSettings](const StrId id) {
+    const auto it = std::find_if(unorderedSystemSettings.begin(), unorderedSystemSettings.end(),
+                                 [id](const SettingInfo& setting) { return setting.nameId == id; });
+    if (it == unorderedSystemSettings.end()) return;
+    systemSettings.push_back(std::move(*it));
+    unorderedSystemSettings.erase(it);
+  };
+  appendSystemSetting(StrId::STR_TIME_TO_SLEEP);
+  if (halClock.isAvailable()) {
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_TIME_SETTINGS, SettingAction::Time));
+  }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+  appendSystemSetting(StrId::STR_DEVICE_DISPLAY_NAME);
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+  appendSystemSetting(StrId::STR_SHOW_HIDDEN_FILES);
+  // Preserve future persisted System settings even if their preferred order
+  // has not yet been added above.
+  for (auto& setting : unorderedSystemSettings) systemSettings.push_back(std::move(setting));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_DEVICE_INFO, SettingAction::DeviceInfo));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
-  // Insert "Manage Fonts" right after the font family setting so users discover it naturally
-  readerSettings.insert(readerSettings.begin() + 1,
-                        SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+  // Font installation is a maintenance action; keep it after the reading
+  // preferences instead of displacing the common family/size controls.
+  readerSettings.push_back(SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
 
   // Update currentSettings pointer and count for the active category
   switch (selectedCategoryIndex) {
@@ -94,16 +156,26 @@ void SettingsActivity::rebuildSettingsLists() {
   settingsCount = static_cast<int>(currentSettings->size());
 }
 
+void SettingsActivity::releaseSettingsLists() {
+  std::vector<SettingInfo>().swap(displaySettings);
+  std::vector<SettingInfo>().swap(readerSettings);
+  std::vector<SettingInfo>().swap(controlsSettings);
+  std::vector<SettingInfo>().swap(systemSettings);
+  currentSettings = nullptr;
+  settingsCount = 0;
+}
+
 void SettingsActivity::onEnter() {
   Activity::onEnter();
 
   // Reset selection to first category
   selectedCategoryIndex = 0;
   selectedSettingIndex = 0;
-  preserveQuickResumeTimeoutOn =
-      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-  quickResumeTimeoutAutoEnabled = false;
-  syncQuickResumeTimeoutForSleepScreen(/*sleepScreenChanged=*/true, /*quickResumeTimeoutChanged=*/false);
+  pendingNavigation = 0;
+  holdUp.reset();
+  holdDown.reset();
+  dictionaries.clear();
+  dictionariesLoaded = false;
 
   rebuildSettingsLists();
 
@@ -111,28 +183,87 @@ void SettingsActivity::onEnter() {
   requestUpdate();
 }
 
-void SettingsActivity::onExit() {
-  Activity::onExit();
+void SettingsActivity::onExit() { Activity::onExit(); }
 
-  UITheme::getInstance().reload();  // Re-apply theme in case it was changed
+bool SettingsActivity::handleGlobalShortcut(const GlobalShortcut shortcut) {
+  if (optionPopup.isActive()) return false;
+  if (Storage.probeMedia() && !SETTINGS.saveToFile()) return false;
+  return handleSafeGlobalShortcut(shortcut);
 }
 
 void SettingsActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
-  bool hasChangedCategory = false;
+  // Up/Down have a deliberate two-level contract on this screen: a short
+  // press moves within the current category, while a hold switches category.
+  // Recognise the hold before the release edge so the action fires at 500 ms
+  // and the eventual release cannot also move a row.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) holdUp.onPress();
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) holdDown.onPress();
+  if (mappedInput.isPressed(MappedInputManager::Button::Up) &&
+      holdUp.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Up), 500)) {
+    const bool rowWasSelected = selectedSettingIndex > 0;
+    const int previousSetting = selectedSettingIndex;
+    selectedCategoryIndex = ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount);
+    rebuildSettingsLists();
+    selectedSettingIndex = rowWasSelected ? std::min(previousSetting, settingsCount) : 0;
+    pendingNavigation = 0;
+    requestUpdate();
+    return;
+  }
+  if (mappedInput.isPressed(MappedInputManager::Button::Down) &&
+      holdDown.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Down), 500)) {
+    const bool rowWasSelected = selectedSettingIndex > 0;
+    const int previousSetting = selectedSettingIndex;
+    selectedCategoryIndex = ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount);
+    rebuildSettingsLists();
+    selectedSettingIndex = rowWasSelected ? std::min(previousSetting, settingsCount) : 0;
+    pendingNavigation = 0;
+    requestUpdate();
+    return;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+    if (holdUp.onRelease() == ReaderUtils::HoldRelease::Short) --pendingNavigation;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+    if (holdDown.onRelease() == ReaderUtils::HoldRelease::Short) ++pendingNavigation;
+  }
+  // Front buttons have no long-press action in Settings; keep them useful for
+  // ordinary row navigation without allowing them to wrap into the tab bar.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) --pendingNavigation;
+  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) ++pendingNavigation;
+
+  if (pendingNavigation != 0) {
+    while (pendingNavigation < 0) {
+      if (selectedSettingIndex == 0) {
+        selectedSettingIndex = settingsCount > 0 ? settingsCount : 0;
+      } else {
+        --selectedSettingIndex;
+      }
+      ++pendingNavigation;
+    }
+    while (pendingNavigation > 0) {
+      if (selectedSettingIndex >= settingsCount) {
+        selectedSettingIndex = 0;
+      } else {
+        ++selectedSettingIndex;
+      }
+      --pendingNavigation;
+    }
+    requestUpdate();
+  }
 
   // Handle actions with early return
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (selectedSettingIndex == 0) {
-      selectedCategoryIndex = (selectedCategoryIndex < categoryCount - 1) ? (selectedCategoryIndex + 1) : 0;
-      hasChangedCategory = true;
-      requestUpdate();
+      selectedCategoryIndex = ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount);
+      rebuildSettingsLists();
     } else {
       toggleCurrentSetting();
-      requestUpdate();
-      return;
     }
+    requestUpdate();
+    return;
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -140,52 +271,10 @@ void SettingsActivity::loop() {
       selectedSettingIndex = 0;
       requestUpdate();
     } else {
-      SETTINGS.saveToFile();
+      if (Storage.probeMedia()) SETTINGS.saveToFile();
       onGoHome();
     }
     return;
-  }
-
-  // Handle navigation
-  buttonNavigator.onNextRelease([this] {
-    selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousRelease([this] {
-    selectedSettingIndex = ButtonNavigator::previousIndex(selectedSettingIndex, settingsCount + 1);
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this, &hasChangedCategory] {
-    hasChangedCategory = true;
-    selectedCategoryIndex = ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount);
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this, &hasChangedCategory] {
-    hasChangedCategory = true;
-    selectedCategoryIndex = ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount);
-    requestUpdate();
-  });
-
-  if (hasChangedCategory) {
-    selectedSettingIndex = (selectedSettingIndex == 0) ? 0 : 1;
-    switch (selectedCategoryIndex) {
-      case 0:
-        currentSettings = &displaySettings;
-        break;
-      case 1:
-        currentSettings = &readerSettings;
-        break;
-      case 2:
-        currentSettings = &controlsSettings;
-        break;
-      case 3:
-        currentSettings = &systemSettings;
-        break;
-    }
-    settingsCount = static_cast<int>(currentSettings->size());
   }
 }
 
@@ -196,11 +285,24 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   const auto& setting = (*currentSettings)[selectedSetting];
-  const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
-  const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
-
   if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
     openSleepTimeoutPicker();
+    return;
+  }
+  if (setting.nameId == StrId::STR_FONT_SIZE) {
+    startActivityForResult(std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
+                           [this](const ActivityResult& result) {
+                             if (result.isCancelled) {
+                               rebuildSettingsLists();
+                               return;
+                             }
+                             SETTINGS.saveToFile();
+                             rebuildSettingsLists();
+                           });
+    return;
+  }
+  if (setting.type == SettingType::VALUE) {
+    openValuePicker(setting);
     return;
   }
 
@@ -210,19 +312,17 @@ void SettingsActivity::toggleCurrentSetting() {
     SETTINGS.*(setting.valuePtr) = !currentValue;
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (setting.enumValues.size() > 2) {
+    if (!setting.enumValues.empty()) {
       const auto valuePtr = setting.valuePtr;
       optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
-                       currentValue, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                       currentValue, [this, valuePtr](int idx) {
                          SETTINGS.*valuePtr = idx;
-                         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
                          SETTINGS.saveToFile();
                          rebuildSettingsLists();
                        });
       requestUpdate();
       return;
     }
-    SETTINGS.*(setting.valuePtr) = (currentValue + 1) % static_cast<uint8_t>(setting.enumValues.size());
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
     if (setting.nameId == StrId::STR_FONT_FAMILY) {
       // Launch font selection submenu instead of cycling
@@ -237,11 +337,10 @@ void SettingsActivity::toggleCurrentSetting() {
                                     ? static_cast<uint8_t>(setting.enumValues.size())
                                     : static_cast<uint8_t>(setting.enumStringValues.size());
     const uint8_t cur = setting.valueGetter();
-    if (totalValues > 2) {
+    if (totalValues > 0) {
       const auto valueSetter = setting.valueSetter;
-      auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+      auto onSelect = [this, valueSetter](int idx) {
         valueSetter(idx);
-        syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
         SETTINGS.saveToFile();
         rebuildSettingsLists();
       };
@@ -254,14 +353,30 @@ void SettingsActivity::toggleCurrentSetting() {
       requestUpdate();
       return;
     }
-    setting.valueSetter((cur + 1) % totalValues);
-  } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-    const int8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (currentValue + setting.valueRange.step > setting.valueRange.max) {
-      SETTINGS.*(setting.valuePtr) = setting.valueRange.min;
-    } else {
-      SETTINGS.*(setting.valuePtr) = currentValue + setting.valueRange.step;
-    }
+  } else if (setting.type == SettingType::STRING) {
+    const std::string initialValue = setting.stringGetter
+                                         ? setting.stringGetter()
+                                         : std::string(reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset);
+    const size_t stringOffset = setting.stringOffset;
+    const size_t stringMaxLen = setting.stringMaxLen;
+    const auto stringSetter = setting.stringSetter;
+    startActivityForResult(
+        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(setting.nameId), initialValue,
+                                                stringMaxLen > 0 ? stringMaxLen - 1 : 0, InputType::Text),
+        [this, stringOffset, stringMaxLen, stringSetter](const ActivityResult& result) {
+          if (result.isCancelled) return;
+          const std::string& value = std::get<KeyboardResult>(result.data).text;
+          if (stringSetter) {
+            stringSetter(value);
+          } else if (stringMaxLen > 0) {
+            char* destination = reinterpret_cast<char*>(&SETTINGS) + stringOffset;
+            std::strncpy(destination, value.c_str(), stringMaxLen - 1);
+            destination[stringMaxLen - 1] = '\0';
+          }
+          SETTINGS.saveToFile();
+          rebuildSettingsLists();
+        });
+    return;
   } else if (setting.type == SettingType::ACTION) {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
 
@@ -271,6 +386,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::CustomiseStatusBar:
         startActivityForResult(std::make_unique<StatusBarSettingsActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Time:
+        startActivityForResult(std::make_unique<TimeSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::KOReaderSync:
         startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
@@ -291,6 +409,10 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::DownloadFonts:
+        // The parent Settings activity remains on the stack while the font
+        // manager performs a TLS request. Release its copied setting rows so
+        // mbedTLS has enough contiguous heap for GitHub's redirect headers.
+        releaseSettingsLists();
         startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
                                [this](const ActivityResult&) {
                                  SETTINGS.saveToFile();
@@ -299,6 +421,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::DeviceInfo:
+        startActivityForResult(std::make_unique<DeviceInfoActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::None:
         // Do nothing
@@ -309,33 +434,9 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   }
 
-  syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
   SETTINGS.saveToFile();
   rebuildSettingsLists();
   selectedSettingIndex = std::min(selectedSettingIndex, settingsCount);
-}
-
-void SettingsActivity::syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged) {
-  if (quickResumeTimeoutChanged) {
-    preserveQuickResumeTimeoutOn =
-        SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-    quickResumeTimeoutAutoEnabled = false;
-  }
-
-  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME) {
-    if (SETTINGS.quickResumeSleepScreen != CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT) {
-      SETTINGS.quickResumeSleepScreen = CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-      quickResumeTimeoutAutoEnabled = !preserveQuickResumeTimeoutOn;
-    } else if (sleepScreenChanged && !preserveQuickResumeTimeoutOn) {
-      quickResumeTimeoutAutoEnabled = true;
-    }
-    return;
-  }
-
-  if (sleepScreenChanged && quickResumeTimeoutAutoEnabled && !preserveQuickResumeTimeoutOn) {
-    SETTINGS.quickResumeSleepScreen = CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_NEVER;
-    quickResumeTimeoutAutoEnabled = false;
-  }
 }
 
 void SettingsActivity::openSleepTimeoutPicker() {
@@ -348,6 +449,30 @@ void SettingsActivity::openSleepTimeoutPicker() {
         if (!result.isCancelled) {
           SETTINGS.sleepTimeoutMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
           SETTINGS.saveToFile();
+        }
+        requestUpdate();
+      });
+}
+
+void SettingsActivity::openValuePicker(const SettingInfo& setting) {
+  const bool is16Bit = setting.value16Ptr != nullptr;
+  const int initialValue = is16Bit ? SETTINGS.*(setting.value16Ptr) : SETTINGS.*(setting.valuePtr);
+  const auto valuePtr = setting.valuePtr;
+  const auto value16Ptr = setting.value16Ptr;
+  startActivityForResult(
+      std::make_unique<IntervalSelectionActivity>(
+          renderer, mappedInput, "SettingsValueInterval", setting.nameId, initialValue, setting.valueRange.min,
+          setting.valueRange.max, setting.valueRange.step, setting.valueRange.step, StrId::STR_NONE_OPT, false, true),
+      [this, is16Bit, valuePtr, value16Ptr](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          const uint32_t value = std::get<IntervalResult>(result.data).value;
+          if (is16Bit) {
+            SETTINGS.*value16Ptr = static_cast<uint16_t>(value);
+          } else {
+            SETTINGS.*valuePtr = static_cast<uint8_t>(value);
+          }
+          SETTINGS.saveToFile();
+          rebuildSettingsLists();
         }
         requestUpdate();
       });
@@ -390,7 +515,11 @@ void SettingsActivity::render(RenderLock&&) {
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
           const uint8_t value = SETTINGS.*(setting.valuePtr);
-          valueText = I18N.get(setting.enumValues[value]);
+          if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
+            valueText = setting.enumStringValues[value];
+          } else if (value < setting.enumValues.size()) {
+            valueText = I18N.get(setting.enumValues[value]);
+          }
         } else if (setting.type == SettingType::ENUM && setting.valueGetter) {
           const uint8_t value = setting.valueGetter();
           if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
@@ -398,7 +527,8 @@ void SettingsActivity::render(RenderLock&&) {
           } else if (value < setting.enumValues.size()) {
             valueText = I18N.get(setting.enumValues[value]);
           }
-        } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
+        } else if (setting.type == SettingType::VALUE &&
+                   (setting.valuePtr != nullptr || setting.value16Ptr != nullptr)) {
           if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
             char valueBuffer[32];
             if (SETTINGS.sleepTimeoutMinutes >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) {
@@ -409,22 +539,29 @@ void SettingsActivity::render(RenderLock&&) {
               valueText = valueBuffer;
             }
           } else {
-            valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+            valueText = setting.value16Ptr ? std::to_string(SETTINGS.*(setting.value16Ptr))
+                                           : std::to_string(SETTINGS.*(setting.valuePtr));
           }
+        } else if (setting.type == SettingType::STRING) {
+          valueText = setting.stringGetter
+                          ? setting.stringGetter()
+                          : std::string(reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset);
+          if (valueText.empty()) valueText = tr(STR_NONE_OPT);
         }
         return valueText;
       },
       true);
 
   // Draw help text
-  const auto confirmLabel =
-      (selectedSettingIndex == 0)
-          ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-          : (selectedSettingIndex > 0 && (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP
-                 ? tr(STR_SELECT)
-                 : tr(STR_TOGGLE));
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const bool selectedSettingIsToggle =
+      selectedSettingIndex > 0 && (*currentSettings)[selectedSettingIndex - 1].type == SettingType::TOGGLE;
+  const char* confirmLabel =
+      selectedSettingIndex == 0
+          ? I18N.get(categoryNames[ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount)])
+      : selectedSettingIsToggle ? tr(STR_TOGGLE)
+                                : tr(STR_SELECT);
+  const char* backLabel = selectedSettingIndex == 0 ? tr(STR_HOME) : I18N.get(categoryNames[selectedCategoryIndex]);
+  const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Always use standard refresh for settings screen

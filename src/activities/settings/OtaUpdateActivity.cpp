@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Version.h>
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
@@ -10,6 +11,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
+#include "util/WifiLifecycle.h"
 
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
@@ -69,11 +71,9 @@ void OtaUpdateActivity::onExit() {
 
   // Success path reboots via the SHUTTING_DOWN state's plain ESP.restart()
   // (loop() above) so the new firmware boots normally. Back-out paths land
-  // here with wifi still active; silent-restart to free the LWIP/mbedTLS
-  // fragmentation, same as the other wifi activities.
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  // here with wifi still active; release the stack in place and restart only
+  // if ESP-IDF fails to deinitialise it cleanly.
+  if (!WifiLifecycle::shutDown()) {
     silentRestart();
   }
 }
@@ -91,8 +91,11 @@ void OtaUpdateActivity::render(RenderLock&&) {
 
   float updaterProgress = 0;
   if (state == UPDATE_IN_PROGRESS) {
-    LOG_DBG("OTA", "Update progress: %d / %d", updater.getProcessedSize(), updater.getTotalSize());
-    updaterProgress = static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize());
+    LOG_DBG("OTA", "Update progress: %u / %u", static_cast<unsigned>(updater.getProcessedSize()),
+            static_cast<unsigned>(updater.getTotalSize()));
+    const size_t totalSize = updater.getTotalSize();
+    updaterProgress =
+        totalSize == 0 ? 0.0f : static_cast<float>(updater.getProcessedSize()) / static_cast<float>(totalSize);
     // Only update every 2% at the most
     if (static_cast<int>(updaterProgress * 50) == lastUpdaterPercentage / 2) {
       return;

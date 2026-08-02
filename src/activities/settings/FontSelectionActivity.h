@@ -13,7 +13,7 @@
 class FontSelectionActivity final : public Activity {
  public:
   explicit FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                 const SdCardFontRegistry* registry);
+                                 const SdCardFontRegistry* registry, bool persistInvalidSelection = true);
 
   void onEnter() override;
   void onExit() override;
@@ -22,7 +22,7 @@ class FontSelectionActivity final : public Activity {
 
  private:
   void handleSelection();
-  int getFontIdForPreview(int index) const;
+  void applyFontSelection(int index);
   void renderPreviewPane(int top, int height, int fontId, const char* fontName) const;
 
   struct FontEntry {
@@ -32,11 +32,14 @@ class FontSelectionActivity final : public Activity {
   };
 
   const SdCardFontRegistry* registry_;
+  bool persistInvalidSelection_ = true;
   ButtonNavigator buttonNavigator_;
   std::vector<FontEntry> fonts_;
   int selectedIndex_ = 0;
   int previewFontIndex_ = 0;
   uint8_t originalFontFamily_ = 0;
+  uint8_t originalFontSize_ = 0;
+  uint8_t preferredPointSize_ = 14;
   char originalSdFontFamilyName_[32] = {};
 
   ThemeMetrics metrics_ = {};

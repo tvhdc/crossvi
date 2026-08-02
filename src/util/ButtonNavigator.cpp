@@ -1,5 +1,9 @@
 #include "ButtonNavigator.h"
 
+#include <Arduino.h>
+
+#include <algorithm>
+
 const MappedInputManager* ButtonNavigator::mappedInput = nullptr;
 
 void ButtonNavigator::onNext(const Callback& callback) {
@@ -30,8 +34,11 @@ void ButtonNavigator::onNextContinuous(const Callback& callback) { onContinuous(
 void ButtonNavigator::onPreviousContinuous(const Callback& callback) { onContinuous(getPreviousButtons(), callback); }
 
 void ButtonNavigator::onPress(const Buttons& buttons, const Callback& callback) {
-  const bool wasPressed = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
-    return mappedInput != nullptr && mappedInput->wasPressed(button);
+  const bool wasPressed = std::any_of(buttons.begin(), buttons.end(), [this](const MappedInputManager::Button button) {
+    if (mappedInput == nullptr) return false;
+    const bool pressed = mappedInput->wasPressed(button);
+    latch(button).update(pressed, false);
+    return pressed;
   });
 
   if (wasPressed) {
@@ -40,8 +47,9 @@ void ButtonNavigator::onPress(const Buttons& buttons, const Callback& callback) 
 }
 
 void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback) {
-  const bool wasReleased = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
-    return mappedInput != nullptr && mappedInput->wasReleased(button);
+  const bool wasReleased = std::any_of(buttons.begin(), buttons.end(), [this](const MappedInputManager::Button button) {
+    return mappedInput != nullptr &&
+           latch(button).update(mappedInput->wasPressed(button), mappedInput->wasReleased(button));
   });
 
   if (wasReleased) {
@@ -55,7 +63,9 @@ void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback
 
 void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callback) {
   const bool isPressed = std::any_of(buttons.begin(), buttons.end(), [this](const MappedInputManager::Button button) {
-    return mappedInput != nullptr && mappedInput->isPressed(button) && shouldNavigateContinuously();
+    if (mappedInput == nullptr) return false;
+    latch(button).update(mappedInput->wasPressed(button), false);
+    return latch(button).isArmed() && mappedInput->isPressed(button) && shouldNavigateContinuously(button);
   });
 
   if (isPressed) {
@@ -64,10 +74,10 @@ void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callb
   }
 }
 
-bool ButtonNavigator::shouldNavigateContinuously() const {
+bool ButtonNavigator::shouldNavigateContinuously(const MappedInputManager::Button button) const {
   if (!mappedInput) return false;
 
-  const bool buttonHeldLongEnough = mappedInput->getHeldTime() > continuousStartMs;
+  const bool buttonHeldLongEnough = mappedInput->getHeldTime(button) > continuousStartMs;
   const bool navigationIntervalElapsed = (millis() - lastContinuousNavTime) > continuousIntervalMs;
 
   return buttonHeldLongEnough && navigationIntervalElapsed;

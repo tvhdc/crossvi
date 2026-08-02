@@ -3,39 +3,43 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Memory.h>
+#include <Utf8.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include <cctype>
 #include <climits>
 #include <cstdlib>
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
+#include "util/DictionaryHistoryStore.h"
+#include "util/DictionaryQuery.h"
 
 namespace {
 
 constexpr unsigned long POPUP_DURATION_MS = 1500;
 
-// A token is selectable when it has an ASCII alphanumeric or a non-ASCII
-// codepoint outside U+2000-U+206F (dashes, bullets and other General
-// Punctuation that appear as standalone tokens are not words).
-bool isSelectableToken(const char* text) {
-  for (const uint8_t* p = reinterpret_cast<const uint8_t*>(text); *p != 0; p++) {
-    if (*p < 0x80) {
-      if (std::isalnum(*p)) return true;
-    } else if (*p == 0xE2 && (p[1] == 0x80 || p[1] == 0x81)) {
-      if (p[2] == 0) break;  // truncated sequence: skipping would step past the NUL
-      p += 2;                // skip the 3-byte General Punctuation codepoint
-    } else {
-      return true;
-    }
+void indexBuildYield(void*) { vTaskDelay(1); }
+
+StrId lookupErrorMessage(const Dictionary::LookupResult result) {
+  switch (result) {
+    case Dictionary::LookupResult::LowMemory:
+      return StrId::STR_DICT_LOW_MEMORY;
+    case Dictionary::LookupResult::Decompress:
+      return StrId::STR_DICT_DECOMPRESS_ERROR;
+    case Dictionary::LookupResult::ReadError:
+      return StrId::STR_DICT_READ_FAILED;
+    case Dictionary::LookupResult::Found:
+    case Dictionary::LookupResult::NotFound:
+    default:
+      return StrId::STR_DICT_NOT_FOUND;
   }
-  return false;
 }
 
-void indexBuildYield(void*) { vTaskDelay(1); }
+StrId indexErrorMessage(const Dictionary::IndexResult result) {
+  return result == Dictionary::IndexResult::LowMemory ? StrId::STR_DICT_LOW_MEMORY : StrId::STR_DICT_READ_FAILED;
+}
 
 }  // namespace
 
@@ -59,7 +63,7 @@ void DictionaryWordSelectActivity::onEnter() {
 
 void DictionaryWordSelectActivity::extractWords() {
   words.clear();
-  words.reserve(128);
+  words.reserve(MAX_VISIBLE_WORDS);
   rowCount = 0;
 
   // Single walk: collect the selectable words while accumulating their text
@@ -79,8 +83,9 @@ void DictionaryWordSelectActivity::extractWords() {
 
     bool rowHasWords = false;
     for (uint16_t i = 0; i < block->wordCount(); i++) {
+      if (words.size() >= MAX_VISIBLE_WORDS) break;
       const char* text = block->wordText(i);
-      if (!isSelectableToken(text)) continue;
+      if (!utf8ContainsLookupCharacter(text)) continue;
 
       WordBox box;
       box.x = static_cast<int16_t>(line->xPos + block->wordXpos(i) + marginLeft);
@@ -88,7 +93,9 @@ void DictionaryWordSelectActivity::extractWords() {
       box.style = block->wordStyle(i);
       box.width = 0;  // measured below, once the advance table is ready
       box.row = rowCount;
+      box.blockIdentity = block.get();
       box.text = text;
+      box.joinWithoutSpaceBefore = false;
       words.push_back(box);
       rowHasWords = true;
 
@@ -97,12 +104,22 @@ void DictionaryWordSelectActivity::extractWords() {
       styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(box.style) & 0x03));
     }
     if (rowHasWords) rowCount++;
+    if (words.size() >= MAX_VISIBLE_WORDS) break;
   }
 
   if (styleMask == 0) styleMask = 0x01;  // REGULAR
   renderer.ensureSdCardFontReady(fontId, pageText.c_str(), styleMask);
   for (auto& word : words) {
     word.width = static_cast<int16_t>(renderer.getTextAdvanceX(fontId, word.text, word.style));
+  }
+  const int naturalSpaceWidth = renderer.getSpaceWidth(fontId);
+  for (size_t index = 1; index < words.size(); ++index) {
+    auto& current = words[index];
+    const auto& previous = words[index - 1];
+    if (current.blockIdentity != previous.blockIdentity || current.row != previous.row) continue;
+    const int gap =
+        current.x >= previous.x ? current.x - (previous.x + previous.width) : previous.x - (current.x + current.width);
+    current.joinWithoutSpaceBefore = gap < naturalSpaceWidth / 2;
   }
 }
 
@@ -130,8 +147,63 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
   const int best = closestInRow(static_cast<uint16_t>(targetRow), current.x + current.width / 2);
   if (best >= 0 && best != selected) {
     selected = best;
+    selectionCount = 1;
+    snapshotIdx = -1;
     requestUpdate();
   }
+}
+
+void DictionaryWordSelectActivity::moveHorizontal(const int direction) {
+  const int next = selected + direction;
+  if (next < 0 || next >= static_cast<int>(words.size())) return;
+  selected = next;
+  selectionCount = 1;
+  snapshotIdx = -1;
+  requestUpdate();
+}
+
+bool DictionaryWordSelectActivity::buildSelectedPhrase(const size_t count, std::string& out) const {
+  if (selected < 0 || count == 0 || static_cast<size_t>(selected) + count > words.size()) return false;
+  const char* tokens[DictionaryQuery::MAX_PHRASE_TOKENS] = {};
+  bool joins[DictionaryQuery::MAX_PHRASE_TOKENS] = {};
+  for (size_t i = 0; i < count; i++) {
+    tokens[i] = words[selected + i].text;
+    joins[i] = words[selected + i].joinWithoutSpaceBefore;
+  }
+  return DictionaryQuery::buildPhrase(tokens, count, out, joins);
+}
+
+bool DictionaryWordSelectActivity::canExtendSelection() const {
+  if (selectionCount >= DictionaryQuery::MAX_PHRASE_TOKENS ||
+      static_cast<size_t>(selected) + selectionCount >= words.size()) {
+    return false;
+  }
+  const WordBox& previous = words[selected + selectionCount - 1];
+  const WordBox& next = words[selected + selectionCount];
+  if (previous.blockIdentity != next.blockIdentity) return false;
+
+  const std::string previousToken = previous.text ? previous.text : "";
+  const size_t last = previousToken.find_last_not_of(" \t\r\n");
+  if (last != std::string::npos && (previousToken[last] == '.' || previousToken[last] == '!' ||
+                                    previousToken[last] == '?' || previousToken[last] == ';')) {
+    return false;
+  }
+
+  std::string phrase;
+  return buildSelectedPhrase(selectionCount + 1, phrase);
+}
+
+bool DictionaryWordSelectActivity::resizeSelection(const int delta) {
+  if (delta > 0) {
+    if (!canExtendSelection()) return false;
+    selectionCount++;
+  } else {
+    if (selectionCount <= 1) return false;
+    selectionCount--;
+  }
+  snapshotIdx = -1;
+  requestUpdate();
+  return true;
 }
 
 void DictionaryWordSelectActivity::performLookup() {
@@ -139,27 +211,52 @@ void DictionaryWordSelectActivity::performLookup() {
   if (!dictOpenAttempted) {
     dictOpenAttempted = true;
     dictOpenOk = dict.open(SETTINGS.dictionaryName);
+    dictNeedsIndex = dictOpenOk && dict.needsIndex();
   }
-  const bool indexing = dictOpenOk && dict.needsIndex();
-  popupMsg = indexing ? StrId::STR_DICT_INDEXING : StrId::STR_DICT_LOOKING_UP;
+  popupMsg = dictNeedsIndex ? StrId::STR_DICT_INDEXING : StrId::STR_DICT_LOOKING_UP;
   requestUpdateAndWait();  // paint the page + busy popup before blocking on SD
 
   bool ok = dictOpenOk;
-  if (ok && indexing) ok = dict.buildIndex(&indexBuildYield);
+  Dictionary::IndexResult indexResult = Dictionary::IndexResult::Ok;
+  if (ok && dictNeedsIndex) {
+    ok = dict.buildIndex(&indexBuildYield, nullptr, &indexResult);
+    if (ok) dictNeedsIndex = false;
+  }
 
   std::string definition;
   std::string headword;
-  const bool found = ok && dict.lookup(words[selected].text, definition, headword);
+  std::string successfulQuery;
+  Dictionary::LookupResult lookupResult = Dictionary::LookupResult::NotFound;
+  bool found = false;
+  if (ok) {
+    for (size_t count = selectionCount; count > 0 && !found; count--) {
+      std::string query;
+      if (!buildSelectedPhrase(count, query)) continue;
+      found = count == 1 ? dict.lookup(query.c_str(), definition, headword, &lookupResult)
+                         : dict.lookupExact(query.c_str(), definition, headword, &lookupResult);
+      if (found) successfulQuery = std::move(query);
+      if (!found && lookupResult != Dictionary::LookupResult::NotFound) break;
+    }
+  }
 
   if (found) {
+    DICTIONARY_HISTORY.record(successfulQuery);
     popup = Popup::None;
     startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                                           std::move(definition)),
                            [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
-  popup = ok ? Popup::NotFound : Popup::Error;
-  popupMsg = ok ? StrId::STR_DICT_NOT_FOUND : StrId::STR_DICT_ERROR;
+  if (!ok) {
+    popup = Popup::Error;
+    popupMsg = dictNeedsIndex ? indexErrorMessage(indexResult) : StrId::STR_DICT_ERROR;
+  } else if (lookupResult == Dictionary::LookupResult::NotFound) {
+    popup = Popup::NotFound;
+    popupMsg = StrId::STR_DICT_NOT_FOUND;
+  } else {
+    popup = Popup::Error;
+    popupMsg = lookupErrorMessage(lookupResult);
+  }
   popupTime = millis();
   requestUpdate();
 }
@@ -185,14 +282,41 @@ void DictionaryWordSelectActivity::loop() {
   }
 
   if (words.empty()) return;
-  if (mappedInput.wasPressed(MappedInputManager::Button::Left) && selected > 0) {
-    selected--;
-    requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Right) &&
-             selected + 1 < static_cast<int>(words.size())) {
-    selected++;
-    requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    leftHeld = true;
+    leftLongHandled = false;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    rightHeld = true;
+    rightLongHandled = false;
+  }
+  if (leftHeld && !leftLongHandled && mappedInput.isPressed(MappedInputManager::Button::Left) &&
+      mappedInput.getHeldTime(MappedInputManager::Button::Left) >= LONG_PRESS_MS) {
+    leftLongHandled = true;
+    resizeSelection(-1);
+    return;
+  }
+  if (rightHeld && !rightLongHandled && mappedInput.isPressed(MappedInputManager::Button::Right) &&
+      mappedInput.getHeldTime(MappedInputManager::Button::Right) >= LONG_PRESS_MS) {
+    rightLongHandled = true;
+    resizeSelection(1);
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Left) && leftHeld) {
+    const bool move = !leftLongHandled;
+    leftHeld = false;
+    if (move) moveHorizontal(-1);
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Right) && rightHeld) {
+    const bool move = !rightLongHandled;
+    rightHeld = false;
+    if (move) moveHorizontal(1);
+    return;
+  }
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     moveVertical(-1);
   } else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
     moveVertical(1);
@@ -234,6 +358,14 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
   return saved;
 }
 
+void DictionaryWordSelectActivity::drawSelection() {
+  for (size_t i = 0; i < selectionCount && static_cast<size_t>(selected) + i < words.size(); i++) {
+    const WordBox& word = words[selected + i];
+    renderer.fillRect(word.x - 2, word.y - 2, word.width + 4, lineHeight + 4, true);
+    renderer.drawText(fontId, word.x, word.y, word.text, false, word.style);
+  }
+}
+
 // Front-button bar (Back/Confirm/Left/Right). Drawn last on every repaint
 // path, including the differential highlight-only path, so it always ends
 // up as the top layer even when a highlighted word's box falls under a
@@ -258,7 +390,7 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   // still holds a clean page (no popup or sub-activity since the last full
   // repaint). Restore the pixels under the old highlight, draw the new one,
   // and push — skipping the two-pass page render entirely.
-  if (popup == Popup::None && snapshotIdx >= 0 && !words.empty() && selected != snapshotIdx) {
+  if (popup == Popup::None && selectionCount == 1 && snapshotIdx >= 0 && !words.empty() && selected != snapshotIdx) {
     renderer.writeFramebufferRegion(snapshotX, snapshotY, snapshotW, snapshotH, snapshot.get());
     // The full path's PrewarmScope cleared the glyph cache on exit; batch-load
     // just the highlighted word's glyphs before drawing them white-on-black.
@@ -283,7 +415,12 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   page->render(renderer, fontId, marginLeft, marginTop);
 
   if (!words.empty()) {
-    drawHighlightWithSnapshot();
+    if (selectionCount == 1) {
+      drawHighlightWithSnapshot();
+    } else {
+      snapshotIdx = -1;
+      drawSelection();
+    }
   }
 
   drawHints();

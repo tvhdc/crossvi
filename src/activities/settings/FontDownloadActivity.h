@@ -41,7 +41,7 @@ class FontDownloadActivity : public Activity {
            // during downloading.
            state_ == COMPLETE || state_ == ERROR;
   }
-  bool skipLoopDelay() override { return true; }
+  bool skipLoopDelay() override { return state_ == LOADING_MANIFEST || state_ == DOWNLOADING; }
 
  private:
   enum State {
@@ -83,16 +83,21 @@ class FontDownloadActivity : public Activity {
   size_t currentFileTotal_ = 0;
   size_t fileProgress_ = 0;
   size_t fileTotal_ = 0;
+  int lastNotifiedPercent_ = -1;
   int downloadingFamilyIndex_ = 0;
+  std::string downloadingFamilyName_;
   std::string errorMessage_;
   bool cancelRequested_ = false;
 
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifest();
+  bool parseCachedManifest();
   void downloadFamily(ManifestFamily& family);
   void downloadAll();
   void updateAll();
-  static bool computeFileCrc32(const char* path, uint32_t& outCrc);
+  bool validateFamilyDirectory(const char* directory, const ManifestFamily& family);
+  static bool validateFamilyDirectoryCallback(const char* directory, void* context);
+  bool recoverFamilyTransactions(const ManifestFamily& family);
   bool showDownloadAllRow() const;
   bool showUpdateAllRow() const;
   int specialRowCount() const;

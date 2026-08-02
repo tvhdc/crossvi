@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <new>
 
 struct BmpHeader;
 
@@ -29,6 +30,12 @@ class Atkinson1BitDitherer {
     errorRow2 = new int16_t[width + 4]();  // Row after next
   }
 
+  Atkinson1BitDitherer(int width, const std::nothrow_t&) : width(width) {
+    errorRow0 = new (std::nothrow) int16_t[width + 4]();
+    errorRow1 = new (std::nothrow) int16_t[width + 4]();
+    errorRow2 = new (std::nothrow) int16_t[width + 4]();
+  }
+
   ~Atkinson1BitDitherer() {
     delete[] errorRow0;
     delete[] errorRow1;
@@ -40,6 +47,8 @@ class Atkinson1BitDitherer {
 
   // EXPLICITLY DELETE THE COPY ASSIGNMENT OPERATOR
   Atkinson1BitDitherer& operator=(const Atkinson1BitDitherer& other) = delete;
+
+  bool valid() const { return errorRow0 && errorRow1 && errorRow2; }
 
   uint8_t processPixel(int gray, int x) {
     // Apply brightness/contrast/gamma adjustments
@@ -110,6 +119,12 @@ class AtkinsonDitherer {
     errorRow2 = new int16_t[width + 4]();  // Row after next
   }
 
+  AtkinsonDitherer(int width, const std::nothrow_t&) : width(width) {
+    errorRow0 = new (std::nothrow) int16_t[width + 4]();
+    errorRow1 = new (std::nothrow) int16_t[width + 4]();
+    errorRow2 = new (std::nothrow) int16_t[width + 4]();
+  }
+
   ~AtkinsonDitherer() {
     delete[] errorRow0;
     delete[] errorRow1;
@@ -120,6 +135,8 @@ class AtkinsonDitherer {
 
   // **2. EXPLICITLY DELETE THE COPY ASSIGNMENT OPERATOR**
   AtkinsonDitherer& operator=(const AtkinsonDitherer& other) = delete;
+
+  bool valid() const { return errorRow0 && errorRow1 && errorRow2; }
 
   uint8_t processPixel(int gray, int x) {
     // Add accumulated error
@@ -210,6 +227,11 @@ class FloydSteinbergDitherer {
     errorNextRow = new int16_t[width + 2]();
   }
 
+  FloydSteinbergDitherer(int width, const std::nothrow_t&) : width(width), rowCount(0) {
+    errorCurRow = new (std::nothrow) int16_t[width + 2]();
+    errorNextRow = new (std::nothrow) int16_t[width + 2]();
+  }
+
   ~FloydSteinbergDitherer() {
     delete[] errorCurRow;
     delete[] errorNextRow;
@@ -220,6 +242,8 @@ class FloydSteinbergDitherer {
 
   // **2. EXPLICITLY DELETE THE COPY ASSIGNMENT OPERATOR**
   FloydSteinbergDitherer& operator=(const FloydSteinbergDitherer& other) = delete;
+
+  bool valid() const { return errorCurRow && errorNextRow; }
 
   // Process a single pixel and return quantized 2-bit value
   // x is the logical x position (0 to width-1), direction handled internally

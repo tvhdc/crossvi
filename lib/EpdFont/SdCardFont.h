@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
 #include "EpdFont.h"
 #include "EpdFontData.h"
+#include "FontStorageContract.h"
 
 // On-disk binary format version for .cpfont files. Defined as a preprocessor
 // macro (rather than a constexpr) so it can be stringified into the SD-fonts
@@ -51,7 +53,7 @@ class SdCardFont {
   // (e.g. shaped Arabic presentation forms the measurement path will look up).
   // Returns number of codepoints not found in font coverage.
   int buildAdvanceTable(const char* utf8Text, uint8_t styleMask = 0x0F, const char* extraText = nullptr);
-  int buildAdvanceTable(const std::vector<std::string>& words, bool includeHyphen, uint8_t styleMask = 0x0F,
+  int buildAdvanceTable(const std::deque<std::string>& words, bool includeHyphen, uint8_t styleMask = 0x0F,
                         const char* extraText = nullptr);
 
   // Look up advanceX for a codepoint from the advance table.
@@ -76,6 +78,10 @@ class SdCardFont {
 
   // Returns true if the given style is present in this font file.
   bool hasStyle(uint8_t style) const;
+
+  // Coverage check used by Settings preview. This only inspects the bounded
+  // interval table already resident after load; it performs no SD I/O.
+  bool supportsVietnamese() const;
 
   // Resolve requested style bits to the closest present style.
   uint8_t resolveStyle(uint8_t style) const;
@@ -140,6 +146,7 @@ class SdCardFont {
     uint32_t kernMatrixFileOffset = 0;
     uint32_t ligatureFileOffset = 0;
     uint32_t bitmapFileOffset = 0;
+    uint32_t bitmapSize = 0;
 
     // Full intervals loaded from file (kept in RAM for codepoint lookup)
     EpdUnicodeInterval* fullIntervals = nullptr;
@@ -199,7 +206,7 @@ class SdCardFont {
   PerStyle styles_[MAX_STYLES] = {};
   uint8_t styleCount_ = 0;
 
-  char filePath_[128] = {};
+  char filePath_[FontStorageContract::FONT_PATH_CAPACITY] = {};
 
   // Overflow context: glyphMissHandler needs to know which style it's serving
   struct OverflowContext {
@@ -261,7 +268,7 @@ class SdCardFont {
   // Global helpers
   void freeAll();
   void clearOverflow();
-  static void computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset);
+  static bool computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset, uint32_t styleEnd);
 
   // Static callback for EpdFontData::glyphMissHandler (per-style via OverflowContext)
   static const EpdGlyph* onGlyphMiss(void* ctx, uint32_t codepoint);

@@ -11,6 +11,17 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
   dst[n] = '\0';
 }
 
+bool isSha256Digest(const char* value) {
+  if (strlen(value) != 71 || memcmp(value, "sha256:", 7) != 0) return false;
+  for (size_t i = 7; i < 71; ++i) {
+    const char byte = value[i];
+    if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 ReleaseJsonParser::ReleaseJsonParser()
@@ -27,11 +38,14 @@ void ReleaseJsonParser::reset() {
   assetDepth = 0;
   tagName[0] = '\0';
   firmwareUrl[0] = '\0';
+  firmwareDigest[0] = '\0';
   firmwareSize = 0;
   tagFound = false;
   firmwareFound = false;
+  firmwareDigestFound = false;
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
+  currentAssetDigest[0] = '\0';
   currentAssetSize = 0;
 }
 
@@ -39,8 +53,10 @@ void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, l
 
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
+bool ReleaseJsonParser::foundFirmwareDigest() const { return firmwareDigestFound; }
 const char* ReleaseJsonParser::getTagName() const { return tagName; }
 const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
+const char* ReleaseJsonParser::getFirmwareDigest() const { return firmwareDigest; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
@@ -48,9 +64,17 @@ void ReleaseJsonParser::commitAsset() {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;
+    firmwareDigestFound = isSha256Digest(currentAssetDigest);
+    if (firmwareDigestFound) {
+      memcpy(firmwareDigest, currentAssetDigest + 7, sizeof(firmwareDigest) - 1);
+      firmwareDigest[sizeof(firmwareDigest) - 1] = '\0';
+    } else {
+      firmwareDigest[0] = '\0';
+    }
   }
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
+  currentAssetDigest[0] = '\0';
   currentAssetSize = 0;
 }
 
@@ -78,6 +102,8 @@ void ReleaseJsonParser::sOnKey(void* ctx, const char* key, size_t len) {
           self->lastKey = LastKey::ASSET_URL;
         else if (len == 4 && memcmp(key, "size", 4) == 0)
           self->lastKey = LastKey::ASSET_SIZE;
+        else if (len == 6 && memcmp(key, "digest", 6) == 0)
+          self->lastKey = LastKey::ASSET_DIGEST;
         else
           self->lastKey = LastKey::NONE;
       }
@@ -104,6 +130,10 @@ void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
     case LastKey::ASSET_URL:
       if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
         safeCopy(self->currentAssetUrl, sizeof(self->currentAssetUrl), value, len);
+      break;
+    case LastKey::ASSET_DIGEST:
+      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
+        safeCopy(self->currentAssetDigest, sizeof(self->currentAssetDigest), value, len);
       break;
     default:
       break;
@@ -139,6 +169,7 @@ void ReleaseJsonParser::sOnObjectStart(void* ctx) {
       self->assetDepth = 1;
       self->currentAssetName[0] = '\0';
       self->currentAssetUrl[0] = '\0';
+      self->currentAssetDigest[0] = '\0';
       self->currentAssetSize = 0;
       self->lastKey = LastKey::NONE;
       break;

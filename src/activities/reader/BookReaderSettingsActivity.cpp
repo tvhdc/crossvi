@@ -1,0 +1,325 @@
+#include "BookReaderSettingsActivity.h"
+
+#include <GfxRenderer.h>
+#include <I18n.h>
+
+#include <algorithm>
+#include <cstring>
+#include <string>
+
+#include "CrossPointSettings.h"
+#include "MappedInputManager.h"
+#include "PerBookReaderSettingsBridge.h"
+#include "SdCardFontSystem.h"
+#include "SettingsList.h"
+#include "activities/settings/FontSelectionActivity.h"
+#include "activities/settings/FontSizeSelectionActivity.h"
+#include "components/UITheme.h"
+
+BookReaderSettingsActivity::BookReaderSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                                       PerBookReaderSettings globalDefaults,
+                                                       PerBookReaderSettings bookSettings, const ReaderKind readerKind)
+    : Activity("BookReaderSettings", renderer, mappedInput),
+      globalDefaults(std::move(globalDefaults)),
+      savedCustom(std::move(bookSettings)),
+      customEnabled(savedCustom.hasReaderOverrides),
+      readerKind(readerKind) {}
+
+void BookReaderSettingsActivity::rebuildSettings() {
+  settings.clear();
+  sdFontSystem.refreshIfDirty();
+  if (readerKind == ReaderKind::Epub) {
+    settings.push_back(SettingInfo::Enum(
+        StrId::STR_EPUB_RENDER_MODE, &CrossPointSettings::epubRenderMode,
+        {StrId::STR_EPUB_RENDER_FULL, StrId::STR_EPUB_RENDER_BALANCED, StrId::STR_EPUB_RENDER_LIGHT}));
+    settings.push_back(SettingInfo::Toggle(StrId::STR_EPUB_SAFE_MODE, &CrossPointSettings::epubSafeMode));
+  }
+  for (auto& setting : getSettingsList(&sdFontSystem.registry())) {
+    if (setting.category != StrId::STR_CAT_READER || setting.nameId == StrId::STR_TEXT_DARKNESS ||
+        setting.nameId == StrId::STR_SKIP_EPUB_COVER_PAGE) {
+      continue;
+    }
+    if (readerKind == ReaderKind::PlainText) {
+      const bool supported = setting.nameId == StrId::STR_FONT_FAMILY || setting.nameId == StrId::STR_FONT_SIZE ||
+                             setting.nameId == StrId::STR_LINE_SPACING || setting.nameId == StrId::STR_SCREEN_MARGIN ||
+                             setting.nameId == StrId::STR_PARA_ALIGNMENT || setting.nameId == StrId::STR_ORIENTATION ||
+                             setting.nameId == StrId::STR_TEXT_AA;
+      if (!supported) continue;
+      if (setting.nameId == StrId::STR_PARA_ALIGNMENT) {
+        setting.enumValues = {StrId::STR_ALIGN_LEFT, StrId::STR_CENTER, StrId::STR_ALIGN_RIGHT};
+        setting.valueGetter = [] {
+          const uint8_t value = SETTINGS.paragraphAlignment;
+          return value >= CrossPointSettings::LEFT_ALIGN && value <= CrossPointSettings::RIGHT_ALIGN
+                     ? static_cast<uint8_t>(value - CrossPointSettings::LEFT_ALIGN)
+                     : static_cast<uint8_t>(0);
+        };
+        setting.valueSetter = [](const uint8_t value) {
+          SETTINGS.paragraphAlignment =
+              static_cast<uint8_t>(CrossPointSettings::LEFT_ALIGN + std::min<uint8_t>(value, 2));
+        };
+      }
+    }
+    settings.push_back(std::move(setting));
+  }
+}
+
+bool BookReaderSettingsActivity::isIndependentBookOption(const SettingInfo& setting) const {
+  return readerKind == ReaderKind::Epub &&
+         (setting.nameId == StrId::STR_EPUB_RENDER_MODE || setting.nameId == StrId::STR_EPUB_SAFE_MODE);
+}
+
+void BookReaderSettingsActivity::onEnter() {
+  Activity::onEnter();
+  rebuildSettings();
+  requestUpdate();
+}
+
+void BookReaderSettingsActivity::setCustomEnabled(const bool enabled) {
+  if (enabled == customEnabled) return;
+  if (!enabled) {
+    savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval, savedCustom.autoPageTurnSeconds,
+                                        savedCustom.autoPageTurnStartsOnOpen);
+    applyReaderSettings(globalDefaults);
+    SETTINGS.epubRenderMode = static_cast<uint8_t>(savedCustom.renderMode);
+    SETTINGS.epubRenderModeOverride = savedCustom.hasRenderModeOverride ? 1 : 0;
+    SETTINGS.epubSafeMode = savedCustom.safeModeEnabled ? 1 : 0;
+  } else {
+    applyReaderSettings(savedCustom);
+  }
+  customEnabled = enabled;
+  sdFontSystem.ensureLoaded(renderer, false);
+}
+
+void BookReaderSettingsActivity::finishWithResult() {
+  if (customEnabled) {
+    savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval, savedCustom.autoPageTurnSeconds,
+                                        savedCustom.autoPageTurnStartsOnOpen);
+  }
+  savedCustom.hasReaderOverrides = customEnabled;
+  setResult(ReaderSettingsResult{savedCustom});
+  finish();
+}
+
+void BookReaderSettingsActivity::loop() {
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
+
+  const int rowCount = static_cast<int>(settings.size()) + 2;
+  buttonNavigator.onNextRelease([this, rowCount] {
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, rowCount);
+    resetConfirmationPending = false;
+    requestUpdate();
+  });
+  buttonNavigator.onPreviousRelease([this, rowCount] {
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, rowCount);
+    resetConfirmationPending = false;
+    requestUpdate();
+  });
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (resetConfirmationPending) {
+      resetConfirmationPending = false;
+      requestUpdate();
+      return;
+    }
+    finishWithResult();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) toggleSelected();
+}
+
+void BookReaderSettingsActivity::toggleSelected() {
+  if (selectedIndex == 0) {
+    setCustomEnabled(!customEnabled);
+    requestUpdate();
+    return;
+  }
+  if (selectedIndex == static_cast<int>(settings.size()) + 1) {
+    if (!resetConfirmationPending) {
+      resetConfirmationPending = true;
+      requestUpdate();
+      return;
+    }
+    resetConfirmationPending = false;
+    applyReaderSettings(globalDefaults);
+    // Reset means remove the complete book profile, including its independent
+    // auto-page-turn interval. Merely disabling custom typography preserves the
+    // snapshot; Reset is the explicit destructive action.
+    savedCustom = captureReaderSettings(false, false, 0);
+    customEnabled = false;
+    sdFontSystem.ensureLoaded(renderer, false);
+    requestUpdate();
+    return;
+  }
+
+  const SettingInfo& setting = settings[selectedIndex - 1];
+  const bool independentBookOption = isIndependentBookOption(setting);
+  if (setting.nameId == StrId::STR_FONT_SIZE) {
+    const uint8_t previousFontFamily = SETTINGS.fontFamily;
+    const uint8_t previousSize = SETTINGS.fontSize;
+    const std::string previousSdFontFamily = SETTINGS.sdFontFamilyName;
+    startActivityForResult(
+        std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
+        [this, previousFontFamily, previousSize, previousSdFontFamily](const ActivityResult& result) {
+          if (result.isCancelled) {
+            requestUpdate();
+            return;
+          }
+
+          if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.fontSize == previousSize &&
+              SETTINGS.sdFontFamilyName == previousSdFontFamily) {
+            requestUpdate();
+            return;
+          }
+
+          const uint8_t selectedFontFamily = SETTINGS.fontFamily;
+          const uint8_t selectedSize = SETTINGS.fontSize;
+          const std::string selectedSdFontFamily = SETTINGS.sdFontFamilyName;
+          if (!customEnabled) setCustomEnabled(true);
+          SETTINGS.fontFamily = selectedFontFamily;
+          SETTINGS.fontSize = selectedSize;
+          std::strncpy(SETTINGS.sdFontFamilyName, selectedSdFontFamily.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+          SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+          sdFontSystem.ensureLoaded(renderer, false);
+          customEnabled = true;
+          savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
+                                              savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);
+          requestUpdate();
+        });
+    return;
+  }
+  if (setting.nameId == StrId::STR_FONT_FAMILY) {
+    const uint8_t previousFontFamily = SETTINGS.fontFamily;
+    const uint8_t previousFontSize = SETTINGS.fontSize;
+    const std::string previousSdFontFamily = SETTINGS.sdFontFamilyName;
+    startActivityForResult(
+        std::make_unique<FontSelectionActivity>(renderer, mappedInput, &sdFontSystem.registry(), false),
+        [this, previousFontFamily, previousFontSize, previousSdFontFamily](const ActivityResult&) {
+          if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.fontSize == previousFontSize &&
+              SETTINGS.sdFontFamilyName == previousSdFontFamily) {
+            requestUpdate();
+            return;
+          }
+
+          const uint8_t selectedFontFamily = SETTINGS.fontFamily;
+          const uint8_t selectedFontSize = SETTINGS.fontSize;
+          const std::string selectedSdFontFamily = SETTINGS.sdFontFamilyName;
+          if (!customEnabled) setCustomEnabled(true);
+          SETTINGS.fontFamily = selectedFontFamily;
+          SETTINGS.fontSize = selectedFontSize;
+          std::strncpy(SETTINGS.sdFontFamilyName, selectedSdFontFamily.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+          SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+          sdFontSystem.ensureLoaded(renderer, false);
+          customEnabled = true;
+          savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
+                                              savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);
+          requestUpdate();
+        });
+    return;
+  }
+
+  const size_t enumOptionCount =
+      setting.enumStringValues.empty() ? setting.enumValues.size() : setting.enumStringValues.size();
+  if (setting.type == SettingType::ENUM && enumOptionCount > 2 && (setting.valuePtr || setting.valueSetter)) {
+    const auto valuePtr = setting.valuePtr;
+    const auto valueGetter = setting.valueGetter;
+    const auto valueSetter = setting.valueSetter;
+    const uint8_t current = valueGetter ? valueGetter() : SETTINGS.*valuePtr;
+    auto onSelect = [this, valuePtr, valueSetter](const int value) {
+      const bool renderMode = valuePtr == &CrossPointSettings::epubRenderMode;
+      if (!customEnabled && !renderMode) setCustomEnabled(true);
+      if (valueSetter) {
+        valueSetter(static_cast<uint8_t>(value));
+      } else {
+        SETTINGS.*valuePtr = static_cast<uint8_t>(value);
+      }
+      if (renderMode) SETTINGS.epubRenderModeOverride = 1;
+      savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval, savedCustom.autoPageTurnSeconds,
+                                          savedCustom.autoPageTurnStartsOnOpen);
+      requestUpdate();
+    };
+    if (!setting.enumStringValues.empty()) {
+      optionPopup.show(setting.nameId, setting.enumStringValues, current, std::move(onSelect));
+    } else {
+      optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()), current,
+                       std::move(onSelect));
+    }
+    requestUpdate();
+    return;
+  }
+
+  if (!customEnabled && !independentBookOption) setCustomEnabled(true);
+
+  if (setting.type == SettingType::TOGGLE && setting.valuePtr) {
+    SETTINGS.*(setting.valuePtr) = !(SETTINGS.*(setting.valuePtr));
+  } else if (setting.type == SettingType::ENUM && setting.valuePtr) {
+    const uint8_t current = SETTINGS.*(setting.valuePtr);
+    SETTINGS.*(setting.valuePtr) = static_cast<uint8_t>((current + 1) % setting.enumValues.size());
+  } else if (setting.type == SettingType::VALUE && setting.valuePtr) {
+    const uint8_t current = SETTINGS.*(setting.valuePtr);
+    SETTINGS.*(setting.valuePtr) = current + setting.valueRange.step > setting.valueRange.max
+                                       ? static_cast<uint8_t>(setting.valueRange.min)
+                                       : static_cast<uint8_t>(current + setting.valueRange.step);
+  }
+  savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval, savedCustom.autoPageTurnSeconds,
+                                      savedCustom.autoPageTurnStartsOnOpen);
+  savedCustom.hasReaderOverrides = customEnabled;
+  requestUpdate();
+}
+
+std::string BookReaderSettingsActivity::valueForRow(const int index) const {
+  if (index == 0) return customEnabled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+  if (index == static_cast<int>(settings.size()) + 1) {
+    return resetConfirmationPending ? tr(STR_CONFIRM) : std::string{};
+  }
+
+  const SettingInfo& setting = settings[index - 1];
+  if (setting.type == SettingType::TOGGLE && setting.valuePtr) {
+    return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+  }
+  if (setting.type == SettingType::VALUE && setting.valuePtr) {
+    return std::to_string(SETTINGS.*(setting.valuePtr));
+  }
+  if (setting.type == SettingType::ENUM) {
+    const uint8_t value = setting.valueGetter ? setting.valueGetter() : SETTINGS.*(setting.valuePtr);
+    if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
+      return setting.enumStringValues[value];
+    }
+    if (value < setting.enumValues.size()) return I18N.get(setting.enumValues[value]);
+  }
+  return {};
+}
+
+void BookReaderSettingsActivity::render(RenderLock&&) {
+  if (optionPopup.processRender(renderer, mappedInput)) return;
+
+  renderer.clearScreen();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentBottom = screen.y + screen.height;
+
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_BOOK_READER_SETTINGS));
+  const int rowCount = static_cast<int>(settings.size()) + 2;
+  GUI.drawList(
+      renderer, Rect{screen.x, contentTop, screen.width, std::max(0, contentBottom - contentTop)}, rowCount,
+      selectedIndex,
+      [this](const int index) -> std::string {
+        if (index == 0) return tr(STR_USE_BOOK_SETTINGS);
+        if (index == static_cast<int>(settings.size()) + 1) return tr(STR_RESET_BOOK_SETTINGS);
+        return I18N.get(settings[index - 1].nameId);
+      },
+      nullptr, nullptr, [this](const int index) { return valueForRow(index); }, true,
+      [this](const int index) {
+        return !customEnabled && index > 0 && index <= static_cast<int>(settings.size()) &&
+               !isIndependentBookOption(settings[index - 1]);
+      });
+
+  const bool selectedIsToggle =
+      selectedIndex == 0 || (selectedIndex > 0 && selectedIndex <= static_cast<int>(settings.size()) &&
+                             settings[selectedIndex - 1].type == SettingType::TOGGLE);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), selectedIsToggle ? tr(STR_TOGGLE) : tr(STR_SELECT),
+                                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer();
+}

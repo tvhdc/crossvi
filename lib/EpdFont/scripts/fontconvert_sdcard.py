@@ -49,6 +49,18 @@ INTERVAL_PRESETS = {
     "armenian":    [(0x0530, 0x058F)],
     "ethiopic":    [(0x1200, 0x137F), (0x1380, 0x139F), (0x2D80, 0x2DDF)],
     "vietnamese":  [(0x01A0, 0x01B0), (0x1EA0, 0x1EF9)],
+    # Self-contained Vietnamese reading preset. The legacy "vietnamese"
+    # preset above remains unchanged for scripts that combine it manually.
+    "vietnamese-reading": [
+        (0x0020, 0x007E), (0x00A0, 0x017F),
+        (0x01A0, 0x01A1), (0x01AF, 0x01B0),
+        (0x0300, 0x0303), (0x0306, 0x0306), (0x0309, 0x0309),
+        (0x031B, 0x031B), (0x0323, 0x0323),
+        (0x1EA0, 0x1EF9),
+        (0x2013, 0x2014), (0x2018, 0x2019), (0x201C, 0x201D),
+        (0x2022, 0x2022), (0x2026, 0x2026),
+        (0x20AB, 0x20AC),
+    ],
     "punctuation": [(0x2000, 0x206F)],
     "cjk":         [(0x3000, 0x303F), (0x3040, 0x309F), (0x30A0, 0x30FF),
                     (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF)],
@@ -78,6 +90,48 @@ INTERVAL_PRESETS = {
                     (0x2070, 0x209F), (0x2190, 0x21FF), (0x2200, 0x22FF),
                     (0xFB00, 0xFB06)],
 }
+
+
+def _codepoints_in_ranges(ranges):
+    return {cp for start, end in ranges for cp in range(start, end + 1)}
+
+
+# Exact contract used by --require-vietnamese and SdCardFont at runtime. The
+# preset is deliberately a convenient superset; this set is the compatibility
+# promise. FontConverterTest locks it to VietnameseFontContract.h.
+VIETNAMESE_REQUIRED_RANGES = [(0x0020, 0x007E), (0x1EA0, 0x1EF9)]
+VIETNAMESE_REQUIRED_SINGLETONS = {
+    0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C8, 0x00C9, 0x00CA, 0x00CC, 0x00CD,
+    0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D9, 0x00DA, 0x00DD, 0x00E0, 0x00E1,
+    0x00E2, 0x00E3, 0x00E8, 0x00E9, 0x00EA, 0x00EC, 0x00ED, 0x00F2, 0x00F3,
+    0x00F4, 0x00F5, 0x00F9, 0x00FA, 0x00FD,
+    0x0102, 0x0103, 0x0110, 0x0111, 0x0128, 0x0129, 0x0168, 0x0169, 0x01A0,
+    0x01A1, 0x01AF, 0x01B0,
+    0x0300, 0x0301, 0x0302, 0x0303, 0x0306, 0x0309, 0x031B, 0x0323,
+    0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AB,
+    0x20AC, 0xFFFD,
+}
+VIETNAMESE_REQUIRED_CODEPOINTS = (
+    _codepoints_in_ranges(VIETNAMESE_REQUIRED_RANGES) |
+    VIETNAMESE_REQUIRED_SINGLETONS
+)
+
+
+def missing_codepoints_for_fonts(primary_path, fallback_path, required_codepoints):
+    """Return sorted codepoints absent from both primary and style fallback."""
+    import freetype
+
+    primary = freetype.Face(os.fspath(primary_path))
+    fallback = freetype.Face(os.fspath(fallback_path)) if fallback_path else None
+    return sorted(
+        cp for cp in required_codepoints
+        if primary.get_char_index(cp) == 0 and
+        (fallback is None or fallback.get_char_index(cp) == 0)
+    )
+
+
+def format_codepoints(codepoints):
+    return ", ".join(f"U+{cp:04X}" for cp in codepoints)
 
 # Regex for parsing unnamed hex range intervals: (0xSTART-0xEND)
 _HEX_RANGE_PATTERN = re.compile(r'^\(0x([0-9a-fA-F]+)-0x([0-9a-fA-F]+)\)$')
@@ -519,6 +573,47 @@ def extract_ligatures_fonttools(font_path, codepoints):
     return pairs
 
 
+def extract_ligature_glyph_indices_fonttools(font_path):
+    """Map unencoded standard ligature codepoints to their glyph indices."""
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(font_path)
+    cmap = font.getBestCmap() or {}
+    glyph_to_cp = {gname: cp for cp, gname in cmap.items()}
+    glyph_indices = {gname: index for index, gname in enumerate(font.getGlyphOrder())}
+    overrides = {}
+
+    if 'GSUB' in font:
+        gsub = font['GSUB'].table
+        liga_lookup_indices = set()
+        if gsub.FeatureList:
+            for feature_record in gsub.FeatureList.FeatureRecord:
+                if feature_record.FeatureTag in ('liga', 'rlig'):
+                    liga_lookup_indices.update(feature_record.Feature.LookupListIndex)
+
+        for lookup_index in liga_lookup_indices:
+            lookup = gsub.LookupList.Lookup[lookup_index]
+            for subtable in lookup.SubTable:
+                actual = subtable.ExtSubTable if lookup.LookupType == 7 and hasattr(
+                    subtable, 'ExtSubTable') else subtable
+                if not hasattr(actual, 'ligatures'):
+                    continue
+                for first_glyph, ligature_list in actual.ligatures.items():
+                    if first_glyph not in glyph_to_cp:
+                        continue
+                    for ligature in ligature_list:
+                        if any(component not in glyph_to_cp for component in ligature.Component):
+                            continue
+                        sequence = tuple([glyph_to_cp[first_glyph]] +
+                                         [glyph_to_cp[component] for component in ligature.Component])
+                        ligature_cp = STANDARD_LIGATURE_MAP.get(sequence)
+                        if ligature_cp is not None and ligature_cp not in cmap:
+                            overrides[ligature_cp] = glyph_indices[ligature.LigGlyph]
+
+    font.close()
+    return overrides
+
+
 def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False,
                          fallback_fontfile=None):
     """Rasterize all glyphs for one font style. Returns StyleRasterData."""
@@ -528,6 +623,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     style_label = style_names.get(style_id, str(style_id))
 
     face = freetype.Face(fontfile)
+    ligature_glyph_indices = extract_ligature_glyph_indices_fonttools(fontfile)
     # Set font size at 150 DPI (matching fontconvert.py) BEFORE any glyph load.
     # load_glyph() with FT_LOAD_RENDER renders at the active size, so calling
     # it before set_char_size() would waste work at the default size and risk
@@ -543,7 +639,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
         load_flags |= freetype.FT_LOAD_FORCE_AUTOHINT
 
     def load_glyph(code_point):
-        glyph_index = face.get_char_index(code_point)
+        glyph_index = ligature_glyph_indices.get(code_point, face.get_char_index(code_point))
         if glyph_index > 0:
             face.load_glyph(glyph_index, load_flags)
             return face
@@ -563,7 +659,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     for i_start, i_end in intervals:
         start = i_start
         for code_point in range(i_start, i_end + 1):
-            has_primary = face.get_char_index(code_point) != 0
+            has_primary = code_point in ligature_glyph_indices or face.get_char_index(code_point) != 0
             has_fallback = fallback_face and fallback_face.get_char_index(code_point) != 0
             if not has_primary and not has_fallback:
                 if start < code_point:
@@ -899,6 +995,8 @@ def main():
                         help="Output directory for multi-size mode.")
     parser.add_argument("--list-presets", action="store_true",
                         help="List available interval presets and exit.")
+    parser.add_argument("--require-vietnamese", action="store_true",
+                        help="Fail if any emitted style lacks the full Vietnamese reading contract.")
 
     # Multi-style mode: per-style font file arguments (generates v4 .cpfont)
     parser.add_argument("--regular", dest="font_regular",
@@ -999,6 +1097,34 @@ def main():
         # Single font file provided: wrap as a single-style v4 font
         style_map = {"regular": 0, "bold": 1, "italic": 2, "bolditalic": 3}
         style_fonts[style_map[args.style]] = fontfile
+
+    if 0 not in style_fonts:
+        print("Error: regular style is required by the .cpfont runtime contract", file=sys.stderr)
+        sys.exit(1)
+
+    style_names = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
+    for style_id in range(4):
+        if style_id not in style_fonts:
+            print(f"Warning: {style_names[style_id]} style is missing; "
+                  "the device will use its existing style fallback order",
+                  file=sys.stderr)
+
+    requested_presets = {name.strip().lower() for name in args.intervals.split(",")}
+    require_vietnamese = args.require_vietnamese or "vietnamese-reading" in requested_presets
+    if require_vietnamese:
+        coverage_failed = False
+        for style_id, style_font in sorted(style_fonts.items()):
+            missing = missing_codepoints_for_fonts(
+                style_font, fallback_style_fonts.get(style_id),
+                VIETNAMESE_REQUIRED_CODEPOINTS)
+            if missing:
+                coverage_failed = True
+                print(f"Error: {style_names[style_id]} lacks required Vietnamese codepoints: "
+                      f"{format_codepoints(missing)}", file=sys.stderr)
+        if coverage_failed:
+            print("Provide the matching --fallback-<style> font or disable the Vietnamese contract.",
+                  file=sys.stderr)
+            sys.exit(1)
 
     # Always generate v4 format
     if args.output and len(sizes) != 1:

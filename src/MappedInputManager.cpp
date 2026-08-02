@@ -2,6 +2,8 @@
 
 #include <GfxRenderer.h>
 
+#include <algorithm>
+
 #include "CrossPointSettings.h"
 
 bool MappedInputManager::isNavDirectionSwapped() const {
@@ -76,7 +78,10 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
 
 bool MappedInputManager::wasPressed(const Button button) const { return mapButton(button, &HalGPIO::wasPressed); }
 
-bool MappedInputManager::wasReleased(const Button button) const { return mapButton(button, &HalGPIO::wasReleased); }
+bool MappedInputManager::wasReleased(const Button button) const {
+  if (button == Button::Power && powerReleaseOverrideEnabled) return powerReleaseOverride;
+  return mapButton(button, &HalGPIO::wasReleased);
+}
 
 bool MappedInputManager::isPressed(const Button button) const { return mapButton(button, &HalGPIO::isPressed); }
 
@@ -85,6 +90,44 @@ bool MappedInputManager::wasAnyPressed() const { return gpio.wasAnyPressed(); }
 bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased(); }
 
 unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
+
+unsigned long MappedInputManager::getHeldTime(const Button button) const {
+  const auto activeDuration = [this](const Button candidate) {
+    return isPressed(candidate) || wasPressed(candidate) || wasReleased(candidate) ? getHeldTime(candidate) : 0UL;
+  };
+
+  switch (button) {
+    case Button::Back:
+      return gpio.getHeldTime(SETTINGS.frontButtonBack);
+    case Button::Confirm:
+      return gpio.getHeldTime(SETTINGS.frontButtonConfirm);
+    case Button::Left:
+      return gpio.getHeldTime(SETTINGS.frontButtonLeft);
+    case Button::Right:
+      return gpio.getHeldTime(SETTINGS.frontButtonRight);
+    case Button::Up:
+      return gpio.getHeldTime(HalGPIO::BTN_UP);
+    case Button::Down:
+      return gpio.getHeldTime(HalGPIO::BTN_DOWN);
+    case Button::Power:
+      return gpio.getHeldTime(HalGPIO::BTN_POWER);
+    case Button::PageBack:
+      if (SETTINGS.sideButtonLayout == CrossPointSettings::PREV_NEXT) return gpio.getHeldTime(HalGPIO::BTN_UP);
+      if (SETTINGS.sideButtonLayout == CrossPointSettings::NEXT_PREV) return gpio.getHeldTime(HalGPIO::BTN_DOWN);
+      return 0;
+    case Button::PageForward:
+      if (SETTINGS.sideButtonLayout == CrossPointSettings::PREV_NEXT) return gpio.getHeldTime(HalGPIO::BTN_DOWN);
+      if (SETTINGS.sideButtonLayout == CrossPointSettings::NEXT_PREV) return gpio.getHeldTime(HalGPIO::BTN_UP);
+      return 0;
+    case Button::NavNext:
+      return isNavDirectionSwapped() ? std::max(activeDuration(Button::Up), activeDuration(Button::Left))
+                                     : std::max(activeDuration(Button::Down), activeDuration(Button::Right));
+    case Button::NavPrevious:
+      return isNavDirectionSwapped() ? std::max(activeDuration(Button::Down), activeDuration(Button::Right))
+                                     : std::max(activeDuration(Button::Up), activeDuration(Button::Left));
+  }
+  return 0;
+}
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,
                                                          const char* next) const {

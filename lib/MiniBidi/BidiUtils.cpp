@@ -13,11 +13,12 @@ extern "C" {
 #include <cstring>
 #include <mutex>
 
-// Guards the static bidi_char buffers in applyBidiVisual() and
-// computeVisualWordOrder().  The bidi+shaping pipeline is not reentrant;
+// Guards the shared static bidi scratch buffers. The bidi+shaping pipeline is not reentrant;
 // this mutex serialises access so multi-core callers don't corrupt each
 // other's intermediate state.
 static std::mutex bidiMutex;
+static bidi_char bidiLine[BIDI_MAX_LINE];
+static bidi_char bidiShaped[BIDI_MAX_LINE];
 
 namespace {
 
@@ -89,8 +90,8 @@ bool applyBidiVisual(const char* utf8, std::string& out, int paragraphLevel) {
   if (!utf8 || !*utf8) return false;
   const std::lock_guard<std::mutex> lock(bidiMutex);
 
-  static bidi_char line[BIDI_MAX_LINE];
-  static bidi_char shaped[BIDI_MAX_LINE];
+  auto* line = bidiLine;
+  auto* shaped = bidiShaped;
   int count = 0;
   int lastBase = -1;           // last non-formatter character (mintty's ibase)
   uint8_t pendingJoiners = 0;  // ZWJ/ZWNJ seen since lastBase
@@ -176,7 +177,7 @@ bool computeVisualWordOrder(const std::vector<std::string>& words, bool paragrap
   if (nWords <= 1 || nWords > BIDI_MAX_LINE) return false;
   const std::lock_guard<std::mutex> lock(bidiMutex);
 
-  static bidi_char line[BIDI_MAX_LINE];
+  auto* line = bidiLine;
   int count = 0;
   bool truncated = false;
 
@@ -210,27 +211,29 @@ bool computeVisualWordOrder(const std::vector<std::string>& words, bool paragrap
   if (truncated || count == 0) return false;
 
   // Fast-path for homogeneous lines: skip UAX#9 if there's no mixing.
-  bool hasL = false, hasR = false;
+  bool hasL = false, hasR = false, hasNumbers = false;
   for (int i = 0; i < count; i++) {
     uchar bc = bidi_class(line[i].wc);
-    if (bc == L || bc == EN || bc == AN)
+    if (bc == L)
       hasL = true;
     else if (bc == R || bc == AL)
       hasR = true;
+    else if (bc == EN || bc == AN)
+      hasNumbers = true;
   }
 
   // Purely LTR line in RTL paragraph: identity order, but we might still need to reorder
   // if some characters are mirrored or neutral resolution differs.
   // Actually, UAX#9 rule L1/L2 says purely LTR in RTL para stays as is (identity).
   // Purely RTL line: just reverse the words.
-  if (!hasL && hasR && paragraphIsRtl) {
+  if (!hasNumbers && !hasL && hasR && paragraphIsRtl) {
     visualOrder.reserve(nWords);
     for (int i = static_cast<int>(nWords) - 1; i >= 0; i--) {
       visualOrder.push_back(static_cast<uint16_t>(i));
     }
     return true;
   }
-  if (!hasR) {
+  if (!hasNumbers && !hasR) {
     if (!paragraphIsRtl) {
       // Pure LTR in LTR paragraph: nothing to do.
       return false;

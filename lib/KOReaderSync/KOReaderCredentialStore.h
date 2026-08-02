@@ -65,6 +65,9 @@ class KOReaderCredentialStore : public PersistableStore<KOReaderCredentialStore>
   // Get base URL for API calls (with http:// normalization if no protocol, falls back to default)
   std::string getBaseUrl() const;
 
+  // Whether the configured endpoint supports CrossPoint-only protocol fields.
+  bool usesCrossPointSyncServer() const;
+
   // Document matching method
   void setMatchMethod(DocumentMatchMethod method);
   DocumentMatchMethod getMatchMethod() const { return matchMethod; }

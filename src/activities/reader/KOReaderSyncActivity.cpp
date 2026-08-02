@@ -298,9 +298,9 @@ void KOReaderSyncActivity::performUpload() {
   progress.progress = localProgress.xpath;
   progress.percentage = localProgress.percentage;
 
-  // Rich CrossPoint position for crosspoint-sync servers (lossless
-  // CrossPoint<->CrossPoint sync); plain kosync servers ignore the extra field.
-  {
+  // Rich CrossPoint position for the default CrossPoint sync server. The HTTP
+  // client independently enforces the same boundary before serialization.
+  if (KOREADER_STORE.usesCrossPointSyncServer()) {
     KOReaderRichPosition pos;
     const float pct = localProgress.percentage < 0.0f   ? 0.0f
                       : localProgress.percentage > 1.0f ? 1.0f
@@ -363,6 +363,7 @@ void KOReaderSyncActivity::performUpload() {
 void KOReaderSyncActivity::onEnter() {
   Activity::onEnter();
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+  suppressInitialConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
 
   // Check for credentials first
   if (!KOREADER_STORE.hasCredentials()) {
@@ -523,6 +524,12 @@ void KOReaderSyncActivity::render(RenderLock&&) {
 }
 
 void KOReaderSyncActivity::loop() {
+  if (ReaderUtils::consumeInitialRelease(suppressInitialConfirmRelease,
+                                         mappedInput.wasReleased(MappedInputManager::Button::Confirm),
+                                         mappedInput.isPressed(MappedInputManager::Button::Confirm))) {
+    return;
+  }
+
   if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE || state == SYNC_COMPLETE) {
     if (autoReturnAt != 0 && millis() >= autoReturnAt) {
       returnToReader();
