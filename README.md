@@ -94,6 +94,12 @@ power use, buttons, and sleep/wake must be tested on a physical device.
 - [Wi-Fi file transfer](docs/webserver.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
+## Development transparency
+
+CrossVi is developed with AI assistance. AI tools help with code exploration,
+drafting changes, and reviewing tests. The maintainer makes the design decisions,
+reviews and validates every release, and remains responsible for the firmware.
+
 ## Credits
 
 CrossVi is a fork of
