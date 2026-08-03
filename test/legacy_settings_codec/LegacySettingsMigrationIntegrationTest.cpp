@@ -1,4 +1,5 @@
 #include <HalStorage.h>
+#include <I18nKeys.h>
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -16,6 +17,8 @@ namespace {
 constexpr char SETTINGS_BIN[] = "/.crosspoint/settings.bin";
 constexpr char SETTINGS_BIN_BAK[] = "/.crosspoint/settings.bin.bak";
 constexpr char SETTINGS_JSON[] = "/.crosspoint/settings.json";
+constexpr char LANGUAGE_BIN[] = "/.crosspoint/language.bin";
+constexpr char LANGUAGE_BIN_BAK[] = "/.crosspoint/language.bin.bak";
 
 void appendUint32(std::vector<uint8_t>& bytes, const uint32_t value) {
   const size_t offset = bytes.size();
@@ -124,6 +127,70 @@ TEST(SettingsJsonIntegration, PersistsReaderDarkModeAndOutsideClockPlacement) {
       SETTINGS, R"({"statusBarChapterPageCount":1,"outsideReaderClock":99,"readerDarkMode":99})", &needsResave));
   EXPECT_EQ(SETTINGS.outsideReaderClock, CrossPointSettings::STATUS_BAR_CLOCK_HIDE);
   EXPECT_EQ(SETTINGS.readerDarkMode, 0);
+}
+
+TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::VI);
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+}
+
+TEST(SettingsJsonIntegration, StableLanguageCodeWinsOverAmbiguousLegacyIndex) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::VI);
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+  Storage.setFile(LANGUAGE_BIN, {1, 6});  // Index 6 means different languages in different forks.
+
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
+}
+
+TEST(SettingsJsonIntegration, StandaloneAmbiguousLanguageIndexFallsBackToEnglish) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  Storage.setFile(LANGUAGE_BIN, {1, 6});
+
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::EN));
+  EXPECT_TRUE(Storage.exists(SETTINGS_JSON));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
+}
+
+TEST(SettingsJsonIntegration, RepairsLanguagePreviouslyAutoMigratedFromAmbiguousIndex) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::RU);
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+  Storage.setFile(LANGUAGE_BIN_BAK, {1, 6});
+
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::EN));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
+}
+
+TEST(SettingsJsonIntegration, PreservesExplicitLanguageThatDiffersFromAmbiguousBackup) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::VI);
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+  Storage.setFile(LANGUAGE_BIN_BAK, {1, 6});
+
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
 }
 
 TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAndCanonicalCover) {

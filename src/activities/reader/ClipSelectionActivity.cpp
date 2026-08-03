@@ -592,7 +592,18 @@ void ClipSelectionActivity::render(RenderLock&&) {
   auto scope = fontCache->createPrewarmScope();
   page_->render(renderer, fontId_, marginLeft_, marginTop_);
   scope.endScanAndPrewarm();
+
+  const uint32_t currentPageFingerprint =
+      ClippingPageTools::fingerprint(*page_, renderer, fontId_, marginLeft_, marginTop_);
+  const ClippingPageTools::HighlightPlan existingHighlights =
+      existingClippings_ ? ClippingPageTools::buildHighlightPlan(renderer, *page_, fontId_, marginLeft_, marginTop_,
+                                                                 *existingClippings_, spineIndex_, currentPage_,
+                                                                 currentPageFingerprint, layoutFingerprint_)
+                         : ClippingPageTools::HighlightPlan{};
+  const bool underlineOnlyHighlights = SETTINGS.focusReadingEnabled != 0;
+  if (!underlineOnlyHighlights) existingHighlights.drawBackground(renderer);
   page_->render(renderer, fontId_, marginLeft_, marginTop_);
+  existingHighlights.drawUnderline(renderer, !underlineOnlyHighlights);
 
   if (SETTINGS.readerDarkMode) renderer.invertScreen();
 

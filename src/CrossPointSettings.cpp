@@ -4,7 +4,6 @@
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
-#include <Serialization.h>
 
 #include <array>
 #include <cstring>
@@ -160,25 +159,36 @@ bool CrossPointSettings::loadFromFile() {
 }
 
 bool CrossPointSettings::migrateLanguageBinaryFile() {
-  // V1_LANGUAGES / V1_LANGUAGE_COUNT are emitted by gen_i18n.py with the
-  // frozen enum order from 2f969a9.
-  if (!Storage.exists(LANG_FILE_BIN)) return false;
+  const bool sourceExists = Storage.exists(LANG_FILE_BIN);
+  const bool backupExists = Storage.exists(LANG_FILE_BAK);
+  if (!sourceExists && !backupExists) return false;
 
-  HalFile f;
-  if (Storage.openFileForRead("CPS", LANG_FILE_BIN, f)) {
-    uint8_t version;
-    serialization::readPod(f, version);
-    if (version == 1) {
-      uint8_t oldIndex;
-      serialization::readPod(f, oldIndex);
-      if (oldIndex < V1_LANGUAGE_COUNT) {
-        language = static_cast<uint8_t>(V1_LANGUAGES[oldIndex]);
-      }
+  // language.bin stored only a numeric enum index. That index is ambiguous
+  // across CrossPoint forks, so applying it can turn Vietnamese into Russian
+  // after an upgrade. A previous CrossVi build may already have applied that
+  // index and left language.bin.bak; reset only that exact auto-migrated value.
+  const uint8_t previousLanguage = language;
+  if (backupExists) {
+    HalFile backup;
+    std::array<uint8_t, 2> legacy{};
+    if (Storage.openFileForRead("CPS", LANG_FILE_BAK, backup) && backup.fileSize64() == legacy.size() &&
+        backup.read(legacy.data(), legacy.size()) == static_cast<int>(legacy.size()) && legacy[0] == 1 &&
+        legacy[1] < V1_LANGUAGE_COUNT && language == static_cast<uint8_t>(V1_LANGUAGES[legacy[1]])) {
+      language = static_cast<uint8_t>(Language::EN);
     }
   }
-  Storage.rename(LANG_FILE_BIN, LANG_FILE_BAK);
-  saveToFile();
-  LOG_DBG("CPS", "Migrated language.bin into settings.json");
+
+  // Keep a current selection that does not match the ambiguous backup, then
+  // retire both numeric artifacts after publishing the stable ISO code.
+  if (!saveToFile()) {
+    language = previousLanguage;
+    LOG_ERR("CPS", "Could not retire ambiguous language.bin because settings save failed");
+    return false;
+  }
+  const bool removedSource = !sourceExists || Storage.remove(LANG_FILE_BIN);
+  const bool removedBackup = !backupExists || Storage.remove(LANG_FILE_BAK);
+  if (!removedSource || !removedBackup) LOG_ERR("CPS", "Saved language code but could not remove legacy artifact");
+  LOG_DBG("CPS", "Retired ambiguous numeric language settings");
   return true;
 }
 

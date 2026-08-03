@@ -41,6 +41,38 @@ TEST_F(MappedInputManagerTest, UsesTheConfiguredSideButtonForPageHolds) {
   EXPECT_EQ(input_.getHeldTime(MappedInputManager::Button::PageBack), 300U);
 }
 
+TEST_F(MappedInputManagerTest, MapsBothSideButtonsToPageForwardInNextNextMode) {
+  SETTINGS.sideButtonLayout = CrossPointSettings::NEXT_NEXT;
+
+  gpio_.pressed[HalGPIO::BTN_UP] = true;
+  EXPECT_TRUE(input_.wasPressed(MappedInputManager::Button::PageForward));
+  EXPECT_FALSE(input_.wasPressed(MappedInputManager::Button::PageBack));
+
+  gpio_.pressed.fill(false);
+  gpio_.pressed[HalGPIO::BTN_DOWN] = true;
+  EXPECT_TRUE(input_.wasPressed(MappedInputManager::Button::PageForward));
+  EXPECT_FALSE(input_.wasPressed(MappedInputManager::Button::PageBack));
+}
+
+TEST_F(MappedInputManagerTest, UsesEitherSideButtonHoldInNextNextMode) {
+  SETTINGS.sideButtonLayout = CrossPointSettings::NEXT_NEXT;
+  gpio_.held[HalGPIO::BTN_UP] = true;
+  gpio_.heldTime[HalGPIO::BTN_UP] = 700;
+  gpio_.heldTime[HalGPIO::BTN_DOWN] = 300;
+
+  EXPECT_EQ(input_.getHeldTime(MappedInputManager::Button::PageForward), 700U);
+  EXPECT_EQ(input_.getHeldTime(MappedInputManager::Button::PageBack), 0U);
+}
+
+TEST_F(MappedInputManagerTest, IgnoresStaleOtherSideDurationInNextNextMode) {
+  SETTINGS.sideButtonLayout = CrossPointSettings::NEXT_NEXT;
+  gpio_.heldTime[HalGPIO::BTN_UP] = 900;
+  gpio_.held[HalGPIO::BTN_DOWN] = true;
+  gpio_.heldTime[HalGPIO::BTN_DOWN] = 120;
+
+  EXPECT_EQ(input_.getHeldTime(MappedInputManager::Button::PageForward), 120U);
+}
+
 TEST_F(MappedInputManagerTest, FollowsTheLiveOrientationForLogicalNavigation) {
   SETTINGS.frontButtonFollowOrientation = true;
   gpio_.held[HalGPIO::BTN_DOWN] = true;

@@ -42,21 +42,25 @@ void LanguageSelectActivity::loop() {
 
   // Handle navigation
   buttonNavigator.onNextRelease([this] {
+    saveFailed = false;
     selectedIndex = ButtonNavigator::nextIndex(static_cast<int>(selectedIndex), totalItems);
     requestUpdate();
   });
 
   buttonNavigator.onPreviousRelease([this] {
+    saveFailed = false;
     selectedIndex = ButtonNavigator::previousIndex(static_cast<int>(selectedIndex), totalItems);
     requestUpdate();
   });
 
   buttonNavigator.onNextContinuous([this, pageItems] {
+    saveFailed = false;
     selectedIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectedIndex), totalItems, pageItems);
     requestUpdate();
   });
 
   buttonNavigator.onPreviousContinuous([this, pageItems] {
+    saveFailed = false;
     selectedIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectedIndex), totalItems, pageItems);
     requestUpdate();
   });
@@ -64,14 +68,27 @@ void LanguageSelectActivity::loop() {
 
 void LanguageSelectActivity::handleSelection() {
   const uint8_t langIndex = languageAt(selectedIndex);
+  const auto selectedLanguage = static_cast<Language>(langIndex);
+
+  if (SETTINGS.language == langIndex && I18N.getLanguage() == selectedLanguage) {
+    onBack();
+    return;
+  }
+
+  const uint8_t previousLanguage = SETTINGS.language;
+  SETTINGS.language = langIndex;
+  if (!SETTINGS.saveToFile()) {
+    SETTINGS.language = previousLanguage;
+    saveFailed = true;
+    LOG_ERR("LANG", "Could not persist selected language");
+    requestUpdate();
+    return;
+  }
 
   {
     RenderLock lock(*this);
-    I18N.setLanguage(static_cast<Language>(langIndex));
+    I18N.setLanguage(selectedLanguage);
   }
-
-  SETTINGS.language = langIndex;
-  SETTINGS.saveToFile();
 
   // Return to previous page
   onBack();
@@ -103,6 +120,7 @@ void LanguageSelectActivity::render(RenderLock&&) {
   // Button hints
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (saveFailed) GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
 
   renderer.displayBuffer();
 }

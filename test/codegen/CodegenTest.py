@@ -244,10 +244,10 @@ class CodegenTest(unittest.TestCase):
 
     def test_version_mapping_preserves_existing_environment_contract(self):
         module = load_git_branch()
-        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.0.0")
-        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.0.0-slim")
-        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.0.0-simulator")
-        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.0.0-simulator")
+        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.0.1")
+        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.0.1-slim")
+        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.0.1-simulator")
+        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.0.1-simulator")
 
 
 if __name__ == "__main__":

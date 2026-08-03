@@ -160,6 +160,9 @@ class ActivityManager {
   // True only when the currently visible activity is a page-turn reader.
   // A paused reader below a modal does not qualify.
   bool isReaderActivity() const;
+  // True when the current activity or a paused activity below it is a reader.
+  // Sleep cannot restore the modal stack, but it must still resume its book.
+  bool hasReaderActivity() const;
   uint32_t getCompletedRenderGeneration() const { return completedRenderGeneration.load(std::memory_order_acquire); }
   bool handleForcedRefresh();
   bool skipLoopDelay() const;

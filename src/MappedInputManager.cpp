@@ -47,6 +47,7 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
           return (gpio.*fn)(HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_PREV:
           return (gpio.*fn)(HalGPIO::BTN_DOWN);
+        case CrossPointSettings::NEXT_NEXT:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
@@ -58,6 +59,8 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
           return (gpio.*fn)(HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_PREV:
           return (gpio.*fn)(HalGPIO::BTN_UP);
+        case CrossPointSettings::NEXT_NEXT:
+          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
@@ -92,6 +95,11 @@ bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased(); 
 unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
 
 unsigned long MappedInputManager::getHeldTime(const Button button) const {
+  const auto activeHardwareDuration = [this](const uint8_t hardwareButton) {
+    return gpio.isPressed(hardwareButton) || gpio.wasPressed(hardwareButton) || gpio.wasReleased(hardwareButton)
+               ? gpio.getHeldTime(hardwareButton)
+               : 0UL;
+  };
   const auto activeDuration = [this](const Button candidate) {
     return isPressed(candidate) || wasPressed(candidate) || wasReleased(candidate) ? getHeldTime(candidate) : 0UL;
   };
@@ -118,6 +126,9 @@ unsigned long MappedInputManager::getHeldTime(const Button button) const {
     case Button::PageForward:
       if (SETTINGS.sideButtonLayout == CrossPointSettings::PREV_NEXT) return gpio.getHeldTime(HalGPIO::BTN_DOWN);
       if (SETTINGS.sideButtonLayout == CrossPointSettings::NEXT_PREV) return gpio.getHeldTime(HalGPIO::BTN_UP);
+      if (SETTINGS.sideButtonLayout == CrossPointSettings::NEXT_NEXT) {
+        return std::max(activeHardwareDuration(HalGPIO::BTN_UP), activeHardwareDuration(HalGPIO::BTN_DOWN));
+      }
       return 0;
     case Button::NavNext:
       return isNavDirectionSwapped() ? std::max(activeDuration(Button::Up), activeDuration(Button::Left))

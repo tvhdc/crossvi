@@ -1336,7 +1336,7 @@ void TxtReaderActivity::openClippingSelection() {
   startActivityForResult(
       std::make_unique<ClipSelectionActivity>(renderer, mappedInput, std::move(page), SETTINGS.getReaderFontId(), 0, 0,
                                               static_cast<uint16_t>(currentPage), static_cast<uint16_t>(totalPages),
-                                              UINT16_MAX, 0, loader),
+                                              UINT16_MAX, 0, loader, &clippingStore.entries(), 0),
       [this](const ActivityResult& result) {
         if (result.isCancelled) {
           requestUpdate();

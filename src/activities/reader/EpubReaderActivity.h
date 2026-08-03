@@ -86,6 +86,7 @@ class EpubReaderActivity final : public Activity {
   bool pendingBookSettingsSaveError = false;
   bool pendingBookStylesApplyError = false;
   bool pendingExternalCssWarning = false;
+  unsigned long externalCssWarningTime = 0UL;
   bool pendingCacheClearError = false;
   std::atomic<bool> safeModePromptRequested{false};
   std::atomic<bool> pendingSafeModeFailureNotice{false};

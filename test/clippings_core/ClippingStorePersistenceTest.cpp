@@ -171,6 +171,31 @@ TEST_F(ClippingStorePersistenceTest, RoundTripsMetadataAndLoadsTextOnlyWhenReque
   EXPECT_EQ(text, "nội dung đầu");
 }
 
+TEST_F(ClippingStorePersistenceTest, AppendsTwoHighlightsOnTheSamePageWithoutReplacingTheFirst) {
+  ClippingStore store;
+  ASSERT_EQ(store.loadForBook(BOOK_PATH, "Sách", "Tác giả"), ClippingStore::LoadResult::Ready);
+  const auto first = sampleClipping(42);
+  ASSERT_EQ(store.add(first, "đoạn thứ nhất"), ClippingStore::AddResult::Added);
+
+  auto second = sampleClipping(43);
+  second.startWordIndex = 10;
+  second.endWordIndex = 12;
+  ASSERT_EQ(store.add(second, "đoạn thứ hai"), ClippingStore::AddResult::Added);
+
+  ClippingStore reopened;
+  ASSERT_EQ(reopened.loadForBook(BOOK_PATH, "Sách", "Tác giả"), ClippingStore::LoadResult::Loaded);
+  ASSERT_EQ(reopened.size(), 2U);
+  EXPECT_EQ(reopened.at(0)->startPage, first.startPage);
+  EXPECT_EQ(reopened.at(0)->startWordIndex, first.startWordIndex);
+  EXPECT_EQ(reopened.at(1)->startPage, second.startPage);
+  EXPECT_EQ(reopened.at(1)->startWordIndex, second.startWordIndex);
+  std::string text;
+  ASSERT_TRUE(reopened.readText(0, text));
+  EXPECT_EQ(text, "đoạn thứ nhất");
+  ASSERT_TRUE(reopened.readText(1, text));
+  EXPECT_EQ(text, "đoạn thứ hai");
+}
+
 TEST_F(ClippingStorePersistenceTest, MigratesVersionThreeAndPreservesItsExactPageFingerprint) {
   const auto v4 = createCanonical();
   const auto v3 = downgradeSingleRecordToV3(v4);

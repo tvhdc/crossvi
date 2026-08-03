@@ -18,6 +18,13 @@
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
 
+namespace {
+// A sleep render is the last panel operation before the MCU enters deep sleep.
+// Power the panel down as part of that refresh so teardown work cannot leave it
+// electrically driven and darken the image after it has settled.
+constexpr bool TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH = true;
+}  // namespace
+
 void SleepActivity::onEnter() {
   Activity::onEnter();
 
@@ -177,7 +184,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool applyCoverSettings) const {
@@ -241,7 +248,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
     // the differential nudge then lands unevenly (blotchy noise in gray areas).
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   } else {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
   }
 
   if (hasGreyscale) {
@@ -257,7 +264,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
     renderer.copyGrayscaleMsbBuffers();
 
-    renderer.displayGrayBuffer();
+    renderer.displayGrayBuffer(TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
     renderer.setRenderMode(GfxRenderer::BW);
   }
 }
@@ -344,13 +351,13 @@ void SleepActivity::renderLastScreenSleepScreen() const {
   if (gpio.deviceIsX3()) {
     // The X3 controller still holds the displayed page, so update the moon
     // against that baseline without a full-screen flash.
-    renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+    renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
   } else {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
   }
 }
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }

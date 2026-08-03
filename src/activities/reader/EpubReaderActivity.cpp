@@ -965,6 +965,13 @@ void EpubReaderActivity::loop() {
     requestUpdate();
   }
 
+  if (pendingExternalCssWarning && externalCssWarningTime != 0 &&
+      (millis() - externalCssWarningTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
+    pendingExternalCssWarning = false;
+    externalCssWarningTime = 0;
+    requestUpdate();
+  }
+
   // While the end screen suggestion menu is showing it owns Confirm/Back/navigation
   // input. Anything it doesn't handle (e.g. long-press Back to the file browser) falls
   // through to the regular handlers below; page turns are absorbed by the end-of-book
@@ -1807,7 +1814,8 @@ void EpubReaderActivity::openClippingSelection() {
 
   startActivityForResult(std::make_unique<ClipSelectionActivity>(
                              renderer, mappedInput, std::move(page), SETTINGS.getReaderFontId(), marginLeft, marginTop,
-                             currentPage, pageCount, paragraphIndex, currentClippingLayoutFingerprint(), pageLoader),
+                             currentPage, pageCount, paragraphIndex, currentClippingLayoutFingerprint(), pageLoader,
+                             &clippingStore.entries(), static_cast<uint16_t>(currentSpineIndex)),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) return;
                            const auto* selection = std::get_if<ClippingSelectionResult>(&result.data);
@@ -2346,7 +2354,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       pendingBookStylesApplyError = false;
       GUI.drawPopup(renderer, tr(STR_APPLY_BOOK_STYLES_FAILED));
     } else if (pendingExternalCssWarning) {
-      pendingExternalCssWarning = false;
+      if (externalCssWarningTime == 0) externalCssWarningTime = millis();
       GUI.drawPopup(renderer, tr(STR_PUBLISHER_STYLES_UNAVAILABLE));
     } else if (pendingCacheClearError) {
       pendingCacheClearError = false;

@@ -10,6 +10,7 @@
 
 #include "activities/Activity.h"
 #include "clippings/ClipTextBuilder.h"
+#include "clippings/ClippingCodec.h"
 
 // Button-driven quote selection that keeps only one rendered Page resident.
 // A tiny callback can load the following page without coupling this activity
@@ -30,7 +31,9 @@ class ClipSelectionActivity final : public Activity {
   explicit ClipSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Page> page,
                                  int fontId, int marginLeft, int marginTop, uint16_t sectionPage,
                                  uint16_t sectionPageCount, uint16_t paragraphIndex, uint32_t layoutFingerprint,
-                                 PageLoader pageLoader)
+                                 PageLoader pageLoader,
+                                 const std::vector<ClippingCodec::ClippingMetadata>* existingClippings,
+                                 uint16_t spineIndex)
       : Activity("ClipSelection", renderer, mappedInput),
         page_(std::move(page)),
         fontId_(fontId),
@@ -41,7 +44,9 @@ class ClipSelectionActivity final : public Activity {
         sectionPageCount_(sectionPageCount),
         paragraphIndex_(paragraphIndex),
         layoutFingerprint_(layoutFingerprint),
-        pageLoader_(pageLoader) {}
+        pageLoader_(pageLoader),
+        existingClippings_(existingClippings),
+        spineIndex_(spineIndex) {}
 
   void onEnter() override;
   void loop() override;
@@ -79,6 +84,8 @@ class ClipSelectionActivity final : public Activity {
   const uint16_t paragraphIndex_;
   const uint32_t layoutFingerprint_;
   const PageLoader pageLoader_;
+  const std::vector<ClippingCodec::ClippingMetadata>* const existingClippings_;
+  const uint16_t spineIndex_;
   uint32_t pageFingerprint_ = 0;
 
   int lineHeight_ = 0;
