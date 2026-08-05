@@ -129,6 +129,9 @@ void EpubReaderBookmarksActivity::loop() {
       confirmingDelete = DELETE_MODE_OFF;
       return;
     }
+    // The confirmation dialog is modal. Ignore navigation and held-button
+    // gestures until it is confirmed or dismissed.
+    return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {  // Open
@@ -168,6 +171,7 @@ void EpubReaderBookmarksActivity::loop() {
     }
     confirmingDelete = DELETE_MODE_DISPLAY;
     requestUpdate();
+    return;
   }
 
   buttonNavigator.onNextRelease([this] {
@@ -177,18 +181,6 @@ void EpubReaderBookmarksActivity::loop() {
 
   buttonNavigator.onPreviousRelease([this] {
     selectorIndex = ButtonNavigator::previousIndex(selectorIndex, bookmarks.size());
-    requestUpdate();
-  });
-
-  buttonNavigator.onNextContinuous([this] {
-    selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, bookmarks.size(),
-                                                   GUI.getListPageItems(getListHeight(renderer), true));
-    requestUpdate();
-  });
-
-  buttonNavigator.onPreviousContinuous([this] {
-    selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, bookmarks.size(),
-                                                       GUI.getListPageItems(getListHeight(renderer), true));
     requestUpdate();
   });
 }

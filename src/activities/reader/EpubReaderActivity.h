@@ -38,6 +38,7 @@ class EpubReaderActivity final : public Activity {
   bool forcedRefreshPending = false;
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
+  std::optional<uint32_t> cachedContentSourceOffset;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
@@ -250,10 +251,10 @@ class EpubReaderActivity final : public Activity {
   // whole HTML must be inflated before page 1 can lay out (the giant single-spine case), which is
   // a multi-second wait. Normal chapters are well under this and stay popup-free.
   static constexpr size_t BUILD_POPUP_BYTE_THRESHOLD = 96 * 1024;
-  // Remap the cached relative reading position once the section's real page count is known
-  // (used after a settings change re-paginates a chapter). Returns true if currentPage moved.
-  // No-op while the section is still building or when the pagination is unchanged (plain resume).
+  // Restore the cached content position after a settings change re-paginates a chapter.
+  // Falls back to the old page ratio only when the visible page has no stable text anchor.
   bool applyDeferredReposition();
+  void rememberCurrentContentOffset();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);

@@ -12,6 +12,7 @@
 #include "BoundedFileReader.h"
 #include "Epub/css/CssParser.h"
 #include "Page.h"
+#include "PageSourceAnchor.h"
 #include "SectionCacheLayout.h"
 #include "SectionCacheValidator.h"
 #include "hyphenation/Hyphenator.h"
@@ -145,6 +146,8 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
     return 0;
   }
 
+  const bool containsSourceTarget =
+      sourceOffsetTarget_.has_value() && PageSourceAnchor::contains(*page, *sourceOffsetTarget_);
   const uint32_t position = file.position();
   if (!page->serialize(file)) {
     LOG_ERR("SCT", "Failed to serialize page %d", builtPageCount_);
@@ -152,6 +155,7 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   }
   LOG_DBG("SCT", "Page %d processed", builtPageCount_);
 
+  if (containsSourceTarget) sourceOffsetTargetPage_ = builtPageCount_;
   builtPageCount_++;
   // pageCount is the pages available to read: a rebuild over a partial only raises it
   // once it has laid out more pages than the partial already covers.
@@ -364,6 +368,7 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   buildComplete_ = false;
   lastBuildStatus_ = EpubBuildStatus::Ok;
   builtPageCount_ = 0;
+  sourceOffsetTargetPage_.reset();
   if (!partial_) {
     cacheLayout_ = {};
     cacheLayoutValid_ = false;

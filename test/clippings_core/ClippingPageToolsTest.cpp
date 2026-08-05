@@ -1,3 +1,4 @@
+#include <Epub/PageSourceAnchor.h>
 #include <GfxRenderer.h>
 #include <gtest/gtest.h>
 
@@ -77,6 +78,21 @@ ClippingCodec::ClippingMetadata clippingForWord(const uint16_t word, const uint3
 }
 
 }  // namespace
+
+TEST(PageSourceAnchor, FindsFirstStableWordAndUsesHalfOpenRanges) {
+  Page page = makeTextPage({"unanchored"});
+  Page anchored = makeAnchoredTextPage({"alpha", "beta"}, {100, 110}, {105, 114});
+  page.elements.insert(page.elements.end(), anchored.elements.begin(), anchored.elements.end());
+
+  const auto first = PageSourceAnchor::first(page);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(*first, 100U);
+  EXPECT_TRUE(PageSourceAnchor::contains(page, 100));
+  EXPECT_TRUE(PageSourceAnchor::contains(page, 104));
+  EXPECT_FALSE(PageSourceAnchor::contains(page, 105));
+  EXPECT_TRUE(PageSourceAnchor::contains(page, 113));
+  EXPECT_FALSE(PageSourceAnchor::contains(page, 114));
+}
 
 TEST(ClippingPageTools, FingerprintCoversRenderContextAndAvailableLayoutData) {
   const Page page = makePage();

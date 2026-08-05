@@ -1,6 +1,7 @@
 #include "EpubReaderActivity.h"
 
 #include <Epub/Page.h>
+#include <Epub/PageSourceAnchor.h>
 #include <Epub/blocks/ImageBlock.h>
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
@@ -1410,6 +1411,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             requestUpdate();
             break;
           }
+          rememberCurrentContentOffset();
+          cachedSpineIndex = backupSpine;
           nextPageNumber = backupPage;
           cachedChapterTotalPageCount = backupPageCount;
           section.reset();
@@ -1633,6 +1636,7 @@ bool EpubReaderActivity::queueSafeModePromptIfEligible(const EpubBuildStatus sta
 void EpubReaderActivity::invalidateReaderLayout() {
   RenderLock lock(*this);
   if (section) {
+    rememberCurrentContentOffset();
     cachedSpineIndex = currentSpineIndex;
     cachedChapterTotalPageCount = section->pageCount;
     nextPageNumber = section->currentPage;
@@ -1640,6 +1644,14 @@ void EpubReaderActivity::invalidateReaderLayout() {
   sdFontSystem.ensureLoaded(renderer, false);
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   section.reset();
+}
+
+void EpubReaderActivity::rememberCurrentContentOffset() {
+  cachedContentSourceOffset.reset();
+  if (!section || section->currentPage < 0 || section->currentPage >= section->pageCount) return;
+  if (const auto page = section->loadPage(section->currentPage)) {
+    cachedContentSourceOffset = PageSourceAnchor::first(*page);
+  }
 }
 
 void EpubReaderActivity::openBookReaderSettings() {
@@ -1985,6 +1997,7 @@ void EpubReaderActivity::armClippingJump(const ClippingJumpResult& jump) {
   // before its fingerprint is checked.
   cachedSpineIndex = jump.spineIndex;
   cachedChapterTotalPageCount = 0;
+  cachedContentSourceOffset.reset();
   currentSpineIndex = jump.spineIndex;
   const bool layoutKnown = buildViewportWidth > 0 && buildViewportHeight > 0;
   const bool layoutChanged =
@@ -2136,6 +2149,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
   {
     RenderLock lock(*this);
     if (section) {
+      rememberCurrentContentOffset();
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = section->pageCount;
       nextPageNumber = section->currentPage;
@@ -2173,6 +2187,7 @@ void EpubReaderActivity::applyAutoPageTurnRuntime(const uint8_t seconds, const b
     // Preserve current reading position so we can restore after reflow.
     RenderLock lock(*this);
     if (section) {
+      rememberCurrentContentOffset();
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = section->pageCount;
       nextPageNumber = section->currentPage;
@@ -2487,6 +2502,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // suspension cost is included. Other open/reflow paths begin timing here.
     debugBeginSectionOpen(false);
 #endif
+    // An explicit navigation request always outranks a settings-change anchor
+    // left over from the page that was previously visible.
+    if (pendingPageJump.has_value() || !pendingAnchor.empty() || pendingPercentJump || pendingClippingJump) {
+      cachedChapterTotalPageCount = 0;
+      cachedContentSourceOffset.reset();
+    }
+
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
@@ -2517,8 +2539,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       // saved while the section was still building (i.e. a watermark, not the real count)
       // would remap the resume page against the finalized count and teleport the reader.
       cachedChapterTotalPageCount = 0;
+      cachedContentSourceOffset.reset();
     }
     const bool cacheComplete = cacheLoaded && !section->isPartial();
+    const bool contentReposition =
+        !cacheComplete && cachedContentSourceOffset.has_value() && currentSpineIndex == cachedSpineIndex;
+    if (contentReposition) section->setSourceOffsetTarget(*cachedContentSourceOffset);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     debugSetSectionCacheStatus(
         cacheComplete ? DebugSectionCacheStatus::Hit
@@ -2531,18 +2557,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         LOG_DBG("ERS", "Cache not found, building...");
       }
 
-      // Jumps that need the final pagination or the anchor map -- explicit page jumps,
-      // fragment anchors, percent jumps, and cross-setting progress repositioning -- can't
-      // resolve their landing page until the whole chapter is laid out, so they take the full
-      // (blocking) build with the indexing popup. Everything else -- plain forward reads, resume,
-      // and explicit page jumps -- only needs a specific page, so it builds incrementally to that
-      // page and finishes the rest in loop(). The settings-change reposition (cachedChapterTotal*)
-      // is NOT a full-build trigger: it's deferred to applyDeferredReposition() once the real page
-      // count is known, so it never blocks the first page.
-      // Only a percent jump truly needs the whole chapter up front (percent -> page needs the final
-      // page count). Anchor jumps (TOC / chapter select / footnotes) resolve incrementally below --
-      // the anchor is recorded as its page is laid out, so a chapter-top anchor lands on page 0
-      // without indexing the whole chapter.
+      // Only a percent jump needs the whole chapter up front (percent -> page needs the final page
+      // count). Explicit pages and fragment anchors build incrementally until their landing page is
+      // available. A settings-change reposition follows the same bounded path, stopping as soon as
+      // the old page's canonical text offset appears in the new pagination; image-only pages retain
+      // the proportional fallback after the final page count is known.
       const bool needsFullBuild = pendingPercentJump;
       if (needsFullBuild) {
         renderer.clearScreen();
@@ -2639,7 +2658,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             return;
           }
           while (!section->isBuildComplete() &&
-                 (anchorJump ? !section->findAnchor(pendingAnchor) : static_cast<int>(section->pageCount) <= target)) {
+                 (anchorJump          ? !section->findAnchor(pendingAnchor)
+                  : contentReposition ? !section->sourceOffsetTargetPage().has_value()
+                                      : static_cast<int>(section->pageCount) <= target)) {
             // Anchor jump: build until the anchor's page is laid out (usually page 0), checking a
             // partial's on-disk anchor map too so an already-indexed anchor resolves immediately.
             // Otherwise: build until the target page exists. loop() builds the rest behind it.
@@ -2936,26 +2957,43 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 }
 
 bool EpubReaderActivity::applyDeferredReposition() {
-  if (cachedChapterTotalPageCount == 0 || !section || section->isBuilding()) {
+  if (!section || (!cachedContentSourceOffset.has_value() && cachedChapterTotalPageCount == 0)) return false;
+
+  if (currentSpineIndex != cachedSpineIndex) {
+    cachedContentSourceOffset.reset();
+    cachedChapterTotalPageCount = 0;
+    section->clearSourceOffsetTarget();
     return false;
   }
-  bool changed = false;
-  // Only remap when the chapter actually re-paginated (e.g. after a settings change). A plain
-  // resume has identical pagination, so section->pageCount == cachedChapterTotalPageCount and
-  // nothing moves.
-  if (currentSpineIndex == cachedSpineIndex && section->pageCount != cachedChapterTotalPageCount) {
+
+  const std::optional<uint16_t> contentPage =
+      cachedContentSourceOffset.has_value() ? section->sourceOffsetTargetPage() : std::nullopt;
+  if (section->isBuilding() && !contentPage.has_value()) return false;
+
+  int newPage = section->currentPage;
+  bool mapped = false;
+  if (contentPage.has_value()) {
+    newPage = *contentPage;
+    mapped = true;
+  } else if (cachedChapterTotalPageCount > 0 && section->pageCount != cachedChapterTotalPageCount) {
+    // Image-only pages do not have a stable text anchor. Keep the old proportional fallback
+    // rather than inventing a content position that cannot be identified safely.
     const float progress = static_cast<float>(section->currentPage) / static_cast<float>(cachedChapterTotalPageCount);
-    int newPage = static_cast<int>(progress * static_cast<float>(section->pageCount));
-    if (newPage < 0) newPage = 0;
-    if (section->pageCount > 0 && newPage >= static_cast<int>(section->pageCount)) {
-      newPage = section->pageCount - 1;
-    }
-    if (newPage != section->currentPage) {
-      section->currentPage = newPage;
-      changed = true;
-    }
+    newPage = static_cast<int>(progress * static_cast<float>(section->pageCount));
+    mapped = true;
   }
-  cachedChapterTotalPageCount = 0;  // consumed; don't read cached progress again
+
+  if (newPage < 0) newPage = 0;
+  if (section->pageCount > 0 && newPage >= static_cast<int>(section->pageCount)) {
+    newPage = section->pageCount - 1;
+  }
+
+  const bool changed = mapped && newPage != section->currentPage;
+  if (changed) section->currentPage = newPage;
+
+  cachedContentSourceOffset.reset();
+  cachedChapterTotalPageCount = 0;
+  section->clearSourceOffsetTarget();
   return changed;
 }
 

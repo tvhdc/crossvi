@@ -62,6 +62,8 @@ class Section {
     uint32_t smoothedAtConsumed = 0;
   };
   std::unique_ptr<BuildContext> build_;
+  std::optional<uint32_t> sourceOffsetTarget_;
+  std::optional<uint16_t> sourceOffsetTargetPage_;
   bool buildComplete_ = false;
   EpubBuildStatus lastBuildStatus_ = EpubBuildStatus::Ok;
   // Pages laid out by the active build (== build_->lut.size()). Distinct from pageCount,
@@ -144,6 +146,18 @@ class Section {
   // Unified page read: from the active build if it has reached the page, otherwise from
   // the on-disk file (finalized section, or a partial the rebuild hasn't caught up to).
   std::unique_ptr<Page> loadPage(int page);
+
+  // One-shot content anchor used while a changed reader layout is rebuilt. The target
+  // is a canonical chapter-text byte offset already stored with EPUB highlight words.
+  void setSourceOffsetTarget(uint32_t offset) {
+    sourceOffsetTarget_ = offset;
+    sourceOffsetTargetPage_.reset();
+  }
+  void clearSourceOffsetTarget() {
+    sourceOffsetTarget_.reset();
+    sourceOffsetTargetPage_.reset();
+  }
+  std::optional<uint16_t> sourceOffsetTargetPage() const { return sourceOffsetTargetPage_; }
 
   std::string getTextFromSectionFile();
 
