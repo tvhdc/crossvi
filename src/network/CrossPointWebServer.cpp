@@ -138,13 +138,6 @@ void CrossPointWebServer::begin() {
 
   LOG_DBG("WEB", "Creating web server on port %d...", port);
 
-  // Register the task that owns handleClient() before any request callback can
-  // reset its watchdog.  Some targets do not subscribe this task by default.
-  const esp_err_t watchdogResult = esp_task_wdt_add(nullptr);
-  watchdogTaskRegistered = watchdogResult == ESP_OK;
-  if (!watchdogTaskRegistered) {
-    LOG_DBG("WEB", "Watchdog registration unavailable: %s", esp_err_to_name(watchdogResult));
-  }
   server.reset(new WebServer(port));
 
   // Callers disable modem sleep around each request batch and while an upload
@@ -161,10 +154,6 @@ void CrossPointWebServer::begin() {
 
   if (!server) {
     LOG_ERR("WEB", "Failed to create WebServer!");
-    if (watchdogTaskRegistered) {
-      esp_task_wdt_delete(nullptr);
-      watchdogTaskRegistered = false;
-    }
     return;
   }
 
@@ -254,6 +243,8 @@ void CrossPointWebServer::begin() {
 }
 
 void CrossPointWebServer::abortWsUpload(const char* tag) {
+  LOG_DBG(tag, "Upload aborted at %zu/%zu bytes: free=%u maxalloc=%u", wsUploadReceived, wsUploadSize,
+          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   // Explicit close() required: file-scope global persists beyond function scope
   wsUploadFile.close();
   if (wsUploadOwnsStagingFile && !wsUploadStagingPath.isEmpty()) {
@@ -298,11 +289,6 @@ void CrossPointWebServer::stop() {
   if (upload.ownsStagingFile && !upload.stagingPath.isEmpty()) Storage.remove(upload.stagingPath.c_str());
   upload.ownsStagingFile = false;
   upload.stagingPath = "";
-
-  if (watchdogTaskRegistered) {
-    esp_task_wdt_delete(nullptr);
-    watchdogTaskRegistered = false;
-  }
 
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
@@ -883,7 +869,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     uploadDirectory.close();
 
     LOG_DBG("WEB", "[UPLOAD] START: %s to path: %s", state.fileName.c_str(), state.path.c_str());
-    LOG_DBG("WEB", "[UPLOAD] Free heap: %d bytes", ESP.getFreeHeap());
+    LOG_DBG("WEB", "[UPLOAD] Heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     String filePath = state.path;
     if (!filePath.endsWith("/")) filePath += "/";
@@ -967,8 +953,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
         const float writePercent = (elapsed > 0) ? (totalWriteTime * 100.0 / elapsed) : 0;
         LOG_DBG("WEB", "[UPLOAD] Complete: %s (%d bytes in %lu ms, avg %.1f KB/s)", state.fileName.c_str(), state.size,
                 elapsed, avgKbps);
-        LOG_DBG("WEB", "[UPLOAD] Diagnostics: %d writes, total write time: %lu ms (%.1f%%)", writeCount, totalWriteTime,
-                writePercent);
+        LOG_DBG("WEB", "[UPLOAD] Diagnostics: %d writes, write=%lu ms (%.1f%%), free=%u maxalloc=%u", writeCount,
+                totalWriteTime, writePercent, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
         String filePath = state.path;
         if (!filePath.endsWith("/")) filePath += "/";
@@ -996,7 +982,8 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     if (state.ownsStagingFile && !state.stagingPath.isEmpty()) Storage.remove(state.stagingPath.c_str());
     state.ownsStagingFile = false;
     state.error = "Upload aborted";
-    LOG_DBG("WEB", "Upload aborted");
+    LOG_DBG("WEB", "Upload aborted at %zu bytes: free=%u maxalloc=%u", state.size, ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
   }
 }
 
@@ -1544,6 +1531,8 @@ void CrossPointWebServer::handleGetSettings() const {
       seenFirst = true;
     }
     server->sendContent(output);
+    yield();
+    resetTaskWatchdogIfSubscribed();
   }
 
   server->sendContent("]");
@@ -1665,6 +1654,8 @@ void CrossPointWebServer::handleGetOpdsServers() const {
 
     if (i > 0) server->sendContent(",");
     server->sendContent(output);
+    yield();
+    resetTaskWatchdogIfSubscribed();
   }
 
   server->sendContent("]");
@@ -1773,6 +1764,8 @@ void CrossPointWebServer::handleGetWifiNetworks() const {
 
     if (i > 0) server->sendContent(",");
     server->sendContent(output);
+    yield();
+    resetTaskWatchdogIfSubscribed();
   }
 
   server->sendContent("]");
@@ -1969,8 +1962,8 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
             return;
           }
 
-          LOG_DBG("WS", "Starting upload: %s (%d bytes) to %s", wsUploadFileName.c_str(), wsUploadSize,
-                  filePath.c_str());
+          LOG_DBG("WS", "Starting upload: %s (%u bytes) to %s, free=%u maxalloc=%u", wsUploadFileName.c_str(),
+                  static_cast<unsigned>(wsUploadSize), filePath.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
           wsUploadStagingPath = hiddenBookFileSibling(filePath.c_str(), ".crossvi-upload.tmp").c_str();
           if (!clearStaleBookUploadStaging(wsUploadStagingPath)) {
@@ -2074,8 +2067,9 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
         unsigned long elapsed = millis() - wsUploadStartTime;
         float kbps = (elapsed > 0) ? (wsUploadSize / 1024.0) / (elapsed / 1000.0) : 0;
 
-        LOG_DBG("WS", "Upload complete: %s (%u bytes in %lu ms, %.1f KB/s, free=%u)", wsUploadFileName.c_str(),
-                static_cast<unsigned>(wsUploadSize), elapsed, kbps, static_cast<unsigned>(ESP.getFreeHeap()));
+        LOG_DBG("WS", "Upload complete: %s (%u bytes in %lu ms, %.1f KB/s, free=%u maxalloc=%u)",
+                wsUploadFileName.c_str(), static_cast<unsigned>(wsUploadSize), elapsed, kbps, ESP.getFreeHeap(),
+                ESP.getMaxAllocHeap());
 
         String filePath = wsUploadPath;
         if (!filePath.endsWith("/")) filePath += "/";
@@ -2232,7 +2226,8 @@ void CrossPointWebServer::handleFontUploadData() {
 
       fontUpload.valid = true;
       fontUpload.writeOk = true;
-      LOG_DBG("WEB", "Font upload started: %s -> %s", filename.c_str(), path);
+      LOG_DBG("WEB", "Font upload started: %s -> %s, free=%u maxalloc=%u", filename.c_str(), path, ESP.getFreeHeap(),
+              ESP.getMaxAllocHeap());
       break;
     }
 
@@ -2297,7 +2292,8 @@ void CrossPointWebServer::handleFontUploadData() {
       fontUpload.published = fontUpload.valid;
       if (!fontUpload.valid && !fontUpload.stagingPath.empty()) Storage.remove(fontUpload.stagingPath.c_str());
 
-      LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes", fontUpload.valid, fontUpload.bytesWritten);
+      LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes, free=%u maxalloc=%u", fontUpload.valid,
+              fontUpload.bytesWritten, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
       break;
     }
 

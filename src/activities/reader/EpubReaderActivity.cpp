@@ -129,7 +129,11 @@ ProgressRange getPageProgressRange(const std::shared_ptr<Epub>& epub, const int 
 }
 
 bool bookmarkMatchesProgress(const BookmarkEntry& bookmark, const int spineIndex, const int page, const int pageCount,
-                             const ProgressRange& pageRange) {
+                             const ProgressRange& pageRange,
+                             const std::optional<uint32_t> sourceOffset = std::nullopt) {
+  if (bookmark.hasContentSourceOffset && sourceOffset.has_value()) {
+    return bookmark.computedSpineIndex == spineIndex && bookmark.contentSourceOffset == *sourceOffset;
+  }
   if (bookmark.computedSpineIndex == spineIndex && bookmark.computedChapterPageCount == pageCount &&
       bookmark.computedChapterProgress == page) {
     return true;
@@ -728,7 +732,10 @@ void EpubReaderActivity::openReaderMenu() {
   startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
                              renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
                              SETTINGS.orientation, autoPageTurnSeconds, automaticPageTurnActive,
-                             !currentPageFootnotes.empty(), !cachedBookmarks.empty(), currentPageBookmarked),
+                             !currentPageFootnotes.empty(), !cachedBookmarks.empty(), currentPageBookmarked,
+                             EpubReaderMenuActivity::ReaderKind::Epub, clippingStore.isLoaded(),
+                             clippingStore.isLoaded() && clippingStore.size() > 0, epub->getTocItemsCount() > 0,
+                             bookReadingStats.isCompleted),
                          [this](const ActivityResult& result) {
                            const auto* menu = std::get_if<MenuResult>(&result.data);
                            if (!menu) {
@@ -819,7 +826,8 @@ void EpubReaderActivity::loop() {
       if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, buildViewportWidth,
                                buildViewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
-                               SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, activeEpubRenderMode(),
+                               SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
+                               activeEpubRenderMode(),
                                SETTINGS.forceParagraphIndents != 0)) {
         const EpubBuildStatus failure = section->lastBuildStatus();
         if (queueSafeModePromptIfEligible(failure)) {
@@ -1328,6 +1336,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                layout.embeddedStyle = activeEmbeddedStyle();
                                layout.imageRendering = SETTINGS.imageRendering;
                                layout.focusReadingEnabled = SETTINGS.focusReadingEnabled;
+                               layout.wordSpacing = SETTINGS.wordSpacing;
                                layout.renderMode = activeEpubRenderMode();
                                layout.forceParagraphIndents = SETTINGS.forceParagraphIndents != 0;
                                const int searchSpine = currentSpineIndex;
@@ -1476,6 +1485,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 void EpubReaderActivity::applyBookmarkJump(const ProgressChangeResult& sync) {
+  const bool contentJump =
+      sync.hasContentSourceOffset && sync.spineIndex >= 0 && epub && sync.spineIndex < epub->getSpineItemsCount();
   int targetSpineIndex = sync.spineIndex;
   int targetPage = sync.page;
   int activeSpineIndex = 0;
@@ -1489,11 +1500,11 @@ void EpubReaderActivity::applyBookmarkJump(const ProgressChangeResult& sync) {
     activeTotalPages = section ? section->estimatedTotalPages() : 0;
     fallbackTotalPages = section ? activeTotalPages : cachedChapterTotalPageCount;
   }
-  const bool cachedPageMatchesActiveSection = hasSection && sync.totalPages > 0 &&
+  const bool cachedPageMatchesActiveSection = !contentJump && hasSection && sync.totalPages > 0 &&
                                               activeSpineIndex == sync.spineIndex && sync.page >= 0 &&
                                               sync.page < sync.totalPages && activeTotalPages == sync.totalPages;
 
-  if (!cachedPageMatchesActiveSection && sync.hasSavedProgress) {
+  if (!contentJump && !cachedPageMatchesActiveSection && sync.hasSavedProgress) {
     const CrossPointPosition fallback = ProgressMapper::toCrossPoint(epub, {sync.xpath, sync.percentage}, renderer,
                                                                      activeSpineIndex, fallbackTotalPages);
     targetSpineIndex = fallback.spineIndex;
@@ -1501,6 +1512,14 @@ void EpubReaderActivity::applyBookmarkJump(const ProgressChangeResult& sync) {
   }
 
   RenderLock lock(*this);
+  pendingBookmarkSourceOffset = contentJump ? std::optional<uint32_t>(sync.contentSourceOffset) : std::nullopt;
+  currentPageSourceOffset.reset();
+  if (contentJump) {
+    currentSpineIndex = targetSpineIndex;
+    nextPageNumber = std::max(0, targetPage);
+    section.reset();
+    return;
+  }
   if (currentSpineIndex != targetSpineIndex) {
     currentSpineIndex = targetSpineIndex;
     nextPageNumber = targetPage;
@@ -1609,6 +1628,7 @@ bool EpubReaderActivity::launchNearbyPositionSync() {
       activeEmbeddedStyle(),
       SETTINGS.imageRendering,
       SETTINGS.focusReadingEnabled != 0,
+      SETTINGS.wordSpacing,
       activeEpubRenderMode(),
       SETTINGS.forceParagraphIndents != 0,
   };
@@ -1888,6 +1908,7 @@ uint32_t EpubReaderActivity::currentClippingLayoutFingerprint() const {
   identity.embeddedStyle = activeEmbeddedStyle();
   identity.imageRendering = SETTINGS.imageRendering;
   identity.focusReadingEnabled = SETTINGS.focusReadingEnabled != 0;
+  identity.wordSpacing = SETTINGS.wordSpacing;
   identity.renderMode = static_cast<uint8_t>(activeEpubRenderMode());
   identity.forceParagraphIndents = SETTINGS.forceParagraphIndents != 0;
   return ClippingPageTools::layoutFingerprint(identity);
@@ -2526,7 +2547,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     const bool cacheLoaded = section->loadSectionFile(
         SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
         SETTINGS.paragraphAlignment, viewportWidth, viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
-        SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, activeEpubRenderMode(),
+        SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing, activeEpubRenderMode(),
         SETTINGS.forceParagraphIndents != 0);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     LOG_DBG("ERTM", "section_cache_load spine=%d elapsed_ms=%u loaded=%u partial=%u pages=%u", currentSpineIndex,
@@ -2542,9 +2563,24 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       cachedContentSourceOffset.reset();
     }
     const bool cacheComplete = cacheLoaded && !section->isPartial();
+    if (cacheLoaded && pendingBookmarkSourceOffset.has_value()) {
+      const uint16_t hint = static_cast<uint16_t>(std::clamp(nextPageNumber, 0, static_cast<int>(UINT16_MAX)));
+      if (const auto page = section->findPageForSourceOffset(*pendingBookmarkSourceOffset, hint)) {
+        nextPageNumber = *page;
+        pendingBookmarkSourceOffset.reset();
+      } else if (cacheComplete) {
+        // A malformed/stale anchor must not make the book unavailable. Keep
+        // the legacy page hint as the deterministic fallback.
+        pendingBookmarkSourceOffset.reset();
+      }
+    }
     const bool contentReposition =
-        !cacheComplete && cachedContentSourceOffset.has_value() && currentSpineIndex == cachedSpineIndex;
-    if (contentReposition) section->setSourceOffsetTarget(*cachedContentSourceOffset);
+        !cacheComplete && ((cachedContentSourceOffset.has_value() && currentSpineIndex == cachedSpineIndex) ||
+                           pendingBookmarkSourceOffset.has_value());
+    if (contentReposition) {
+      section->setSourceOffsetTarget(pendingBookmarkSourceOffset.has_value() ? *pendingBookmarkSourceOffset
+                                                                             : *cachedContentSourceOffset);
+    }
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     debugSetSectionCacheStatus(
         cacheComplete ? DebugSectionCacheStatus::Hit
@@ -2583,7 +2619,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                         SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                         viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
-                                        SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, activeEpubRenderMode(),
+                                        SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
+                                        activeEpubRenderMode(),
                                         SETTINGS.forceParagraphIndents != 0, popupFn)) {
           LOG_ERR("ERS", "Failed to persist page data to SD");
           const EpubBuildStatus failure = section->lastBuildStatus();
@@ -2609,7 +2646,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // from page 0 (minutes of background CPU + SD writes on a giant spine), pure waste when
         // the reader never nears the watermark this session. loop() starts it lazily once the
         // reader is within PARTIAL_REBUILD_START_MARGIN pages of the watermark.
-        if (section->isPartial() &&
+        if (section->isPartial() && !contentReposition &&
             (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
                         : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount))) {
           LOG_DBG("ERS", "Partial covers target %d of %d; deferring extension build", target, section->pageCount);
@@ -2649,7 +2686,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                    SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                    viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
-                                   SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, activeEpubRenderMode(),
+                                   SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
+                                   activeEpubRenderMode(),
                                    SETTINGS.forceParagraphIndents != 0)) {
             LOG_ERR("ERS", "Failed to start section build");
             const EpubBuildStatus failure = section->lastBuildStatus();
@@ -2695,6 +2733,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       }
     }
 
+    if (pendingBookmarkSourceOffset.has_value()) {
+      if (const auto contentPage = section->sourceOffsetTargetPage()) section->currentPage = *contentPage;
+      pendingBookmarkSourceOffset.reset();
+      section->clearSourceOffsetTarget();
+    }
+
     if (!pendingAnchor.empty()) {
       // Resolve from the pages laid out so far and/or the on-disk map (finalized or partial).
       const auto page = section->findAnchor(pendingAnchor);
@@ -2737,7 +2781,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         !section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                              SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
                              SETTINGS.hyphenationEnabled, activeEmbeddedStyle(), SETTINGS.imageRendering,
-                             SETTINGS.focusReadingEnabled, activeEpubRenderMode(),
+                             SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing, activeEpubRenderMode(),
                              SETTINGS.forceParagraphIndents != 0)) {
       LOG_ERR("ERS", "Failed to start partial extension build");
       const EpubBuildStatus failure = section->lastBuildStatus();
@@ -2820,7 +2864,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
-  updateBookmarkFlag();
+  currentPageSourceOffset.reset();
 
   {
     // Unified page read: the in-progress build's in-RAM table if it has reached the page,
@@ -2871,6 +2915,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       return;
     }
     pageLoadRetryCount = 0;  // Reset the retry counter once a page loads cleanly
+    currentPageSourceOffset = PageSourceAnchor::first(*p);
+    updateBookmarkFlag();
 
     // Verify the very same Page object that will be rendered. Loading once to
     // validate and again to render would leave a TOCTOU window where an SD
@@ -3363,13 +3409,17 @@ bool EpubReaderActivity::addBookmark() {
 
   SavedProgressPosition progress = ProgressMapper::toSavedProgress(epub, getCurrentPosition());
   const ProgressRange pageRange = getPageProgressRange(epub, currentSpineIndex, currentPage, pageCount);
+  std::optional<uint32_t> sourceOffset = currentPageSourceOffset;
+  if (!sourceOffset.has_value() && currentPage >= 0 && currentPage < pageCount) {
+    if (const auto page = section->loadPage(currentPage)) sourceOffset = PageSourceAnchor::first(*page);
+  }
 
   const std::vector<BookmarkEntry> previousBookmarks = cachedBookmarks;
   const size_t bookmarkCountBeforeToggle = cachedBookmarks.size();
   cachedBookmarks.erase(std::remove_if(cachedBookmarks.begin(), cachedBookmarks.end(),
                                        [&](const BookmarkEntry& b) {
                                          return bookmarkMatchesProgress(b, currentSpineIndex, currentPage, pageCount,
-                                                                        pageRange);
+                                                                        pageRange, sourceOffset);
                                        }),
                         cachedBookmarks.end());
   if (cachedBookmarks.size() != bookmarkCountBeforeToggle) {
@@ -3387,6 +3437,10 @@ bool EpubReaderActivity::addBookmark() {
     entry.computedSpineIndex = currentSpineIndex;
     entry.computedChapterPageCount = pageCount;
     entry.computedChapterProgress = currentPage;
+    if (sourceOffset.has_value()) {
+      entry.hasContentSourceOffset = true;
+      entry.contentSourceOffset = *sourceOffset;
+    }
     cachedBookmarks.insert(cachedBookmarks.begin(), entry);
     bookmarkRemoved = false;
     currentPageBookmarked = true;
@@ -3415,7 +3469,8 @@ void EpubReaderActivity::updateBookmarkFlag() {
   const int pageCount = section->estimatedTotalPages();
   const ProgressRange pageRange = getPageProgressRange(epub, currentSpineIndex, section->currentPage, pageCount);
   currentPageBookmarked = std::any_of(cachedBookmarks.begin(), cachedBookmarks.end(), [&](const BookmarkEntry& b) {
-    return bookmarkMatchesProgress(b, currentSpineIndex, section->currentPage, pageCount, pageRange);
+    return bookmarkMatchesProgress(b, currentSpineIndex, section->currentPage, pageCount, pageRange,
+                                   currentPageSourceOffset);
   });
 }
 

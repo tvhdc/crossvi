@@ -121,6 +121,7 @@ TEST(ClippingPageTools, LayoutFingerprintCoversEverySectionPaginationInput) {
   identity.embeddedStyle = true;
   identity.imageRendering = 1;
   identity.focusReadingEnabled = true;
+  identity.wordSpacing = 2;
   identity.renderMode = 2;
   identity.forceParagraphIndents = true;
   const uint32_t baseline = ClippingPageTools::layoutFingerprint(identity);
@@ -141,6 +142,7 @@ TEST(ClippingPageTools, LayoutFingerprintCoversEverySectionPaginationInput) {
   expectChanged(&ClippingPageTools::LayoutIdentity::embeddedStyle, false);
   expectChanged(&ClippingPageTools::LayoutIdentity::imageRendering, uint8_t{2});
   expectChanged(&ClippingPageTools::LayoutIdentity::focusReadingEnabled, false);
+  expectChanged(&ClippingPageTools::LayoutIdentity::wordSpacing, uint8_t{3});
   expectChanged(&ClippingPageTools::LayoutIdentity::renderMode, uint8_t{1});
   expectChanged(&ClippingPageTools::LayoutIdentity::forceParagraphIndents, false);
 }

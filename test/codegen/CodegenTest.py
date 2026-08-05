@@ -111,6 +111,34 @@ class CodegenTest(unittest.TestCase):
         self.assertGreaterEqual(client.count("KOREADER_STORE.usesCrossPointSyncServer()"), 2)
         self.assertIn("if (KOREADER_STORE.usesCrossPointSyncServer())", activity)
 
+    def test_koreader_sync_releases_font_caches_before_tls(self):
+        activity = (REPO_ROOT / "src/activities/reader/KOReaderSyncActivity.cpp").read_text(encoding="utf-8")
+        fetch = activity[activity.index("void KOReaderSyncActivity::performSync()") :]
+        upload = activity[activity.index("void KOReaderSyncActivity::performUpload()") :]
+        self.assertLess(fetch.index("clearAllCaches()"), fetch.index("KOReaderSyncClient::getProgress"))
+        self.assertLess(upload.index("clearAllCaches()"), upload.index("KOReaderSyncClient::updateProgress"))
+
+    def test_web_server_does_not_subscribe_request_task_to_watchdog(self):
+        header = (REPO_ROOT / "src/network/CrossPointWebServer.h").read_text(encoding="utf-8")
+        source = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("watchdogTaskRegistered", header)
+        self.assertNotIn("esp_task_wdt_add(nullptr)", source)
+        self.assertNotIn("esp_task_wdt_delete(nullptr)", source)
+
+    def test_settings_page_serializes_large_api_requests_and_yields_between_chunks(self):
+        page = (REPO_ROOT / "src/network/html/SettingsPage.html").read_text(encoding="utf-8")
+        server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
+        startup = page[page.index("const initialLanguageReady") : page.index("</script>")]
+        self.assertLess(startup.rindex("await loadSettings();"), startup.rindex("await loadWifiNetworks();"))
+        self.assertLess(startup.rindex("await loadWifiNetworks();"), startup.rindex("await loadOpdsServers();"))
+
+        for handler_name in ("handleGetSettings", "handleGetOpdsServers", "handleGetWifiNetworks"):
+            handler = server[server.index(f"void CrossPointWebServer::{handler_name}") :]
+            handler = handler[: handler.index("\n}")]
+            self.assertIn("server->sendContent(output);", handler)
+            self.assertIn("yield();", handler)
+            self.assertIn("resetTaskWatchdogIfSubscribed();", handler)
+
     def test_manual_reader_refresh_rerenders_before_displaying(self):
         manager = (REPO_ROOT / "src/activities/ActivityManager.cpp").read_text(encoding="utf-8")
         epub = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")

@@ -16,6 +16,7 @@ class EpdFontFamily {
     STRIKETHROUGH = 8,  // drawn as a line through midline by TextBlock::render()
     SUP = 16,           // superscript: glyph scaled 50%, raised ~40% of ascender
     SUB = 32,           // subscript: glyph scaled 50%, lowered ~25% of ascender
+    SMALL_CAPS = 64,    // lowercase is drawn as a 75%-scale uppercase glyph
   };
   static constexpr uint8_t TEXT_DECORATION_MASK = static_cast<uint8_t>(UNDERLINE | STRIKETHROUGH);
 

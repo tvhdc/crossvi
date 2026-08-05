@@ -68,6 +68,8 @@ bool parseBookmarks(const uint8_t* data, const size_t size, std::vector<Bookmark
     if (!textPosition && !fixedPosition && std::strcmp(positionKind, "epub") != 0) return false;
     if (textPosition && !obj["byteOffset"].is<uint32_t>()) return false;
     if (fixedPosition && !obj["pageIndex"].is<uint32_t>()) return false;
+    const bool hasContentSourceOffset = !obj["sourceOffset"].isNull();
+    if (hasContentSourceOffset && (textPosition || fixedPosition || !obj["sourceOffset"].is<uint32_t>())) return false;
     const float percentage = obj["percentage"] | static_cast<float>(-1);
     if (!std::isfinite(percentage) || percentage < 0.0f || percentage > 1.0f) return false;
     if (!destination) continue;
@@ -79,6 +81,8 @@ bool parseBookmarks(const uint8_t* data, const size_t size, std::vector<Bookmark
     bookmark.computedSpineIndex = obj["si"] | static_cast<uint16_t>(0);
     bookmark.computedChapterPageCount = obj["pc"] | static_cast<uint16_t>(0);
     bookmark.computedChapterProgress = obj["pp"] | static_cast<uint16_t>(0);
+    bookmark.hasContentSourceOffset = hasContentSourceOffset;
+    bookmark.contentSourceOffset = hasContentSourceOffset ? obj["sourceOffset"].as<uint32_t>() : 0;
     bookmark.positionKind = textPosition    ? BookmarkEntry::PositionKind::Text
                             : fixedPosition ? BookmarkEntry::PositionKind::FixedLayout
                                             : BookmarkEntry::PositionKind::Epub;
@@ -97,8 +101,11 @@ bool equalBookmark(const BookmarkEntry& left, const BookmarkEntry& right) {
          std::fabs(left.percentage - right.percentage) <= 0.000001f &&
          left.computedSpineIndex == right.computedSpineIndex &&
          left.computedChapterPageCount == right.computedChapterPageCount &&
-         left.computedChapterProgress == right.computedChapterProgress && left.positionKind == right.positionKind &&
-         left.byteOffset == right.byteOffset && left.pageIndex == right.pageIndex;
+         left.computedChapterProgress == right.computedChapterProgress &&
+         left.hasContentSourceOffset == right.hasContentSourceOffset &&
+         (!left.hasContentSourceOffset || left.contentSourceOffset == right.contentSourceOffset) &&
+         left.positionKind == right.positionKind && left.byteOffset == right.byteOffset &&
+         left.pageIndex == right.pageIndex;
 }
 
 bool equalBookmarks(const std::vector<BookmarkEntry>& left, const std::vector<BookmarkEntry>& right) {
@@ -133,6 +140,9 @@ bool JsonSettingsIO::saveBookmarks(const std::vector<BookmarkEntry>& bookmarks, 
     obj["si"] = bookmark.computedSpineIndex;
     obj["pc"] = bookmark.computedChapterPageCount;
     obj["pp"] = bookmark.computedChapterProgress;
+    if (bookmark.positionKind == BookmarkEntry::PositionKind::Epub && bookmark.hasContentSourceOffset) {
+      obj["sourceOffset"] = bookmark.contentSourceOffset;
+    }
     if (bookmark.positionKind == BookmarkEntry::PositionKind::Text) {
       obj["positionKind"] = "text";
       obj["byteOffset"] = bookmark.byteOffset;

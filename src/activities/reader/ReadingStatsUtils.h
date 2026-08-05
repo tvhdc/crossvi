@@ -30,6 +30,8 @@ struct ReadingStatsDateTime {
 };
 
 uint32_t addReadingStatsSaturated(uint32_t lhs, uint32_t rhs);
+uint32_t estimateRemainingReadingSeconds(uint32_t totalPages, uint32_t currentPage, uint16_t secondsPerPage,
+                                         uint16_t sampleCount, uint16_t minimumSamples = 3);
 bool isLeapYear(uint16_t year);
 uint8_t daysInMonth(uint16_t year, uint8_t month);
 bool isValidReadingStatsDate(const ReadingStatsDate& date);

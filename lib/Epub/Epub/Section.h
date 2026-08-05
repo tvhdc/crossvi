@@ -29,7 +29,7 @@ class Section {
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
                               bool embeddedStyle, uint8_t imageRendering, bool focusReadingEnabled,
-                              EpubRenderMode renderMode, bool forceParagraphIndents);
+                              uint8_t wordSpacing, EpubRenderMode renderMode, bool forceParagraphIndents);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
   // Page-offset table entry, kept in RAM while an incremental build is running so
@@ -100,12 +100,13 @@ class Section {
   ~Section();
   bool loadSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                        uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                       uint8_t imageRendering, bool focusReadingEnabled, EpubRenderMode renderMode,
+                       uint8_t imageRendering, bool focusReadingEnabled, uint8_t wordSpacing, EpubRenderMode renderMode,
                        bool forceParagraphIndents);
   bool clearCache();
   bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                          uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                         uint8_t imageRendering, bool focusReadingEnabled, EpubRenderMode renderMode,
+                         uint8_t imageRendering, bool focusReadingEnabled, uint8_t wordSpacing,
+                         EpubRenderMode renderMode,
                          bool forceParagraphIndents, const std::function<void()>& popupFn = nullptr);
 
   // Incremental build: lay out the section a few pages at a time so a large chapter
@@ -115,7 +116,7 @@ class Section {
   //   each tick: buildSomeMore(N); render up to pageCount; when isBuildComplete() stop.
   bool startBuild(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                   uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                  uint8_t imageRendering, bool focusReadingEnabled, EpubRenderMode renderMode,
+                  uint8_t imageRendering, bool focusReadingEnabled, uint8_t wordSpacing, EpubRenderMode renderMode,
                   bool forceParagraphIndents, const std::function<void()>& popupFn = nullptr);
   // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
   // false on error (the build is abandoned). Sets isBuildComplete() when finished.
@@ -146,6 +147,12 @@ class Section {
   // Unified page read: from the active build if it has reached the page, otherwise from
   // the on-disk file (finalized section, or a partial the rebuild hasn't caught up to).
   std::unique_ptr<Page> loadPage(int page);
+
+  // Find the page containing a canonical source byte offset. The hint is the
+  // legacy page saved with the bookmark; checking outward from it keeps the
+  // common case to one or a few bounded page reads without adding another
+  // persistent lookup table to the section cache format.
+  std::optional<uint16_t> findPageForSourceOffset(uint32_t offset, uint16_t hintPage);
 
   // One-shot content anchor used while a changed reader layout is rebuilt. The target
   // is a canonical chapter-text byte offset already stored with EPUB highlight words.

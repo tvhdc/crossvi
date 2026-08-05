@@ -39,6 +39,8 @@ class EpubReaderActivity final : public Activity {
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   std::optional<uint32_t> cachedContentSourceOffset;
+  std::optional<uint32_t> pendingBookmarkSourceOffset;
+  std::optional<uint32_t> currentPageSourceOffset;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section

@@ -411,13 +411,13 @@
     if (typeof loadSettings === 'function') loadSettings();
   }
   const savedWebLanguage = localStorage.getItem(WEB_LANGUAGE_KEY);
-  if (savedWebLanguage) applyWebLanguage(savedWebLanguage, false);
-  else fetch('/api/status').then(response => response.ok ? response.json() : null)
+  const initialLanguageReady = savedWebLanguage
+    ? Promise.resolve(applyWebLanguage(savedWebLanguage, false))
+    : fetch('/api/status').then(response => response.ok ? response.json() : null)
     .then(data => {
       applyWebLanguage(data && data.language === 'VI' ? 'vi' : 'en', false);
-      if (typeof loadSettings === 'function') loadSettings();
     })
-    .catch(() => { if (typeof loadSettings === 'function') loadSettings(); });
+    .catch(() => {});
 
   let allSettings = [];
   let originalValues = {};
@@ -660,8 +660,6 @@
     btn.textContent = webText('saveSettings');
   }
 
-  if (savedWebLanguage) loadSettings();
-
   // --- Wi-Fi Network Management ---
   // Renders an editable list of saved Wi-Fi networks using /api/wifi endpoints.
   // Password fields are never pre-filled; when left blank during edit, existing
@@ -889,8 +887,12 @@
     }
   }
 
-  loadWifiNetworks();
-  loadOpdsServers();
+  (async () => {
+    await initialLanguageReady;
+    await loadSettings();
+    await loadWifiNetworks();
+    await loadOpdsServers();
+  })();
 </script>
 </body>
 </html>

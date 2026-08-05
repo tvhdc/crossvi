@@ -68,6 +68,7 @@ struct LayoutIdentity {
   bool embeddedStyle = false;
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
+  uint8_t wordSpacing = 0;
   uint8_t renderMode = 0;
   bool forceParagraphIndents = false;
 };

@@ -34,7 +34,7 @@
 class CssParser {
  public:
   // Bump when CSS cache format or rules change; section caches are invalidated when this changes
-  static constexpr uint8_t CSS_CACHE_VERSION = 10;
+  static constexpr uint8_t CSS_CACHE_VERSION = 11;
 
   struct AncestorEntry {
     std::string tag;
@@ -161,6 +161,7 @@ class CssParser {
   static CssTextAlign interpretAlignment(std::string_view val);
   static CssFontStyle interpretFontStyle(std::string_view val);
   static CssFontWeight interpretFontWeight(std::string_view val);
+  static CssFontVariantCaps interpretFontVariantCaps(std::string_view val);
   static CssTextDecoration interpretDecoration(std::string_view val);
   /** Returns true only when a numeric length was parsed (e.g. 2em, 50%). False for auto/inherit/initial. */
   static bool tryInterpretLength(std::string_view val, CssLength& out);

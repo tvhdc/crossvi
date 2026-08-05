@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "HalGPIO.h"
+#include "XteinkDetect.h"
 
 namespace {
 constexpr uint8_t POWER_MASK = 1U << HalGPIO::BTN_POWER;
@@ -17,6 +18,7 @@ class HalGPIOTest : public testing::Test {
     ArduinoFake::reset();
     InputManager::reset();
     PreferencesFake::reset();
+    freeink::XteinkDetectFake::reset();
     WireFake::reset();
     EspFake::wakeupCause = ESP_SLEEP_WAKEUP_UNDEFINED;
     EspFake::resetReason = ESP_RST_POWERON;
@@ -137,6 +139,28 @@ TEST_F(HalGPIOTest, X3UsbPollingIsLimitedAndEdgesFollowSuccessfulSamples) {
   EXPECT_FALSE(subject.isUsbConnected());
   EXPECT_TRUE(subject.wasUsbStateChanged());
   EXPECT_EQ(WireFake::transactionCount, 2U);
+}
+
+TEST_F(HalGPIOTest, X3DisplayDetectionUsesLiveProbeInsteadOfStaleCache) {
+  PreferencesFake::cachedDevice = 2;
+  PreferencesFake::epdCached = 1;
+  freeink::XteinkDetectFake::verdict = freeink::X3DisplayVerdict::Uc8279Confirmed;
+
+  HalGPIO subject;
+  subject.begin();
+
+  EXPECT_EQ(freeink::XteinkDetectFake::callCount, 1U);
+}
+
+TEST_F(HalGPIOTest, ExplicitX3DisplayOverrideStillSkipsLiveProbe) {
+  PreferencesFake::cachedDevice = 2;
+  PreferencesFake::epdOverride = 1;
+  freeink::XteinkDetectFake::verdict = freeink::X3DisplayVerdict::Uc8279Confirmed;
+
+  HalGPIO subject;
+  subject.begin();
+
+  EXPECT_EQ(freeink::XteinkDetectFake::callCount, 0U);
 }
 
 TEST_F(HalGPIOTest, X3UsbReadFailureKeepsLastKnownStateAndIsRateLimited) {

@@ -143,13 +143,15 @@ void EpubReaderBookmarksActivity::loop() {
     result.xpath = bookmark.xpath;
     result.percentage = bookmark.percentage;
     result.hasSavedProgress = true;
+    result.spineIndex = bookmark.computedSpineIndex;
+    result.contentSourceOffset = bookmark.contentSourceOffset;
+    result.hasContentSourceOffset = bookmark.hasContentSourceOffset;
     if (textMode) {
       result.textByteOffset = bookmark.byteOffset;
       result.hasTextByteOffset = true;
     } else if (bookmark.computedChapterPageCount > 0 &&
                bookmark.computedChapterProgress < bookmark.computedChapterPageCount &&
                bookmark.computedSpineIndex < epub->getSpineItemsCount()) {
-      result.spineIndex = bookmark.computedSpineIndex;
       result.page = bookmark.computedChapterProgress;
       result.totalPages = bookmark.computedChapterPageCount;
     }

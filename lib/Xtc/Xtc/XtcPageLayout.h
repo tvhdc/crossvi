@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -59,6 +60,11 @@ struct Viewport {
   uint16_t height = 0;
 };
 
+struct CoordinateRange {
+  uint16_t begin = 0;
+  uint16_t end = 0;
+};
+
 inline bool calculateFitViewport(const uint16_t sourceWidth, const uint16_t sourceHeight, const uint16_t screenWidth,
                                  const uint16_t screenHeight, Viewport& viewport) {
   viewport = {};
@@ -84,6 +90,45 @@ inline uint16_t mapViewportCoordinate(const uint16_t destination, const uint16_t
                                       const uint16_t sourceSize) {
   if (destinationSize <= 1 || sourceSize <= 1) return 0;
   return static_cast<uint16_t>((static_cast<uint64_t>(destination) * (sourceSize - 1U)) / (destinationSize - 1U));
+}
+
+// Inverse of mapViewportCoordinate(). The half-open result contains every
+// destination coordinate which samples this source coordinate. It lets the
+// XTCH reader keep the exact fit-to-screen behavior while processing source
+// pixels as small streamed chunks.
+inline CoordinateRange mapSourceCoordinateRange(const uint16_t source, const uint16_t sourceSize,
+                                                const uint16_t destinationSize) {
+  if (source >= sourceSize || sourceSize == 0 || destinationSize == 0) return {};
+  if (sourceSize == 1) return source == 0 ? CoordinateRange{0, destinationSize} : CoordinateRange{};
+  if (destinationSize == 1) return source == 0 ? CoordinateRange{0, 1} : CoordinateRange{};
+
+  const uint64_t sourceSpan = sourceSize - 1U;
+  const uint64_t destinationSpan = destinationSize - 1U;
+  const auto ceilDivide = [](const uint64_t numerator, const uint64_t denominator) {
+    return (numerator + denominator - 1U) / denominator;
+  };
+  const uint64_t begin = ceilDivide(static_cast<uint64_t>(source) * destinationSpan, sourceSpan);
+  const uint64_t end = std::min<uint64_t>(
+      destinationSize, ceilDivide((static_cast<uint64_t>(source) + 1U) * destinationSpan, sourceSpan));
+  return {static_cast<uint16_t>(std::min<uint64_t>(begin, destinationSize)), static_cast<uint16_t>(end)};
+}
+
+// Resolve one byte from a streamed XTH payload. yBase is the first source row
+// covered by the byte; its eight pixels are stored MSB-first.
+inline bool locateXthStreamByte(const PageLayout& layout, const uint16_t width, const uint16_t height,
+                                const size_t absoluteOffset, bool& secondPlane, uint16_t& x, uint16_t& yBase) {
+  if (width == 0 || height == 0 || layout.columnBytes == 0 || layout.planeBytes == 0 ||
+      absoluteOffset >= layout.payloadBytes) {
+    return false;
+  }
+  secondPlane = absoluteOffset >= layout.planeBytes;
+  const size_t planeOffset = secondPlane ? absoluteOffset - layout.planeBytes : absoluteOffset;
+  const size_t column = planeOffset / layout.columnBytes;
+  const size_t rowByte = planeOffset % layout.columnBytes;
+  if (column >= width || rowByte * 8U >= height) return false;
+  x = static_cast<uint16_t>(width - 1U - column);
+  yBase = static_cast<uint16_t>(rowByte * 8U);
+  return true;
 }
 
 }  // namespace xtc

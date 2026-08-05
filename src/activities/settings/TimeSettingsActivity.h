@@ -6,7 +6,7 @@
 
 class TimeSettingsActivity final : public Activity {
  public:
-  static constexpr int ITEM_COUNT = 3;
+  static constexpr int ITEM_COUNT = 5;
 
   explicit TimeSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("TimeSettings", renderer, mappedInput) {}

@@ -35,10 +35,48 @@ TEST_F(BookmarkJsonIOTest, LoadsLegacyJsonWithoutCatalogMetadata) {
   EXPECT_EQ(bookmarks[0].computedSpineIndex, 2U);
   EXPECT_EQ(bookmarks[0].computedChapterPageCount, 9U);
   EXPECT_EQ(bookmarks[0].computedChapterProgress, 3U);
+  EXPECT_FALSE(bookmarks[0].hasContentSourceOffset);
+  EXPECT_EQ(bookmarks[0].contentSourceOffset, 0U);
   EXPECT_TRUE(metadata.path.empty());
   EXPECT_TRUE(metadata.title.empty());
   EXPECT_TRUE(metadata.author.empty());
   EXPECT_TRUE(metadata.bookType.empty());
+}
+
+TEST_F(BookmarkJsonIOTest, RoundTripsEpubContentSourceOffset) {
+  BookmarkEntry bookmark;
+  bookmark.xpath = "OEBPS/chapter.xhtml";
+  bookmark.summary = "Stable content anchor";
+  bookmark.percentage = 0.25F;
+  bookmark.computedSpineIndex = 2;
+  bookmark.computedChapterPageCount = 9;
+  bookmark.computedChapterProgress = 3;
+  bookmark.hasContentSourceOffset = true;
+  bookmark.contentSourceOffset = 123456;
+  const uint64_t savedFingerprint = BookmarkUtil::fingerprint(bookmark);
+
+  ASSERT_TRUE(JsonSettingsIO::saveBookmarks({bookmark}, BOOKMARK_PATH));
+
+  std::vector<BookmarkEntry> loaded;
+  ASSERT_EQ(JsonSettingsIO::loadBookmarksFromFile(loaded, BOOKMARK_PATH), JsonSettingsIO::BookmarkLoadStatus::Loaded);
+  ASSERT_EQ(loaded.size(), 1U);
+  EXPECT_EQ(loaded[0].positionKind, BookmarkEntry::PositionKind::Epub);
+  EXPECT_TRUE(loaded[0].hasContentSourceOffset);
+  EXPECT_EQ(loaded[0].contentSourceOffset, bookmark.contentSourceOffset);
+  EXPECT_EQ(BookmarkUtil::fingerprint(loaded[0]), savedFingerprint);
+}
+
+TEST_F(BookmarkJsonIOTest, RejectsMalformedOrNonEpubContentSourceOffset) {
+  constexpr std::string_view cases[] = {
+      R"({"bookmarks":[{"xpath":"chapter.xhtml","percentage":0.25,"summary":"Bad","sourceOffset":"12"}]})",
+      R"({"bookmarks":[{"xpath":"text:12","percentage":0.25,"summary":"Bad","positionKind":"text","byteOffset":12,"sourceOffset":12}]})",
+      R"({"bookmarks":[{"xpath":"fixed:2","percentage":0.25,"summary":"Bad","positionKind":"fixed","pageIndex":2,"sourceOffset":12}]})",
+  };
+
+  for (const auto json : cases) {
+    std::vector<BookmarkEntry> bookmarks;
+    EXPECT_FALSE(JsonSettingsIO::loadBookmarks(bookmarks, std::string(json).c_str())) << json;
+  }
 }
 
 TEST_F(BookmarkJsonIOTest, RoundTripsFixedLayoutBookmarkAndCatalogMetadata) {

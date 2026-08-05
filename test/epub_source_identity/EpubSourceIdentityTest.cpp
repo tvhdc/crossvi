@@ -1420,6 +1420,32 @@ TEST_F(EpubSourceIdentityTest, FullModeDescendantRulesAreBoundedAndSurviveTheCss
   EXPECT_TRUE(cached.defined.textIndent);
 }
 
+TEST_F(EpubSourceIdentityTest, SmallCapsCssSurvivesParsingAndCacheRoundTrip) {
+  const std::string css =
+      "p.caps { font-variant: small-caps; } "
+      "span.normal { font-variant-caps: normal; }";
+  Storage.setFile("/small-caps.css", std::vector<uint8_t>(css.begin(), css.end()));
+  HalFile source;
+  ASSERT_TRUE(Storage.openFileForRead("TEST", "/small-caps.css", source));
+
+  CssParser parser(CACHE_PATH);
+  ASSERT_TRUE(parser.loadFromStream(source));
+  ASSERT_TRUE(source.close());
+  const CssStyle caps = parser.resolveStyle("p", "caps");
+  EXPECT_TRUE(caps.hasFontVariantCaps());
+  EXPECT_EQ(caps.fontVariantCaps, CssFontVariantCaps::SmallCaps);
+  const CssStyle normal = parser.resolveStyle("span", "normal");
+  EXPECT_TRUE(normal.hasFontVariantCaps());
+  EXPECT_EQ(normal.fontVariantCaps, CssFontVariantCaps::Normal);
+
+  ASSERT_TRUE(parser.saveToCache());
+  CssParser restored(CACHE_PATH);
+  ASSERT_TRUE(restored.loadFromCache());
+  const CssStyle cached = restored.resolveStyle("p", "caps");
+  EXPECT_TRUE(cached.hasFontVariantCaps());
+  EXPECT_EQ(cached.fontVariantCaps, CssFontVariantCaps::SmallCaps);
+}
+
 TEST_F(EpubSourceIdentityTest, InvalidLengthKeywordsDoNotOverrideValidBookSpacing) {
   const std::string css =
       "p.note { text-indent: 2em; margin-left: 1em; } "
@@ -1590,7 +1616,10 @@ TEST_F(EpubSourceIdentityTest, CssCacheRejectsSemanticGarbageWithValidCrc) {
   uint16_t selectorLength = 0;
   memcpy(&selectorLength, validCache.data() + 3, sizeof(selectorLength));
   const size_t styleOffset = 5U + selectorLength;
-  ASSERT_LE(styleOffset + 66U, validCache.size());
+  constexpr size_t styleEnumBytes = 6U;
+  constexpr size_t firstLengthUnitOffset = styleEnumBytes + sizeof(float);
+  constexpr size_t definedBitsOffset = styleEnumBytes + 11U * (sizeof(float) + sizeof(uint8_t)) + 2U;
+  ASSERT_LE(styleOffset + definedBitsOffset + sizeof(uint32_t), validCache.size());
 
   for (int mutation = 0; mutation < 4; ++mutation) {
     SCOPED_TRACE(mutation);
@@ -1598,14 +1627,14 @@ TEST_F(EpubSourceIdentityTest, CssCacheRejectsSemanticGarbageWithValidCrc) {
     if (mutation == 0) corrupted[styleOffset] = 0xFFU;
     if (mutation == 1) {
       const float nan = std::numeric_limits<float>::quiet_NaN();
-      memcpy(corrupted.data() + styleOffset + 5U, &nan, sizeof(nan));
+      memcpy(corrupted.data() + styleOffset + styleEnumBytes, &nan, sizeof(nan));
     }
-    if (mutation == 2) corrupted[styleOffset + 9U] = 0xFFU;
+    if (mutation == 2) corrupted[styleOffset + firstLengthUnitOffset] = 0xFFU;
     if (mutation == 3) {
       uint32_t definedBits = 0;
-      memcpy(&definedBits, corrupted.data() + styleOffset + 62U, sizeof(definedBits));
-      definedBits |= 1U << 18U;
-      memcpy(corrupted.data() + styleOffset + 62U, &definedBits, sizeof(definedBits));
+      memcpy(&definedBits, corrupted.data() + styleOffset + definedBitsOffset, sizeof(definedBits));
+      definedBits |= 1U << 19U;
+      memcpy(corrupted.data() + styleOffset + definedBitsOffset, &definedBits, sizeof(definedBits));
     }
     const uint32_t crc = SourceIdentityCodec::crc32(corrupted.data(), corrupted.size() - sizeof(uint32_t));
     memcpy(corrupted.data() + corrupted.size() - sizeof(uint32_t), &crc, sizeof(crc));

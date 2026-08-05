@@ -4,10 +4,13 @@
 #include <string>
 
 #include "BookSearchUtils.h"
+#include <ClockDateFormat.h>
 #include "DictionaryQuery.h"
 #include "EpubSearchTraversal.h"
 #include "PowerButtonGesture.h"
 #include "QrCapacity.h"
+#include <ReaderWordSpacing.h>
+#include <SmallCaps.h>
 #include "UrlUtils.h"
 #include "Utf8.h"
 #include "VietnameseTelex.h"
@@ -58,6 +61,58 @@ TEST(EpubSearchTraversal, ExtendsPartialCachesAndClampsInvalidStartPages) {
   EXPECT_EQ(EpubSearchTraversal::clampPage(4, 10), 4);
   EXPECT_EQ(EpubSearchTraversal::clampPage(99, 10), 9);
   EXPECT_EQ(EpubSearchTraversal::clampPage(99, 0), 0);
+}
+
+TEST(ReaderWordSpacing, AddsOnlyToNaturalWordGapsAndClampsTheLevel) {
+  EXPECT_EQ(readerWordSpacingExtra(0, 4), 0);
+  EXPECT_EQ(readerWordSpacingExtra(-3, 4), 0);
+  EXPECT_EQ(readerWordSpacingExtra(6, 0), 0);
+  EXPECT_EQ(readerWordSpacingExtra(6, 1), 10);
+  EXPECT_EQ(readerWordSpacingExtra(6, 4), 40);
+  EXPECT_EQ(readerWordSpacingExtra(6, 255), 40);
+}
+
+TEST(SmallCaps, MapsSupportedLowercaseScriptsWithoutGuessingOtherCharacters) {
+  EXPECT_TRUE(isSyntheticSmallCapsLowercase('z'));
+  EXPECT_EQ(syntheticSmallCapsUppercase('z'), static_cast<uint32_t>('Z'));
+  EXPECT_TRUE(isSyntheticSmallCapsLowercase(0x1EC7));       // ệ
+  EXPECT_EQ(syntheticSmallCapsUppercase(0x1EC7), 0x1EC6U);  // Ệ
+  EXPECT_TRUE(isSyntheticSmallCapsLowercase(0x03C2));
+  EXPECT_EQ(syntheticSmallCapsUppercase(0x03C2), 0x03A3U);
+  EXPECT_FALSE(isSyntheticSmallCapsLowercase(0x00DF));  // ß has no one-codepoint uppercase pair
+  EXPECT_EQ(syntheticSmallCapsUppercase(0x00DF), 0x00DFU);
+}
+
+TEST(ClockDateFormat, FormatsEveryOrderAndSeparatorWithoutLocaleState) {
+  char value[20]{};
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::MonthDayYearLong, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "Jul 21, 2026");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::DayMonthYearLong, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "21 Jul 2026");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::MonthDayYearNumeric, '.', value, sizeof(value)));
+  EXPECT_STREQ(value, "07.21.2026");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::DayMonthYearNumeric, '-', value, sizeof(value)));
+  EXPECT_STREQ(value, "21-07-2026");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::YearMonthDayNumeric, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "2026/07/21");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::MonthDayNumeric, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "07/21");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 7, 21, ClockDateFormat::DayMonthNumeric, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "21/07");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 9, 1, ClockDateFormat::MonthDayLong, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "September 01");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 9, 1, ClockDateFormat::DayMonthLong, '/', value, sizeof(value)));
+  EXPECT_STREQ(value, "01 September");
+}
+
+TEST(ClockDateFormat, RejectsInvalidInputAndTruncatedOutput) {
+  char value[8]{};
+  EXPECT_FALSE(ClockDateFormat::format(2026, 0, 1, ClockDateFormat::MonthDayNumeric, '/', value, sizeof(value)));
+  EXPECT_FALSE(ClockDateFormat::format(2026, 1, 1, ClockDateFormat::MonthDayYearLong, '/', value, sizeof(value)));
+  EXPECT_EQ(ClockDateFormat::separatorChar(ClockDateFormat::Period), '.');
+  EXPECT_EQ(ClockDateFormat::separatorChar(ClockDateFormat::Hyphen), '-');
+  EXPECT_EQ(ClockDateFormat::separatorChar(ClockDateFormat::Slash), '/');
+  EXPECT_EQ(ClockDateFormat::separatorChar(99), '/');
 }
 
 TEST(Utf8Safety, DropsAnIncompleteSequenceStartingAtTheFirstByte) {

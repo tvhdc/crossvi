@@ -247,6 +247,9 @@ uint64_t BookmarkUtil::fingerprint(const BookmarkEntry& bookmark) {
   append(&bookmark.computedSpineIndex, sizeof(bookmark.computedSpineIndex));
   append(&bookmark.computedChapterPageCount, sizeof(bookmark.computedChapterPageCount));
   append(&bookmark.computedChapterProgress, sizeof(bookmark.computedChapterProgress));
+  const uint8_t hasContentSourceOffset = bookmark.hasContentSourceOffset ? 1U : 0U;
+  append(&hasContentSourceOffset, sizeof(hasContentSourceOffset));
+  if (bookmark.hasContentSourceOffset) append(&bookmark.contentSourceOffset, sizeof(bookmark.contentSourceOffset));
   append(&bookmark.positionKind, sizeof(bookmark.positionKind));
   append(&bookmark.byteOffset, sizeof(bookmark.byteOffset));
   append(&bookmark.pageIndex, sizeof(bookmark.pageIndex));

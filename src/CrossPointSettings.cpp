@@ -5,6 +5,7 @@
 #include <JsonSettingsIO.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <mutex>
@@ -24,6 +25,34 @@ constexpr char SETTINGS_FILE_JSON[] = "/.crosspoint/settings.json";
 constexpr char SETTINGS_FILE_BAK[] = "/.crosspoint/settings.bin.bak";
 constexpr char LANG_FILE_BIN[] = "/.crosspoint/language.bin";
 constexpr char LANG_FILE_BAK[] = "/.crosspoint/language.bin.bak";
+
+int builtInFontId(const uint8_t family, const uint8_t size) {
+  const uint8_t builtinSize = std::min<uint8_t>(size, CrossPointSettings::EXTRA_LARGE);
+  if (family == CrossPointSettings::NOTOSANS) {
+    switch (builtinSize) {
+      case CrossPointSettings::SMALL:
+        return NOTOSANS_12_FONT_ID;
+      case CrossPointSettings::MEDIUM:
+        return NOTOSANS_14_FONT_ID;
+      case CrossPointSettings::LARGE:
+        return NOTOSANS_16_FONT_ID;
+      case CrossPointSettings::EXTRA_LARGE:
+      default:
+        return NOTOSANS_18_FONT_ID;
+    }
+  }
+  switch (builtinSize) {
+    case CrossPointSettings::SMALL:
+      return NOTOSERIF_12_FONT_ID;
+    case CrossPointSettings::MEDIUM:
+      return NOTOSERIF_14_FONT_ID;
+    case CrossPointSettings::LARGE:
+      return NOTOSERIF_16_FONT_ID;
+    case CrossPointSettings::EXTRA_LARGE:
+    default:
+      return NOTOSERIF_18_FONT_ID;
+  }
+}
 
 // Convert legacy front button layout into explicit logical->hardware mapping.
 void applyLegacyFrontButtonLayout(CrossPointSettings& settings) {
@@ -357,32 +386,13 @@ int CrossPointSettings::getReaderFontId() const {
     // Fall through to built-in if SD font not found
   }
 
-  const uint8_t builtinSize = std::min<uint8_t>(fontSize, EXTRA_LARGE);
-  switch (fontFamily) {
-    case NOTOSERIF:
-    default:
-      switch (builtinSize) {
-        case SMALL:
-          return NOTOSERIF_12_FONT_ID;
-        case MEDIUM:
-          return NOTOSERIF_14_FONT_ID;
-        case LARGE:
-          return NOTOSERIF_16_FONT_ID;
-        case EXTRA_LARGE:
-        default:
-          return NOTOSERIF_18_FONT_ID;
-      }
-    case NOTOSANS:
-      switch (builtinSize) {
-        case SMALL:
-          return NOTOSANS_12_FONT_ID;
-        case MEDIUM:
-          return NOTOSANS_14_FONT_ID;
-        case LARGE:
-          return NOTOSANS_16_FONT_ID;
-        case EXTRA_LARGE:
-        default:
-          return NOTOSANS_18_FONT_ID;
-      }
-  }
+  return builtInFontId(fontFamily, fontSize);
+}
+
+int CrossPointSettings::getDictionaryFontId() const {
+  if (dictionaryFontFamily == DICTIONARY_FONT_READER) return getReaderFontId();
+  const uint8_t family = dictionaryFontFamily == DICTIONARY_FONT_NOTO_SANS ? NOTOSANS : NOTOSERIF;
+  const uint8_t size = dictionaryFontSize == 0 ? std::min<uint8_t>(fontSize, EXTRA_LARGE)
+                                               : std::min<uint8_t>(dictionaryFontSize - 1, EXTRA_LARGE);
+  return builtInFontId(family, size);
 }

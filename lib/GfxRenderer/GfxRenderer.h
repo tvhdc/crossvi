@@ -171,6 +171,7 @@ class GfxRenderer {
   int getWriteRows() const { return _stripActive ? _stripRows : panelHeight; }
 
   // Drawing
+  bool isPixelBlack(int x, int y) const;
   void drawPixel(int x, int y, bool state = true) const;
   void drawLine(int x1, int y1, int x2, int y2, bool state = true) const;
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, bool state) const;

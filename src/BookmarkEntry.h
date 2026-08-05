@@ -20,6 +20,11 @@ struct BookmarkEntry {
   uint16_t computedSpineIndex = 0;        // Spine index at the time of bookmarking
   uint16_t computedChapterPageCount = 0;  // Total page count of the chapter at the time of bookmarking
   uint16_t computedChapterProgress = 0;   // Number of pages into the chapter at the time of bookmarking
+  // Canonical byte offset of the first visible source word on an EPUB page.
+  // Unlike a rendered page number this remains stable after typography,
+  // margins or orientation change. Legacy bookmarks leave it absent.
+  bool hasContentSourceOffset = false;
+  uint32_t contentSourceOffset = 0;
   PositionKind positionKind = PositionKind::Epub;
   uint32_t byteOffset = 0;
   uint32_t pageIndex = 0;

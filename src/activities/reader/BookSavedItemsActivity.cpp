@@ -218,6 +218,9 @@ void BookSavedItemsActivity::openSelected() {
   result.xpath = bookmark.xpath;
   result.percentage = bookmark.percentage;
   result.hasSavedProgress = true;
+  result.spineIndex = bookmark.computedSpineIndex;
+  result.contentSourceOffset = bookmark.contentSourceOffset;
+  result.hasContentSourceOffset = bookmark.hasContentSourceOffset;
   result.bookmarkFingerprint = BookmarkUtil::fingerprint(bookmark);
   result.hasBookmarkFingerprint = true;
   if (readerKind_ == ReaderKind::Text) {
@@ -226,7 +229,6 @@ void BookSavedItemsActivity::openSelected() {
   } else if (epub_ && bookmark.computedChapterPageCount > 0 &&
              bookmark.computedChapterProgress < bookmark.computedChapterPageCount &&
              bookmark.computedSpineIndex < epub_->getSpineItemsCount()) {
-    result.spineIndex = bookmark.computedSpineIndex;
     result.page = bookmark.computedChapterProgress;
     result.totalPages = bookmark.computedChapterPageCount;
   }

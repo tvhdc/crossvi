@@ -249,6 +249,16 @@ CssFontWeight CssParser::interpretFontWeight(std::string_view val) {
   return CssFontWeight::Normal;
 }
 
+CssFontVariantCaps CssParser::interpretFontVariantCaps(std::string_view val) {
+  val = trimCssWhitespace(val);
+  CssFontVariantCaps result = CssFontVariantCaps::Normal;
+  forEachDelimitedToken(val, isCssWhitespace, [&](const std::string_view token) {
+    if (iequalsAscii(token, "small-caps")) result = CssFontVariantCaps::SmallCaps;
+    if (iequalsAscii(token, "normal")) result = CssFontVariantCaps::Normal;
+  });
+  return result;
+}
+
 CssTextDecoration CssParser::interpretDecoration(std::string_view val) {
   // text-decoration can have multiple space-separated values. Compare whole tokens
   // so malformed values like "notunderline" do not accidentally enable a line.
@@ -324,6 +334,9 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
   } else if (iequalsAscii(name, "font-weight")) {
     style.fontWeight = interpretFontWeight(value);
     style.defined.fontWeight = 1;
+  } else if (iequalsAscii(name, "font-variant") || iequalsAscii(name, "font-variant-caps")) {
+    style.fontVariantCaps = interpretFontVariantCaps(value);
+    style.defined.fontVariantCaps = 1;
   } else if (iequalsAscii(name, "text-decoration") || iequalsAscii(name, "text-decoration-line")) {
     style.textDecoration = interpretDecoration(value);
     style.defined.textDecoration = 1;
@@ -801,7 +814,7 @@ namespace {
 // rename after all bytes have been synchronized.
 constexpr char rulesCache[] = "/css_rules.cache";
 constexpr char rulesCacheTemp[] = "/css_rules.cache.tmp";
-constexpr uint32_t CSS_DEFINED_BITS_MASK = (1U << 18U) - 1U;
+constexpr uint32_t CSS_DEFINED_BITS_MASK = (1U << 19U) - 1U;
 
 uint32_t updateCacheCrc(uint32_t crc, const void* data, const size_t size) {
   const auto* bytes = static_cast<const uint8_t*>(data);
@@ -871,6 +884,7 @@ bool CssParser::saveToCache() const {
       writeByte(static_cast<uint8_t>(style.fontWeight));
       writeByte(static_cast<uint8_t>(style.textDecoration));
       writeByte(static_cast<uint8_t>(style.direction));
+      writeByte(static_cast<uint8_t>(style.fontVariantCaps));
 
       const auto writeLength = [&writePayload, &writeByte](const CssLength& len) {
         return writePayload(&len.value, sizeof(len.value)) && writeByte(static_cast<uint8_t>(len.unit));
@@ -908,6 +922,7 @@ bool CssParser::saveToCache() const {
       if (style.defined.display) definedBits |= 1U << 15U;
       if (style.defined.direction) definedBits |= 1U << 16U;
       if (style.defined.verticalAlign) definedBits |= 1U << 17U;
+      if (style.defined.fontVariantCaps) definedBits |= 1U << 18U;
       writePayload(&definedBits, sizeof(definedBits));
     }
 
@@ -968,7 +983,7 @@ bool CssParser::loadFromCache() {
     constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
     constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
     constexpr size_t CSS_FIXED_STYLE_BYTES =
-        5 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + 2 * sizeof(uint8_t) + sizeof(uint32_t);
+        6 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + 2 * sizeof(uint8_t) + sizeof(uint32_t);
 
     for (uint16_t i = 0; i < decodedRuleCount; ++i) {
       uint16_t selectorLen = 0;
@@ -992,12 +1007,14 @@ bool CssParser::loadFromCache() {
       uint8_t fontWeight = 0;
       uint8_t textDecoration = 0;
       uint8_t direction = 0;
+      uint8_t fontVariantCaps = 0;
       if (!readPayload(&textAlign, 1) || !readPayload(&fontStyle, 1) || !readPayload(&fontWeight, 1) ||
-          !readPayload(&textDecoration, 1) || !readPayload(&direction, 1) ||
+          !readPayload(&textDecoration, 1) || !readPayload(&direction, 1) || !readPayload(&fontVariantCaps, 1) ||
           textAlign > static_cast<uint8_t>(CssTextAlign::None) ||
           fontStyle > static_cast<uint8_t>(CssFontStyle::Italic) ||
           fontWeight > static_cast<uint8_t>(CssFontWeight::Bold) || (textDecoration & ~CSS_TEXT_DECORATION_MASK) != 0 ||
-          direction > static_cast<uint8_t>(CssTextDirection::Rtl)) {
+          direction > static_cast<uint8_t>(CssTextDirection::Rtl) ||
+          fontVariantCaps > static_cast<uint8_t>(CssFontVariantCaps::SmallCaps)) {
         return false;
       }
       style.textAlign = static_cast<CssTextAlign>(textAlign);
@@ -1005,6 +1022,7 @@ bool CssParser::loadFromCache() {
       style.fontWeight = static_cast<CssFontWeight>(fontWeight);
       style.textDecoration = static_cast<CssTextDecoration>(textDecoration);
       style.direction = static_cast<CssTextDirection>(direction);
+      style.fontVariantCaps = static_cast<CssFontVariantCaps>(fontVariantCaps);
 
       const auto readLength = [&readPayload](CssLength& length) {
         uint8_t unit = 0;
@@ -1050,6 +1068,7 @@ bool CssParser::loadFromCache() {
       style.defined.display = (definedBits & 1U << 15U) != 0;
       style.defined.direction = (definedBits & 1U << 16U) != 0;
       style.defined.verticalAlign = (definedBits & 1U << 17U) != 0;
+      style.defined.fontVariantCaps = (definedBits & 1U << 18U) != 0;
 
       if (!rulesBySelector_.emplace(std::move(selector), style).second) return false;
     }

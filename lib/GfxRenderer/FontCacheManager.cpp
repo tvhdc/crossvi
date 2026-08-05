@@ -3,8 +3,11 @@
 #include <FontDecompressor.h>
 #include <Logging.h>
 #include <SdCardFont.h>
+#include <Utf8.h>
 
 #include <cstring>
+
+#include "SmallCaps.h"
 
 FontCacheManager::FontCacheManager(const std::map<int, EpdFontFamily>& fontMap,
                                    const std::map<int, SdCardFont*>& sdCardFonts)
@@ -78,7 +81,14 @@ void FontCacheManager::resetStats() {
 bool FontCacheManager::isScanning() const { return scanMode_ == ScanMode::Scanning; }
 
 void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style) {
-  scanText_ += text;
+  if ((style & EpdFontFamily::SMALL_CAPS) != 0) {
+    const auto* cursor = reinterpret_cast<const uint8_t*>(text);
+    while (const uint32_t cp = utf8NextCodepoint(&cursor)) {
+      utf8AppendCodepoint(isSyntheticSmallCapsLowercase(cp) ? syntheticSmallCapsUppercase(cp) : cp, scanText_);
+    }
+  } else {
+    scanText_ += text;
+  }
   if (scanFontId_ < 0) scanFontId_ = fontId;
   const uint8_t baseStyle = static_cast<uint8_t>(style) & 0x03;
   const unsigned char* p = reinterpret_cast<const unsigned char*>(text);

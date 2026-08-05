@@ -185,7 +185,7 @@ def write_per_book_reader_settings(
     path: Path, *, custom: bool, font_size: int, sd_font_family: str,
     font_family: int = 0, line_spacing: int = 1, screen_margin: int = 5, version: int = 4,
 ) -> None:
-    payload = bytearray(48)
+    payload = bytearray(49 if version >= 6 else 48)
     payload[0] = 1 if custom else 0
     payload[1] = font_family
     payload[2] = font_size
@@ -208,7 +208,14 @@ def write_per_book_reader_settings(
 
 def read_per_book_reader_settings(path: Path) -> tuple[int, int, int, int, str]:
     data = path.read_bytes()
-    if len(data) != 59 or data[:4] != b"CVRS" or data[4] not in (4, 5) or struct.unpack_from("<H", data, 5)[0] != 48:
+    version = data[4] if len(data) > 4 else 0
+    payload_size = 49 if version >= 6 else 48
+    if (
+        len(data) != 11 + payload_size
+        or data[:4] != b"CVRS"
+        or version not in (4, 5, 6)
+        or struct.unpack_from("<H", data, 5)[0] != payload_size
+    ):
         raise AssertionError(f"Invalid per-book reader settings fixture: {path}")
     payload = data[11:]
     if zlib.crc32(payload) != struct.unpack_from("<I", data, 7)[0]:
@@ -219,7 +226,14 @@ def read_per_book_reader_settings(path: Path) -> tuple[int, int, int, int, str]:
 
 def read_per_book_screen_margin(path: Path) -> tuple[int, int]:
     data = path.read_bytes()
-    if len(data) != 59 or data[:4] != b"CVRS" or data[4] != 5 or struct.unpack_from("<H", data, 5)[0] != 48:
+    version = data[4] if len(data) > 4 else 0
+    payload_size = 49 if version >= 6 else 48
+    if (
+        len(data) != 11 + payload_size
+        or data[:4] != b"CVRS"
+        or version not in (5, 6)
+        or struct.unpack_from("<H", data, 5)[0] != payload_size
+    ):
         raise AssertionError(f"Invalid v5 per-book reader settings fixture: {path}")
     payload = data[11:]
     if zlib.crc32(payload) != struct.unpack_from("<I", data, 7)[0]:
@@ -678,9 +692,9 @@ def smoke_xtc_saved_items(device: str) -> None:
     fixture = sd / "saved.xtc"
     create_navigation_fixture(XTC_FIXTURES / "crossvi-converter-480x800.xtc", fixture)
 
-    # Fixed-layout menu: chapter, stats, bookmark, saved. Toggle page-one's
-    # bookmark, reopen the menu, then enter Saved at the immediately following
-    # row. Right must not expose a highlight tab for an image-only book.
+    # Fixed-layout menu: chapter, Home, bookmark, Saved. Toggle page one's
+    # bookmark, reopen the menu, then enter Saved. Right moves focus from the
+    # sole Bookmark tab to its first row; it must not expose text highlighting.
     events = (
         "1200:CONFIRM,2600:CONFIRM,4200:CONFIRM,4800:DOWN,5400:DOWN,6000:CONFIRM,"
         "7200:CONFIRM,7800:DOWN,8400:DOWN,9000:DOWN,9600:CONFIRM,"
@@ -716,8 +730,8 @@ def smoke_xtc_saved_items(device: str) -> None:
         raise AssertionError(f"{device.upper()} did not store the current XTC page index")
 
     screenshots = sorted(shots.glob("*.framebuffer.bin"))
-    if len(screenshots) != 2 or screenshots[0].read_bytes() != screenshots[1].read_bytes():
-        raise AssertionError(f"{device.upper()} XTC Saved screen exposed more than its single Bookmark tab")
+    if len(screenshots) != 2 or screenshots[0].read_bytes() == screenshots[1].read_bytes():
+        raise AssertionError(f"{device.upper()} XTC Saved screen did not focus its bookmark row")
     print(f"{device.upper()}: XTC page bookmark and bookmark-only Saved screen smoke passed")
 
 
@@ -874,7 +888,12 @@ def smoke_book_search_actions(device: str, source: str) -> None:
     sd.mkdir(parents=True)
     shots.mkdir(parents=True)
     control.mkdir()
-    settings = {"uiTheme": 5}
+    settings = {
+        "uiTheme": 5,
+        "homeLayout": 1,
+        "homeLayoutVersion": 2,
+        "hideTxtBooks": 0,
+    }
     if device == "x3":
         settings["language"] = "VI"
     (control / "settings.json").write_text(json.dumps(settings) + "\n", encoding="utf-8")
@@ -1003,6 +1022,10 @@ def smoke_your_books_press_edges(device: str) -> None:
         sd = output / "sd"
         control = sd / ".crosspoint"
         control.mkdir(parents=True)
+        (control / "settings.json").write_text(
+            json.dumps({"homeLayout": 1, "homeLayoutVersion": 2, "hideTxtBooks": 0}) + "\n",
+            encoding="utf-8",
+        )
         books = []
         for index in range(6):
             name = f"edge-{index}.txt"
@@ -1055,6 +1078,10 @@ def smoke_your_books_press_edges(device: str) -> None:
     sd = output / "sd"
     control = sd / ".crosspoint"
     control.mkdir(parents=True)
+    (control / "settings.json").write_text(
+        json.dumps({"homeLayout": 1, "homeLayoutVersion": 2, "hideTxtBooks": 0}) + "\n",
+        encoding="utf-8",
+    )
     books = []
     for index in range(8):
         name = f"rapid-{index}.txt"
@@ -1106,6 +1133,7 @@ def smoke_your_books_catalog(device: str) -> None:
         "language": "VI" if device == "x3" else "EN",
         "allLibraryView": 1,
         "allLibraryGrid": 2,
+        "hideTxtBooks": 0,
     }
     (control / "settings.json").write_text(json.dumps(settings) + "\n", encoding="utf-8")
     expected_count = 1000
@@ -1140,7 +1168,15 @@ def smoke_your_books_catalog(device: str) -> None:
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
     completed = run([str(binary)], env=environment, capture_output=True, timeout=42)
     log = completed.stdout + completed.stderr
-    if "Entering activity: YourBooks" not in log or "Entering activity: TxtReader" not in log:
+    opened_reader = any(
+        marker in log
+        for marker in (
+            "Entering activity: EpubReader",
+            "Entering activity: TxtReader",
+            "Entering activity: XtcReader",
+        )
+    )
+    if "Entering activity: YourBooks" not in log or not opened_reader:
         raise AssertionError(f"{device.upper()} did not browse and open the All catalog:\n{log}")
 
     catalog = control / "library.idx"
@@ -1152,7 +1188,7 @@ def smoke_your_books_catalog(device: str) -> None:
     magic, version, _record_size, count, _generation, phase, truncated, _reserved, _crc = struct.unpack(
         "<8sHHIIBBHI", header
     )
-    if magic != b"CVLIB01\0" or version != 1 or count != expected_count or phase != 4 or truncated != 0:
+    if magic != b"CVLIB01\0" or version != 2 or count != expected_count or phase != 4 or truncated != 0:
         raise AssertionError(
             f"{device.upper()} invalid catalog header: magic={magic!r}, version={version}, "
             f"count={count}, phase={phase}, truncated={truncated}"
@@ -1230,6 +1266,12 @@ def smoke_your_books_grid(device: str, grid_setting: int, grid_name: str, capaci
     shots.mkdir(parents=True)
     settings = {
         "language": "VI" if device == "x3" else "EN",
+        # This smoke test exercises the library grid, not Home style 1's
+        # variable-length recent list.  Pin Home to the single-book layout so
+        # the scripted route to My Books stays deterministic.
+        "homeLayout": 1,
+        "homeLayoutVersion": 2,
+        "hideTxtBooks": 0,
         "libraryView": 1,
         "libraryGrid": grid_setting,
         "libraryGridLayoutVersion": 2,
@@ -1533,15 +1575,17 @@ def smoke_txt_saved_items_menu(device: str) -> None:
     text = "".join(f"Dòng thử số {index} có nhiều từ tiếng Việt để chọn tô sáng.\n" for index in range(1, 81))
     (sd / "saved-flow.txt").write_text(text, encoding="utf-8")
 
-    # TXT menu starts with Stats, then Bookmark, Highlight, Saved. Exercise all
-    # three consecutive rows. The first Back clears selection point 1/2; the
+    # TXT menu starts with Home, Book settings, Bookmark, Highlight, Saved.
+    # Exercise the three saved-item rows. The first Back clears selection point 1/2; the
     # second selection is completed and must appear beside the bookmark.
     events = (
-        "1200:CONFIRM,2400:CONFIRM,4500:CONFIRM,5100:DOWN,5700:CONFIRM,"
-        "6600:CONFIRM,7200:DOWN,7800:DOWN,8400:CONFIRM,"
-        "9300:SCREENSHOT,9900:CONFIRM,10600:SCREENSHOT,11200:BACK,11900:SCREENSHOT,"
-        "12500:CONFIRM,13100:RIGHT,13700:CONFIRM,"
-        "14700:CONFIRM,15300:DOWN,15900:DOWN,16500:DOWN,17100:CONFIRM,18000:SCREENSHOT"
+        "1200:CONFIRM,2400:CONFIRM,4500:CONFIRM,5100:DOWN,5700:DOWN,6300:CONFIRM,"
+        "7200:CONFIRM,7800:DOWN,8400:DOWN,9000:DOWN,9600:CONFIRM,"
+        "10500:SCREENSHOT,11100:CONFIRM,11800:SCREENSHOT,12400:BACK,13100:SCREENSHOT,"
+        "13700:CONFIRM,14300:RIGHT,14900:CONFIRM,"
+        "15900:CONFIRM,16500:DOWN,17100:DOWN,17700:DOWN,18300:CONFIRM,"
+        "19200:CONFIRM,19800:RIGHT,20400:RIGHT,21000:CONFIRM,"
+        "22000:CONFIRM,22600:DOWN,23200:DOWN,23800:DOWN,24400:DOWN,25000:CONFIRM,25900:SCREENSHOT"
     )
     environment = os.environ.copy()
     environment.update(
@@ -1550,15 +1594,15 @@ def smoke_txt_saved_items_menu(device: str) -> None:
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "18800",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "26700",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
-    completed = run([str(binary)], env=environment, capture_output=True, timeout=28)
+    completed = run([str(binary)], env=environment, capture_output=True, timeout=36)
     log = completed.stdout + completed.stderr
-    if log.count("Entering activity: EpubReaderMenu") != 3:
-        raise AssertionError(f"{device.upper()} did not reopen the TXT tools menu for all three saved actions:\n{log}")
-    if log.count("Entering activity: ClipSelection") != 1 or "Entering activity: BookSavedItems" not in log:
+    if log.count("Entering activity: EpubReaderMenu") != 4:
+        raise AssertionError(f"{device.upper()} did not reopen the TXT tools menu for all saved actions:\n{log}")
+    if log.count("Entering activity: ClipSelection") != 2 or "Entering activity: BookSavedItems" not in log:
         raise AssertionError(f"{device.upper()} did not follow TXT bookmark -> highlight -> Saved menu order:\n{log}")
 
     screenshots = sorted(shots.glob("*.framebuffer.bin"))
@@ -1572,13 +1616,16 @@ def smoke_txt_saved_items_menu(device: str) -> None:
     bookmark_files = list((control / "bookmarks").glob("book_*.json"))
     clipping_files = list((control / "clippings").glob("txt_*.bin"))
     if len(bookmark_files) != 1 or len(clipping_files) != 1:
-        raise AssertionError(f"{device.upper()} did not persist one TXT bookmark and one highlight")
+        raise AssertionError(f"{device.upper()} did not persist the TXT bookmark/highlight stores")
     document = json.loads(bookmark_files[0].read_text(encoding="utf-8"))
     if document.get("book", {}).get("path") != "/saved-flow.txt" or len(document.get("bookmarks", [])) != 1:
         raise AssertionError(f"{device.upper()} wrote invalid TXT bookmark metadata")
     if clipping_files[0].stat().st_size == 0:
         raise AssertionError(f"{device.upper()} wrote an empty TXT highlight store")
-    print(f"{device.upper()}: TXT bookmark/highlight/Saved grouping and two-stage Back smoke passed")
+    clipping_data = clipping_files[0].read_bytes()
+    if len(clipping_data) < 18 or struct.unpack_from("<H", clipping_data, 16)[0] != 2:
+        raise AssertionError(f"{device.upper()} did not preserve two highlights on the same TXT page")
+    print(f"{device.upper()}: TXT bookmark/two highlights/Saved grouping and two-stage Back smoke passed")
 
 
 def smoke_text_highlight_restart(device: str, extension: str) -> None:
@@ -1627,10 +1674,10 @@ def smoke_text_highlight_restart(device: str, extension: str) -> None:
             # Highlight row and persist a two-word selection.
             "CROSSVI_SIM_INPUT_SCRIPT": (
                 "1200:CONFIRM,2600:CONFIRM,4200:SCREENSHOT,5000:CONFIRM,"
-                "5600:DOWN,6200:DOWN,6800:CONFIRM,7600:CONFIRM,"
-                "8200:RIGHT,8800:CONFIRM"
+                "5600:DOWN,6200:DOWN,6800:DOWN,7400:CONFIRM,8200:CONFIRM,"
+                "8800:RIGHT,9400:CONFIRM"
             ),
-            "CROSSVI_SIM_EXIT_AFTER_MS": "10200",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "10800",
         }
     )
     created = run([str(binary)], env=create_environment, capture_output=True, timeout=18)
@@ -1710,22 +1757,29 @@ def smoke_epub_highlight_restart(device: str) -> None:
         {
             "SDL_VIDEODRIVER": "dummy",
             "CROSSVI_SIM_SD": str(sd),
-            # EPUB menu starts with Chapter, Stats, Bookmark, then Highlight.
+            # This EPUB has no TOC: Home, Book settings, Bookmark, Highlight.
+            # The route also guards the production hasChapters flag passed by
+            # EpubReaderActivity instead of the menu constructor's old default.
             "CROSSVI_SIM_INPUT_SCRIPT": (
                 "1200:CONFIRM,2600:CONFIRM,6000:CONFIRM,6600:DOWN,"
                 "7200:DOWN,7800:DOWN,8400:CONFIRM,9300:CONFIRM,"
-                "9900:RIGHT,10600:CONFIRM"
+                "9900:RIGHT,10600:CONFIRM,11600:CONFIRM,12200:DOWN,"
+                "12800:DOWN,13400:DOWN,14000:CONFIRM,14900:CONFIRM,"
+                "15500:RIGHT,16100:RIGHT,16700:CONFIRM"
             ),
-            "CROSSVI_SIM_EXIT_AFTER_MS": "12200",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "18000",
         }
     )
-    created = run([str(binary)], env=create_environment, capture_output=True, timeout=20)
+    created = run([str(binary)], env=create_environment, capture_output=True, timeout=26)
     create_log = created.stdout + created.stderr
-    if "Entering activity: EpubReader" not in create_log or "Entering activity: ClipSelection" not in create_log:
+    if "Entering activity: EpubReader" not in create_log or create_log.count("Entering activity: ClipSelection") != 2:
         raise AssertionError(f"{device.upper()} could not create the EPUB highlight:\n{create_log}")
     clipping_files = list((control / "clippings").glob("epub_*.bin"))
     if len(clipping_files) != 1 or clipping_files[0].stat().st_size == 0:
         raise AssertionError(f"{device.upper()} did not persist the EPUB highlight")
+    clipping_data = clipping_files[0].read_bytes()
+    if len(clipping_data) < 18 or struct.unpack_from("<H", clipping_data, 16)[0] != 2:
+        raise AssertionError(f"{device.upper()} did not preserve two highlights on the same EPUB page")
 
     no_highlight_sd = output / "sd-no-highlight"
     shutil.copytree(sd, no_highlight_sd)
@@ -1756,7 +1810,7 @@ def smoke_epub_highlight_restart(device: str) -> None:
     no_highlight = find_single(control_shots, "*.framebuffer.bin").read_bytes()
     if highlighted == no_highlight:
         raise AssertionError(f"{device.upper()} EPUB highlight was not rendered after restart")
-    print(f"{device.upper()}: EPUB highlight persisted and rendered after restart")
+    print(f"{device.upper()}: two EPUB highlights persisted and rendered after restart")
 
 
 def smoke_per_book_screen_margin(device: str, book_format: str) -> None:
@@ -1794,8 +1848,8 @@ def smoke_per_book_screen_margin(device: str, book_format: str) -> None:
         profile, custom=True, font_size=1, sd_font_family="", screen_margin=70, version=5
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
-    menu_downs = 5 if book_format == "txt" else 6
-    settings_downs = 4 if book_format == "txt" else 6
+    menu_downs = 1
+    settings_downs = 5 if book_format == "txt" else 11
 
     def run_picker(name: str, apply: bool) -> tuple[bytes, bytes, str]:
         reset_simulator_navigation(control)

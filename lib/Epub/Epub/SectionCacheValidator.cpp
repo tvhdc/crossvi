@@ -222,15 +222,17 @@ bool validateHeader(SectionCacheValidation::Input& input, const uint64_t headerS
   uint16_t viewportWidth = 0;
   uint16_t viewportHeight = 0;
   uint8_t imageRendering = 0;
+  uint8_t wordSpacing = 0;
   uint8_t renderMode = 0;
   if (!cursor.read(fontId) || !cursor.read(lineCompression) || !std::isfinite(lineCompression) ||
       lineCompression <= 0 || !readSerializedBool(cursor) || !cursor.read(paragraphAlignment) ||
       paragraphAlignment > 4 || !cursor.read(viewportWidth) || !cursor.read(viewportHeight) || viewportWidth == 0 ||
       viewportHeight == 0 || !readSerializedBool(cursor) || !readSerializedBool(cursor) ||
-      !cursor.read(imageRendering) || imageRendering > 2 || !readSerializedBool(cursor) || !cursor.read(renderMode) ||
-      renderMode >= EPUB_RENDER_MODE_COUNT || !readSerializedBool(cursor) || !cursor.read(layout.pageCount) ||
-      !cursor.read(layout.pageLutOffset) || !cursor.read(layout.anchorMapOffset) ||
-      !cursor.read(layout.paragraphLutOffset) || !cursor.read(layout.listItemLutOffset) || !cursor.atEnd()) {
+      !cursor.read(imageRendering) || imageRendering > 2 || !readSerializedBool(cursor) || !cursor.read(wordSpacing) ||
+      wordSpacing > 4 || !cursor.read(renderMode) || renderMode >= EPUB_RENDER_MODE_COUNT ||
+      !readSerializedBool(cursor) || !cursor.read(layout.pageCount) || !cursor.read(layout.pageLutOffset) ||
+      !cursor.read(layout.anchorMapOffset) || !cursor.read(layout.paragraphLutOffset) ||
+      !cursor.read(layout.listItemLutOffset) || !cursor.atEnd()) {
     return false;
   }
   (void)fontId;

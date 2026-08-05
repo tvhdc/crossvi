@@ -13,18 +13,31 @@
 #include "components/UITheme.h"
 
 namespace {
-enum MenuItem { ITEM_FORMAT = 0, ITEM_UTC_OFFSET, ITEM_SYNC };
+enum MenuItem { ITEM_FORMAT = 0, ITEM_UTC_OFFSET, ITEM_DATE_FORMAT, ITEM_DATE_SEPARATOR, ITEM_SYNC };
 
 const StrId menuNames[TimeSettingsActivity::ITEM_COUNT] = {
-    StrId::STR_CLOCK_FORMAT,
-    StrId::STR_CLOCK_UTC_OFFSET,
-    StrId::STR_CLOCK_SYNC_NOW,
+    StrId::STR_CLOCK_FORMAT,   StrId::STR_CLOCK_UTC_OFFSET, StrId::STR_DATE_FORMAT,
+    StrId::STR_DATE_SEPARATOR, StrId::STR_CLOCK_SYNC_NOW,
 };
 
 constexpr int CLOCK_FORMAT_ITEMS = 2;
 const StrId clockFormatNames[CLOCK_FORMAT_ITEMS] = {
     StrId::STR_CLOCK_FORMAT_24H,
     StrId::STR_CLOCK_FORMAT_12H,
+};
+
+const StrId dateFormatNames[CrossPointSettings::DATE_FORMAT_COUNT] = {
+    StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_LONG,    StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_LONG,
+    StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_NUMERIC, StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_NUMERIC,
+    StrId::STR_DATE_FORMAT_YEAR_MONTH_DAY_NUMERIC, StrId::STR_DATE_FORMAT_MONTH_DAY_NUMERIC,
+    StrId::STR_DATE_FORMAT_DAY_MONTH_NUMERIC,      StrId::STR_DATE_FORMAT_MONTH_DAY_LONG,
+    StrId::STR_DATE_FORMAT_DAY_MONTH_LONG,
+};
+
+const StrId dateSeparatorNames[CrossPointSettings::DATE_SEPARATOR_COUNT] = {
+    StrId::STR_DATE_SEPARATOR_PERIOD,
+    StrId::STR_DATE_SEPARATOR_HYPHEN,
+    StrId::STR_DATE_SEPARATOR_SLASH,
 };
 
 std::string formatUtcOffset(uint8_t biasedQuarterHours) {
@@ -43,6 +56,12 @@ void TimeSettingsActivity::onEnter() {
   selectedIndex = 0;
   if (SETTINGS.clockFormat >= CLOCK_FORMAT_ITEMS) SETTINGS.clockFormat = 0;
   if (SETTINGS.clockUtcOffsetQ > 104) SETTINGS.clockUtcOffsetQ = 48;
+  if (SETTINGS.dateFormat >= CrossPointSettings::DATE_FORMAT_COUNT) {
+    SETTINGS.dateFormat = CrossPointSettings::DATE_FORMAT_MONTH_DAY_YEAR_LONG;
+  }
+  if (SETTINGS.dateSeparator >= CrossPointSettings::DATE_SEPARATOR_COUNT) {
+    SETTINGS.dateSeparator = CrossPointSettings::DATE_SEPARATOR_SLASH;
+  }
   requestUpdate();
 }
 
@@ -82,6 +101,22 @@ void TimeSettingsActivity::handleSelection() {
       startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput),
                              [this](const ActivityResult&) { requestUpdate(); });
       return;
+    case ITEM_DATE_FORMAT:
+      optionPopup.show(StrId::STR_DATE_FORMAT, dateFormatNames, CrossPointSettings::DATE_FORMAT_COUNT,
+                       SETTINGS.dateFormat, [this](const int index) {
+                         SETTINGS.dateFormat = static_cast<uint8_t>(index);
+                         SETTINGS.saveToFile();
+                       });
+      requestUpdate();
+      return;
+    case ITEM_DATE_SEPARATOR:
+      optionPopup.show(StrId::STR_DATE_SEPARATOR, dateSeparatorNames, CrossPointSettings::DATE_SEPARATOR_COUNT,
+                       SETTINGS.dateSeparator, [this](const int index) {
+                         SETTINGS.dateSeparator = static_cast<uint8_t>(index);
+                         SETTINGS.saveToFile();
+                       });
+      requestUpdate();
+      return;
     case ITEM_SYNC:
       startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput),
                              [this](const ActivityResult&) { requestUpdate(); });
@@ -112,6 +147,15 @@ void TimeSettingsActivity::render(RenderLock&&) {
                 I18N.get(clockFormatNames[SETTINGS.clockFormat < CLOCK_FORMAT_ITEMS ? SETTINGS.clockFormat : 0]));
           case ITEM_UTC_OFFSET:
             return formatUtcOffset(SETTINGS.clockUtcOffsetQ);
+          case ITEM_DATE_FORMAT:
+            return std::string(I18N.get(
+                dateFormatNames[SETTINGS.dateFormat < CrossPointSettings::DATE_FORMAT_COUNT ? SETTINGS.dateFormat
+                                                                                            : 0]));
+          case ITEM_DATE_SEPARATOR:
+            return std::string(
+                I18N.get(dateSeparatorNames[SETTINGS.dateSeparator < CrossPointSettings::DATE_SEPARATOR_COUNT
+                                                ? SETTINGS.dateSeparator
+                                                : CrossPointSettings::DATE_SEPARATOR_SLASH]));
           case ITEM_SYNC:
             return SETTINGS.clockHasBeenSynced ? std::string(tr(STR_CLOCK_SYNCED)) : std::string(tr(STR_NOT_SET));
           default:

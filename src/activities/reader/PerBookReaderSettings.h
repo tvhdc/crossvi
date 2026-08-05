@@ -21,6 +21,7 @@ struct PerBookReaderSettings {
   uint8_t fontFamily = 0;
   uint8_t fontSize = 1;
   uint8_t lineSpacing = 1;
+  uint8_t wordSpacing = 0;
   uint8_t paragraphAlignment = 0;
   uint8_t orientation = 0;
   uint8_t screenMargin = 5;

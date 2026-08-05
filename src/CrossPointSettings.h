@@ -163,6 +163,12 @@ class CrossPointSettings {
 
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
   enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
+  enum DICTIONARY_FONT_FAMILY {
+    DICTIONARY_FONT_READER = 0,
+    DICTIONARY_FONT_NOTO_SERIF = 1,
+    DICTIONARY_FONT_NOTO_SANS = 2,
+    DICTIONARY_FONT_FAMILY_COUNT,
+  };
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
@@ -181,6 +187,24 @@ class CrossPointSettings {
   static_assert(SMALL == 0 && MEDIUM == 1 && LARGE == 2 && EXTRA_LARGE == 3,
                 "Existing font-size settings must retain their stored meaning");
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
+  enum DATE_FORMAT {
+    DATE_FORMAT_MONTH_DAY_YEAR_LONG = 0,
+    DATE_FORMAT_DAY_MONTH_YEAR_LONG = 1,
+    DATE_FORMAT_MONTH_DAY_YEAR_NUMERIC = 2,
+    DATE_FORMAT_DAY_MONTH_YEAR_NUMERIC = 3,
+    DATE_FORMAT_YEAR_MONTH_DAY_NUMERIC = 4,
+    DATE_FORMAT_MONTH_DAY_NUMERIC = 5,
+    DATE_FORMAT_DAY_MONTH_NUMERIC = 6,
+    DATE_FORMAT_MONTH_DAY_LONG = 7,
+    DATE_FORMAT_DAY_MONTH_LONG = 8,
+    DATE_FORMAT_COUNT,
+  };
+  enum DATE_SEPARATOR {
+    DATE_SEPARATOR_PERIOD = 0,
+    DATE_SEPARATOR_HYPHEN = 1,
+    DATE_SEPARATOR_SLASH = 2,
+    DATE_SEPARATOR_COUNT,
+  };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
     LEFT_ALIGN = 1,
@@ -333,12 +357,16 @@ class CrossPointSettings {
   // Clock display in headers outside the reader (X3 only, requires DS3231 RTC).
   // Uses the same hide/right/left values as statusBarClock.
   uint8_t outsideReaderClock = STATUS_BAR_CLOCK_HIDE;
+  // Optionally show the local date next to the outside-reader clock.
+  uint8_t showDateOutsideReader = 0;
   // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
   // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
   // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
   uint8_t clockUtcOffsetQ = 48;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  uint8_t dateFormat = DATE_FORMAT_MONTH_DAY_YEAR_LONG;
+  uint8_t dateSeparator = DATE_SEPARATOR_SLASH;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;
@@ -373,7 +401,12 @@ class CrossPointSettings {
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   uint8_t fontSize = MEDIUM;
+  uint8_t dictionaryFontFamily = DICTIONARY_FONT_READER;
+  // 0 follows the reader size; 1-4 map to the four built-in sizes.
+  uint8_t dictionaryFontSize = 0;
   uint8_t lineSpacing = NORMAL;
+  // Adds 0-40 px to natural word gaps without changing CJK/no-space text.
+  uint8_t wordSpacing = 0;
   uint8_t paragraphAlignment = JUSTIFIED;
   // EPUB render mode and Safe Mode are transient per-book overlays. They are
   // persisted only by PerBookReaderSettings, never in global settings.json.
@@ -468,6 +501,7 @@ class CrossPointSettings {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
   int getReaderFontId() const;
+  int getDictionaryFontId() const;
 
   // If count_only is true, returns the number of settings items that would be written.
   uint8_t writeSettings(HalFile& file, bool count_only = false) const;

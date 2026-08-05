@@ -191,10 +191,10 @@ HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
 }
 
 // Newer X3 production units use a UC8279d panel controller on the same board,
-// glass, and pins. Probe it before SPI owns the EPD pins. The persisted values
-// reuse the device enum encoding: X4=UC8253 and X3=UC8279.
+// glass, and pins. Probe it before SPI owns the EPD pins. Only an explicit
+// recovery override is trusted: a cached/factory value can describe a different
+// panel after a full flash and must not override the live display-bus probe.
 constexpr char NVS_KEY_EPD_OVERRIDE[] = "epd_ovr";  // 0=auto, 1=uc8253, 2=uc8279
-constexpr char NVS_KEY_EPD_CACHED[] = "epd_det";    // 0=unknown, 1=uc8253, 2=uc8279
 
 bool detectX3DisplayIsUc8279() {
   const NvsDeviceValue overrideValue = readNvsDeviceValue(NVS_KEY_EPD_OVERRIDE, NvsDeviceValue::Unknown);
@@ -203,26 +203,16 @@ bool detectX3DisplayIsUc8279() {
     return overrideValue == NvsDeviceValue::X3;
   }
 
-  const NvsDeviceValue cachedValue = readNvsDeviceValue(NVS_KEY_EPD_CACHED, NvsDeviceValue::Unknown);
-  if (cachedValue != NvsDeviceValue::Unknown) {
-    LOG_INF("HW", "Using cached EPD controller: %s", cachedValue == NvsDeviceValue::X3 ? "UC8279" : "UC8253");
-    return cachedValue == NvsDeviceValue::X3;
-  }
-
   uint8_t ver[5] = {0};
   uint8_t flg = 0;
   const freeink::X3DisplayVerdict verdict = freeink::detectX3DisplayController(ver, &flg);
   LOG_INF("HW", "EPD probe: ver=%02X %02X %02X %02X %02X flg=%02X verdict=%u", ver[0], ver[1], ver[2], ver[3], ver[4],
           flg, static_cast<unsigned>(verdict));
   if (verdict == freeink::X3DisplayVerdict::Uc8279Confirmed) {
-    writeNvsDeviceValue(NVS_KEY_EPD_CACHED, NvsDeviceValue::X3);
     return true;
   }
-  if (verdict == freeink::X3DisplayVerdict::Uc8253Assumed) {
-    writeNvsDeviceValue(NVS_KEY_EPD_CACHED, NvsDeviceValue::X4);
-  }
-  // An inconclusive probe uses the established UC8253 driver but is not
-  // persisted, so a later cold boot can try again.
+  // An inconclusive probe conservatively uses the established UC8253 driver.
+  // The next boot probes again instead of persisting a possibly wrong result.
   return false;
 }
 

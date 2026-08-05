@@ -1,5 +1,6 @@
 #include "KOReaderSyncActivity.h"
 
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -163,6 +164,12 @@ void KOReaderSyncActivity::performSync() {
   }
   requestUpdateAndWait();
 
+  // The status frame is now on-screen and no render is using glyph data.
+  // Release font caches before TLS so the handshake gets the largest possible
+  // contiguous heap block; rendering repopulates these caches lazily.
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+  LOG_DBG("KOSync", "TLS fetch heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
   // Fetch remote progress. In smart mode, also probe the alternate document-id
   // method and use the furthest remote state we can find. This avoids a stale
   // local upload when another KOReader device synced the same book with a
@@ -291,6 +298,9 @@ void KOReaderSyncActivity::performUpload() {
     statusMessage = tr(STR_UPLOAD_PROGRESS);
   }
   requestUpdateAndWait();
+
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+  LOG_DBG("KOSync", "TLS upload heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   // localProgress was pre-computed in EpubReaderActivity before the Epub was released.
   KOReaderProgress progress;

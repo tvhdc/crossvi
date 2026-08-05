@@ -29,6 +29,16 @@ inline SettingInfo buildPersistedFontSizeSetting() {
                                   StrId::STR_CAT_READER);
 }
 
+inline SettingInfo buildDictionaryFontSizeSetting() {
+  std::vector<std::string> labels{I18N.get(StrId::STR_USE_READER_FONT_SIZE)};
+  labels.reserve(ReaderFontSize::BUILTIN_COUNT + 1);
+  for (uint8_t index = 0; index < ReaderFontSize::BUILTIN_COUNT; ++index) {
+    labels.push_back(readerFontSizeLabel(index));
+  }
+  return SettingInfo::EnumStrings(StrId::STR_DICTIONARY_FONT_SIZE, &CrossPointSettings::dictionaryFontSize,
+                                  std::move(labels), "dictionaryFontSize", StrId::STR_CAT_READER);
+}
+
 inline SettingInfo buildScreenMarginSetting() {
   SettingInfo setting;
   setting.nameId = StrId::STR_SCREEN_MARGIN;
@@ -238,6 +248,8 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_CLOCK_OUTSIDE_READER, &CrossPointSettings::outsideReaderClock,
                           {StrId::STR_HIDE, StrId::STR_DIR_RIGHT, StrId::STR_DIR_LEFT}, "outsideReaderClock",
                           StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_DATE_OUTSIDE_READER, &CrossPointSettings::showDateOutsideReader,
+                            "showDateOutsideReader", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_LIBRARY_DISPLAY_MODE, &CrossPointSettings::libraryView,
                           {StrId::STR_LIBRARY_LIST, StrId::STR_LIBRARY_COVERS}, "libraryView", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_LIBRARY_SORT, &CrossPointSettings::librarySort,
@@ -278,6 +290,10 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
                           {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS}, "fontFamily", StrId::STR_CAT_READER),
         buildPersistedFontSizeSetting(),
+        SettingInfo::Enum(StrId::STR_DICTIONARY_FONT, &CrossPointSettings::dictionaryFontFamily,
+                          {StrId::STR_USE_READER_FONT, StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS},
+                          "dictionaryFontFamily", StrId::STR_CAT_READER),
+        buildDictionaryFontSizeSetting(),
         SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                             StrId::STR_CAT_READER),
         SettingInfo::Enum(
@@ -288,6 +304,10 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                             StrId::STR_CAT_READER),
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
                           {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER),
+        SettingInfo::Enum(StrId::STR_WORD_SPACING, &CrossPointSettings::wordSpacing,
+                          {StrId::STR_NORMAL, StrId::STR_WORD_SPACING_1, StrId::STR_WORD_SPACING_2,
+                           StrId::STR_WORD_SPACING_3, StrId::STR_WORD_SPACING_4},
+                          "wordSpacing", StrId::STR_CAT_READER),
         buildScreenMarginSetting(),
         SettingInfo::Toggle(StrId::STR_EMBEDDED_STYLE, &CrossPointSettings::embeddedStyle, "embeddedStyle",
                             StrId::STR_CAT_READER),
@@ -439,6 +459,17 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat,
                           {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H}, "clockFormat",
                           StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::Enum(StrId::STR_DATE_FORMAT, &CrossPointSettings::dateFormat,
+                          {StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_LONG, StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_LONG,
+                           StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_NUMERIC, StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_NUMERIC,
+                           StrId::STR_DATE_FORMAT_YEAR_MONTH_DAY_NUMERIC, StrId::STR_DATE_FORMAT_MONTH_DAY_NUMERIC,
+                           StrId::STR_DATE_FORMAT_DAY_MONTH_NUMERIC, StrId::STR_DATE_FORMAT_MONTH_DAY_LONG,
+                           StrId::STR_DATE_FORMAT_DAY_MONTH_LONG},
+                          "dateFormat", StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::Enum(
+            StrId::STR_DATE_SEPARATOR, &CrossPointSettings::dateSeparator,
+            {StrId::STR_DATE_SEPARATOR_PERIOD, StrId::STR_DATE_SEPARATOR_HYPHEN, StrId::STR_DATE_SEPARATOR_SLASH},
+            "dateSeparator", StrId::STR_CUSTOMISE_STATUS_BAR),
         // Persistence flag for NTP debounce. Resetting from the web UI forces a re-sync
         // on next WiFi connect, which is useful when crossing time zones.
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",

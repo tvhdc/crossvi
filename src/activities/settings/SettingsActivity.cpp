@@ -56,7 +56,13 @@ void SettingsActivity::rebuildSettingsLists() {
   for (auto& setting : getSettingsList(&sdFontSystem.registry(), dictionariesLoaded ? &dictionaries : nullptr)) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
-      if (setting.valuePtr == &CrossPointSettings::outsideReaderClock && !halClock.isAvailable()) {
+      if ((setting.valuePtr == &CrossPointSettings::outsideReaderClock ||
+           setting.valuePtr == &CrossPointSettings::showDateOutsideReader) &&
+          !halClock.isAvailable()) {
+        continue;
+      }
+      if (setting.valuePtr == &CrossPointSettings::showDateOutsideReader &&
+          SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_HIDE) {
         continue;
       }
       const bool quickResume =
@@ -71,6 +77,10 @@ void SettingsActivity::rebuildSettingsLists() {
       }
       displaySettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_READER) {
+      if ((setting.nameId == StrId::STR_DICTIONARY_FONT || setting.nameId == StrId::STR_DICTIONARY_FONT_SIZE) &&
+          dictionaries.empty()) {
+        continue;
+      }
       const bool supportsTextGrayscale = renderer.supportsStripGrayscale();
       if (!supportsTextGrayscale &&
           (setting.nameId == StrId::STR_TEXT_AA || setting.nameId == StrId::STR_TEXT_DARKNESS)) {

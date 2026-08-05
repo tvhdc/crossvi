@@ -18,16 +18,18 @@ constexpr uint8_t LEGACY_VERSION = 1;
 constexpr uint8_t AUTO_TURN_VERSION = 2;
 constexpr uint8_t EPUB_OPTIONS_VERSION = 3;
 constexpr uint8_t EXTENDED_FONT_SIZE_VERSION = 4;
-constexpr uint8_t VERSION = 5;
+constexpr uint8_t SCREEN_MARGIN_VERSION = 5;
+constexpr uint8_t VERSION = 6;
 constexpr uint16_t LEGACY_PAYLOAD_SIZE = 46;
-constexpr uint16_t PAYLOAD_SIZE = 48;
+constexpr uint16_t PREVIOUS_PAYLOAD_SIZE = 48;
+constexpr uint16_t PAYLOAD_SIZE = 49;
 constexpr size_t VERSION_OFFSET = MAGIC.size();
 constexpr size_t PAYLOAD_LENGTH_OFFSET = VERSION_OFFSET + 1;
 constexpr size_t CRC_OFFSET = PAYLOAD_LENGTH_OFFSET + 2;
 constexpr size_t PAYLOAD_OFFSET = CRC_OFFSET + 4;
 constexpr size_t ENCODED_SIZE = PAYLOAD_OFFSET + PAYLOAD_SIZE;
 constexpr size_t LEGACY_ENCODED_SIZE = PAYLOAD_OFFSET + LEGACY_PAYLOAD_SIZE;
-static_assert(ENCODED_SIZE == 59);
+static_assert(ENCODED_SIZE == 60);
 static_assert(LEGACY_ENCODED_SIZE == 57);
 
 using Encoded = std::array<uint8_t, ENCODED_SIZE>;
@@ -128,6 +130,7 @@ inline bool hasCanonicalSdFontName(const std::array<char, PerBookReaderSettings:
 inline bool isValid(const PerBookReaderSettings& settings) {
   const auto isToggle = [](const uint8_t value) { return value <= 1; };
   return settings.fontFamily < 2 && settings.fontSize < ReaderFontSize::COUNT && settings.lineSpacing < 3 &&
+         settings.wordSpacing <= 4 &&
          settings.paragraphAlignment < 5 && settings.orientation < 4 &&
          ReaderScreenMargin::isValid(settings.screenMargin) && isToggle(settings.embeddedStyle) &&
          isToggle(settings.focusReadingEnabled) && isToggle(settings.hyphenationEnabled) &&
@@ -170,6 +173,7 @@ inline bool encode(const PerBookReaderSettings& settings, Encoded& encoded) {
   std::memcpy(payload + 14, settings.sdFontFamilyName.data(), settings.sdFontFamilyName.size());
   payload[46] = settings.forceParagraphIndents;
   payload[47] = static_cast<uint8_t>(settings.renderMode);
+  payload[48] = settings.wordSpacing;
 
   writeU32(encoded.data() + CRC_OFFSET, crc32(payload, PAYLOAD_SIZE));
   return true;
@@ -182,10 +186,12 @@ inline DecodeStatus decode(const uint8_t* data, const size_t length, PerBookRead
   const uint8_t version = data[VERSION_OFFSET];
   if (version > VERSION) return DecodeStatus::NEWER_VERSION;
   if (version != LEGACY_VERSION && version != AUTO_TURN_VERSION && version != EPUB_OPTIONS_VERSION &&
-      version != EXTENDED_FONT_SIZE_VERSION && version != VERSION) {
+      version != EXTENDED_FONT_SIZE_VERSION && version != SCREEN_MARGIN_VERSION && version != VERSION) {
     return DecodeStatus::UNSUPPORTED_VERSION;
   }
-  const uint16_t payloadSize = version >= EPUB_OPTIONS_VERSION ? PAYLOAD_SIZE : LEGACY_PAYLOAD_SIZE;
+  const uint16_t payloadSize = version >= VERSION               ? PAYLOAD_SIZE
+                               : version >= EPUB_OPTIONS_VERSION ? PREVIOUS_PAYLOAD_SIZE
+                                                                 : LEGACY_PAYLOAD_SIZE;
   const size_t encodedSize = PAYLOAD_OFFSET + payloadSize;
   if (length < encodedSize) return DecodeStatus::TRUNCATED;
   if (length > encodedSize) return DecodeStatus::WRONG_SIZE;
@@ -241,6 +247,7 @@ inline DecodeStatus decode(const uint8_t* data, const size_t length, PerBookRead
     decoded.forceParagraphIndents = payload[46];
     decoded.renderMode = static_cast<EpubRenderMode>(payload[47]);
   }
+  decoded.wordSpacing = version >= VERSION ? payload[48] : 0;
 
   // Versions 1-3 were published with a four-value font-size contract. Writers
   // from v4 onward understand the extended 12-28 pt domain.
@@ -249,7 +256,7 @@ inline DecodeStatus decode(const uint8_t* data, const size_t length, PerBookRead
   }
   // Versions 1-4 accepted every byte value from 5 through 40. Preserve those
   // files and canonicalize them into the explicit v5 value table.
-  if (version < VERSION) {
+  if (version < SCREEN_MARGIN_VERSION) {
     if (decoded.screenMargin < 5 || decoded.screenMargin > 40) return DecodeStatus::INVALID_VALUE;
     decoded.screenMargin = ReaderScreenMargin::closestValue(decoded.screenMargin);
   } else if (!ReaderScreenMargin::isValid(decoded.screenMargin)) {

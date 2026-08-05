@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "ClockCalendar.h"
+#include "ClockDateFormat.h"
 
 HalClock halClock;  // Singleton instance
 
@@ -121,6 +122,28 @@ bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHou
     snprintf(buf, bufSize, "%02d:%02d", hour24, min);
   }
   return true;
+}
+
+bool HalClock::formatDate(char* buf, const size_t bufSize, uint8_t utcOffsetQuarterHoursBiased,
+                          const DateFormat dateFormat, const char numericSeparator) const {
+  uint16_t year;
+  uint8_t month;
+  uint8_t day;
+  uint8_t hour;
+  uint8_t minute;
+  if (!getDateTime(year, month, day, hour, minute)) return false;
+
+  if (utcOffsetQuarterHoursBiased > 104) utcOffsetQuarterHoursBiased = 104;
+  ClockCalendar::DateTime calendar{year, month, day, hour, minute, 0, 0};
+  time_t epoch = 0;
+  if (!ClockCalendar::toEpoch(calendar, epoch)) return false;
+  const int64_t adjusted =
+      static_cast<int64_t>(epoch) + (static_cast<int>(utcOffsetQuarterHoursBiased) - 48) * 15LL * 60LL;
+  if (adjusted < 0) return false;
+  ClockCalendar::DateTime local;
+  if (!ClockCalendar::fromEpoch(static_cast<time_t>(adjusted), local)) return false;
+  return ClockDateFormat::format(local.year, local.month, local.day, static_cast<uint8_t>(dateFormat), numericSeparator,
+                                 buf, bufSize);
 }
 
 bool HalClock::writeDateTimeToRTC(const time_t epoch) {

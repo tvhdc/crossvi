@@ -98,8 +98,9 @@ class XtcReaderActivity final : public Activity {
   void signalReadingPageVisible();
   void signalReadingPageHidden();
   void consumeReadingViewSignal();
-  void stopReadingPage(bool forwardPageTurn, uint32_t nowMs);
-  void recordReadingSample(const ReadingSessionSample& sample);
+  void stopReadingPage(bool forwardPageTurn, uint32_t nowMs, bool recordPace = true);
+  void recordReadingSample(const ReadingSessionSample& sample, bool recordPace);
+  bool refreshEstimatedTimeLeft();
   void commitReadingSession();
   void saveReadingStats();
   void markBookCompleted();

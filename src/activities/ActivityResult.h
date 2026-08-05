@@ -113,6 +113,8 @@ struct ProgressChangeResult {
   std::string xpath;
   float percentage = 0.0f;
   bool hasSavedProgress = false;
+  uint32_t contentSourceOffset = 0;
+  bool hasContentSourceOffset = false;
   uint32_t textByteOffset = 0;
   bool hasTextByteOffset = false;
   uint64_t bookmarkFingerprint = 0;

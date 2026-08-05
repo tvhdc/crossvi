@@ -60,6 +60,15 @@ uint32_t addReadingStatsSaturated(const uint32_t lhs, const uint32_t rhs) {
   return max - lhs < rhs ? max : lhs + rhs;
 }
 
+uint32_t estimateRemainingReadingSeconds(const uint32_t totalPages, const uint32_t currentPage,
+                                         const uint16_t secondsPerPage, const uint16_t sampleCount,
+                                         const uint16_t minimumSamples) {
+  if (totalPages == 0 || currentPage >= totalPages || secondsPerPage == 0 || sampleCount < minimumSamples) return 0;
+  const uint64_t remainingPages = totalPages - currentPage - 1u;
+  const uint64_t estimate = remainingPages * secondsPerPage;
+  return estimate > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(estimate);
+}
+
 bool isLeapYear(const uint16_t year) { return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0; }
 
 uint8_t daysInMonth(const uint16_t year, const uint8_t month) {

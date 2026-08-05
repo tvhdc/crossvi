@@ -239,11 +239,31 @@ Rect topRightBatteryRect(const Rect rect) {
               rect.y + 8, CrossViMetrics::values.batteryWidth, CrossViMetrics::values.batteryHeight};
 }
 
-bool outsideClockText(char (&value)[9]) {
+bool outsideClockText(char (&value)[32]) {
   if (!halClock.isAvailable() || SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_HIDE) {
     return false;
   }
-  return halClock.formatTime(value, sizeof(value), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1);
+  char time[9]{};
+  if (!halClock.formatTime(time, sizeof(time), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) return false;
+  if (!SETTINGS.showDateOutsideReader) {
+    std::snprintf(value, sizeof(value), "%s", time);
+    return true;
+  }
+
+  char separator = '/';
+  if (SETTINGS.dateSeparator == CrossPointSettings::DATE_SEPARATOR_PERIOD) {
+    separator = '.';
+  } else if (SETTINGS.dateSeparator == CrossPointSettings::DATE_SEPARATOR_HYPHEN) {
+    separator = '-';
+  }
+  char date[16]{};
+  if (!halClock.formatDate(date, sizeof(date), SETTINGS.clockUtcOffsetQ,
+                           static_cast<HalClock::DateFormat>(SETTINGS.dateFormat), separator)) {
+    std::snprintf(value, sizeof(value), "%s", time);
+    return true;
+  }
+  std::snprintf(value, sizeof(value), "%s %s", date, time);
+  return true;
 }
 
 int batteryClusterLeft(const GfxRenderer& renderer, const Rect battery, const bool showPercentage) {
@@ -468,7 +488,7 @@ void CrossViTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   const Rect battery = topRightBatteryRect(rect);
   drawBatteryRight(renderer, battery, showBatteryPercentage);
-  char timeValue[9]{};
+  char timeValue[32]{};
   if (outsideClockText(timeValue)) {
     if (SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_LEFT) {
       renderer.drawText(SMALL_FONT_ID, rect.x + CrossViMetrics::values.contentSidePadding, rect.y + 8, timeValue);
@@ -707,7 +727,7 @@ void CrossViTheme::drawHomeHeader(const GfxRenderer& renderer, const Rect rect, 
   const Rect battery = topRightBatteryRect(rect);
   drawBatteryRight(renderer, battery, showBatteryPercentage);
 
-  char timeValue[9]{};
+  char timeValue[32]{};
   const bool showClock = outsideClockText(timeValue);
   const int clockWidth = showClock ? renderer.getTextWidth(SMALL_FONT_ID, timeValue) : 0;
   const int rightLimit = showClock && SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_RIGHT

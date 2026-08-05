@@ -311,7 +311,8 @@ bool NearbyPositionSyncActivity::preparePeerPosition() {
       localLayout_.fontId, localLayout_.lineCompression, localLayout_.extraParagraphSpacing,
       localLayout_.paragraphAlignment, localLayout_.viewportWidth, localLayout_.viewportHeight,
       localLayout_.hyphenationEnabled, localLayout_.embeddedStyle, localLayout_.imageRendering,
-      localLayout_.focusReadingEnabled, localLayout_.renderMode, localLayout_.forceParagraphIndents);
+      localLayout_.focusReadingEnabled, localLayout_.wordSpacing, localLayout_.renderMode,
+      localLayout_.forceParagraphIndents);
   if (!cacheMatches || targetSection.isPartial() || targetSection.pageCount == 0) {
     setError(tr(STR_NEARBY_ERROR_POSITION_NOT_READY));
     return false;

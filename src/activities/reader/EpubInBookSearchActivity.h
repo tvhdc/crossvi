@@ -29,6 +29,7 @@ class EpubInBookSearchActivity final : public Activity {
     bool embeddedStyle = false;
     uint8_t imageRendering = 0;
     bool focusReadingEnabled = false;
+    uint8_t wordSpacing = 0;
     EpubRenderMode renderMode = EpubRenderMode::Full;
     bool forceParagraphIndents = false;
   };

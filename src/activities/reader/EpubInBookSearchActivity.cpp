@@ -44,7 +44,8 @@ bool EpubInBookSearchActivity::openSection() {
   const bool loaded = section_->loadSectionFile(
       layout_.fontId, layout_.lineCompression, layout_.extraParagraphSpacing, layout_.paragraphAlignment,
       layout_.viewportWidth, layout_.viewportHeight, layout_.hyphenationEnabled, layout_.embeddedStyle,
-      layout_.imageRendering, layout_.focusReadingEnabled, layout_.renderMode, layout_.forceParagraphIndents);
+      layout_.imageRendering, layout_.focusReadingEnabled, layout_.wordSpacing, layout_.renderMode,
+      layout_.forceParagraphIndents);
   if (!EpubSearchTraversal::needsBuild(loaded, loaded && section_->isPartial())) {
     if (!wrapped_ && spine_ == startSpine_) {
       startPage_ = EpubSearchTraversal::clampPage(startPage_, section_->pageCount);
@@ -55,7 +56,8 @@ bool EpubInBookSearchActivity::openSection() {
   return section_->startBuild(layout_.fontId, layout_.lineCompression, layout_.extraParagraphSpacing,
                               layout_.paragraphAlignment, layout_.viewportWidth, layout_.viewportHeight,
                               layout_.hyphenationEnabled, layout_.embeddedStyle, layout_.imageRendering,
-                              layout_.focusReadingEnabled, layout_.renderMode, layout_.forceParagraphIndents);
+                              layout_.focusReadingEnabled, layout_.wordSpacing, layout_.renderMode,
+                              layout_.forceParagraphIndents);
 }
 
 bool EpubInBookSearchActivity::scanCurrentPage() {

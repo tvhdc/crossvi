@@ -51,6 +51,7 @@ class ChapterHtmlSlimParser {
   uint16_t viewportHeight;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
+  uint8_t wordSpacing;
   EpubRenderMode renderMode;
   bool forceParagraphIndents;
   const CssParser* cssParser;
@@ -73,6 +74,7 @@ class ChapterHtmlSlimParser {
     CssTextDirection direction = CssTextDirection::Ltr;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
+    bool hasSmallCaps = false, smallCaps = false;
   };
   std::vector<StyleStackEntry> inlineStyleStack;
   std::vector<BlockStyle> blockStyleStack;  // accumulated block styles from open ancestor elements
@@ -84,6 +86,7 @@ class ChapterHtmlSlimParser {
   CssTextDirection effectiveDirection = CssTextDirection::Ltr;
   bool effectiveSup = false;
   bool effectiveSub = false;
+  bool effectiveSmallCaps = false;
   int tableDepth = 0;
   int tableRowIndex = 0;
   int tableColIndex = 0;
@@ -128,6 +131,7 @@ class ChapterHtmlSlimParser {
   static EpdFontFamily::Style fontStyleForTextDecoration(CssTextDecoration decoration);
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   static void applyTextDecorationToEntry(StyleStackEntry& entry, const CssStyle& css);
+  static void applySmallCapsToEntry(StyleStackEntry& entry, const CssStyle& css);
   void pushDecorationStyleEntry(CssTextDecoration defaultDecoration, const CssStyle& cssStyle);
   void emitHorizontalRule(const BlockStyle& blockStyle);
   // XML callbacks
@@ -141,7 +145,7 @@ class ChapterHtmlSlimParser {
                                  const int fontId, const float lineCompression, const bool extraParagraphSpacing,
                                  const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                  const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                 const bool focusReadingEnabled,
+                                 const bool focusReadingEnabled, const uint8_t wordSpacing,
                                  const std::function<void(std::unique_ptr<Page>, uint16_t, uint16_t)>& completePageFn,
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
@@ -161,6 +165,7 @@ class ChapterHtmlSlimParser {
         viewportHeight(viewportHeight),
         hyphenationEnabled(hyphenationEnabled),
         focusReadingEnabled(focusReadingEnabled),
+        wordSpacing(wordSpacing),
         renderMode(renderMode),
         forceParagraphIndents(forceParagraphIndents),
         completePageFn(completePageFn),

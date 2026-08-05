@@ -62,6 +62,8 @@ enum class CssFontStyle : uint8_t { Normal = 0, Italic = 1 };
 // Font weight options - CSS supports 100-900, we simplify to normal/bold
 enum class CssFontWeight : uint8_t { Normal = 0, Bold = 1 };
 
+enum class CssFontVariantCaps : uint8_t { Normal = 0, SmallCaps = 1 };
+
 // Text decoration options. Values are bit flags so CSS can combine multiple line decorations.
 enum class CssTextDecoration : uint8_t { None = 0, Underline = 1, LineThrough = 2 };
 
@@ -84,24 +86,25 @@ enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
 
 // Bitmask for tracking which properties have been explicitly set
 struct CssPropertyFlags {
-  uint16_t textAlign : 1;
-  uint16_t fontStyle : 1;
-  uint16_t fontWeight : 1;
-  uint16_t textDecoration : 1;
-  uint16_t textIndent : 1;
-  uint16_t marginTop : 1;
-  uint16_t marginBottom : 1;
-  uint16_t marginLeft : 1;
-  uint16_t marginRight : 1;
-  uint16_t paddingTop : 1;
-  uint16_t paddingBottom : 1;
-  uint16_t paddingLeft : 1;
-  uint16_t paddingRight : 1;
-  uint16_t imageHeight : 1;
-  uint16_t imageWidth : 1;
-  uint16_t display : 1;
-  uint16_t direction : 1;
-  uint16_t verticalAlign : 1;
+  uint32_t textAlign : 1;
+  uint32_t fontStyle : 1;
+  uint32_t fontWeight : 1;
+  uint32_t textDecoration : 1;
+  uint32_t textIndent : 1;
+  uint32_t marginTop : 1;
+  uint32_t marginBottom : 1;
+  uint32_t marginLeft : 1;
+  uint32_t marginRight : 1;
+  uint32_t paddingTop : 1;
+  uint32_t paddingBottom : 1;
+  uint32_t paddingLeft : 1;
+  uint32_t paddingRight : 1;
+  uint32_t imageHeight : 1;
+  uint32_t imageWidth : 1;
+  uint32_t display : 1;
+  uint32_t direction : 1;
+  uint32_t verticalAlign : 1;
+  uint32_t fontVariantCaps : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -121,23 +124,24 @@ struct CssPropertyFlags {
         imageWidth(0),
         display(0),
         direction(0),
-        verticalAlign(0) {}
+        verticalAlign(0),
+        fontVariantCaps(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || direction || verticalAlign;
+           imageWidth || display || direction || verticalAlign || fontVariantCaps;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = direction = verticalAlign = 0;
+    imageHeight = imageWidth = display = direction = verticalAlign = fontVariantCaps = 0;
   }
 };
 
-// Cache serializes defined flags as uint32_t with bit indices 0..17.
+// Cache serializes defined flags as uint32_t with bit indices 0..18.
 static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
               "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
 
@@ -150,6 +154,7 @@ struct CssStyle {
   CssFontWeight fontWeight = CssFontWeight::Normal;
   CssTextDecoration textDecoration = CssTextDecoration::None;
   CssTextDirection direction = CssTextDirection::Ltr;
+  CssFontVariantCaps fontVariantCaps = CssFontVariantCaps::Normal;
 
   CssLength textIndent;     // First-line indent (deferred resolution)
   CssLength marginTop;      // Vertical spacing before block
@@ -242,6 +247,10 @@ struct CssStyle {
       verticalAlign = base.verticalAlign;
       defined.verticalAlign = 1;
     }
+    if (base.hasFontVariantCaps()) {
+      fontVariantCaps = base.fontVariantCaps;
+      defined.fontVariantCaps = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -262,6 +271,7 @@ struct CssStyle {
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
+  [[nodiscard]] bool hasFontVariantCaps() const { return defined.fontVariantCaps; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -269,6 +279,7 @@ struct CssStyle {
     fontWeight = CssFontWeight::Normal;
     textDecoration = CssTextDecoration::None;
     direction = CssTextDirection::Ltr;
+    fontVariantCaps = CssFontVariantCaps::Normal;
     textIndent = CssLength{};
     marginTop = marginBottom = marginLeft = marginRight = CssLength{};
     paddingTop = paddingBottom = paddingLeft = paddingRight = CssLength{};

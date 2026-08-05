@@ -254,6 +254,7 @@ uint32_t layoutFingerprint(const LayoutIdentity& identity) {
   addU8(checksum, identity.embeddedStyle ? 1 : 0);
   addU8(checksum, identity.imageRendering);
   addU8(checksum, identity.focusReadingEnabled ? 1 : 0);
+  addU8(checksum, identity.wordSpacing);
   addU8(checksum, identity.renderMode);
   addU8(checksum, identity.forceParagraphIndents ? 1 : 0);
   return checksum == 0 ? 1 : checksum;

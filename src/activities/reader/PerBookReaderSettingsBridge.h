@@ -16,6 +16,7 @@ inline PerBookReaderSettings captureReaderSettings(const bool hasOverrides = fal
   out.fontFamily = SETTINGS.fontFamily;
   out.fontSize = SETTINGS.fontSize;
   out.lineSpacing = SETTINGS.lineSpacing;
+  out.wordSpacing = SETTINGS.wordSpacing;
   out.paragraphAlignment = SETTINGS.paragraphAlignment;
   out.orientation = SETTINGS.orientation;
   out.screenMargin = SETTINGS.screenMargin;
@@ -40,6 +41,7 @@ inline void applyReaderSettings(const PerBookReaderSettings& settings) {
   SETTINGS.fontFamily = settings.fontFamily;
   SETTINGS.fontSize = settings.fontSize;
   SETTINGS.lineSpacing = settings.lineSpacing;
+  SETTINGS.wordSpacing = settings.wordSpacing;
   SETTINGS.paragraphAlignment = settings.paragraphAlignment;
   SETTINGS.orientation = settings.orientation;
   SETTINGS.screenMargin = settings.screenMargin;

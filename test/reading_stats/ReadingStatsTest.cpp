@@ -1074,6 +1074,14 @@ TEST(ReadingStatsModels, PaceUsesBoundedRunningAverage) {
   EXPECT_EQ(stats.paceSampleCount, BookReadingStats::MAX_PACE_SAMPLE_COUNT);
 }
 
+TEST(ReadingStatsModels, EstimatesFixedLayoutTimeOnlyAfterEnoughPaceSamples) {
+  EXPECT_EQ(estimateRemainingReadingSeconds(100, 9, 20, 2), 0U);
+  EXPECT_EQ(estimateRemainingReadingSeconds(100, 9, 20, 3), 1800U);
+  EXPECT_EQ(estimateRemainingReadingSeconds(100, 99, 20, 3), 0U);
+  EXPECT_EQ(estimateRemainingReadingSeconds(0, 0, 20, 3), 0U);
+  EXPECT_EQ(estimateRemainingReadingSeconds(UINT32_MAX, 0, UINT16_MAX, 3), UINT32_MAX);
+}
+
 TEST(ReadingStatsPersistence, BookPrefersCommittedFilesThenRecoversTemp) {
   Storage.reset();
   constexpr char PRIMARY[] = "/book/stats_v6.bin";

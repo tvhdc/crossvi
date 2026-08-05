@@ -9,14 +9,14 @@
 #include "Epub/Epub/SectionCacheValidator.h"
 
 namespace {
-constexpr uint8_t FINAL_VERSION = 35;
-constexpr uint8_t PARTIAL_VERSION = 0xF7;
-constexpr uint64_t HEADER_SIZE = 39;
-constexpr size_t PAGE_COUNT_OFFSET = 21;
-constexpr size_t PAGE_LUT_OFFSET = 23;
-constexpr size_t ANCHOR_MAP_OFFSET = 27;
-constexpr size_t PARAGRAPH_LUT_OFFSET = 31;
-constexpr size_t LIST_ITEM_LUT_OFFSET = 35;
+constexpr uint8_t FINAL_VERSION = 36;
+constexpr uint8_t PARTIAL_VERSION = 0xF6;
+constexpr uint64_t HEADER_SIZE = 40;
+constexpr size_t PAGE_COUNT_OFFSET = 22;
+constexpr size_t PAGE_LUT_OFFSET = 24;
+constexpr size_t ANCHOR_MAP_OFFSET = 28;
+constexpr size_t PARAGRAPH_LUT_OFFSET = 32;
+constexpr size_t LIST_ITEM_LUT_OFFSET = 36;
 
 template <typename T>
 void append(std::vector<uint8_t>& bytes, const T& value) {
@@ -162,6 +162,7 @@ CacheBytes cacheWithPageVersion(const std::vector<uint8_t>& page, const bool par
   append<uint8_t>(bytes, 0);
   append<uint8_t>(bytes, 0);
   append<uint8_t>(bytes, 0);
+  append<uint8_t>(bytes, 4);  // word spacing
   append<uint8_t>(bytes, 0);
   append<uint8_t>(bytes, 0);
   append<uint16_t>(bytes, 1);
@@ -210,7 +211,7 @@ CacheBytes cacheWithTwoEmptyPages() {
   append<uint16_t>(bytes, 600);
   append<uint16_t>(bytes, 800);
   append<uint8_t>(bytes, 1);
-  for (uint8_t field = 0; field < 5; ++field) append<uint8_t>(bytes, 0);
+  for (uint8_t field = 0; field < 6; ++field) append<uint8_t>(bytes, 0);
   append<uint16_t>(bytes, 2);
   for (uint8_t field = 0; field < 4; ++field) append<uint32_t>(bytes, 0);
   EXPECT_EQ(bytes.size(), HEADER_SIZE);
@@ -327,11 +328,15 @@ TEST(SectionCacheValidator, RejectsInvalidHeaderAndTableOffsets) {
   EXPECT_FALSE(validates(cache.bytes));
 
   cache = cacheWithPage(emptyPage());
-  cache.bytes[19] = 3;  // invalid EPUB render mode
+  cache.bytes[19] = 5;  // invalid word spacing
   EXPECT_FALSE(validates(cache.bytes));
 
   cache = cacheWithPage(emptyPage());
-  cache.bytes[20] = 2;  // invalid serialized force-indent bool
+  cache.bytes[20] = 3;  // invalid EPUB render mode
+  EXPECT_FALSE(validates(cache.bytes));
+
+  cache = cacheWithPage(emptyPage());
+  cache.bytes[21] = 2;  // invalid serialized force-indent bool
   EXPECT_FALSE(validates(cache.bytes));
 
   cache = cacheWithPage(emptyPage());

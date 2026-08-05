@@ -90,9 +90,15 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
   LOG_DBG("FONT", "Manifest request heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   auto result = HttpDownloader::downloadToFile(FONT_MANIFEST_URL, FONT_MANIFEST_TMP, nullptr);
+  if (result == HttpDownloader::HTTP_ERROR) {
+    LOG_DBG("FONT", "Retrying font manifest after network failure");
+    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    result = HttpDownloader::downloadToFile(FONT_MANIFEST_URL, FONT_MANIFEST_TMP, nullptr);
+  }
   if (result != HttpDownloader::OK) {
     LOG_ERR("FONT", "Failed to fetch manifest from %s (result %d)", FONT_MANIFEST_URL, static_cast<int>(result));
-    errorMessage_ = "Failed to fetch font list";
+    errorMessage_ = result == HttpDownloader::FILE_ERROR ? "Could not save font list to SD card"
+                                                         : "Could not connect to font server";
     Storage.remove(FONT_MANIFEST_TMP);
     return false;
   }
@@ -441,26 +447,42 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     std::string url = baseUrl_ + file.name;
 
-    auto result = HttpDownloader::downloadToFile(
-        url, stagingPath,
-        [this](size_t downloaded, size_t total) {
-          fileProgress_ = downloaded;
-          if (total > 0) fileTotal_ = total;
-          mappedInput.update();
-          if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
-              mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-            cancelRequested_ = true;
-          }
-          // The downloader reports every small network chunk, while an e-ink
-          // refresh cannot usefully represent sub-percent changes.
-          int percent = fileTotal_ > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100u / fileTotal_) : 0;
-          if (percent > 100) percent = 100;
-          if (percent != lastNotifiedPercent_) {
-            lastNotifiedPercent_ = percent;
-            requestUpdate(true);
-          }
-        },
-        &cancelRequested_, "", "", false);
+    const auto downloadFile = [this, &url, &stagingPath]() {
+      return HttpDownloader::downloadToFile(
+          url, stagingPath,
+          [this](size_t downloaded, size_t total) {
+            fileProgress_ = downloaded;
+            if (total > 0) fileTotal_ = total;
+            mappedInput.update();
+            if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+              cancelRequested_ = true;
+            }
+            // The downloader reports every small network chunk, while an e-ink
+            // refresh cannot usefully represent sub-percent changes.
+            int percent = fileTotal_ > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100u / fileTotal_) : 0;
+            if (percent > 100) percent = 100;
+            if (percent != lastNotifiedPercent_) {
+              lastNotifiedPercent_ = percent;
+              requestUpdate(true);
+            }
+          },
+          &cancelRequested_, "", "", false);
+    };
+
+    auto result = downloadFile();
+    if (result == HttpDownloader::HTTP_ERROR && !cancelRequested_) {
+      LOG_DBG("FONT", "Retrying %s after network failure", file.name.c_str());
+      {
+        // Progress renders may have repopulated glyph caches during the first
+        // attempt. Hold the activity render lock while releasing them again.
+        RenderLock lock(*this);
+        if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+        fileProgress_ = 0;
+        lastNotifiedPercent_ = -1;
+      }
+      result = downloadFile();
+    }
 
     if (result == HttpDownloader::ABORTED) {
       FontStorageUtils::discardStagingFamily(stagingDirectory);
@@ -475,7 +497,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     if (result != HttpDownloader::OK) {
       LOG_ERR("FONT", "Download failed: %s (%d)", file.name.c_str(), result);
-      failDownload("Download failed: " + file.name);
+      failDownload((result == HttpDownloader::FILE_ERROR ? "SD card write failed: " : "Network error: ") + file.name);
       return;
     }
 

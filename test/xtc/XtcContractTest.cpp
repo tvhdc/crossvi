@@ -493,6 +493,37 @@ TEST_F(XtcContractTest, X3FitsAndX4MapsEveryEdge) {
   EXPECT_EQ(xtc::mapViewportCoordinate(x3.height - 1, x3.height, 800), 799);
 }
 
+TEST_F(XtcContractTest, StreamCoordinatesPreservePlaneOrderAndViewportSampling) {
+  xtc::PageLayout layout;
+  ASSERT_TRUE(xtc::calculatePageLayout(480, 799, 2, layout));
+
+  bool secondPlane = false;
+  uint16_t x = 0;
+  uint16_t yBase = 0;
+  ASSERT_TRUE(xtc::locateXthStreamByte(layout, 480, 799, 0, secondPlane, x, yBase));
+  EXPECT_FALSE(secondPlane);
+  EXPECT_EQ(x, 479);
+  EXPECT_EQ(yBase, 0);
+  ASSERT_TRUE(xtc::locateXthStreamByte(layout, 480, 799, layout.planeBytes, secondPlane, x, yBase));
+  EXPECT_TRUE(secondPlane);
+  EXPECT_EQ(x, 479);
+  EXPECT_EQ(yBase, 0);
+  EXPECT_FALSE(xtc::locateXthStreamByte(layout, 480, 799, layout.payloadBytes, secondPlane, x, yBase));
+
+  for (uint16_t destination = 0; destination < 475; ++destination) {
+    const uint16_t source = xtc::mapViewportCoordinate(destination, 475, 480);
+    const xtc::CoordinateRange range = xtc::mapSourceCoordinateRange(source, 480, 475);
+    EXPECT_LE(range.begin, destination);
+    EXPECT_GT(range.end, destination);
+  }
+  size_t covered = 0;
+  for (uint16_t source = 0; source < 480; ++source) {
+    const xtc::CoordinateRange range = xtc::mapSourceCoordinateRange(source, 480, 475);
+    covered += range.end - range.begin;
+  }
+  EXPECT_EQ(covered, 475U);
+}
+
 TEST_F(XtcContractTest, SameSizePixelReplacementChangesStreamingIdentity) {
   auto first = makeBook();
   auto second = first;
