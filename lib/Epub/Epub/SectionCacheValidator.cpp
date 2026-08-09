@@ -248,8 +248,8 @@ bool validateTables(SectionCacheValidation::Input& input, const uint64_t headerS
                                 static_cast<uint64_t>(layout.pageCount) * sizeof(uint16_t);
   const uint64_t listItemEnd =
       static_cast<uint64_t>(layout.listItemLutOffset) + static_cast<uint64_t>(layout.pageCount) * sizeof(uint16_t);
-  const uint64_t visibleTextEnd = static_cast<uint64_t>(layout.visibleTextLutOffset) +
-                                  static_cast<uint64_t>(layout.pageCount) * sizeof(uint32_t);
+  const uint64_t visibleTextEnd =
+      static_cast<uint64_t>(layout.visibleTextLutOffset) + static_cast<uint64_t>(layout.pageCount) * sizeof(uint32_t);
   const uint64_t expectedEnd = visibleTextEnd + (layout.partial ? 2U * sizeof(uint32_t) : 0U);
   if (layout.pageLutOffset < headerSize || (layout.pageCount == 0 && layout.pageLutOffset != headerSize) ||
       pageLutEnd != layout.anchorMapOffset ||

@@ -307,9 +307,8 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
   const uint32_t sourceStart = canonicalTextOffsetValid ? canonicalTextOffset : UINT32_MAX;
-  const size_t sourceBytes =
-      currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, sourceStart,
-                                partWordVisibleOffset);
+  const size_t sourceBytes = currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, sourceStart,
+                                                       partWordVisibleOffset);
   if (canonicalTextOffsetValid) {
     if (sourceBytes > UINT32_MAX - canonicalTextOffset) {
       canonicalTextOffsetValid = false;
@@ -452,8 +451,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   if (self->lastFailure_ == ChapterParseFailure::OutOfMemory) return;
 
   if (strcmp(name, "body") == 0) self->insideBody = true;
-  if (self->insideBody &&
-      (self->nonVisibleTextDepth > 0 || VisibleTextUtils::isNonVisibleElement(name))) {
+  if (self->insideBody && (self->nonVisibleTextDepth > 0 || VisibleTextUtils::isNonVisibleElement(name))) {
     self->nonVisibleTextDepth++;
   }
 
@@ -826,8 +824,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   (self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
                    self->viewportHeight)) {
                 self->setCurrentPageVisibleOffset(self->visibleTextOffset);
-                self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
-                                     self->xpathListItemIndex, self->currentPageVisibleOffset);
+                self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex, self->xpathListItemIndex,
+                                     self->currentPageVisibleOffset);
                 self->completedPageCount++;
                 if (!self->createPage("image_page_break")) return;
               } else if (!self->currentPage) {

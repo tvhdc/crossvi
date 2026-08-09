@@ -15,8 +15,8 @@
 #include "activities/settings/KOReaderSettingsActivity.h"
 #include "activities/settings/LanguageSelectActivity.h"
 #include "activities/settings/OpdsServerListActivity.h"
-#include "activities/settings/StatusBarSettingsActivity.h"
 #include "activities/settings/SettingsSubmenuActivity.h"
+#include "activities/settings/StatusBarSettingsActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "activities/settings/TimeSettingsActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
@@ -157,8 +157,8 @@ void HomeShortcutsActivity::openScreen(const HomeShortcutTarget target) {
   std::unique_ptr<Activity> activity;
   switch (target) {
     case HomeShortcutTarget::Appearance:
-      activity = std::make_unique<SettingsSubmenuActivity>(renderer, mappedInput,
-                                                           SettingsSubmenuActivity::Page::HomeLibrary);
+      activity =
+          std::make_unique<SettingsSubmenuActivity>(renderer, mappedInput, SettingsSubmenuActivity::Page::HomeLibrary);
       break;
     case HomeShortcutTarget::TextSettings:
       activity = std::make_unique<TextSettingsActivity>(renderer, mappedInput);

@@ -1141,8 +1141,8 @@ std::optional<uint32_t> Section::getVisibleTextOffsetForPage(const uint16_t page
       page >= layout.pageCount) {
     return std::nullopt;
   }
-  const uint64_t begin = static_cast<uint64_t>(layout.visibleTextLutOffset) +
-                         static_cast<uint64_t>(page) * sizeof(uint32_t);
+  const uint64_t begin =
+      static_cast<uint64_t>(layout.visibleTextLutOffset) + static_cast<uint64_t>(page) * sizeof(uint32_t);
   BoundedFileReader reader(f, begin, begin + sizeof(uint32_t));
   uint32_t result = 0;
   return reader.readPod(result) && reader.atEnd() ? std::optional<uint32_t>{result} : std::nullopt;
@@ -1174,8 +1174,8 @@ std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offs
     return std::nullopt;
   }
 
-  const uint64_t end = static_cast<uint64_t>(layout.visibleTextLutOffset) +
-                       static_cast<uint64_t>(layout.pageCount) * sizeof(uint32_t);
+  const uint64_t end =
+      static_cast<uint64_t>(layout.visibleTextLutOffset) + static_cast<uint64_t>(layout.pageCount) * sizeof(uint32_t);
   BoundedFileReader reader(f, layout.visibleTextLutOffset, end);
   uint16_t result = 0;
   uint32_t lastPageStart = 0;

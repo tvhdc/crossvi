@@ -15,8 +15,8 @@ inline bool equalsTag(const std::string_view name, const std::string_view tag) {
 }
 
 inline bool isNonVisibleElement(const std::string_view name) {
-  return equalsTag(name, "head") || equalsTag(name, "style") || equalsTag(name, "script") ||
-         equalsTag(name, "title") || equalsTag(name, "rp");
+  return equalsTag(name, "head") || equalsTag(name, "style") || equalsTag(name, "script") || equalsTag(name, "title") ||
+         equalsTag(name, "rp");
 }
 
 }  // namespace VisibleTextUtils

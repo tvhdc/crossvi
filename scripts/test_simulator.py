@@ -1934,7 +1934,7 @@ def smoke_settings_directional_navigation(device: str) -> None:
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
     completed = run([str(binary)], env=environment, capture_output=True, timeout=22)
     log = completed.stdout + completed.stderr
-    if "Entering activity: Settings" not in log or "Entering activity: AppearanceSettings" not in log:
+    if "Entering activity: Settings" not in log or "Entering activity: SettingsSubmenu" not in log:
         raise AssertionError(f"{device.upper()} did not enter Settings through the Home grid:\n{log}")
     if "Entering activity: TextSettings" not in log or "Entering activity: FontSizeSelect" in log:
         raise AssertionError(f"{device.upper()} did not keep font and size choices inside Text Settings:\n{log}")

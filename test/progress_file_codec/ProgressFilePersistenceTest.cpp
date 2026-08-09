@@ -77,8 +77,8 @@ TEST(ProgressFilePersistence, AcceptsLegacyEpubButKeepsPageLayoutsStrict) {
 
 TEST(ProgressFilePersistence, LoadsAndSafelyMigratesContentAnchoredEpubProgress) {
   Storage.reset();
-  const std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> anchored{
-      12, 0, 3, 0, 20, 0, 0x44, 0x33, 0x22, 0x11};
+  const std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> anchored{12, 0,    3,    0,    20,
+                                                                                        0,  0x44, 0x33, 0x22, 0x11};
   const std::array<uint8_t, ProgressFile::EPUB_PROGRESS_SIZE> next{12, 0, 4, 0, 20, 0};
   const std::array<uint8_t, ProgressFile::EPUB_PROGRESS_SIZE> oldBackup{12, 0, 2, 0, 20, 0};
   const ProgressFile::EpubBounds bounds{53};
@@ -102,8 +102,8 @@ TEST(ProgressFilePersistence, LoadsAndSafelyMigratesContentAnchoredEpubProgress)
 TEST(ProgressFilePersistence, UpgradesSixByteEpubProgressWithoutDiscardingRollbackCopy) {
   Storage.reset();
   const std::array<uint8_t, ProgressFile::EPUB_PROGRESS_SIZE> previous{12, 0, 3, 0, 20, 0};
-  const std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> anchored{
-      12, 0, 4, 0, 20, 0, 0x44, 0x33, 0x22, 0x11};
+  const std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> anchored{12, 0,    4,    0,    20,
+                                                                                        0,  0x44, 0x33, 0x22, 0x11};
   const ProgressFile::EpubBounds bounds{53};
   const ProgressFile::CandidateValidator validator{ProgressFile::validateEpubBounds, &bounds};
   Storage.setFile(PRIMARY, bytes(previous));

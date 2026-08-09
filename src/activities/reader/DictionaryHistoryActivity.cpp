@@ -84,8 +84,8 @@ void DictionaryHistoryActivity::lookupSelected() {
     return;
   }
 
-  auto definitionActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
-      renderer, mappedInput, std::move(headword), std::move(definition));
+  auto definitionActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
+                                                                            std::move(definition));
   if (!definitionActivity) {
     LOG_ERR("DHIST", "OOM allocating DictionaryDefinitionActivity (%u bytes)",
             static_cast<unsigned>(sizeof(DictionaryDefinitionActivity)));

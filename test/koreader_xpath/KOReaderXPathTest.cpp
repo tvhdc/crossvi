@@ -18,8 +18,7 @@ TEST(KOReaderXPath, ResolvesExactVisibleOffsetAcrossNestedTextNodes) {
       "<html><head><title>Ignored</title></head><body><p>Alpha <em>beta</em> gamma</p>"
       "<script>ignored()</script><div>Delta</div></body></html>");
 
-  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleOffset(epub, 0, 0),
-            "/body/DocFragment[1]/body");
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleOffset(epub, 0, 0), "/body/DocFragment[1]/body");
   EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleOffset(epub, 0, 6),
             "/body/DocFragment[1]/body/p[1]/em[1]/text()[1].0");
   EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleOffset(epub, 0, 8),
@@ -31,6 +30,5 @@ TEST(KOReaderXPath, ResolvesExactVisibleOffsetAcrossNestedTextNodes) {
 TEST(KOReaderXPath, ResolvesDirectBodyTextWithoutFallingBackToChapterStart) {
   const auto epub = std::make_shared<Epub>("<html><body>Lead<p>Paragraph</p></body></html>");
 
-  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleOffset(epub, 0, 2),
-            "/body/DocFragment[1]/body/text()[1].2");
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleOffset(epub, 0, 2), "/body/DocFragment[1]/body/text()[1].2");
 }

@@ -698,8 +698,8 @@ bool Epub::readCoreMetadata(BookMetadataCache::BookMetadata& metadata) {
     fromCache = !bookMetadataCache->coreMetadata.coverItemHref.empty();
   } else if (Storage.exists((cachePath + "/book.bin").c_str()) && ensureSourceIdentitySnapshot()) {
     bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
-    const bool loaded = bookMetadataCache &&
-                        bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
+    const bool loaded =
+        bookMetadataCache && bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
     if (!bookMetadataCache) LOG_ERR("EBP", "Not enough memory for cached metadata; parsing OPF instead");
     if (loaded) fromCache = !bookMetadataCache->coreMetadata.coverItemHref.empty();
   }

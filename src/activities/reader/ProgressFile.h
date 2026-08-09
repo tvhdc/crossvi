@@ -299,8 +299,7 @@ inline LoadResult loadPage(const std::string& cachePath, uint8_t* data, const si
 inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const size_t len,
                         const CandidateValidator validator = {}, const CandidateProtector protector = {},
                         const size_t compatibleExistingSize = 0) {
-  if (!data || (len != 4 && len != 6 && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) ||
-      !validator.accepts(data, len)) {
+  if (!data || (len != 4 && len != 6 && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) || !validator.accepts(data, len)) {
     return false;
   }
 
@@ -342,9 +341,9 @@ inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const
     return candidate.status == detail::CandidateStatus::Protected;
   });
   const bool primaryIsValid = primary.status == detail::CandidateStatus::Valid;
-  const bool hasUnrecoverableState = isUnreadableOrUnknown(primary) ||
-                                     (!primaryIsValid &&
-                                      (isUnreadableOrUnknown(backup) || isUnreadableOrUnknown(temp)));
+  const bool hasUnrecoverableState =
+      isUnreadableOrUnknown(primary) ||
+      (!primaryIsValid && (isUnreadableOrUnknown(backup) || isUnreadableOrUnknown(temp)));
   if (hasProtectedRecord || hasUnrecoverableState) {
     LOG_ERR("PRG", "Refusing progress write: primary=%u/%u backup=%u/%u temp=%u/%u",
             static_cast<unsigned>(primary.status), static_cast<unsigned>(primary.size),
@@ -421,8 +420,7 @@ inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const
 inline bool writeEpubAtomic(const std::string& cachePath, const uint8_t* data, const size_t len,
                             const CandidateValidator validator = {}) {
   if (len != EPUB_PROGRESS_SIZE && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) return false;
-  const size_t compatibleSize =
-      len == EPUB_PROGRESS_SIZE ? EPUB_CONTENT_ANCHORED_PROGRESS_SIZE : EPUB_PROGRESS_SIZE;
+  const size_t compatibleSize = len == EPUB_PROGRESS_SIZE ? EPUB_CONTENT_ANCHORED_PROGRESS_SIZE : EPUB_PROGRESS_SIZE;
   return writeAtomic(cachePath, data, len, validator, {}, compatibleSize);
 }
 

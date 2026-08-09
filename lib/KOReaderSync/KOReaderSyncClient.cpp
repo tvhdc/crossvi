@@ -115,16 +115,16 @@ bool verifiedRequest(const RequestMethod method, const std::string& url, const s
     client.addHeader(headers[i].name, headers[i].value);
   }
 
-  const int status = client.sendRequest(
-      methodName(method), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
-      [&accumulator](const uint8_t* data, const size_t length) {
-        if (!accumulator.response || length > MAX_RESPONSE_BYTES - accumulator.response->size()) {
-          accumulator.overflow = true;
-          return false;
-        }
-        accumulator.response->append(reinterpret_cast<const char*>(data), length);
-        return true;
-      });
+  const int status =
+      client.sendRequest(methodName(method), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+                         [&accumulator](const uint8_t* data, const size_t length) {
+                           if (!accumulator.response || length > MAX_RESPONSE_BYTES - accumulator.response->size()) {
+                             accumulator.overflow = true;
+                             return false;
+                           }
+                           accumulator.response->append(reinterpret_cast<const char*>(data), length);
+                           return true;
+                         });
   httpStatus = status;
   const size_t declaredLength = client.hasContentLength() ? client.getContentLength() : 0;
   const int contentLength =
@@ -134,8 +134,7 @@ bool verifiedRequest(const RequestMethod method, const std::string& url, const s
                      (!client.hasContentLength() || declaredLength <= MAX_RESPONSE_BYTES) &&
                      (!client.hasContentLength() || response.size() == declaredLength);
 #if defined(ENABLE_SERIAL_LOG)
-  LOG_DBG("KOSync",
-          "HTTP done: status=%d, complete=%d, declared=%d, received=%u, overflow=%d, heap=%u, max_alloc=%u",
+  LOG_DBG("KOSync", "HTTP done: status=%d, complete=%d, declared=%d, received=%u, overflow=%d, heap=%u, max_alloc=%u",
           httpStatus, client.responseComplete() ? 1 : 0, contentLength, static_cast<unsigned>(response.size()),
           accumulator.overflow ? 1 : 0, static_cast<unsigned>(ESP.getFreeHeap()),
           static_cast<unsigned>(ESP.getMaxAllocHeap()));

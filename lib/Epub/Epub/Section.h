@@ -28,8 +28,8 @@ class Section {
 
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
-                              bool embeddedStyle, uint8_t imageRendering, bool focusReadingEnabled,
-                              uint8_t wordSpacing, EpubRenderMode renderMode, bool forceParagraphIndents);
+                              bool embeddedStyle, uint8_t imageRendering, bool focusReadingEnabled, uint8_t wordSpacing,
+                              EpubRenderMode renderMode, bool forceParagraphIndents);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
   // Page-offset table entry, kept in RAM while an incremental build is running so
@@ -107,8 +107,8 @@ class Section {
   bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                          uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
                          uint8_t imageRendering, bool focusReadingEnabled, uint8_t wordSpacing,
-                         EpubRenderMode renderMode,
-                         bool forceParagraphIndents, const std::function<void()>& popupFn = nullptr);
+                         EpubRenderMode renderMode, bool forceParagraphIndents,
+                         const std::function<void()>& popupFn = nullptr);
 
   // Incremental build: lay out the section a few pages at a time so a large chapter
   // can show its first page immediately and keep the UI responsive while the rest

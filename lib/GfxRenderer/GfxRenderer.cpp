@@ -24,9 +24,7 @@ uint8_t resolveSdCardStyle(const SdCardFont& font, const EpdFontFamily::Style st
   return font.resolveStyle(static_cast<uint8_t>(style));
 }
 
-int32_t scaleSmallCapsAdvance(const int32_t value) {
-  return value >= 0 ? (value * 3 + 2) / 4 : (value * 3 - 2) / 4;
-}
+int32_t scaleSmallCapsAdvance(const int32_t value) { return value >= 0 ? (value * 3 + 2) / 4 : (value * 3 - 2) / 4; }
 
 int scaleSmallCapsMetric(const int value) { return value * 3 / 4; }
 int smallCapsExtent(const int value) { return (value * 3 + 3) / 4; }
@@ -2089,7 +2087,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
     if (prevCp != 0) {
       int32_t kernFP = font.getKerning(prevCp, cp, style);  // 4.4 fixed-point kern
       if (previousSmallCap || smallCap) kernFP = scaleSmallCapsAdvance(kernFP);
-      widthPx += fp4::toPixel(prevAdvanceFP + kernFP);         // snap 12.4 fixed-point to nearest pixel
+      widthPx += fp4::toPixel(prevAdvanceFP + kernFP);  // snap 12.4 fixed-point to nearest pixel
     }
 
     const EpdGlyph* glyph = font.getGlyph(cp, style);

@@ -22,8 +22,7 @@ enum Format : uint8_t {
 enum Separator : uint8_t { Period = 0, Hyphen = 1, Slash = 2, SeparatorCount };
 
 inline constexpr const char* FORMAT_PATTERNS[FormatCount] = {
-    "MMM dd, yyyy", "dd MMM yyyy", "MM/dd/yyyy", "dd/MM/yyyy", "yyyy/MM/dd",
-    "MM/dd",        "dd/MM",       "MMMM dd",    "dd MMMM",
+    "MMM dd, yyyy", "dd MMM yyyy", "MM/dd/yyyy", "dd/MM/yyyy", "yyyy/MM/dd", "MM/dd", "dd/MM", "MMMM dd", "dd MMMM",
 };
 
 inline const char* formatPattern(const uint8_t value) {
@@ -48,15 +47,13 @@ inline bool format(const uint16_t year, const uint8_t month, const uint8_t day, 
   if (!output || outputSize == 0 || month < 1 || month > 12 || day < 1 || day > 31) return false;
 
   static constexpr const char* SHORT_MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  static constexpr const char* LONG_MONTHS[] = {"January", "February", "March",     "April",
-                                                 "May",     "June",     "July",      "August",
-                                                 "September", "October", "November", "December"};
-  static constexpr const char* SHORT_MONTHS_VI[] = {"Thg 1", "Thg 2", "Thg 3", "Thg 4", "Thg 5", "Thg 6",
-                                                     "Thg 7", "Thg 8", "Thg 9", "Thg 10", "Thg 11", "Thg 12"};
-  static constexpr const char* LONG_MONTHS_VI[] = {"Tháng 1", "Tháng 2", "Tháng 3", "Tháng 4",
-                                                    "Tháng 5", "Tháng 6", "Tháng 7", "Tháng 8",
-                                                    "Tháng 9", "Tháng 10", "Tháng 11", "Tháng 12"};
+                                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  static constexpr const char* LONG_MONTHS[] = {"January", "February", "March",     "April",   "May",      "June",
+                                                "July",    "August",   "September", "October", "November", "December"};
+  static constexpr const char* SHORT_MONTHS_VI[] = {"Thg 1", "Thg 2", "Thg 3", "Thg 4",  "Thg 5",  "Thg 6",
+                                                    "Thg 7", "Thg 8", "Thg 9", "Thg 10", "Thg 11", "Thg 12"};
+  static constexpr const char* LONG_MONTHS_VI[] = {"Tháng 1", "Tháng 2", "Tháng 3", "Tháng 4",  "Tháng 5",  "Tháng 6",
+                                                   "Tháng 7", "Tháng 8", "Tháng 9", "Tháng 10", "Tháng 11", "Tháng 12"};
   const char* const* shortMonths = vietnameseMonthNames ? SHORT_MONTHS_VI : SHORT_MONTHS;
   const char* const* longMonths = vietnameseMonthNames ? LONG_MONTHS_VI : LONG_MONTHS;
   const char separator = numericSeparator == '.' || numericSeparator == '-' ? numericSeparator : '/';
@@ -95,8 +92,8 @@ inline bool format(const uint16_t year, const uint8_t month, const uint8_t day, 
       break;
     case MonthDayYearLong:
     default:
-      written = std::snprintf(output, outputSize, "%s %02u, %u", shortMonths[month - 1],
-                              static_cast<unsigned>(day), static_cast<unsigned>(year));
+      written = std::snprintf(output, outputSize, "%s %02u, %u", shortMonths[month - 1], static_cast<unsigned>(day),
+                              static_cast<unsigned>(year));
       break;
   }
   return written >= 0 && static_cast<size_t>(written) < outputSize;

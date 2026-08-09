@@ -25,12 +25,8 @@ enum MenuItem {
 };
 
 const StrId menuNames[] = {
-    StrId::STR_TITLE,
-    StrId::STR_CHAPTER_PAGE_COUNT,
-    StrId::STR_BOOK_PROGRESS_PERCENTAGE,
-    StrId::STR_PROGRESS_BAR,
-    StrId::STR_PROGRESS_BAR_THICKNESS,
-    StrId::STR_CLOCK,
+    StrId::STR_TITLE,          StrId::STR_CHAPTER_PAGE_COUNT,     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
+    StrId::STR_PROGRESS_BAR,   StrId::STR_PROGRESS_BAR_THICKNESS, StrId::STR_CLOCK,
     StrId::STR_XTC_STATUS_BAR,
 };
 constexpr int PROGRESS_BAR_ITEMS = 3;

@@ -279,8 +279,7 @@ void DictionaryWordSelectActivity::performLookup() {
     }
     DICTIONARY_HISTORY.record(successfulQuery);
     popup = Popup::None;
-    startActivityForResult(std::move(definitionActivity),
-                           [this](const ActivityResult&) { requestUpdate(); });
+    startActivityForResult(std::move(definitionActivity), [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
   if (!ok) {

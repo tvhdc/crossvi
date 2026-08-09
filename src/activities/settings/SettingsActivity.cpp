@@ -44,51 +44,39 @@ void SettingsActivity::rebuildSettingsLists() {
     dictionariesLoaded = true;
   }
 
-  displaySettings.push_back(
-      SettingInfo::Action(StrId::STR_INTERFACE_CUSTOMIZATION, SettingAction::Appearance));
+  displaySettings.push_back(SettingInfo::Action(StrId::STR_INTERFACE_CUSTOMIZATION, SettingAction::Appearance));
   displaySettings.push_back(SettingInfo::Action(StrId::STR_SLEEP_SETTINGS, SettingAction::SleepSettings));
   displaySettings.push_back(SettingInfo::Enum(
       StrId::STR_SHOW_BATTERY_PERCENTAGE, &CrossPointSettings::hideBatteryPercentage,
-      {StrId::STR_BATTERY_ALWAYS_SHOW, StrId::STR_BATTERY_HIDE_WHILE_READING,
-       StrId::STR_BATTERY_ALWAYS_HIDE}));
+      {StrId::STR_BATTERY_ALWAYS_SHOW, StrId::STR_BATTERY_HIDE_WHILE_READING, StrId::STR_BATTERY_ALWAYS_HIDE}));
   displaySettings.push_back(SettingInfo::Enum(
       StrId::STR_REFRESH_EVERY, &CrossPointSettings::refreshFrequency,
-      {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
-       StrId::STR_PAGES_30}));
-  displaySettings.push_back(
-      SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix));
+      {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30}));
+  displaySettings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix));
 
   readerSettings.push_back(SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.push_back(SettingInfo::Enum(
       StrId::STR_ORIENTATION, &CrossPointSettings::orientation,
-      {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_ORIENTATION_INVERTED,
-       StrId::STR_LANDSCAPE_CCW}));
-  readerSettings.push_back(SettingInfo::Enum(
-      StrId::STR_EPUB_IMAGES, &CrossPointSettings::imageRendering,
-      {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS}));
+      {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_ORIENTATION_INVERTED, StrId::STR_LANDSCAPE_CCW}));
+  readerSettings.push_back(
+      SettingInfo::Enum(StrId::STR_EPUB_IMAGES, &CrossPointSettings::imageRendering,
+                        {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS}));
   readerSettings.push_back(
       SettingInfo::Toggle(StrId::STR_SKIP_EPUB_COVER_PAGE, &CrossPointSettings::skipEpubCoverPage));
-  readerSettings.push_back(
-      SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+  readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
   if (!dictionaries.empty()) {
     readerSettings.push_back(SettingInfo::Action(StrId::STR_DICTIONARY, SettingAction::DictionarySettings));
   }
   readerSettings.push_back(SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
 
-  controlsSettings.push_back(
-      SettingInfo::Action(StrId::STR_PAGE_TURN_BUTTONS, SettingAction::PageButtonSettings));
-  controlsSettings.push_back(
-      SettingInfo::Action(StrId::STR_CONFIRM_BUTTON, SettingAction::ConfirmButtonSettings));
-  controlsSettings.push_back(
-      SettingInfo::Action(StrId::STR_POWER_BUTTON, SettingAction::PowerButtonSettings));
-  controlsSettings.push_back(
-      SettingInfo::Action(StrId::STR_BACK_BUTTON, SettingAction::BackButtonSettings));
+  controlsSettings.push_back(SettingInfo::Action(StrId::STR_PAGE_TURN_BUTTONS, SettingAction::PageButtonSettings));
+  controlsSettings.push_back(SettingInfo::Action(StrId::STR_CONFIRM_BUTTON, SettingAction::ConfirmButtonSettings));
+  controlsSettings.push_back(SettingInfo::Action(StrId::STR_POWER_BUTTON, SettingAction::PowerButtonSettings));
+  controlsSettings.push_back(SettingInfo::Action(StrId::STR_BACK_BUTTON, SettingAction::BackButtonSettings));
   if (halTiltSensor.isAvailable()) {
-    controlsSettings.push_back(
-        SettingInfo::Action(StrId::STR_TILT_SENSOR, SettingAction::TiltSensorSettings));
+    controlsSettings.push_back(SettingInfo::Action(StrId::STR_TILT_SENSOR, SettingAction::TiltSensorSettings));
   }
-  controlsSettings.push_back(
-      SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
+  controlsSettings.push_back(SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
 
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   systemSettings.push_back(SettingInfo::String(StrId::STR_DEVICE_DISPLAY_NAME, &SETTINGS.deviceDisplayName[0],
@@ -99,11 +87,9 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
-  systemSettings.push_back(
-      SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles));
+  systemSettings.push_back(SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
-  systemSettings.push_back(
-      SettingInfo::Action(StrId::STR_FIRMWARE_UPDATES, SettingAction::FirmwareUpdates));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_FIRMWARE_UPDATES, SettingAction::FirmwareUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_DEVICE_INFO, SettingAction::DeviceInfo));
 
   // Update currentSettings pointer and count for the active category

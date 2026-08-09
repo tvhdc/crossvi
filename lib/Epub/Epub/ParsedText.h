@@ -88,8 +88,7 @@ class ParsedText {
   // Returns the byte length contributed to the canonical chapter text. A
   // UINT32_MAX sourceStart marks synthetic text (for example list bullets).
   size_t addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false,
-                 bool attachToPrevious = false, uint32_t sourceStart = UINT32_MAX,
-                 uint32_t visibleTextOffset = 0);
+                 bool attachToPrevious = false, uint32_t sourceStart = UINT32_MAX, uint32_t visibleTextOffset = 0);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }

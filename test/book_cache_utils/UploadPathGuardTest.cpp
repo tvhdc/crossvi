@@ -60,9 +60,9 @@ TEST(UploadPathGuard, ValidatesEveryFolderSegment) {
 }
 
 TEST(UploadPathGuard, RejectsProtectedFileApiPathsInEverySegment) {
-  for (const char* path : {"/.crosspoint/settings.json", "/.CROSSPOINT/wifi.json", "/XTCache/foo",
-                           "/xtcache/foo", "/System Volume Information/foo", "/Books/book.epub.davtmp",
-                           "/Books//Nested", "/Books/./Nested", "/Books/../.crosspoint/wifi.json"}) {
+  for (const char* path : {"/.crosspoint/settings.json", "/.CROSSPOINT/wifi.json", "/XTCache/foo", "/xtcache/foo",
+                           "/System Volume Information/foo", "/Books/book.epub.davtmp", "/Books//Nested",
+                           "/Books/./Nested", "/Books/../.crosspoint/wifi.json"}) {
     EXPECT_FALSE(UploadPathGuard::isSafeAbsolutePath(path, false)) << path;
   }
   EXPECT_TRUE(UploadPathGuard::isSafeAbsolutePath("/Books/Novel.epub", false));

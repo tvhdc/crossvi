@@ -11,8 +11,8 @@
 #include <limits>
 #include <vector>
 
-#include "hyphenation/Hyphenator.h"
 #include "ReaderWordSpacing.h"
+#include "hyphenation/Hyphenator.h"
 
 constexpr int MAX_COST = std::numeric_limits<int>::max();
 
@@ -328,8 +328,7 @@ void ParsedText::eraseVisibleOffsetPrefix(const size_t count) {
 }
 
 size_t ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
-                           const bool attachToPrevious, const uint32_t sourceStart,
-                           const uint32_t visibleTextOffset) {
+                           const bool attachToPrevious, const uint32_t sourceStart, const uint32_t visibleTextOffset) {
   if (word.empty()) return 0;
 
   // The device fonts carry no combining-mark positioning, so EPUB text stored in NFD
@@ -816,9 +815,9 @@ std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& r
       if (!isFirstWord && noSpaceBeforeVec[currentIndex]) {
         spacing = 0;
       } else if (!isFirstWord && !continuesVec[currentIndex]) {
-        const int naturalGap = renderer.getSpaceAdvance(fontId, lastCodepoint(words[currentIndex - 1]),
-                                                        firstCodepoint(words[currentIndex]),
-                                                        wordStyles[currentIndex - 1]);
+        const int naturalGap =
+            renderer.getSpaceAdvance(fontId, lastCodepoint(words[currentIndex - 1]),
+                                     firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
         spacing = naturalGap + readerWordSpacingExtra(naturalGap, wordSpacing);
       } else if (!isFirstWord && continuesVec[currentIndex]) {
         // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
@@ -1029,8 +1028,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     } else if (wordIdx > 0 && !continuesVec[lastBreakAt + wordIdx]) {
       actualGapCount++;
       const int naturalGap = renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx - 1]),
-                                                      firstCodepoint(lineWords[wordIdx]),
-                                                      lineWordStyles[wordIdx - 1]);
+                                                      firstCodepoint(lineWords[wordIdx]), lineWordStyles[wordIdx - 1]);
       totalNaturalGaps += naturalGap + readerWordSpacingExtra(naturalGap, wordSpacing);
     } else if (wordIdx > 0 && continuesVec[lastBreakAt + wordIdx]) {
       // Non-breaking space tokens (" " with continues=true) are visible, stretchable spaces —

@@ -166,15 +166,12 @@ TEST(UrlUtils, ResolvesRelativeOpdsLinksAgainstTheFeedDirectory) {
   EXPECT_EQ(UrlUtils::buildUrl("http://host/opds/root.xml?page=2", "book.epub"), "http://host/opds/book.epub");
   EXPECT_EQ(UrlUtils::buildUrl("http://host/opds/", "sub.xml"), "http://host/opds/sub.xml");
   EXPECT_EQ(UrlUtils::buildUrl("http://host", "sub.xml"), "http://host/sub.xml");
-  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog?page=1", "?page=2"),
-            "https://host/opds/catalog?page=2");
-  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog?page=1", "#entry"),
-            "https://host/opds/catalog?page=1#entry");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog?page=1", "?page=2"), "https://host/opds/catalog?page=2");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog?page=1", "#entry"), "https://host/opds/catalog?page=1#entry");
   EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog", "//cdn.example/book.epub"),
             "https://cdn.example/book.epub");
   EXPECT_EQ(UrlUtils::buildUrl("https://host?token=x", "/opds"), "https://host/opds");
-  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/a/root.xml", "../book.epub"),
-            "https://host/opds/book.epub");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/a/root.xml", "../book.epub"), "https://host/opds/book.epub");
 }
 
 TEST(EpubSearchTraversal, ExtendsPartialCachesAndClampsInvalidStartPages) {
