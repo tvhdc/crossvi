@@ -1,11 +1,13 @@
 #include "JpegToFramebufferConverter.h"
 
+#include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <JPEGDEC.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <MemoryBudget.h>
 
 #include <cstdlib>
 #include <memory>
@@ -95,9 +97,6 @@ int32_t jpegSeek(JPEGFILE* pFile, int32_t pos) {
 
 // JPEGDEC object is ~17 KB due to internal decode buffers.
 // Heap-allocate on demand so memory is only used during active decode.
-constexpr size_t JPEG_DECODER_APPROX_SIZE = 20 * 1024;
-constexpr size_t MIN_FREE_HEAP_FOR_JPEG = JPEG_DECODER_APPROX_SIZE + 16 * 1024;
-
 // Choose JPEGDEC's built-in scale factor for coarse downscaling.
 // Returns the scale denominator (1, 2, 4, or 8) and sets jpegScaleOption.
 int chooseJpegScale(float targetScale, int& jpegScaleOption) {
@@ -359,9 +358,9 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 }  // namespace
 
 bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
+  const auto memory = MemoryBudget::snapshot();
+  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::JPEG_DECODE)) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (free=%u maxalloc=%u)", memory.freeHeap, memory.maxAllocHeap);
     return false;
   }
 
@@ -389,11 +388,16 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
                                                      const RenderConfig& config) {
   LOG_DBG("JPG", "Decoding JPEG: %s", imagePath.c_str());
 
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
+  auto memory = MemoryBudget::snapshot();
+  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::JPEG_DECODE)) {
+    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    memory = MemoryBudget::snapshot();
+  }
+  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::JPEG_DECODE)) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (free=%u maxalloc=%u)", memory.freeHeap, memory.maxAllocHeap);
     return false;
   }
+  MemoryBudget::logStage("JPG", "decode_begin");
 
   std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
   if (!jpeg) {

@@ -9,12 +9,14 @@
 
 ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const std::string& heading, const std::string& body,
-                                           std::string negativeLabel, std::string positiveLabel)
+                                           std::string negativeLabel, std::string positiveLabel,
+                                           const StrId positiveFeedback)
     : Activity("Confirmation", renderer, mappedInput),
       heading(heading),
       body(body),
       negativeLabel(std::move(negativeLabel)),
-      positiveLabel(std::move(positiveLabel)) {}
+      positiveLabel(std::move(positiveLabel)),
+      positiveFeedback(positiveFeedback) {}
 
 void ConfirmationActivity::onEnter() {
   Activity::onEnter();
@@ -40,6 +42,7 @@ void ConfirmationActivity::onEnter() {
 }
 
 void ConfirmationActivity::render(RenderLock&& lock) {
+  if (renderBlockingFeedbackOverlay()) return;
   renderer.clearScreen();
 
   int currentY = startY;
@@ -65,6 +68,10 @@ void ConfirmationActivity::render(RenderLock&& lock) {
 }
 
 void ConfirmationActivity::loop() {
+  if (positiveFeedback != StrId::_COUNT && mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    queueBlockingFeedback(positiveFeedback);
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
     ActivityResult res;
     res.isCancelled = false;

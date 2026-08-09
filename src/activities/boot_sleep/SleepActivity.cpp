@@ -3,15 +3,28 @@
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Txt.h>
 #include <Xtc.h>
 
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <string>
+
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "activities/reader/DailyReadingHistory.h"
+#include "activities/reader/GlobalReadingStats.h"
 #include "activities/reader/ReaderUtils.h"
+#include "activities/reader/ReadingCalendarLayout.h"
+#include "activities/reader/ReadingCalendarModel.h"
+#include "activities/reader/ReadingCalendarRenderer.h"
+#include "activities/reader/ReadingStatsPresentation.h"
+#include "activities/reader/ReadingStatsUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/DefaultSleepScreens.h"
@@ -23,6 +36,46 @@ namespace {
 // Power the panel down as part of that refresh so teardown work cannot leave it
 // electrically driven and darken the image after it has settled.
 constexpr bool TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH = true;
+constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 2;
+
+void prepareStrongSleepRefresh() { display.requestResync(X3_SLEEP_CONDITION_PASSES); }
+
+void displayStrongSleepFrame() {
+  prepareStrongSleepRefresh();
+  // The panel scans its own RAM after triggerDisplay() returns. Let the main
+  // task persist state and shut down peripherals during that waveform;
+  // HalDisplay::deepSleep() waits for completion before cutting panel power.
+  display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+}
+
+void drawCenteredInRect(const GfxRenderer& renderer, const int fontId, const Rect& rect, const int y, const char* text,
+                        const EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  const int width = renderer.getTextWidth(fontId, text, style);
+  renderer.drawText(fontId, rect.x + std::max(0, (rect.width - width) / 2), y, text, true, style);
+}
+
+void drawCalendarMetric(const GfxRenderer& renderer, const Rect& rect, const std::string& value, const StrId label,
+                        const int valueFontId = UI_10_FONT_ID) {
+  const int valueHeight = renderer.getLineHeight(valueFontId);
+  const int labelHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  const int top = rect.y + std::max(0, (rect.height - valueHeight - labelHeight - 4) / 2);
+  const std::string shownValue =
+      renderer.truncatedText(valueFontId, value.c_str(), rect.width - 8, EpdFontFamily::BOLD);
+  const std::string shownLabel = renderer.truncatedText(SMALL_FONT_ID, I18N.get(label), rect.width - 8);
+  drawCenteredInRect(renderer, valueFontId, rect, top, shownValue.c_str(), EpdFontFamily::BOLD);
+  drawCenteredInRect(renderer, SMALL_FONT_ID, rect, top + valueHeight + 4, shownLabel.c_str());
+}
+
+void drawCalendarWeekdays(const GfxRenderer& renderer, const ReadingCalendarGridLayout& layout) {
+  constexpr std::array<StrId, ReadingCalendarGridLayout::COLUMNS> labels = {
+      StrId::STR_STATS_MON, StrId::STR_STATS_TUE, StrId::STR_STATS_WED, StrId::STR_STATS_THU,
+      StrId::STR_STATS_FRI, StrId::STR_STATS_SAT, StrId::STR_STATS_SUN};
+  for (size_t index = 0; index < labels.size(); ++index) {
+    const Rect column{layout.grid.x + static_cast<int>(index) * (layout.cellSize + ReadingCalendarGridLayout::CELL_GAP),
+                      layout.weekdays.y, layout.cellSize, layout.weekdays.height};
+    drawCenteredInRect(renderer, SMALL_FONT_ID, column, column.y, I18N.get(labels[index]), EpdFontFamily::BOLD);
+  }
+}
 }  // namespace
 
 void SleepActivity::onEnter() {
@@ -57,9 +110,137 @@ void SleepActivity::onEnter() {
       } else {
         return renderCustomSleepScreen();
       }
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::READING_CALENDAR):
+      return renderReadingCalendarSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }
+}
+
+void SleepActivity::renderReadingCalendarSleepScreen() const {
+  GlobalReadingStats::LoadStatus globalStatus = GlobalReadingStats::LoadStatus::Missing;
+  const GlobalReadingStats stats = GlobalReadingStats::load(&globalStatus);
+  ReadingStatsDateTime now{};
+  const bool clockValid = getCurrentLocalReadingStatsDateTime(now);
+  if (!GlobalReadingStats::isTrustedLoadStatus(globalStatus) || !clockValid) {
+    LOG_ERR("SLP", "Reading calendar unavailable: stats=%u clock=%d", static_cast<unsigned>(globalStatus), clockValid);
+    return renderDefaultSleepScreen();
+  }
+
+  ReadingCalendarModel model(buildReadingCalendarSnapshot(stats, true, &now.date));
+  DailyReadingHistory dailyHistory;
+  const DailyReadingHistory::LoadStatus dailyStatus = DailyReadingHistory::load(dailyHistory);
+  const bool dailyHistoryUsable = dailyStatus == DailyReadingHistory::LoadStatus::Ok ||
+                                  dailyStatus == DailyReadingHistory::LoadStatus::Missing ||
+                                  dailyStatus == DailyReadingHistory::LoadStatus::RecoveredBackup ||
+                                  dailyStatus == DailyReadingHistory::LoadStatus::RecoveredTemp;
+  if (!model.isAvailable() || !dailyHistoryUsable) {
+    LOG_ERR("SLP", "Reading calendar unavailable: daily=%u", static_cast<unsigned>(dailyStatus));
+    return renderDefaultSleepScreen();
+  }
+  if (model.snapshot().hasLatestDayReadingSeconds) {
+    dailyHistory.reconcileExactDay(model.snapshot().latestReadingDay, model.snapshot().latestDayReadingSeconds);
+  }
+  model.setDailyHistory(&dailyHistory);
+
+  renderer.clearScreen();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+  const int side = std::max(18, metrics.contentSidePadding);
+  const Rect content{screen.x + side, screen.y + 20, std::max(1, screen.width - side * 2),
+                     std::max(1, screen.height - 40)};
+
+  char month[16];
+  snprintf(month, sizeof(month), "%02u/%04u", static_cast<unsigned>(model.visibleMonth().month),
+           static_cast<unsigned>(model.visibleMonth().year));
+  const int monthLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int monthWidth = renderer.getTextWidth(UI_10_FONT_ID, month, EpdFontFamily::BOLD) + 18;
+  const int headerHeight = std::max(renderer.getLineHeight(UI_12_FONT_ID), monthLineHeight + 10);
+  const int monthX = content.x + content.width - monthWidth;
+  const std::string title = renderer.truncatedText(UI_12_FONT_ID, tr(STR_READING_STATS),
+                                                   std::max(1, content.width - monthWidth - 12), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, content.x,
+                    content.y + std::max(0, (headerHeight - renderer.getLineHeight(UI_12_FONT_ID)) / 2), title.c_str(),
+                    true, EpdFontFamily::BOLD);
+  renderer.drawRoundedRect(monthX, content.y, monthWidth, headerHeight, 1, 5, true, true, true, true, true);
+  drawCenteredInRect(renderer, UI_10_FONT_ID, Rect{monthX, content.y, monthWidth, headerHeight},
+                     content.y + std::max(0, (headerHeight - monthLineHeight) / 2), month, EpdFontFamily::BOLD);
+
+  const int titleBottom = content.y + headerHeight + 8;
+  renderer.drawLine(content.x, titleBottom, content.x + content.width - 1, titleBottom);
+
+  const ReadingCalendarMonthSummary summary = model.monthSummary();
+  constexpr int sectionGap = 10;
+  const int metricTop = titleBottom + sectionGap;
+  const int weekdayHeight = renderer.getLineHeight(SMALL_FONT_ID) + 4;
+  const ReadingCalendarGridLayout naturalGrid =
+      ReadingCalendarGridLayout::calculate(Rect{0, 0, content.width, content.height}, weekdayHeight);
+  const int calendarHeight = weekdayHeight + naturalGrid.grid.height;
+  const int legendHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  const int availableMetricHeight =
+      std::max(1, content.y + content.height - metricTop - calendarHeight - legendHeight - sectionGap * 3);
+  int primaryMetricHeight = std::clamp(availableMetricHeight * 3 / 5, 104, 152);
+  int secondaryMetricHeight = availableMetricHeight - primaryMetricHeight;
+  if (secondaryMetricHeight < 58) {
+    secondaryMetricHeight = std::min(58, availableMetricHeight);
+    primaryMetricHeight = std::max(1, availableMetricHeight - secondaryMetricHeight);
+  }
+
+  const Rect primaryMetrics{content.x, metricTop, content.width, primaryMetricHeight};
+  renderer.drawRoundedRect(primaryMetrics.x, primaryMetrics.y, primaryMetrics.width, primaryMetrics.height, 1, 6, true,
+                           true, true, true, true);
+  const int totalWidth = primaryMetrics.width * 54 / 100;
+  const int rightHeight = primaryMetrics.height / 2;
+  renderer.drawLine(primaryMetrics.x + totalWidth, primaryMetrics.y + 5, primaryMetrics.x + totalWidth,
+                    primaryMetrics.y + primaryMetrics.height - 6);
+  renderer.drawLine(primaryMetrics.x + totalWidth + 5, primaryMetrics.y + rightHeight,
+                    primaryMetrics.x + primaryMetrics.width - 6, primaryMetrics.y + rightHeight);
+
+  char days[12];
+  snprintf(days, sizeof(days), "%u", static_cast<unsigned>(summary.readingDays));
+  char streak[12];
+  snprintf(streak, sizeof(streak), "%u", static_cast<unsigned>(model.snapshot().currentStreak));
+  drawCalendarMetric(renderer, Rect{primaryMetrics.x, primaryMetrics.y, totalWidth, primaryMetrics.height},
+                     ReadingCalendarRenderer::formatDuration(summary.totalSeconds, summary.totalIsMinimum),
+                     StrId::STR_STATS_MONTH_TOTAL, UI_12_FONT_ID);
+  drawCalendarMetric(
+      renderer, Rect{primaryMetrics.x + totalWidth, primaryMetrics.y, primaryMetrics.width - totalWidth, rightHeight},
+      days, StrId::STR_STATS_MONTH_DAYS);
+  drawCalendarMetric(renderer,
+                     Rect{primaryMetrics.x + totalWidth, primaryMetrics.y + rightHeight,
+                          primaryMetrics.width - totalWidth, primaryMetrics.height - rightHeight},
+                     streak, StrId::STR_STATS_STREAK);
+
+  const int calendarTop = primaryMetrics.y + primaryMetrics.height + sectionGap;
+  const ReadingCalendarGridLayout calendarLayout =
+      ReadingCalendarGridLayout::calculate(Rect{content.x, calendarTop, content.width, calendarHeight}, weekdayHeight);
+  drawCalendarWeekdays(renderer, calendarLayout);
+  const Rect grid = ReadingCalendarRenderer::drawGrid(renderer, calendarLayout.grid, model, false);
+
+  const Rect secondaryMetrics{content.x, grid.y + grid.height + sectionGap, content.width, secondaryMetricHeight};
+  renderer.drawRoundedRect(secondaryMetrics.x, secondaryMetrics.y, secondaryMetrics.width, secondaryMetrics.height, 1,
+                           6, true, true, true, true, true);
+  const int secondaryWidth = secondaryMetrics.width / 2;
+  renderer.drawLine(secondaryMetrics.x + secondaryWidth, secondaryMetrics.y + 5, secondaryMetrics.x + secondaryWidth,
+                    secondaryMetrics.y + secondaryMetrics.height - 6);
+  char best[32] = "--";
+  if (summary.bestDayKnown) {
+    const std::string duration = ReadingCalendarRenderer::formatDuration(summary.bestDaySeconds);
+    snprintf(best, sizeof(best), "%s · %u", duration.c_str(), static_cast<unsigned>(summary.bestDayOfMonth));
+  }
+  char longest[12];
+  snprintf(longest, sizeof(longest), "%u", static_cast<unsigned>(summary.longestReadingStreak));
+  drawCalendarMetric(renderer, Rect{secondaryMetrics.x, secondaryMetrics.y, secondaryWidth, secondaryMetrics.height},
+                     best, StrId::STR_STATS_BEST_DAY);
+  drawCalendarMetric(renderer,
+                     Rect{secondaryMetrics.x + secondaryWidth, secondaryMetrics.y,
+                          secondaryMetrics.width - secondaryWidth, secondaryMetrics.height},
+                     longest, StrId::STR_STATS_LONGEST_STREAK);
+
+  const int legendY = secondaryMetrics.y + secondaryMetrics.height + sectionGap;
+  ReadingCalendarRenderer::drawLegend(renderer, Rect{grid.x, legendY, grid.width, legendHeight});
+
+  displayStrongSleepFrame();
 }
 
 void SleepActivity::renderCustomSleepScreen() const {
@@ -139,7 +320,6 @@ void SleepActivity::renderCustomSleepScreen() const {
       HalFile randFile;
       if (Storage.openFileForRead("SLP", filename, randFile)) {
         LOG_DBG("SLP", "Randomly loading: %s/%s", sleepDir, files[randomFileIndex].c_str());
-        delay(100);
         Bitmap bitmap(randFile, true);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
           renderBitmapSleepScreen(bitmap, false);
@@ -156,10 +336,9 @@ void SleepActivity::renderCustomSleepScreen() const {
   renderDefaultSleepScreen();
 }
 
-// Sleep screens paint with a single HALF refresh (stock parity): the OEM X4
-// firmware's only clean refresh in normal operation is the single-pass 0xD7
-// sequence, used once for the sleep image. It never runs the multi-flash GC
-// waveform (0xF7) that FULL_REFRESH selects (#2471's blinking complaint).
+// Sleep is the last chance to remove accumulated charge before the panel is
+// powered down. Use the strongest existing refresh here; normal UI and reader
+// cadence remain unchanged.
 void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -184,7 +363,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  displayStrongSleepFrame();
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool applyCoverSettings) const {
@@ -242,13 +421,10 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
   }
 
   if (hasGreyscale) {
-    // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
-    // calibrated against the pixel state the single-pass HALF waveform leaves
-    // behind. A FULL (GC) base parks pixels in a different charge state and
-    // the differential nudge then lands unevenly (blotchy noise in gray areas).
-    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+    prepareStrongSleepRefresh();
+    renderer.displayGrayscaleBase(HalDisplay::FULL_REFRESH);
   } else {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+    displayStrongSleepFrame();
   }
 
   if (hasGreyscale) {
@@ -270,10 +446,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
 }
 
 void SleepActivity::renderCoverSleepScreen() const {
-  constexpr auto renderNoCoverSleepScreen = &SleepActivity::renderDefaultSleepScreen;
-
   if (APP_STATE.openEpubPath.empty()) {
-    return (this->*renderNoCoverSleepScreen)();
+    return renderDefaultSleepScreen();
   }
 
   std::string coverBmpPath;
@@ -285,51 +459,56 @@ void SleepActivity::renderCoverSleepScreen() const {
     Xtc lastXtc(APP_STATE.openEpubPath, "/.crosspoint");
     if (!lastXtc.load()) {
       LOG_ERR("SLP", "Failed to load last XTC");
-      return (this->*renderNoCoverSleepScreen)();
+      return renderDefaultSleepScreen();
     }
 
     if (!lastXtc.generateCoverBmp()) {
       LOG_ERR("SLP", "Failed to generate XTC cover bmp");
-      return (this->*renderNoCoverSleepScreen)();
+      return renderDefaultSleepScreen();
     }
 
     coverBmpPath = lastXtc.getCoverBmpPath();
-  } else if (FsHelpers::hasTxtExtension(APP_STATE.openEpubPath)) {
+  } else if (FsHelpers::hasTxtExtension(APP_STATE.openEpubPath) ||
+             FsHelpers::hasMarkdownExtension(APP_STATE.openEpubPath)) {
     // Handle TXT file - looks for cover image in the same folder
     Txt lastTxt(APP_STATE.openEpubPath, "/.crosspoint");
     if (!lastTxt.load()) {
       LOG_ERR("SLP", "Failed to load last TXT");
-      return (this->*renderNoCoverSleepScreen)();
+      return renderDefaultSleepScreen();
     }
 
     if (!lastTxt.generateCoverBmp()) {
       LOG_ERR("SLP", "No cover image found for TXT file");
-      return (this->*renderNoCoverSleepScreen)();
+      return renderDefaultSleepScreen();
     }
 
     coverBmpPath = lastTxt.getCoverBmpPath();
   } else if (FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) {
     // Handle EPUB file
     Epub lastEpub(APP_STATE.openEpubPath, "/.crosspoint");
-    // Skip loading css since we only need metadata here
-    if (!lastEpub.load(true, true)) {
-      LOG_ERR("SLP", "Failed to load last epub");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    const Epub::ThumbnailRequest thumbnails{
-        CrossPointSettings::needsSharedCoverThumbnail(SETTINGS.homeLayout, SETTINGS.libraryView),
-        CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout),
-        renderer.getDisplayHeight() == 528,
-    };
-    if (!lastEpub.generateCoverBmp(cropped, thumbnails)) {
-      LOG_ERR("SLP", "Failed to generate cover bmp");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
     coverBmpPath = lastEpub.getCoverBmpPath(cropped);
+    const bool cachedCoverReady = Bitmap::inspectDerivedCache(coverBmpPath) == BitmapCacheState::Ready &&
+                                  lastEpub.inspectSourceBinding() == Epub::SourceBindingStatus::Match;
+    if (!cachedCoverReady) {
+      // Skip loading CSS since we only need metadata when the validated
+      // full-screen derived cover is absent.
+      if (!lastEpub.load(true, true)) {
+        LOG_ERR("SLP", "Failed to load last epub");
+        return renderDefaultSleepScreen();
+      }
+
+      const Epub::ThumbnailRequest thumbnails{
+          CrossPointSettings::needsSharedCoverThumbnail(SETTINGS.homeLayout, SETTINGS.libraryView),
+          CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout),
+          renderer.getDisplayHeight() == 528,
+      };
+      if (!lastEpub.generateCoverBmp(cropped, thumbnails)) {
+        LOG_ERR("SLP", "Failed to generate cover bmp");
+        return renderDefaultSleepScreen();
+      }
+    }
   } else {
-    return (this->*renderNoCoverSleepScreen)();
+    return renderDefaultSleepScreen();
   }
 
   HalFile file;
@@ -342,22 +521,16 @@ void SleepActivity::renderCoverSleepScreen() const {
     }
   }
 
-  return (this->*renderNoCoverSleepScreen)();
+  return renderDefaultSleepScreen();
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
   renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
-  if (gpio.deviceIsX3()) {
-    // The X3 controller still holds the displayed page, so update the moon
-    // against that baseline without a full-screen flash.
-    renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
-  } else {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
-  }
+  displayStrongSleepFrame();
 }
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  displayStrongSleepFrame();
 }

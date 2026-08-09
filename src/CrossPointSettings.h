@@ -9,6 +9,8 @@
 #include <iosfwd>
 #include <mutex>
 
+#include "HomeShortcuts.h"
+
 class CrossPointSettings {
  private:
   mutable std::mutex _mutex;
@@ -31,8 +33,8 @@ class CrossPointSettings {
 
   enum SLEEP_SCREEN_MODE {
     // Values 1, 4 and 6 are retained for compatibility with settings written
-    // by older firmware. The settings UI exposes only Default, Cover, Custom
-    // and Blank through the compact selection helpers below.
+    // by older firmware. The settings UI exposes only Default, Cover, Custom,
+    // Blank and Reading statistics through the compact selection helpers below.
     DARK = 0,
     LIGHT = 1,
     CUSTOM = 2,
@@ -40,6 +42,7 @@ class CrossPointSettings {
     COVER_CUSTOM = 4,
     BLANK = 5,
     QUICK_RESUME = 6,
+    READING_CALENDAR = 7,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_SELECTION {
@@ -47,6 +50,7 @@ class CrossPointSettings {
     SLEEP_SCREEN_COVER = 1,
     SLEEP_SCREEN_CUSTOM = 2,
     SLEEP_SCREEN_BLANK = 3,
+    SLEEP_SCREEN_READING_CALENDAR = 4,
     SLEEP_SCREEN_SELECTION_COUNT
   };
   static constexpr uint8_t sleepScreenSelection(const uint8_t mode) {
@@ -58,6 +62,8 @@ class CrossPointSettings {
         return SLEEP_SCREEN_CUSTOM;
       case BLANK:
         return SLEEP_SCREEN_BLANK;
+      case READING_CALENDAR:
+        return SLEEP_SCREEN_READING_CALENDAR;
       case DARK:
       case LIGHT:
       case QUICK_RESUME:
@@ -73,6 +79,8 @@ class CrossPointSettings {
         return CUSTOM;
       case SLEEP_SCREEN_BLANK:
         return BLANK;
+      case SLEEP_SCREEN_READING_CALENDAR:
+        return READING_CALENDAR;
       case SLEEP_SCREEN_DEFAULT:
       default:
         return LIGHT;
@@ -262,13 +270,6 @@ class CrossPointSettings {
     DOUBLE_POWER_ACTION_COUNT
   };
 
-  enum TEXT_DARKNESS {
-    TEXT_DARKNESS_NORMAL = 0,
-    TEXT_DARKNESS_DARK = 1,
-    TEXT_DARKNESS_EXTRA_DARK = 2,
-    TEXT_DARKNESS_COUNT
-  };
-
   enum LIBRARY_VIEW { LIBRARY_LIST = 0, LIBRARY_COVERS = 1, LIBRARY_VIEW_COUNT };
   // Ordering for the All tab. Recent remains recency-ordered by RecentBooksStore.
   // Keep the numeric values stable because they are persisted in settings.json.
@@ -337,6 +338,13 @@ class CrossPointSettings {
     QUICK_RESUME_SLEEP_SCREEN_COUNT
   };
 
+  enum HOME_BACK_ACTION {
+    HOME_BACK_SHORTCUTS = 0,
+    HOME_BACK_CONTINUE_READING = 1,
+    HOME_BACK_NONE = 2,
+    HOME_BACK_ACTION_COUNT
+  };
+
   // Sleep screen settings
   uint8_t sleepScreen = LIGHT;
   // Sleep screen cover mode settings
@@ -355,8 +363,8 @@ class CrossPointSettings {
   // Clock display in status bar (X3 only, requires DS3231 RTC)
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
   // Clock display in headers outside the reader (X3 only, requires DS3231 RTC).
-  // Uses the same hide/right/left values as statusBarClock.
-  uint8_t outsideReaderClock = STATUS_BAR_CLOCK_HIDE;
+  // Boolean setting: 0 = hidden, 1 = shown at the fixed right-side position.
+  uint8_t outsideReaderClock = 0;
   // Optionally show the local date next to the outside-reader clock.
   uint8_t showDateOutsideReader = 0;
   // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
@@ -376,8 +384,6 @@ class CrossPointSettings {
   uint8_t textAntiAliasing = 1;
   // Reader-only inverse page mode. Menus and the rest of the UI stay light.
   uint8_t readerDarkMode = 0;
-  // Global glyph weight adjustment for 2-bit anti-aliased reader text only.
-  uint8_t textDarkness = TEXT_DARKNESS_NORMAL;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
   // Optional global double-click action for the power button.
@@ -471,6 +477,10 @@ class CrossPointSettings {
   uint8_t moveFinishedToReadFolder = 0;
   // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
   uint8_t backShortToFileBrowser = 0;
+  // Home owns Back, so this setting is independent from the reader's Back
+  // behavior above. Shortcuts are the default for new and migrated installs.
+  uint8_t homeBackAction = HOME_BACK_SHORTCUTS;
+  HomeShortcutList homeShortcuts;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Skip EPUB pages that contain only the declared cover image while reading.

@@ -362,9 +362,27 @@ TEST(StreamingJsonParser, TruncatedInputNoCrash) {
     TestContext ctx;
     StreamingJsonParser parser(makeCallbacks(&ctx));
     parser.feed(json, strlen(json));
-    // Just verify no crash; partial results are acceptable
+    EXPECT_FALSE(parser.finish());
   }
-  SUCCEED();
+}
+
+TEST(StreamingJsonParser, FinishAcceptsCompleteDocumentAndWhitespace) {
+  TestContext ctx;
+  StreamingJsonParser parser(makeCallbacks(&ctx));
+  const char* json = "{\"ok\": [true, 1]} \r\n\t";
+  parser.feed(json, strlen(json));
+  EXPECT_TRUE(parser.finish());
+  EXPECT_FALSE(parser.hasError());
+}
+
+TEST(StreamingJsonParser, RejectsMismatchedClosersAndTrailingData) {
+  for (const char* json : {"{]", "[}", "}", "[true]x", "{}[]"}) {
+    TestContext ctx;
+    StreamingJsonParser parser(makeCallbacks(&ctx));
+    parser.feed(json, strlen(json));
+    EXPECT_FALSE(parser.finish()) << json;
+    EXPECT_TRUE(parser.hasError()) << json;
+  }
 }
 
 TEST(StreamingJsonParser, AllEscapeSequences) {

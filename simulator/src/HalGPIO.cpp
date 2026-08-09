@@ -234,6 +234,8 @@ bool HalGPIO::wasAnyReleased() const {
   return false;
 }
 
+bool HalGPIO::isDebouncePending() const { return false; }
+
 unsigned long HalGPIO::getHeldTime() const {
   if (anyCombinedHeld()) {
     return SDL_GetTicks() - buttonPressStart;

@@ -1,5 +1,6 @@
 add_executable(LibraryCatalogTest
   LibraryCatalogTest.cpp
+  stubs/RecentBooksStoreStub.cpp
   ${REPO_ROOT}/src/LibraryCatalogStore.cpp
   ${REPO_ROOT}/src/util/BookSearchUtils.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp

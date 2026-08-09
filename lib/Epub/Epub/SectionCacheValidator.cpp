@@ -232,7 +232,7 @@ bool validateHeader(SectionCacheValidation::Input& input, const uint64_t headerS
       wordSpacing > 4 || !cursor.read(renderMode) || renderMode >= EPUB_RENDER_MODE_COUNT ||
       !readSerializedBool(cursor) || !cursor.read(layout.pageCount) || !cursor.read(layout.pageLutOffset) ||
       !cursor.read(layout.anchorMapOffset) || !cursor.read(layout.paragraphLutOffset) ||
-      !cursor.read(layout.listItemLutOffset) || !cursor.atEnd()) {
+      !cursor.read(layout.listItemLutOffset) || !cursor.read(layout.visibleTextLutOffset) || !cursor.atEnd()) {
     return false;
   }
   (void)fontId;
@@ -248,11 +248,14 @@ bool validateTables(SectionCacheValidation::Input& input, const uint64_t headerS
                                 static_cast<uint64_t>(layout.pageCount) * sizeof(uint16_t);
   const uint64_t listItemEnd =
       static_cast<uint64_t>(layout.listItemLutOffset) + static_cast<uint64_t>(layout.pageCount) * sizeof(uint16_t);
-  const uint64_t expectedEnd = listItemEnd + (layout.partial ? 2U * sizeof(uint32_t) : 0U);
+  const uint64_t visibleTextEnd = static_cast<uint64_t>(layout.visibleTextLutOffset) +
+                                  static_cast<uint64_t>(layout.pageCount) * sizeof(uint32_t);
+  const uint64_t expectedEnd = visibleTextEnd + (layout.partial ? 2U * sizeof(uint32_t) : 0U);
   if (layout.pageLutOffset < headerSize || (layout.pageCount == 0 && layout.pageLutOffset != headerSize) ||
       pageLutEnd != layout.anchorMapOffset ||
       static_cast<uint64_t>(layout.anchorMapOffset) + sizeof(uint16_t) > layout.paragraphLutOffset ||
-      paragraphEnd != layout.listItemLutOffset || expectedEnd != fileSize) {
+      paragraphEnd != layout.listItemLutOffset || listItemEnd != layout.visibleTextLutOffset ||
+      expectedEnd != fileSize) {
     return false;
   }
 
@@ -280,14 +283,25 @@ bool validateTables(SectionCacheValidation::Input& input, const uint64_t headerS
   }
   if (!paragraph.atEnd()) return false;
 
-  Cursor listItems(input, layout.listItemLutOffset, listItemEnd);
+  Cursor listItems(input, layout.listItemLutOffset, layout.visibleTextLutOffset);
   if (!consumeOrSkip(listItems, static_cast<uint64_t>(layout.pageCount) * sizeof(uint16_t), verifyPayload) ||
       !listItems.atEnd()) {
     return false;
   }
 
+  Cursor visibleText(input, layout.visibleTextLutOffset, visibleTextEnd);
+  uint32_t previousVisibleOffset = 0;
+  for (uint16_t page = 0; page < layout.pageCount; ++page) {
+    uint32_t currentVisibleOffset = 0;
+    if (!visibleText.read(currentVisibleOffset) || (page > 0 && currentVisibleOffset < previousVisibleOffset)) {
+      return false;
+    }
+    previousVisibleOffset = currentVisibleOffset;
+  }
+  if (!visibleText.atEnd()) return false;
+
   if (layout.partial) {
-    Cursor trailer(input, listItemEnd, fileSize);
+    Cursor trailer(input, visibleTextEnd, fileSize);
     if (!trailer.read(layout.partialBytesConsumed) || !trailer.read(layout.partialTotalBytes) || !trailer.atEnd() ||
         layout.partialBytesConsumed == 0 || layout.partialTotalBytes < layout.partialBytesConsumed) {
       return false;

@@ -49,6 +49,7 @@ INTERVAL_PRESETS = {
     "armenian":    [(0x0530, 0x058F)],
     "ethiopic":    [(0x1200, 0x137F), (0x1380, 0x139F), (0x2D80, 0x2DDF)],
     "vietnamese":  [(0x01A0, 0x01B0), (0x1EA0, 0x1EF9)],
+    "ipa-chars":   [(0x0250, 0x02AF), (0x02B0, 0x02FF)],
     # Self-contained Vietnamese reading preset. The legacy "vietnamese"
     # preset above remains unchanged for scripts that combine it manually.
     "vietnamese-reading": [

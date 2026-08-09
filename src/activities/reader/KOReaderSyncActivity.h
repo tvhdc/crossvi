@@ -84,10 +84,7 @@ class KOReaderSyncActivity final : public Activity {
   static constexpr unsigned long AUTO_RETURN_DELAY_MS = 1200;
   bool suppressInitialConfirmRelease = false;
 
-  // Tracks whether this session activated WiFi. Set in onEnter past the credentials
-  // check; checked in onExit to decide whether to silent-reboot. Can't rely on
-  // WiFi.getMode() because performUpload() calls esp_wifi_stop() on the way out,
-  // which makes WiFi.getMode() return WIFI_MODE_NULL.
+  // Tracks whether this session used WiFi so onExit can release the radio.
   bool wifiActivated = false;
 
   void onWifiSelectionComplete(bool success);

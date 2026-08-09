@@ -42,6 +42,25 @@ bool Activity::renderReaderExitOverlay() {
   return true;
 }
 
+void Activity::queueBlockingFeedback(const StrId message) {
+  blockingFeedback.store(message, std::memory_order_release);
+  requestUpdate(true);
+}
+
+void Activity::clearBlockingFeedback() { blockingFeedback.store(StrId::_COUNT, std::memory_order_release); }
+
+void Activity::showBlockingFeedback(const StrId message) {
+  blockingFeedback.store(message, std::memory_order_release);
+  requestUpdateAndWait();
+}
+
+bool Activity::renderBlockingFeedbackOverlay() {
+  const StrId message = blockingFeedback.exchange(StrId::_COUNT, std::memory_order_acq_rel);
+  if (message == StrId::_COUNT) return false;
+  GUI.drawPopup(renderer, I18N.get(message));
+  return true;
+}
+
 void Activity::onSelectBook(const std::string& path) { openBookWithFeedback(path); }
 
 void Activity::startActivityForResult(std::unique_ptr<Activity>&& activity, ActivityResultHandler resultHandler) {

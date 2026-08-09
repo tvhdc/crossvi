@@ -5,17 +5,11 @@
 #include <ObfuscationUtils.h>
 
 namespace {
-// Default sync server URL. crosspoint-sync speaks the full KOSync protocol, so
-// pointing at any other kosync server (e.g. https://sync.koreader.rocks:443)
-// still works via the custom server URL setting.
-constexpr char DEFAULT_SERVER_URL[] = "https://sync.crosspointreader.com";
-
-// Default before config version 2. Configs saved without a version stamp and an
-// empty serverUrl were implicitly syncing here — they get pinned on upgrade.
-constexpr char LEGACY_DEFAULT_SERVER_URL[] = "https://sync.koreader.rocks:443";
+constexpr char DEFAULT_SERVER_URL[] = "https://sync.koreader.rocks:443";
+constexpr char CROSSPOINT_SERVER_URL[] = "https://sync.crosspointreader.com";
 
 // Bumped when a change to defaults would alter behavior for existing configs.
-constexpr uint8_t CONFIG_VERSION = 2;
+constexpr uint8_t CONFIG_VERSION = 3;
 }  // namespace
 
 void KOReaderCredentialStore::toJson(JsonDocument& doc) const {
@@ -42,16 +36,11 @@ bool KOReaderCredentialStore::fromJson(JsonVariantConst doc) {
   setCredentials(user, pass);
   setServerUrl(doc["serverUrl"] | "");
 
-  // The default server changed in config v2 (sync.koreader.rocks -> crosspoint-sync).
-  // A pre-v2 config with credentials and no explicit URL was actively syncing
-  // against the old default — pin that URL so the upgrade doesn't switch servers
-  // out from under the user. Fresh setups get the new default.
   if (cfgVersion < CONFIG_VERSION) {
-    if (getServerUrl().empty() && hasCredentials()) {
-      LOG_DBG("KRS", "Pre-v2 config used the old default server; pinning %s", LEGACY_DEFAULT_SERVER_URL);
-      setServerUrl(LEGACY_DEFAULT_SERVER_URL);
-    }
-    needsResave = true;  // stamp cfgVersion so this migration runs once
+    // v2 briefly made crosspoint-sync the implicit default. Restore the
+    // official KOReader server for every empty serverUrl; an explicitly saved
+    // custom/CrossPoint URL remains unchanged.
+    needsResave = true;
   }
 
   uint8_t method = doc["matchMethod"] | (uint8_t)0;
@@ -83,13 +72,47 @@ bool KOReaderCredentialStore::fromJson(JsonVariantConst doc) {
   return true;
 }
 
+bool KOReaderCredentialStore::loadFromFile() {
+  if (loadState.usable()) return true;
+  if (loadState.failed() || !loadState.beginLoad()) return false;
+  const bool loaded = PersistableStore<KOReaderCredentialStore>::loadFromFile();
+  const bool usable = loaded || isPersistenceWritable();
+  if (!loaded && usable) {
+    username.clear();
+    password.clear();
+    serverUrl.clear();
+    matchMethod = DocumentMatchMethod::FILENAME;
+    sendMetadata = false;
+    syncBehavior = KOReaderSyncBehavior::ASK_EVERY_TIME;
+  }
+  loadState.finish(usable);
+  return usable;
+}
+
+bool KOReaderCredentialStore::ensureLoaded() { return loadFromFile(); }
+
+bool KOReaderCredentialStore::saveToFile() const {
+  if (!const_cast<KOReaderCredentialStore*>(this)->ensureLoaded()) return false;
+  return PersistableStore<KOReaderCredentialStore>::saveToFile();
+}
+
+void KOReaderCredentialStore::markReadOnlyForRecovery() {
+  username.clear();
+  password.clear();
+  serverUrl.clear();
+  loadState.markLoaded();
+  PersistableStore<KOReaderCredentialStore>::markReadOnlyForRecovery();
+}
+
 void KOReaderCredentialStore::setCredentials(const std::string& user, const std::string& pass) {
+  if (!ensureLoaded()) return;
   username = user;
   password = pass;
   LOG_DBG("KRS", "Set credentials for user: %s", user.c_str());
 }
 
 std::string KOReaderCredentialStore::getMd5Password() const {
+  const_cast<KOReaderCredentialStore*>(this)->ensureLoaded();
   if (password.empty()) {
     return "";
   }
@@ -103,9 +126,13 @@ std::string KOReaderCredentialStore::getMd5Password() const {
   return md5.toString().c_str();
 }
 
-bool KOReaderCredentialStore::hasCredentials() const { return !username.empty() && !password.empty(); }
+bool KOReaderCredentialStore::hasCredentials() const {
+  const_cast<KOReaderCredentialStore*>(this)->ensureLoaded();
+  return !username.empty() && !password.empty();
+}
 
 void KOReaderCredentialStore::clearCredentials() {
+  if (!ensureLoaded()) return;
   username.clear();
   password.clear();
   saveToFile();
@@ -113,11 +140,13 @@ void KOReaderCredentialStore::clearCredentials() {
 }
 
 void KOReaderCredentialStore::setServerUrl(const std::string& url) {
+  if (!ensureLoaded()) return;
   serverUrl = url;
   LOG_DBG("KRS", "Set server URL: %s", url.empty() ? "(default)" : url.c_str());
 }
 
 std::string KOReaderCredentialStore::getBaseUrl() const {
+  const_cast<KOReaderCredentialStore*>(this)->ensureLoaded();
   std::string url;
   if (serverUrl.empty()) {
     url = DEFAULT_SERVER_URL;
@@ -136,19 +165,22 @@ std::string KOReaderCredentialStore::getBaseUrl() const {
   return url;
 }
 
-bool KOReaderCredentialStore::usesCrossPointSyncServer() const { return getBaseUrl() == DEFAULT_SERVER_URL; }
+bool KOReaderCredentialStore::usesCrossPointSyncServer() const { return getBaseUrl() == CROSSPOINT_SERVER_URL; }
 
 void KOReaderCredentialStore::setMatchMethod(DocumentMatchMethod method) {
+  if (!ensureLoaded()) return;
   matchMethod = method;
   LOG_DBG("KRS", "Set match method: %s", method == DocumentMatchMethod::FILENAME ? "Filename" : "Binary");
 }
 
 void KOReaderCredentialStore::setSendMetadata(bool enabled) {
+  if (!ensureLoaded()) return;
   sendMetadata = enabled;
   LOG_DBG("KRS", "Set send metadata: %s", enabled ? "true" : "false");
 }
 
 void KOReaderCredentialStore::setSyncBehavior(KOReaderSyncBehavior behavior) {
+  if (!ensureLoaded()) return;
   if (static_cast<uint8_t>(behavior) > static_cast<uint8_t>(KOReaderSyncBehavior::SMART)) {
     behavior = KOReaderSyncBehavior::ASK_EVERY_TIME;
   }

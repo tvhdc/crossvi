@@ -18,14 +18,17 @@ class GfxRenderer {
     return static_cast<int>(std::strlen(text)) * 6;
   }
   void drawLine(int, int, int, int, int, bool) const { ++underlineCount_; }
-  void fillRectDither(int, int, int, int, Color) const { ++backgroundCount_; }
+  void invertRect(int, int, int, int) const { ++inverseCount_; }
+  void fillRect(int, int, int, int, bool) const { ++grayscaleClearCount_; }
   int underlineCount() const { return underlineCount_; }
-  int backgroundCount() const { return backgroundCount_; }
+  int inverseCount() const { return inverseCount_; }
+  int grayscaleClearCount() const { return grayscaleClearCount_; }
 
  private:
   int width_;
   int height_;
   int lineHeight_;
   mutable int underlineCount_ = 0;
-  mutable int backgroundCount_ = 0;
+  mutable int inverseCount_ = 0;
+  mutable int grayscaleClearCount_ = 0;
 };

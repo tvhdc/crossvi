@@ -2325,8 +2325,8 @@
     }
     // Process running: stop it, keep modal open for retry
     operationCancelled = true;
-    if (currentUploadWs) { currentUploadWs.close(); currentUploadWs = null; }
     if (currentUploadXhr) { currentUploadXhr.abort(); currentUploadXhr = null; }
+    fetch('/api/upload/cancel', { method: 'POST' }).catch(() => {});
     // isUploadInProgress and UI are restored by restoreAfterCancel() from the async handlers
   }
 
@@ -3470,20 +3470,13 @@
   }
 
 let failedUploadsGlobal = [];
-let wsConnection = null;
 let isUploadInProgress = false; // Prevent modal close during upload/conversion
 let requireConversionForUpload = false; // Device-copy flow must not fall back to the original EPUB
 let operationCancelled = false; // Set by Cancel to stop conversion loops and upload async handlers
 let uploadGeneration = 0;       // Incremented each uploadFile() call; guards stale restoreAfterCancel()
-let currentUploadWs = null;     // Active WebSocket reference for external abort
 let currentUploadXhr = null;    // Active XHR reference for external abort
 let uploadToInbox = false;
 let completedUploadNames = [];
-// Hardware serves HTTP/WebSocket on 80/81. Simulator and reverse-proxy
-// development setups keep the same adjacent-port contract on mapped ports.
-const HTTP_PORT = Number(window.location.port || 80);
-const WS_PORT = HTTP_PORT + 1;
-const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
 const BATCH_UPLOAD_DELAY_MS = 500;
 
 // ============================================================================
@@ -3668,7 +3661,7 @@ function getTimestamp() {
 }
 
 // Main logging function
-function log(message, type = '', tag = '') {
+function appendLog(message, type = '', tag = '', allowHtml = false) {
   const entry = document.createElement('div');
   entry.className = 'log-entry ' + type;
 
@@ -3689,11 +3682,23 @@ function log(message, type = '', tag = '') {
   // Message
   const msg = document.createElement('span');
   msg.className = 'log-message';
-  msg.innerHTML = message;
+  if (allowHtml) msg.innerHTML = message;
+  else msg.textContent = message;
   entry.appendChild(msg);
 
   logContainer.appendChild(entry);
   logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+function log(message, type = '', tag = '') {
+  appendLog(message, type, tag, false);
+}
+
+// Only callers that build markup from fixed templates may use this helper.
+// Every dynamic string interpolated into those templates must pass through
+// escapeHtml first.
+function logHtml(message, type = '', tag = '') {
+  appendLog(message, type, tag, true);
 }
 
 // Log image processing details
@@ -3717,14 +3722,14 @@ function logImage(name, origW, origH, origFormat, origSize, newW, newH, newSize,
     if (partsInfo && partsInfo.length > 0) {
       const baseName = name.replace(/\.[^.]+$/, '');
       partsDetail = partsInfo.map(p =>
-        `${baseName}${p.suffix}.jpg (${p.width}×${p.height}, ${formatBytes(p.size)})`
+        `${escapeHtml(baseName + p.suffix + '.jpg')} (${p.width}×${p.height}, ${formatBytes(p.size)})`
       ).join(', ');
     }
     const savedInfo = saved > 0 ? `, <span style="color:#27ae60">-${savedPct}%</span>` : '';
     const stateIndicator = imageState > 0 ? ` <span style="color:${stateColor};font-weight:600;">[${stateLabel}]</span>` : '';
-    log(`<strong>${escapeHtml(name)}</strong>${stateIndicator} <span class="log-detail">(${dims} ${origFormat.toUpperCase()}, ${formatBytes(origSize)}) → ${splitCount} parts${savedInfo}</span>`, '', 'SPLIT');
+    logHtml(`<strong>${escapeHtml(name)}</strong>${stateIndicator} <span class="log-detail">(${dims} ${origFormat.toUpperCase()}, ${formatBytes(origSize)}) → ${splitCount} parts${savedInfo}</span>`, '', 'SPLIT');
     if (partsDetail) {
-      log(`<span class="log-detail" style="margin-left: 20px;">↳ ${partsDetail}</span>`, '', '');
+      logHtml(`<span class="log-detail" style="margin-left: 20px;">↳ ${partsDetail}</span>`, '', '');
     }
   } else {
     conversionStats.images++;
@@ -3732,20 +3737,20 @@ function logImage(name, origW, origH, origFormat, origSize, newW, newH, newSize,
     const detail = saved > 0
       ? `<span class="log-detail">(${dims} → ${newDims}, ${formatBytes(origSize)} → ${formatBytes(newSize)}, <span style="color:#27ae60">-${savedPct}%</span>)</span>`
       : `<span class="log-detail">(${dims} → ${newDims}, ${formatBytes(newSize)})</span>`;
-    log(`<strong>${escapeHtml(name)}</strong>${stateIndicator} ${detail}`, '', 'CONVERT');
+    logHtml(`<strong>${escapeHtml(name)}</strong>${stateIndicator} ${detail}`, '', 'CONVERT');
   }
 }
 
 // Log fix applied
 function logFix(type, detail) {
   conversionStats.fixes++;
-  log(`${type}: <span class="log-detail">${detail}</span>`, 'success', 'FIX');
+  logHtml(`${escapeHtml(String(type))}: <span class="log-detail">${escapeHtml(String(detail))}</span>`, 'success', 'FIX');
 }
 
 // Log skipped item
 function logSkip(name, reason) {
   conversionStats.skipped++;
-  log(`${escapeHtml(name)} <span class="log-detail">(${reason})</span>`, '', 'SKIP');
+  logHtml(`${escapeHtml(String(name))} <span class="log-detail">(${escapeHtml(String(reason))})</span>`, '', 'SKIP');
 }
 
 // Log error
@@ -5181,7 +5186,7 @@ async function convertEpubFile(file, progressCallback) {
   // Initialize logging
   clearLog();
   showLog();
-  log(`<strong>${file.name}</strong> <span class="log-detail">(${formatBytes(originalSize)})</span>`, '', 'INFO');
+  logHtml(`<strong>${escapeHtml(file.name)}</strong> <span class="log-detail">(${formatBytes(originalSize)})</span>`, '', 'INFO');
   log(`Quality: ${JPEG_QUALITY}% | Overlap: ${OVERLAP_PERCENT}% | Rotation: ${HANDEDNESS === 'right' ? 'CW' : 'CCW'} | Grayscale: ${ENABLE_GRAYSCALE ? 'ON' : 'OFF'} | Auto-crop: ${ENABLE_AUTO_CROP ? 'ON' : 'OFF'}`, '', 'INFO');
 
   const zip = await JSZip.loadAsync(file);
@@ -5564,163 +5569,82 @@ async function convertEpubFile(file, progressCallback) {
   return newBlob;
 }
 
-// Get WebSocket URL based on current page location
-function getWsUrl() {
-  const host = window.location.hostname;
-  return `ws://${host}:${WS_PORT}/`;
-}
-
-// Upload file via WebSocket (faster, binary protocol)
-function uploadFileWebSocket(file, onProgress, onComplete, onError) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(getWsUrl());
-    currentUploadWs = ws;
-    let uploadStarted = false;
-    let sendingChunks = false;
-    let uploadComplete = false; // set only when DONE is received and resolve() called
-
-    ws.binaryType = 'arraybuffer';
-
-    ws.onopen = function() {
-      console.log('[WS] Connected, starting upload:', file.name);
-      // Send start message: START:<filename>:<size>:<path>
-      ws.send(`START:${file.name}:${file.size}:${uploadPath}`);
-    };
-
-    ws.onmessage = async function(event) {
-      const msg = event.data;
-      console.log('[WS] Message:', msg);
-
-      if (msg === 'READY') {
-        uploadStarted = true;
-        sendingChunks = true;
-
-        // Small delay to let connection stabilize
-        await new Promise(r => setTimeout(r, 50));
-
-        try {
-          // Send file in chunks
-          const totalSize = file.size;
-          let offset = 0;
-
-          while (offset < totalSize && ws.readyState === WebSocket.OPEN) {
-            const chunkSize = Math.min(WS_CHUNK_SIZE, totalSize - offset);
-            const chunk = file.slice(offset, offset + chunkSize);
-            const buffer = await chunk.arrayBuffer();
-
-            // Wait for buffer to clear - more aggressive backpressure
-            while (ws.bufferedAmount > WS_CHUNK_SIZE * 2 && ws.readyState === WebSocket.OPEN) {
-              await new Promise(r => setTimeout(r, 5));
-            }
-
-            if (ws.readyState !== WebSocket.OPEN) {
-              throw new Error('WebSocket closed during upload');
-            }
-
-            ws.send(buffer);
-            offset += chunkSize;
-
-            // Update local progress with real transfer progress
-            // Server will confirm 100% with DONE message
-            if (onProgress) {
-              onProgress(offset, totalSize);
-            }
-          }
-
-          sendingChunks = false;
-          console.log('[WS] All chunks sent, waiting for DONE');
-        } catch (err) {
-          console.error('[WS] Error sending chunks:', err);
-          sendingChunks = false;
-          ws.close();
-          reject(err);
-        }
-      } else if (msg.startsWith('PROGRESS:')) {
-        // Server confirmed progress - log for debugging but don't update UI
-        // (local progress is smoother, server progress causes jumping)
-        console.log('[WS] Server progress:', msg);
-      } else if (msg === 'DONE') {
-        // Show 100% when server confirms completion
-        if (onProgress) onProgress(file.size, file.size);
-        uploadComplete = true;
-        currentUploadWs = null;
-        ws.close();
-        if (onComplete) onComplete();
-        resolve();
-      } else if (msg.startsWith('ERROR:')) {
-        const error = msg.substring(6);
-        ws.close();
-        if (onError) onError(error);
-        reject(new Error(error));
-      }
-    };
-
-    ws.onerror = function(event) {
-      console.error('[WS] Error:', event);
-      currentUploadWs = null;
-      if (!uploadStarted) {
-        reject(new Error('WebSocket connection failed'));
-      } else if (!sendingChunks) {
-        reject(new Error('WebSocket error during upload'));
-      } else {
-        // Error during chunk sending - reject with appropriate message
-        reject(new Error('WebSocket error during file transfer'));
-      }
-    };
-
-    ws.onclose = function(event) {
-      console.log('[WS] Connection closed, code:', event.code, 'reason:', event.reason);
-      // Reject for any close before upload was confirmed complete (covers both
-      // mid-chunk-send closes and the "all chunks sent, waiting for DONE" window)
-      if (!uploadComplete) {
-        reject(new Error('WebSocket closed during upload'));
-      }
-    };
-  });
-}
-
-// Upload file via HTTP (fallback method)
-function uploadFileHTTP(file, onProgress, onComplete, onError) {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData();
-    formData.append('file', file);
-
+// Keep each request short so the firmware main loop can process physical
+// buttons between chunks. The server keeps one safely-staged file open until
+// the final chunk is durably published.
+async function uploadFileHTTP(file, onProgress, onComplete, onError) {
+  const chunkSize = 64 * 1024;
+  const sendRequest = (url, body, headers, progress) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     currentUploadXhr = xhr;
-    xhr.open('POST', '/upload?path=' + encodeURIComponent(uploadPath), true);
-
-    xhr.upload.onprogress = function(e) {
-      if (e.lengthComputable && onProgress) {
-        onProgress(e.loaded, e.total);
-      }
+    xhr.open('POST', url, true);
+    if (headers) Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+    xhr.upload.onprogress = progress;
+    const clearCurrent = () => {
+      if (currentUploadXhr === xhr) currentUploadXhr = null;
     };
-
-    xhr.onload = function() {
-      currentUploadXhr = null;
-      if (xhr.status === 200) {
-        if (onComplete) onComplete();
-        resolve();
-      } else {
-        const error = xhr.responseText || 'Upload failed';
-        if (onError) onError(error);
-        reject(new Error(error));
-      }
+    xhr.onload = () => {
+      clearCurrent();
+      if (xhr.status === 200) resolve(xhr.responseText);
+      else reject(new Error(xhr.responseText || 'Upload failed'));
     };
-
-    xhr.onerror = function() {
-      currentUploadXhr = null;
-      const error = 'Network error';
-      if (onError) onError(error);
-      reject(new Error(error));
+    xhr.onerror = () => {
+      clearCurrent();
+      reject(new Error('Network error'));
     };
-
-    xhr.onabort = function() {
-      currentUploadXhr = null;
+    xhr.onabort = () => {
+      clearCurrent();
       reject(new Error('Upload aborted'));
     };
-
-    xhr.send(formData);
+    xhr.send(body);
   });
+
+  try {
+    // Preserve support for empty files; an empty raw request does not enter
+    // the ESP32 WebServer raw-body callback.
+    if (file.size === 0) {
+      const formData = new FormData();
+      formData.append('file', file);
+      await sendRequest('/upload?path=' + encodeURIComponent(uploadPath), formData, null, null);
+      if (onProgress) onProgress(0, 0);
+      if (onComplete) onComplete();
+      return;
+    }
+
+    let offset = 0;
+    while (offset < file.size) {
+      if (operationCancelled) throw new Error('Upload aborted');
+      const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+      const nextOffset = offset + chunk.size;
+      let response;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          response = await sendRequest('/api/upload/chunk', chunk, {
+            'Content-Type': 'application/octet-stream',
+            'X-CrossVi-Upload-Path': encodeURIComponent(uploadPath),
+            'X-CrossVi-Upload-Name': encodeURIComponent(file.name),
+            'X-CrossVi-Upload-Offset': String(offset),
+            'X-CrossVi-Upload-Total': String(file.size)
+          }, (e) => {
+            if (e.lengthComputable && onProgress) onProgress(offset + e.loaded, file.size);
+          });
+          if (Number(response) !== nextOffset) throw new Error('Upload progress mismatch');
+          break;
+        } catch (error) {
+          if (operationCancelled || attempt === 3) throw error;
+          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        }
+      }
+      offset = nextOffset;
+      if (onProgress) onProgress(offset, file.size);
+      // Let cancellation and UI updates run before the next network request.
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    if (onComplete) onComplete();
+  } catch (error) {
+    if (onError) onError(error.message);
+    throw error;
+  }
 }
 
 async function uploadFile() {
@@ -5765,7 +5689,6 @@ async function uploadFile() {
 
   let currentIndex = 0;
   const failedFiles = [];
-  let useWebSocket = true; // Try WebSocket first
   const useAggregateProgress = files.length > 1 && convertEnabled &&
     files.some(file => file.name.toLowerCase().endsWith('.epub'));
 
@@ -5890,7 +5813,7 @@ async function uploadFile() {
       });
     }
 
-    const methodText = useWebSocket ? ' [WS]' : ' [HTTP]';
+    const methodText = ' [HTTP]';
     if (optimizationSkippedForSize) {
       console.log(`[Upload] Skipping EPUB optimization above 10 MB: ${originalFile.name} (${originalFile.size} bytes)`);
     }
@@ -6037,11 +5960,7 @@ async function uploadFile() {
         }
       }
 
-      if (useWebSocket) {
-        await uploadFileWebSocket(file, onProgress, null, null);
-      } else {
-        await uploadFileHTTP(file, onProgress, null, null);
-      }
+      await uploadFileHTTP(file, onProgress, null, null);
       // Ensure progress bar shows 100% before moving to next file
       if (useAggregateProgress) {
         const overallPercent = setAggregateProgress(1);
@@ -6059,20 +5978,7 @@ async function uploadFile() {
         logError(`Upload failed: ${error.message}`);
       }
 
-      if (useWebSocket && error.message === 'WebSocket connection failed') {
-        // Fall back to HTTP for all subsequent uploads
-        console.log('WebSocket failed, falling back to HTTP');
-        useWebSocket = false;
-        // Retry this file with HTTP
-        try {
-          await uploadFileHTTP(file, onProgress, null, null);
-          onComplete();
-        } catch (httpError) {
-          onError(httpError.message);
-        }
-      } else {
-        onError(error.message);
-      }
+      onError(error.message);
     }
   }
 

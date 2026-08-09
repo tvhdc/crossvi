@@ -20,7 +20,6 @@ class XtcReaderChapterSelectionActivity final : public Activity {
                                              const std::shared_ptr<Xtc>& xtc, uint32_t currentPage)
       : Activity("XtcReaderChapterSelection", renderer, mappedInput), xtc(xtc), currentPage(currentPage) {}
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 };

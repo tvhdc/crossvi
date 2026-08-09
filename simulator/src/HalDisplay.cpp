@@ -396,6 +396,10 @@ void HalDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   refreshDisplay(mode, turnOffScreen);
 }
 
+void HalDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
+  displayBuffer(mode, turnOffScreen);
+}
+
 void HalDisplay::displayWindow(int, int, int, int) {
   refreshDisplay(RefreshMode::FAST_REFRESH, false);
 }

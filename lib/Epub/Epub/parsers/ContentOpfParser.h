@@ -32,6 +32,7 @@ class ContentOpfParser final : public Print {
   HalFile tempItemStore;
   std::string coverItemId;
   std::string currentAuthor;
+  std::string currentLanguage;
   bool hasExplicitStartReference = false;
 
   // Index for fast idref→href lookup (binary search over .items.bin)

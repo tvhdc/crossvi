@@ -1,6 +1,7 @@
 #include "BootActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <I18n.h>
 #include <Version.h>
@@ -18,7 +19,7 @@ void BootActivity::onEnter() {
   if (minimalWakeScreen_) {
     const int bootingY = (pageHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
     renderer.drawCenteredText(UI_10_FONT_ID, bootingY, tr(STR_BOOTING), true, EpdFontFamily::BOLD);
-    renderer.displayBuffer();
+    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
     return;
   }
 
@@ -41,5 +42,5 @@ void BootActivity::onEnter() {
                               true, EpdFontFamily::BOLD);
   }
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, CROSSPOINT_VERSION);
-  renderer.displayBuffer();
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }

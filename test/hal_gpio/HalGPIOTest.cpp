@@ -116,6 +116,16 @@ TEST_F(HalGPIOTest, TracksOverlappingButtonDurationsIndependently) {
   EXPECT_EQ(subject.getHeldTime(HalGPIO::BTN_CONFIRM), 100U);
 }
 
+TEST_F(HalGPIOTest, ReportsRawInputWaitingForDebounceCommit) {
+  HalGPIO subject;
+  InputManager::rawState = 1U << HalGPIO::BTN_CONFIRM;
+
+  EXPECT_TRUE(subject.isDebouncePending());
+
+  subject.update();
+  EXPECT_FALSE(subject.isDebouncePending());
+}
+
 TEST_F(HalGPIOTest, X3UsbPollingIsLimitedAndEdgesFollowSuccessfulSamples) {
   HalGPIO subject;
   PreferencesFake::cachedDevice = 2;

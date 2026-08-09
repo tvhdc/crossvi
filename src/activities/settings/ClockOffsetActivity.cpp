@@ -201,7 +201,7 @@ void ClockOffsetActivity::render(RenderLock&&) {
     char timeBuf[9];
     const uint8_t encoded = encodeOffset(sign, hours, minutesQuarter);
     if (halClock.formatTime(timeBuf, sizeof(timeBuf), encoded, SETTINGS.clockFormat == 1)) {
-      char preview[24];
+      char preview[64];
       snprintf(preview, sizeof(preview), "%s %s", tr(STR_CURRENT_TIME), timeBuf);
       renderer.drawCenteredText(UI_10_FONT_ID, centreY + 60, preview);
     }

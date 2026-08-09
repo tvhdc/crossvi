@@ -12,6 +12,7 @@ class ConfirmationActivity : public Activity {
   std::string body;
   std::string negativeLabel;
   std::string positiveLabel;
+  StrId positiveFeedback;
 
   const int margin = 20;
   const int spacing = 30;
@@ -24,7 +25,8 @@ class ConfirmationActivity : public Activity {
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,
-                       const std::string& body, std::string negativeLabel = {}, std::string positiveLabel = {});
+                       const std::string& body, std::string negativeLabel = {}, std::string positiveLabel = {},
+                       StrId positiveFeedback = StrId::_COUNT);
 
   void onEnter() override;
   void loop() override;

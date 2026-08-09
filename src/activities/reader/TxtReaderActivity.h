@@ -91,6 +91,7 @@ class TxtReaderActivity final : public Activity {
   std::atomic<bool> pendingScreenshot{false};
   bool pendingBookSettingsSaveError = false;
   bool pendingCacheClearError = false;
+  bool skipStartupRecentUpdate = false;
   std::vector<BookmarkEntry> cachedBookmarks;
   bool bookmarksWritable = true;
   bool currentPageBookmarked = false;
@@ -111,6 +112,8 @@ class TxtReaderActivity final : public Activity {
     JumpUnavailable
   };
   ClippingNotice pendingClippingNotice = ClippingNotice::None;
+  bool showClippingSavedMessage = false;
+  unsigned long clippingSavedMessageTime = 0;
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0;
 
@@ -142,12 +145,13 @@ class TxtReaderActivity final : public Activity {
   bool persistBookReaderSettings();
   void invalidateReaderLayout();
   void applyOrientation(uint8_t orientation);
-  void updateAutoPageTurnFromMenu(uint8_t seconds);
+  void updateAutoPageTurnPreference(uint8_t seconds, bool active);
   void jumpToPercent(int percent);
   void loadCachedBookmarks();
   bool toggleBookmark();
   void updateCurrentPageBookmarked();
   void jumpToByteOffset(uint32_t byteOffset);
+  bool jumpToStoredByteOffset(uint32_t byteOffset);
   void openDictionaryWordSelect();
   void openClippingSelection();
   void openClippings();
@@ -168,13 +172,14 @@ class TxtReaderActivity final : public Activity {
                              PerBookReaderSettings bookReaderSettings = {}, bool bookSettingsWritable = true,
                              std::optional<ClippingJumpResult> initialClippingJump = std::nullopt,
                              std::optional<ProgressChangeResult> initialBookmarkJump = std::nullopt,
-                             int initialRefreshCountdown = 0)
+                             int initialRefreshCountdown = 0, bool skipStartupRecentUpdate = false)
       : Activity("TxtReader", renderer, mappedInput),
         txt(std::move(txt)),
         pagesUntilFullRefresh(initialRefreshCountdown),
         globalReaderSettings(std::move(globalReaderSettings)),
         bookReaderSettings(std::move(bookReaderSettings)),
         bookSettingsWritable(bookSettingsWritable),
+        skipStartupRecentUpdate(skipStartupRecentUpdate),
         initialClippingJump(std::move(initialClippingJump)),
         initialBookmarkJump(std::move(initialBookmarkJump)) {}
   void onEnter() override;

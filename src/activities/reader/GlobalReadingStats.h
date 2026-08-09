@@ -60,8 +60,6 @@ struct GlobalReadingStats {
   static GlobalReadingStats load(LoadStatus* status = nullptr);
   static bool canPublish();
   static bool hasSyncedStats();
-  static GlobalReadingStats loadAggregated();
-  static GlobalReadingStats loadAggregated(const GlobalReadingStats& localStats);
   static GlobalReadingStatsAggregation loadAggregatedWithReport(const GlobalReadingStats& localStats);
   bool save() const;
   bool saveRedundant() const;

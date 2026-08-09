@@ -1,9 +1,11 @@
 #include "ChapterHtmlSlimParser.h"
 
+#include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 #include <Utf8.h>
 #include <XmlParserUtils.h>
 #include <expat.h>
@@ -14,6 +16,7 @@
 
 #include "Epub.h"
 #include "Epub/Page.h"
+#include "Epub/VisibleTextUtils.h"
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageDimsProbe.h"
 #include "Epub/converters/ImageToFramebufferDecoder.h"
@@ -39,11 +42,11 @@ void stripLightPublisherLayout(CssStyle& style) {
 // There should be enough here to build out 1-2 full pages and doing this will free up a lot of
 // memory.
 // Spotted when reading Intermezzo, there are some really long text blocks in there.
-constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS = 750;
+constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS = 512;
 
 // When CSS is enabled, flush earlier to save RAM. 320 is still more than enough to build a CJK
 // page at font size 14
-constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS = 320;
+constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS = 256;
 
 // Hard cap on the number of anchor IDs recorded per chapter. Legitimate navigation
 // anchors (TOC entries, footnotes, cross-references) rarely exceed a few hundred per
@@ -59,8 +62,6 @@ constexpr const char* ITALIC_TAGS[] = {"i", "em"};
 constexpr const char* UNDERLINE_TAGS[] = {"u", "ins"};
 constexpr const char* LINETHROUGH_TAGS[] = {"del", "s", "strike"};
 constexpr const char* IMAGE_TAGS[] = {"img", "image"};
-constexpr const char* SKIP_TAGS[] = {"head"};
-
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
 bool matches(const char* tag_name, const char* const* possible_tags, size_t count) {
@@ -104,6 +105,43 @@ bool isHeaderOrBlock(const char* name) {
 
 bool isTableStructuralTag(const char* name) {
   return strcmp(name, "table") == 0 || strcmp(name, "tr") == 0 || strcmp(name, "td") == 0 || strcmp(name, "th") == 0;
+}
+
+void ChapterHtmlSlimParser::failOutOfMemory(const char* stage) {
+  if (lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+  const auto memory = MemoryBudget::snapshot();
+  LOG_ERR("EHP", "Out of memory at %s (free=%u maxalloc=%u)", stage, memory.freeHeap, memory.maxAllocHeap);
+  MemoryBudget::logStage("EHP", stage);
+  lastFailure_ = ChapterParseFailure::OutOfMemory;
+  if (xmlParser_) XML_StopParser(xmlParser_, XML_FALSE);
+}
+
+bool ChapterHtmlSlimParser::ensureMemory(const char* stage) {
+  if (lastFailure_ == ChapterParseFailure::OutOfMemory) return false;
+  auto memory = MemoryBudget::snapshot();
+  if (MemoryBudget::hasHeadroom(memory, MemoryBudget::TEXT_LAYOUT)) return true;
+
+  if (!releasedFontCachesForMemory_) {
+    releasedFontCachesForMemory_ = true;
+    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    memory = MemoryBudget::snapshot();
+    if (MemoryBudget::hasHeadroom(memory, MemoryBudget::TEXT_LAYOUT)) return true;
+  }
+
+  failOutOfMemory(stage);
+  return false;
+}
+
+bool ChapterHtmlSlimParser::createPage(const char* stage) {
+  if (!ensureMemory(stage)) return false;
+  currentPage.reset(new (std::nothrow) Page());
+  if (!currentPage) {
+    failOutOfMemory(stage);
+    return false;
+  }
+  currentPageNextY = 0;
+  currentPageVisibleOffsetSet = false;
+  return true;
 }
 
 void ChapterHtmlSlimParser::applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css) {
@@ -168,8 +206,8 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   effectiveDirection = currentCssStyle.direction;
   effectiveSup = false;
   effectiveSub = false;
-  effectiveSmallCaps = currentCssStyle.hasFontVariantCaps() &&
-                       currentCssStyle.fontVariantCaps == CssFontVariantCaps::SmallCaps;
+  effectiveSmallCaps =
+      currentCssStyle.hasFontVariantCaps() && currentCssStyle.fontVariantCaps == CssFontVariantCaps::SmallCaps;
 
   // Apply inline style stack in order
   for (const auto& entry : inlineStyleStack) {
@@ -220,10 +258,10 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   // block is flushed so the chapter starts on a fresh page.
   if (std::find(tocAnchors.begin(), tocAnchors.end(), pendingAnchorId) != tocAnchors.end()) {
     if (currentPage && !currentPage->elements.empty()) {
-      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+      setCurrentPageVisibleOffset(visibleTextOffset);
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
       completedPageCount++;
-      currentPage.reset(new Page());
-      currentPageNextY = 0;
+      if (!createPage("toc_page_break")) return;
     }
   }
 
@@ -232,8 +270,18 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   pendingAnchorId.clear();
 }
 
+void ChapterHtmlSlimParser::setCurrentPageVisibleOffset(const uint32_t offset) {
+  if (currentPageVisibleOffsetSet) return;
+  currentPageVisibleOffset = completedPageCount == 0 ? 0 : offset;
+  currentPageVisibleOffsetSet = true;
+}
+
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
+  if (!currentTextBlock || !ensureMemory("token")) {
+    partWordBufferIndex = 0;
+    return;
+  }
   // Determine font style from depth-based tracking and CSS effective style
   const bool isBold = boldUntilDepth < depth || effectiveBold;
   const bool isItalic = italicUntilDepth < depth || effectiveItalic;
@@ -260,7 +308,8 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   partWordBuffer[partWordBufferIndex] = '\0';
   const uint32_t sourceStart = canonicalTextOffsetValid ? canonicalTextOffset : UINT32_MAX;
   const size_t sourceBytes =
-      currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, sourceStart);
+      currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, sourceStart,
+                                partWordVisibleOffset);
   if (canonicalTextOffsetValid) {
     if (sourceBytes > UINT32_MAX - canonicalTextOffset) {
       canonicalTextOffsetValid = false;
@@ -271,6 +320,23 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   partWordBufferIndex = 0;
   nextWordContinues = false;
   listItemBulletOnly = false;
+  softFlushTextBlockIfNeeded();
+}
+
+void ChapterHtmlSlimParser::softFlushTextBlockIfNeeded() {
+  if (!currentTextBlock || lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+  const size_t softFlushThreshold = embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
+  if (currentTextBlock->size() <= softFlushThreshold) return;
+  if (!ensureMemory("paragraph_soft_flush")) return;
+
+  LOG_DBG("EHP", "Text block soft flush (%u words)", static_cast<unsigned>(currentTextBlock->size()));
+  const int horizontalInset = currentTextBlock->getBlockStyle().totalHorizontalInset();
+  const uint16_t effectiveWidth =
+      (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+  currentTextBlock->layoutAndExtractLines(
+      renderer, fontId, effectiveWidth,
+      [this](const std::shared_ptr<TextBlock>& textBlock, const uint32_t offset) { addLineToPage(textBlock, offset); },
+      false);
 }
 
 // start a new text block if needed
@@ -316,8 +382,13 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   // If the pending anchor is a TOC chapter boundary, force a page break after the previous
   // block is flushed so the chapter starts on a fresh page.
   flushPendingAnchor();
-  currentTextBlock.reset(new ParsedText(extraParagraphSpacing, forceParagraphIndents, hyphenationEnabled,
-                                        focusReadingEnabled, wordSpacing, blockStyle));
+  if (!ensureMemory("text_block")) return;
+  currentTextBlock.reset(new (std::nothrow) ParsedText(extraParagraphSpacing, forceParagraphIndents, hyphenationEnabled,
+                                                       focusReadingEnabled, wordSpacing, blockStyle));
+  if (!currentTextBlock) {
+    failOutOfMemory("text_block");
+    return;
+  }
   wordsExtractedInBlock = 0;
   listItemBulletOnly = false;
 }
@@ -333,12 +404,7 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
   }
 
   if (!currentPage) {
-    currentPage.reset(new (std::nothrow) Page());
-    if (!currentPage) {
-      LOG_ERR("EHP", "Failed to create page for horizontal rule");
-      return;
-    }
-    currentPageNextY = 0;
+    if (!createPage("horizontal_rule_page")) return;
   }
 
   const int16_t lineHeight = static_cast<int16_t>(renderer.getLineHeight(fontId) * lineCompression + 0.5f);
@@ -357,14 +423,10 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
   const int16_t totalHeight = static_cast<int16_t>(topSpacing + ruleThickness + bottomSpacing);
 
   if (!currentPage->elements.empty() && currentPageNextY + totalHeight > viewportHeight) {
-    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    setCurrentPageVisibleOffset(visibleTextOffset);
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
     completedPageCount++;
-    currentPage.reset(new (std::nothrow) Page());
-    if (!currentPage) {
-      LOG_ERR("EHP", "Failed to create page after horizontal-rule page break");
-      return;
-    }
-    currentPageNextY = 0;
+    if (!createPage("horizontal_rule_break")) return;
   }
 
   currentPageNextY += topSpacing;
@@ -376,6 +438,7 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
     return;
   }
   currentPage->elements.push_back(pageRule);
+  setCurrentPageVisibleOffset(visibleTextOffset);
   currentPageNextY = static_cast<int16_t>(currentPageNextY + ruleThickness + bottomSpacing);
 
   if (!pendingAnchorId.empty()) {
@@ -386,6 +449,13 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
 
 void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
+  if (self->lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+
+  if (strcmp(name, "body") == 0) self->insideBody = true;
+  if (self->insideBody &&
+      (self->nonVisibleTextDepth > 0 || VisibleTextUtils::isNonVisibleElement(name))) {
+    self->nonVisibleTextDepth++;
+  }
 
   constexpr size_t MAX_CSS_ANCESTOR_DEPTH = 32;
   constexpr size_t MAX_ANCESTOR_TAG_LENGTH = 32;
@@ -551,7 +621,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->updateEffectiveInlineStyle();
     const CssTextDecoration savedTextDecoration = self->effectiveTextDecoration;
     self->effectiveTextDecoration = CssTextDecoration::None;
+    self->syntheticCharacterData = true;
     self->characterData(userData, headerText.c_str(), static_cast<int>(headerText.length()));
+    self->syntheticCharacterData = false;
     if (self->partWordBufferIndex > 0) {
       self->flushPartWordBuffer();
     }
@@ -753,21 +825,13 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               if (self->currentPage && !self->currentPage->elements.empty() &&
                   (self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
                    self->viewportHeight)) {
-                self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex, self->xpathListItemIndex);
+                self->setCurrentPageVisibleOffset(self->visibleTextOffset);
+                self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
+                                     self->xpathListItemIndex, self->currentPageVisibleOffset);
                 self->completedPageCount++;
-                self->currentPage.reset(new Page());
-                if (!self->currentPage) {
-                  LOG_ERR("EHP", "Failed to create new page");
-                  return;
-                }
-                self->currentPageNextY = 0;
+                if (!self->createPage("image_page_break")) return;
               } else if (!self->currentPage) {
-                self->currentPage.reset(new Page());
-                if (!self->currentPage) {
-                  LOG_ERR("EHP", "Failed to create initial page");
-                  return;
-                }
-                self->currentPageNextY = 0;
+                if (!self->createPage("image_page")) return;
               }
 
               // A full-height image must not inherit positive top spacing on
@@ -783,6 +847,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               // Retain the normalized source href even when the dimension
               // fallback extracted the image eagerly. The reader can then
               // classify a cover-only page without decoding it again.
+              if (!self->ensureMemory("image_block")) return;
               auto imageBlock =
                   std::make_shared<ImageBlock>(cachedImagePath, resolvedPath, displayWidth, displayHeight);
               if (!imageBlock) {
@@ -796,6 +861,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 return;
               }
               self->currentPage->elements.push_back(pageImage);
+              self->setCurrentPageVisibleOffset(self->visibleTextOffset);
               self->currentPageNextY += displayHeight + imageMarginBottom;
 
               // The image consumed the empty block's accumulated vertical spacing.
@@ -824,7 +890,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                                     .withoutBottom());
         self->italicUntilDepth = std::min(self->italicUntilDepth, self->depth);
         self->depth += 1;
+        self->syntheticCharacterData = true;
         self->characterData(userData, alt.c_str(), alt.length());
+        self->syntheticCharacterData = false;
         // Skip any child content (skip until parent as we pre-advanced depth above)
         self->skipUntilDepth = self->depth - 1;
         return;
@@ -837,7 +905,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     }
   }
 
-  if (matches(name, SKIP_TAGS, std::size(SKIP_TAGS))) {
+  if (VisibleTextUtils::isNonVisibleElement(name)) {
     // start skip
     self->skipUntilDepth = self->depth;
     self->depth += 1;
@@ -979,7 +1047,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->updateEffectiveInlineStyle();
 
       if (strcmp(name, "li") == 0) {
-        self->currentTextBlock->addWord("\xe2\x80\xa2", EpdFontFamily::REGULAR);
+        self->currentTextBlock->addWord("\xe2\x80\xa2", EpdFontFamily::REGULAR, false, false, UINT32_MAX,
+                                        self->visibleTextOffset);
         self->listItemBulletOnly = true;
       }
     }
@@ -1098,6 +1167,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
 void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char* s, const int len) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
+  if (self->lastFailure_ == ChapterParseFailure::OutOfMemory || !self->currentTextBlock) return;
+
+  const bool countVisibleOffsets = self->insideBody && self->nonVisibleTextDepth == 0 && !self->syntheticCharacterData;
+  const uint32_t callbackVisibleOffset = self->visibleTextOffset;
+  if (countVisibleOffsets) {
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(s);
+    const unsigned char* const end = ptr + len;
+    while (ptr < end) {
+      utf8NextCodepoint(&ptr);
+      self->visibleTextOffset++;
+    }
+  }
 
   // Skip content of nested table
   if (self->tableDepth > 1) {
@@ -1137,7 +1218,10 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     self->currentFootnote.number[self->currentFootnoteLinkTextLen] = '\0';
   }
 
+  uint32_t nextCodepointOffset = callbackVisibleOffset;
   for (int i = 0; i < len; i++) {
+    const uint32_t codepointOffset = nextCodepointOffset;
+    if (countVisibleOffsets && (static_cast<uint8_t>(s[i]) & 0xC0) != 0x80) nextCodepointOffset++;
     if (isWhitespace(s[i])) {
       // Currently looking at whitespace, if there's anything in the partWordBuffer, flush it
       if (self->partWordBufferIndex > 0) {
@@ -1175,6 +1259,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       self->partWordBuffer[0] = ' ';
       self->partWordBuffer[1] = '\0';
       self->partWordBufferIndex = 1;
+      self->partWordVisibleOffset = codepointOffset;
       self->nextWordContinues = true;  // Attach space to previous word (no break).
       self->flushPartWordBuffer();
 
@@ -1194,6 +1279,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       self->partWordBuffer[0] = ' ';
       self->partWordBuffer[1] = '\0';
       self->partWordBufferIndex = 1;
+      self->partWordVisibleOffset = codepointOffset;
       self->nextWordContinues = true;
       self->flushPartWordBuffer();
 
@@ -1228,6 +1314,13 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       if (safeLen < self->partWordBufferIndex && safeLen > 0) {
         // Incomplete UTF-8 sequence at the end — save it before flushing
         int overflow = self->partWordBufferIndex - safeLen;
+        uint32_t overflowVisibleOffset = self->partWordVisibleOffset;
+        const unsigned char* offsetPtr = reinterpret_cast<const unsigned char*>(self->partWordBuffer);
+        const unsigned char* const safeEnd = offsetPtr + safeLen;
+        while (offsetPtr < safeEnd) {
+          utf8NextCodepoint(&offsetPtr);
+          overflowVisibleOffset++;
+        }
         char saved[4];
         for (int j = 0; j < overflow; j++) {
           saved[j] = self->partWordBuffer[safeLen + j];
@@ -1239,30 +1332,15 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
           self->partWordBuffer[j] = saved[j];
         }
         self->partWordBufferIndex = overflow;
+        self->partWordVisibleOffset = overflowVisibleOffset;
       } else {
         self->flushPartWordBuffer();
         self->nextWordContinues = true;
       }
     }
 
+    if (self->partWordBufferIndex == 0) self->partWordVisibleOffset = codepointOffset;
     self->partWordBuffer[self->partWordBufferIndex++] = s[i];
-  }
-
-  // Keep token growth bounded: CSS-heavy spans can fragment text into many tiny
-  // words, so flush earlier when embedded CSS is active. We still keep the
-  // "exclude last line" behavior to preserve paragraph flow across chunks.
-  const size_t blockWordCount = self->currentTextBlock->size();
-  const size_t softFlushThreshold =
-      self->embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
-  if (blockWordCount > softFlushThreshold) {
-    LOG_DBG("EHP", "Text block soft flush (%u words)", static_cast<unsigned>(blockWordCount));
-    const int horizontalInset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
-    const uint16_t effectiveWidth = (horizontalInset < self->viewportWidth)
-                                        ? static_cast<uint16_t>(self->viewportWidth - horizontalInset)
-                                        : self->viewportWidth;
-    self->currentTextBlock->layoutAndExtractLines(
-        self->renderer, self->fontId, effectiveWidth,
-        [self](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock); }, false);
   }
 }
 
@@ -1284,6 +1362,9 @@ void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const X
 
 void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
+  if (self->lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+
+  if (self->nonVisibleTextDepth > 0) self->nonVisibleTextDepth--;
 
   if (self->cssAncestorOverflowDepth > 0) {
     --self->cssAncestorOverflowDepth;
@@ -1412,12 +1493,16 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       self->listItemBulletOnly = false;
     }
   }
+  if (strcmp(name, "body") == 0) self->insideBody = false;
 }
 
 ChapterHtmlSlimParser::~ChapterHtmlSlimParser() { abortParse(); }
 
 bool ChapterHtmlSlimParser::beginParse() {
   lastFailure_ = ChapterParseFailure::None;
+  releasedFontCachesForMemory_ = false;
+  MemoryBudget::logStage("EHP", "parse_begin");
+  if (!ensureMemory("parse_begin")) return false;
   // Initialize block style stack with a root entry representing "no ancestor block elements".
   // The user's paragraph alignment is set as the default so child elements without explicit
   // text-align inherit it correctly through getCombinedBlockStyle.
@@ -1434,6 +1519,7 @@ bool ChapterHtmlSlimParser::beginParse() {
   const auto align = rootBlockStyle.alignment;
   paragraphAlignmentBlockStyle.alignment = align;
   startNewTextBlock(paragraphAlignmentBlockStyle);
+  if (!currentTextBlock) return false;
 
   xmlParser_ = XML_ParserCreate(nullptr);
   if (!xmlParser_) {
@@ -1469,6 +1555,7 @@ bool ChapterHtmlSlimParser::beginParse() {
 }
 
 ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
+  if (!ensureMemory("parse_step")) return ParseStatus::Error;
   void* const buf = XML_GetBuffer(xmlParser_, PARSE_BUFFER_SIZE);
   if (!buf) {
     LOG_ERR("EHP", "Couldn't allocate memory for buffer");
@@ -1487,8 +1574,10 @@ ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
   const int done = parseFile_.available() == 0;
 
   if (XML_ParseBuffer(xmlParser_, static_cast<int>(len), done) == XML_STATUS_ERROR) {
-    lastFailure_ = XML_GetErrorCode(xmlParser_) == XML_ERROR_NO_MEMORY ? ChapterParseFailure::OutOfMemory
-                                                                       : ChapterParseFailure::InvalidContent;
+    if (lastFailure_ != ChapterParseFailure::OutOfMemory) {
+      lastFailure_ = XML_GetErrorCode(xmlParser_) == XML_ERROR_NO_MEMORY ? ChapterParseFailure::OutOfMemory
+                                                                         : ChapterParseFailure::InvalidContent;
+    }
     LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(xmlParser_),
             XML_ErrorString(XML_GetErrorCode(xmlParser_)));
     return ParseStatus::Error;
@@ -1526,7 +1615,8 @@ bool ChapterHtmlSlimParser::finishParse() {
       anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
       pendingAnchorId.clear();
     }
-    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    setCurrentPageVisibleOffset(visibleTextOffset);
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
     completedPageCount++;
     currentPage.reset();
     currentTextBlock.reset();
@@ -1552,20 +1642,20 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   return finishParse();
 }
 
-void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
+void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const uint32_t visibleOffset) {
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 
   if (!currentPage) {
-    currentPage.reset(new Page());
-    currentPageNextY = 0;
+    if (!createPage("text_page")) return;
   }
 
   if (currentPageNextY + lineHeight > viewportHeight) {
-    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    setCurrentPageVisibleOffset(visibleOffset);
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
     completedPageCount++;
-    currentPage.reset(new Page());
-    currentPageNextY = 0;
+    if (!createPage("text_page_break")) return;
   }
+  setCurrentPageVisibleOffset(visibleOffset);
 
   // Track cumulative words to assign footnotes to the page containing their anchor
   wordsExtractedInBlock += line->wordCount();
@@ -1589,9 +1679,10 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   if (!currentPage) {
-    currentPage.reset(new Page());
-    currentPageNextY = 0;
+    if (!createPage("paragraph_page")) return;
   }
+
+  if (!ensureMemory("paragraph_layout")) return;
 
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 
@@ -1611,7 +1702,7 @@ void ChapterHtmlSlimParser::makePages() {
 
   currentTextBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,
-      [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); });
+      [this](const std::shared_ptr<TextBlock>& textBlock, const uint32_t offset) { addLineToPage(textBlock, offset); });
 
   // Fallback: transfer any remaining pending footnotes to current page.
   // Normally addLineToPage handles this via word-index tracking, but this catches

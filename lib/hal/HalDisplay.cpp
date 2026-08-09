@@ -69,6 +69,10 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
 }
 
+void HalDisplay::triggerDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+  einkDisplay.triggerDisplay(convertRefreshMode(mode), turnOffScreen);
+}
+
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
     einkDisplay.requestResync(1);
@@ -76,6 +80,8 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
 
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
 }
+
+void HalDisplay::requestResync(const uint8_t settlePasses) { einkDisplay.requestResync(settlePasses); }
 
 void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }
 

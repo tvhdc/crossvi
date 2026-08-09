@@ -25,6 +25,7 @@ class StreamingJsonParser {
 
   void reset();
   void feed(const char* data, size_t len);
+  bool finish();
 
   bool hasError() const { return error; }
 
@@ -63,6 +64,8 @@ class StreamingJsonParser {
   bool escaped;
   bool tokenOverflow;
   bool error;
+  bool rootStarted;
+  bool rootComplete;
 
   Container nestingStack[MAX_NESTING];
   uint8_t nestingDepth;

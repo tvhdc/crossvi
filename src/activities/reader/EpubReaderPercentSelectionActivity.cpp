@@ -22,8 +22,6 @@ void EpubReaderPercentSelectionActivity::onEnter() {
   requestUpdate();
 }
 
-void EpubReaderPercentSelectionActivity::onExit() { Activity::onExit(); }
-
 void EpubReaderPercentSelectionActivity::adjustPercent(const int delta) {
   // Apply delta and clamp within 0-100.
   percent += delta;

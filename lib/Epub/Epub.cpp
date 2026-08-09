@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <PngToBmpConverter.h>
 #include <StagedFileTransaction.h>
 #include <Utf8.h>
@@ -676,7 +677,11 @@ bool Epub::bindCurrentSource() const {
 
 BookMetadataCache::LoadStatus Epub::inspectCache() {
   if (!ensureSourceIdentitySnapshot()) return BookMetadataCache::LoadStatus::IoError;
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+  if (!bookMetadataCache) {
+    LOG_ERR("EBP", "Not enough memory to inspect EPUB cache");
+    return BookMetadataCache::LoadStatus::IoError;
+  }
   return bookMetadataCache->load(sourceIdentitySnapshot);
 }
 
@@ -692,8 +697,10 @@ bool Epub::readCoreMetadata(BookMetadataCache::BookMetadata& metadata) {
   if (bookMetadataCache && bookMetadataCache->isLoaded()) {
     fromCache = !bookMetadataCache->coreMetadata.coverItemHref.empty();
   } else if (Storage.exists((cachePath + "/book.bin").c_str()) && ensureSourceIdentitySnapshot()) {
-    bookMetadataCache.reset(new BookMetadataCache(cachePath));
-    const bool loaded = bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
+    bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+    const bool loaded = bookMetadataCache &&
+                        bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
+    if (!bookMetadataCache) LOG_ERR("EBP", "Not enough memory for cached metadata; parsing OPF instead");
     if (loaded) fromCache = !bookMetadataCache->coreMetadata.coverItemHref.empty();
   }
   if (fromCache) {
@@ -761,9 +768,10 @@ bool Epub::prepareCssCache(const bool verifySourceAtEntry) {
   // even on a failed cache write so the current reading session remains usable.
   bookMetadataCache.reset();
   const bool saved = parseCssFiles();
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   const bool metadataReloaded =
-      bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
+      bookMetadataCache && bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
+  if (!bookMetadataCache) LOG_ERR("EBP", "Not enough memory to reload metadata after CSS parsing");
 
   if (!saved || !metadataReloaded || !sourceStillMatchesSnapshot() || !cssParser->loadFromCache()) {
     LOG_ERR("EBP", "Failed to build and verify CSS cache");
@@ -792,9 +800,15 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   if (inspectSourceBinding() != SourceBindingStatus::Match) return false;
 
   // Initialize spine/TOC cache
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   // Always create CssParser - needed for inline style parsing even without CSS files
-  cssParser.reset(new CssParser(cachePath));
+  cssParser = makeUniqueNoThrow<CssParser>(cachePath);
+  if (!bookMetadataCache || !cssParser) {
+    LOG_ERR("EBP", "Not enough memory to initialize EPUB metadata and CSS");
+    bookMetadataCache.reset();
+    cssParser.reset();
+    return false;
+  }
   const auto prepareCssForLoad = [this, skipLoadingCss]() {
     // load() already verified the source before reading derived data and
     // verifies it again before returning. Avoid a redundant full central-
@@ -972,7 +986,11 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // ensureCssCache() reloads book.bin after temporarily lending its memory to
   // CSS parsing. A style-free load still needs the normal first reload here.
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
-    bookMetadataCache.reset(new BookMetadataCache(cachePath));
+    bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+    if (!bookMetadataCache) {
+      LOG_ERR("EBP", "Not enough memory to reload EPUB cache after indexing");
+      return false;
+    }
   }
   if (!bookMetadataCache->isLoaded() &&
       bookMetadataCache->load(sourceIdentitySnapshot) != BookMetadataCache::LoadStatus::Loaded) {
@@ -1092,7 +1110,9 @@ bool Epub::openCoverSource(const std::string& coverImageHref, const bool jpeg, C
     clearCoverSource();
     return false;
   }
-  const bool extracted = readItemContentsToStream(coverImageHref, extractedSource, 4096);
+  constexpr size_t MAX_EXTRACTED_COVER_BYTES = 16U * 1024U * 1024U;
+  const bool extracted =
+      readItemContentsToStream(coverImageHref, extractedSource, 4096, false, MAX_EXTRACTED_COVER_BYTES);
   const bool synced = extractedSource.sync();
   const bool closed = extractedSource.close();
   if (!extracted || !synced || !closed) {
@@ -1664,14 +1684,16 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 }
 
 bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, const size_t chunkSize,
-                                    const bool allowEarlyStop) const {
+                                    const bool allowEarlyStop, const size_t maxOutputSize,
+                                    bool* const outputLimitExceeded) const {
   if (itemHref.empty()) {
     LOG_DBG("EBP", "Failed to read item, empty href");
     return false;
   }
 
   const std::string path = FsHelpers::normalisePath(itemHref);
-  return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);
+  return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop, maxOutputSize,
+                                            outputLimitExceeded);
 }
 
 bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::string& finalPath) const {
@@ -1690,7 +1712,8 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
 
   HalFile output;
   if (!Storage.openFileForWrite("EBP", stagingPath, output)) return false;
-  const bool extracted = readItemContentsToStream(itemHref, output, 4096);
+  constexpr size_t MAX_EXTRACTED_RASTER_BYTES = 16U * 1024U * 1024U;
+  const bool extracted = readItemContentsToStream(itemHref, output, 4096, false, MAX_EXTRACTED_RASTER_BYTES);
   const bool synced = output.sync();
   const bool closed = output.close();
   if (!extracted || !synced || !closed || !validateRasterFile(stagingPath.c_str(), nullptr)) {

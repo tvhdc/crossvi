@@ -53,7 +53,8 @@ class HalClock {
   bool formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased = 48, bool use12Hour = false) const;
 
   bool formatDate(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased = 48,
-                  DateFormat dateFormat = MONTH_DAY_YEAR_LONG, char numericSeparator = '/') const;
+                  DateFormat dateFormat = MONTH_DAY_YEAR_LONG, char numericSeparator = '/',
+                  bool vietnameseMonthNames = false) const;
 
   // Sync the DS3231 RTC from an NTP server. Requires WiFi to be connected.
   // Blocks for up to ~5s while waiting for SNTP response.

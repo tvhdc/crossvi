@@ -175,9 +175,9 @@ bool addHighlightLine(HighlightPlan& plan, HighlightLine candidate) {
   return true;
 }
 
-bool appendWordGeometry(HighlightPlan& plan, GfxRenderer& renderer, const PageLine& line, const TextBlock& block,
-                        const uint16_t wordIndex, const int fontId, const int marginLeft, const int marginTop,
-                        const bool backgroundSafe) {
+bool wordGeometry(GfxRenderer& renderer, const PageLine& line, const TextBlock& block, const uint16_t wordIndex,
+                  const int fontId, const int marginLeft, const int marginTop, const bool backgroundSafe,
+                  HighlightLine& geometry) {
   const std::string_view text(block.wordText(wordIndex), block.wordTextLen(wordIndex));
   const int lineHeight = renderer.getLineHeight(fontId);
   const int left = line.xPos + block.wordXpos(wordIndex) + marginLeft;
@@ -192,10 +192,14 @@ bool appendWordGeometry(HighlightPlan& plan, GfxRenderer& renderer, const PageLi
   const int top = std::clamp(line.yPos + marginTop, 0, renderer.getScreenHeight() - 1);
   const int bottom = std::clamp(line.yPos + marginTop + lineHeight - 1, 0, renderer.getScreenHeight() - 1);
   const int underline = std::max(top, bottom - 1);
-  if (right <= left || right <= 0 || left >= renderer.getScreenWidth() || bottom < top) return true;
-  return addHighlightLine(
-      plan, {static_cast<int16_t>(std::max(0, left)), static_cast<int16_t>(right - 1), static_cast<int16_t>(top),
-             static_cast<int16_t>(bottom), static_cast<int16_t>(underline), backgroundSafe});
+  if (right <= left || right <= 0 || left >= renderer.getScreenWidth() || bottom < top) return false;
+  geometry = {static_cast<int16_t>(std::max(0, left)),
+              static_cast<int16_t>(right - 1),
+              static_cast<int16_t>(top),
+              static_cast<int16_t>(bottom),
+              static_cast<int16_t>(underline),
+              backgroundSafe};
+  return true;
 }
 
 template <typename Selected>
@@ -210,14 +214,37 @@ HighlightPlan buildGeometry(GfxRenderer& renderer, const Page& page, const int f
     const auto& block = line.getBlock();
     if (!block || !block->valid()) continue;
     const bool backgroundSafe = !block->getBlockStyle().isRtl;
+    HighlightLine run;
+    bool hasRun = false;
+    const auto flushRun = [&]() {
+      if (!hasRun) return true;
+      hasRun = false;
+      return addHighlightLine(plan, run);
+    };
     for (uint16_t i = 0; i < block->wordCount(); ++i) {
       const std::string_view text(block->wordText(i), block->wordTextLen(i));
       if (!hasVisibleText(text)) continue;
-      if (selected(*block, i, pageWordIndex++) &&
-          !appendWordGeometry(plan, renderer, line, *block, i, fontId, marginLeft, marginTop, backgroundSafe)) {
-        return plan;
+      if (!selected(*block, i, pageWordIndex++)) {
+        if (!flushRun()) return plan;
+        continue;
+      }
+      HighlightLine word;
+      if (!wordGeometry(renderer, line, *block, i, fontId, marginLeft, marginTop, backgroundSafe, word)) continue;
+      if (!hasRun) {
+        run = word;
+        hasRun = true;
+      } else {
+        // Selected words are contiguous in reading order on this visual line.
+        // Expanding one band across their geometry also fills the natural word
+        // spacing without joining highlights separated by an unselected word.
+        run.left = std::min(run.left, word.left);
+        run.right = std::max(run.right, word.right);
+        run.top = std::min(run.top, word.top);
+        run.bottom = std::max(run.bottom, word.bottom);
+        run.y = std::max(run.y, word.y);
       }
     }
+    if (!flushRun()) return plan;
   }
   return plan;
 }
@@ -261,12 +288,20 @@ uint32_t layoutFingerprint(const LayoutIdentity& identity) {
 }
 
 // cppcheck-suppress constParameterReference; keep the public drawing API's mutable renderer reference.
-void HighlightPlan::drawBackground(GfxRenderer& renderer) const {
+void HighlightPlan::drawInverse(GfxRenderer& renderer) const {
   for (size_t i = 0; i < count; ++i) {
     const HighlightLine& line = lines[i];
     if (!line.backgroundSafe) continue;
-    renderer.fillRectDither(line.left, line.top, line.right - line.left + 1, line.bottom - line.top + 1,
-                            Color::LightGray);
+    renderer.invertRect(line.left, line.top, line.right - line.left + 1, line.bottom - line.top + 1);
+  }
+}
+
+// cppcheck-suppress constParameterReference; keep the public drawing API's mutable renderer reference.
+void HighlightPlan::clearGrayscale(GfxRenderer& renderer) const {
+  for (size_t i = 0; i < count; ++i) {
+    const HighlightLine& line = lines[i];
+    if (!line.backgroundSafe) continue;
+    renderer.fillRect(line.left, line.top, line.right - line.left + 1, line.bottom - line.top + 1, true);
   }
 }
 

@@ -82,7 +82,7 @@ class Bitmap {
   // regular row API is intentionally kept for scaled/filtered images, while
   // small cached cover thumbnails use this path to avoid one SD read per row.
   BmpReaderError readPackedRows(uint8_t* data, size_t capacity) const;
-  uint8_t paletteLuminance(uint8_t index) const { return index < 256 ? paletteLum[index] : 255; }
+  uint8_t paletteLuminance(uint8_t index) const { return paletteLum[index]; }
   BmpReaderError rewindToData() const;
   int getWidth() const { return width; }
   int getHeight() const { return height; }

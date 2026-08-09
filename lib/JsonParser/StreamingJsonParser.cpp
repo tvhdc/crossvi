@@ -2,6 +2,10 @@
 
 #include <cstring>
 
+namespace {
+bool isJsonWhitespace(const char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+}  // namespace
+
 StreamingJsonParser::StreamingJsonParser(const JsonCallbacks& callbacks) : cb(callbacks) { reset(); }
 
 void StreamingJsonParser::reset() {
@@ -11,6 +15,8 @@ void StreamingJsonParser::reset() {
   escaped = false;
   tokenOverflow = false;
   error = false;
+  rootStarted = false;
+  rootComplete = false;
   nestingDepth = 0;
   literalLen = 0;
   literalPos = 0;
@@ -40,7 +46,31 @@ void StreamingJsonParser::feed(const char* data, size_t len) {
   }
 }
 
+bool StreamingJsonParser::finish() {
+  if (error) return false;
+
+  if (state == State::IN_NUMBER) {
+    if (!tokenOverflow && cb.onNumber) {
+      tokenBuf[tokenLen] = '\0';
+      cb.onNumber(cb.ctx, tokenBuf, tokenLen);
+    }
+    state = State::SCANNING;
+    expectingValue = false;
+  }
+
+  if (state != State::SCANNING || nestingDepth != 0 || expectingValue || !rootStarted || !rootComplete) {
+    error = true;
+    return false;
+  }
+  return true;
+}
+
 void StreamingJsonParser::handleScanning(char c) {
+  if (rootComplete) {
+    if (!isJsonWhitespace(c)) error = true;
+    return;
+  }
+
   switch (c) {
     case '"':
       tokenLen = 0;
@@ -52,6 +82,13 @@ void StreamingJsonParser::handleScanning(char c) {
       }
       break;
     case '{':
+      if (nestingDepth == 0) {
+        if (rootStarted) {
+          error = true;
+          return;
+        }
+        rootStarted = true;
+      }
       if (nestingDepth < MAX_NESTING) {
         nestingStack[nestingDepth++] = Container::OBJECT;
       } else {
@@ -62,11 +99,23 @@ void StreamingJsonParser::handleScanning(char c) {
       expectingValue = false;
       break;
     case '}':
+      if (nestingDepth == 0 || nestingStack[nestingDepth - 1] != Container::OBJECT || expectingValue) {
+        error = true;
+        return;
+      }
       if (cb.onObjectEnd) cb.onObjectEnd(cb.ctx);
-      if (nestingDepth > 0) --nestingDepth;
+      --nestingDepth;
       expectingValue = false;
+      if (nestingDepth == 0) rootComplete = true;
       break;
     case '[':
+      if (nestingDepth == 0) {
+        if (rootStarted) {
+          error = true;
+          return;
+        }
+        rootStarted = true;
+      }
       if (nestingDepth < MAX_NESTING) {
         nestingStack[nestingDepth++] = Container::ARRAY;
       } else {
@@ -77,9 +126,14 @@ void StreamingJsonParser::handleScanning(char c) {
       expectingValue = false;
       break;
     case ']':
+      if (nestingDepth == 0 || nestingStack[nestingDepth - 1] != Container::ARRAY || expectingValue) {
+        error = true;
+        return;
+      }
       if (cb.onArrayEnd) cb.onArrayEnd(cb.ctx);
-      if (nestingDepth > 0) --nestingDepth;
+      --nestingDepth;
       expectingValue = false;
+      if (nestingDepth == 0) rootComplete = true;
       break;
     case ':':
       expectingValue = true;

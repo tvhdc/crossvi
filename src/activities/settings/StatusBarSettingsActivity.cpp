@@ -4,6 +4,7 @@
 #include <HalClock.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 
@@ -13,32 +14,24 @@
 #include "fontIds.h"
 
 namespace {
-// Menu items in their natural order. Clock entries are appended only when the
-// DS3231 RTC is present so X4 devices don't see them at all.
 enum MenuItem {
-  ITEM_CHAPTER_PAGE_COUNT = 0,
+  ITEM_TITLE = 0,
+  ITEM_CHAPTER_PAGE_COUNT,
   ITEM_BOOK_PROGRESS_PERCENTAGE,
   ITEM_PROGRESS_BAR,
   ITEM_PROGRESS_BAR_THICKNESS,
-  ITEM_TITLE,
-  ITEM_BATTERY,
-  ITEM_XTC_STATUS_BAR,
   ITEM_CLOCK,  // X3 only
-  ITEM_COUNT
+  ITEM_XTC_STATUS_BAR,
 };
 
-constexpr int BASE_MENU_ITEMS = ITEM_CLOCK;  // Items shown on every device
-constexpr int FULL_MENU_ITEMS = ITEM_COUNT;  // Items shown when RTC is available
-
-const StrId menuNames[FULL_MENU_ITEMS] = {
+const StrId menuNames[] = {
+    StrId::STR_TITLE,
     StrId::STR_CHAPTER_PAGE_COUNT,
     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
     StrId::STR_PROGRESS_BAR,
     StrId::STR_PROGRESS_BAR_THICKNESS,
-    StrId::STR_TITLE,
-    StrId::STR_BATTERY,
-    StrId::STR_XTC_STATUS_BAR,
     StrId::STR_CLOCK,
+    StrId::STR_XTC_STATUS_BAR,
 };
 constexpr int PROGRESS_BAR_ITEMS = 3;
 const StrId progressBarNames[PROGRESS_BAR_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
@@ -64,7 +57,6 @@ void StatusBarSettingsActivity::onEnter() {
   Activity::onEnter();
 
   selectedIndex = 0;
-  visibleItemCount = halClock.isAvailable() ? FULL_MENU_ITEMS : BASE_MENU_ITEMS;
 
   // Clamp statusBarProgressBar and statusBarTitle in case of corrupt/migrated data
   if (SETTINGS.statusBarProgressBar >= PROGRESS_BAR_ITEMS) {
@@ -91,10 +83,19 @@ void StatusBarSettingsActivity::onEnter() {
     SETTINGS.statusBarClock = CrossPointSettings::STATUS_BAR_CLOCK_MODE::STATUS_BAR_CLOCK_HIDE;
   }
 
+  rebuildVisibleItems();
   requestUpdate();
 }
 
-void StatusBarSettingsActivity::onExit() { Activity::onExit(); }
+void StatusBarSettingsActivity::rebuildVisibleItems() {
+  visibleItems = {ITEM_TITLE, ITEM_CHAPTER_PAGE_COUNT, ITEM_BOOK_PROGRESS_PERCENTAGE, ITEM_PROGRESS_BAR};
+  if (SETTINGS.statusBarProgressBar != CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS) {
+    visibleItems.push_back(ITEM_PROGRESS_BAR_THICKNESS);
+  }
+  if (halClock.isAvailable()) visibleItems.push_back(ITEM_CLOCK);
+  visibleItems.push_back(ITEM_XTC_STATUS_BAR);
+  selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(visibleItems.size()) - 1);
+}
 
 void StatusBarSettingsActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
@@ -112,28 +113,35 @@ void StatusBarSettingsActivity::loop() {
 
   // Handle navigation
   buttonNavigator.onNextRelease([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, visibleItemCount);
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(visibleItems.size()));
     requestUpdate();
   });
 
   buttonNavigator.onPreviousRelease([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, visibleItemCount);
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(visibleItems.size()));
     requestUpdate();
   });
 
   buttonNavigator.onNextContinuous([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, visibleItemCount);
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(visibleItems.size()));
     requestUpdate();
   });
 
   buttonNavigator.onPreviousContinuous([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, visibleItemCount);
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(visibleItems.size()));
     requestUpdate();
   });
 }
 
 void StatusBarSettingsActivity::handleSelection() {
-  switch (selectedIndex) {
+  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(visibleItems.size())) return;
+  switch (visibleItems[selectedIndex]) {
+    case ITEM_TITLE:
+      optionPopup.show(StrId::STR_TITLE, titleNames, TITLE_ITEMS, SETTINGS.statusBarTitle, [this](int idx) {
+        SETTINGS.statusBarTitle = idx;
+        SETTINGS.saveToFile();
+      });
+      return;
     case ITEM_CHAPTER_PAGE_COUNT:
       SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
       break;
@@ -145,6 +153,7 @@ void StatusBarSettingsActivity::handleSelection() {
                        [this](int idx) {
                          SETTINGS.statusBarProgressBar = idx;
                          SETTINGS.saveToFile();
+                         rebuildVisibleItems();
                        });
       return;
     case ITEM_PROGRESS_BAR_THICKNESS:
@@ -154,15 +163,6 @@ void StatusBarSettingsActivity::handleSelection() {
                          SETTINGS.saveToFile();
                        });
       return;
-    case ITEM_TITLE:
-      optionPopup.show(StrId::STR_TITLE, titleNames, TITLE_ITEMS, SETTINGS.statusBarTitle, [this](int idx) {
-        SETTINGS.statusBarTitle = idx;
-        SETTINGS.saveToFile();
-      });
-      return;
-    case ITEM_BATTERY:
-      SETTINGS.statusBarBattery = (SETTINGS.statusBarBattery + 1) % 2;
-      break;
     case ITEM_XTC_STATUS_BAR:
       optionPopup.show(StrId::STR_XTC_STATUS_BAR, xtcStatusBarNames, XTC_STATUS_BAR_ITEMS, SETTINGS.xtcStatusBarMode,
                        [this](int idx) {
@@ -193,10 +193,13 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, visibleItemCount, static_cast<int>(selectedIndex),
-      [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr, nullptr,
-      [](int index) -> std::string {
-        switch (index) {
+      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(visibleItems.size()),
+      static_cast<int>(selectedIndex),
+      [this](int index) { return std::string(I18N.get(menuNames[visibleItems[index]])); }, nullptr, nullptr,
+      [this](int index) -> std::string {
+        switch (visibleItems[index]) {
+          case ITEM_TITLE:
+            return I18N.get(titleNames[SETTINGS.statusBarTitle]);
           case ITEM_CHAPTER_PAGE_COUNT:
             return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
           case ITEM_BOOK_PROGRESS_PERCENTAGE:
@@ -205,10 +208,6 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
             return I18N.get(progressBarNames[SETTINGS.statusBarProgressBar]);
           case ITEM_PROGRESS_BAR_THICKNESS:
             return I18N.get(progressBarThicknessNames[SETTINGS.statusBarProgressBarThickness]);
-          case ITEM_TITLE:
-            return I18N.get(titleNames[SETTINGS.statusBarTitle]);
-          case ITEM_BATTERY:
-            return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
           case ITEM_XTC_STATUS_BAR:
             return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
           case ITEM_CLOCK:

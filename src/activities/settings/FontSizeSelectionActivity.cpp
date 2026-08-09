@@ -13,16 +13,16 @@
 #include "ReaderFontSize.h"
 #include "SdCardFontSystem.h"
 #include "components/UITheme.h"
+#include "fontIds.h"
 
 FontSizeSelectionActivity::FontSizeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : Activity("FontSizeSelect", renderer, mappedInput) {}
 
 void FontSizeSelectionActivity::onEnter() {
   Activity::onEnter();
-  // The preview renders with SETTINGS.getReaderFontId(); load the selected SD
-  // font before the first frame so it is previewed instead of the built-in
-  // fallback.
-  sdFontSystem.ensureLoaded(renderer, false);
+  // Use the built-in preview fallback here and load the selected .cpfont only
+  // after returning to an active reader page.
+  sdFontSystem.releaseLoadedFont(renderer);
   metrics_ = UITheme::getInstance().getMetrics();
   originalFontFamily_ = SETTINGS.fontFamily;
   originalSize_ =
@@ -62,12 +62,11 @@ void FontSizeSelectionActivity::buildSizeOptions() {
 }
 
 void FontSizeSelectionActivity::previewSelection(const int index) {
-  // Changing point size can unload the SD font currently used by an in-flight
-  // preview render. Wait for it before replacing the font buffers.
+  // Wait for a possible preview render before changing its settings source.
   RenderLock lock(*this);
   selectedIndex_ = std::clamp(index, 0, static_cast<int>(sizeOptions_.size()) - 1);
   SETTINGS.fontSize = sizeOptions_[selectedIndex_];
-  sdFontSystem.ensureLoaded(renderer, false);
+  sdFontSystem.releaseLoadedFont(renderer);
   requestUpdate();
 }
 
@@ -79,7 +78,7 @@ void FontSizeSelectionActivity::loop() {
       SETTINGS.fontSize = originalSize_;
       std::strncpy(SETTINGS.sdFontFamilyName, originalSdFontFamilyName_, sizeof(SETTINGS.sdFontFamilyName) - 1);
       SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-      sdFontSystem.ensureLoaded(renderer, false);
+      sdFontSystem.releaseLoadedFont(renderer);
     }
     ActivityResult cancelled;
     cancelled.isCancelled = true;
@@ -131,9 +130,17 @@ void FontSizeSelectionActivity::render(RenderLock&&) {
 
   GUI.drawHeader(renderer, Rect{0, metrics_.topPadding, screenWidth, metrics_.headerHeight}, tr(STR_FONT_SIZE));
 
-  const int fontId = SETTINGS.getReaderFontId();
+  const bool sdFontSelected = SETTINGS.sdFontFamilyName[0] != '\0';
+  const int fontId = sdFontSelected ? 0 : SETTINGS.getReaderFontId();
   const char* preview = I18N.get(StrId::STR_FONT_PREVIEW_TEXT);
-  if (fontId != 0) {
+  if (sdFontSelected) {
+    const int left = metrics_.previewPadding;
+    renderer.drawText(UI_12_FONT_ID, left, contentTop + metrics_.previewPadding, SETTINGS.sdFontFamilyName, true,
+                      EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, left,
+                      contentTop + metrics_.previewPadding + renderer.getLineHeight(UI_12_FONT_ID) + 4,
+                      tr(STR_IN_READER));
+  } else if (fontId != 0) {
     if (auto* cache = renderer.getFontCacheManager()) {
       cache->clearCache();
       cache->prewarmCache(fontId, preview, 0x01);

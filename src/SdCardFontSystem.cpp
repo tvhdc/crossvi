@@ -1,7 +1,9 @@
 #include "SdCardFontSystem.h"
 
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -41,8 +43,19 @@ void SdCardFontSystem::begin() {
   // The saved family (and any invalid-selection repair) is deliberately not
   // loaded here: loadFamily() reads the whole .cpfont over SD, which would
   // stall every boot. ensureLoaded() covers it before the reader lays out, and
-  // nothing outside the reader/settings needs the loaded family.
+  // nothing outside the active reader needs the loaded family.
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
+}
+
+void SdCardFontSystem::releaseLoadedFont(GfxRenderer& renderer) {
+  if (manager_.currentFamilyName().empty()) return;
+
+  LOG_DBG("SDFS", "Releasing SD font outside active reader: %s", manager_.currentFamilyName().c_str());
+  // FontCacheManager can retain glyph bitmaps derived from the SdCardFont.
+  // Drop those before deleting the owner so no cache survives with stale font
+  // data and the whole allocation is returned to the TLS/parser workload.
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+  manager_.unloadAll(renderer);
 }
 
 void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInvalidSelection) {
@@ -62,7 +75,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
 
   if (wantedFamily[0] == '\0') {
     if (!currentFamily.empty()) {
-      manager_.unloadAll(renderer);
+      releaseLoadedFont(renderer);
     }
     if (normalizeBuiltinFontSize() && persistInvalidSelection) SETTINGS.saveToFile();
     return;
@@ -76,7 +89,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
     const auto* family = registry_.findFamily(wantedFamily);
     if (!family) {
       LOG_DBG("SDFS", "SD font family disappeared: %s (clearing)", wantedFamily);
-      manager_.unloadAll(renderer);
+      releaseLoadedFont(renderer);
       SETTINGS.sdFontFamilyName[0] = '\0';
       normalizeBuiltinFontSize();
       if (persistInvalidSelection) SETTINGS.saveToFile();
@@ -90,18 +103,33 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
   }
 
   if (!currentFamily.empty()) {
-    manager_.unloadAll(renderer);
+    releaseLoadedFont(renderer);
   }
 
   const auto* family = registry_.findFamily(wantedFamily);
   if (family) {
+    // Loading a .cpfont creates several persistent lookup tables. Release all
+    // disposable glyph data first, then require both total and contiguous
+    // headroom. With exceptions disabled this gate is what turns a fragmented
+    // heap into a normal font-load failure rather than an allocation abort.
+    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    const auto memory = MemoryBudget::snapshot();
+    MemoryBudget::logStage("SDFS", "load_begin");
+    if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::SD_FONT_LOAD)) {
+      LOG_ERR("SDFS", "Not enough heap to load SD font: free=%u maxalloc=%u", memory.freeHeap, memory.maxAllocHeap);
+      // Keep the selection so a later attempt after leaving a memory-heavy
+      // activity can load it. The resolver returns the built-in fallback for
+      // this frame instead of persisting a destructive settings change.
+      return;
+    }
     if (manager_.loadFamily(*family, renderer, sizeEnum)) {
       LOG_DBG("SDFS", "Loaded SD font family: %s", wantedFamily);
     } else {
-      LOG_ERR("SDFS", "Failed to load SD font family: %s (clearing)", wantedFamily);
-      SETTINGS.sdFontFamilyName[0] = '\0';
-      normalizeBuiltinFontSize();
-      if (persistInvalidSelection) SETTINGS.saveToFile();
+      // A known family can still fail transiently because the heap is
+      // fragmented or the SD card is briefly unavailable. Keep the user's
+      // choice so the next reader entry can retry instead of converting that
+      // temporary failure into a persisted Noto fallback.
+      LOG_ERR("SDFS", "Failed to load SD font family: %s (keeping selection for retry)", wantedFamily);
     }
   } else {
     LOG_DBG("SDFS", "SD font family not found: %s (clearing)", wantedFamily);

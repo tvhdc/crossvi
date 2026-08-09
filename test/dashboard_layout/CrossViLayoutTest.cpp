@@ -326,6 +326,12 @@ TEST(DashboardProgress, StrictlyDecodesFinalizedEpubProgress) {
   EXPECT_EQ(position.pageNumber, 4);
   EXPECT_EQ(position.pageCount, 10);
 
+  const std::array<uint8_t, 10> contentAnchored{2, 0, 4, 0, 10, 0, 0x44, 0x33, 0x22, 0x11};
+  ASSERT_TRUE(DashboardProgress::decode(contentAnchored.data(), contentAnchored.size(), position));
+  EXPECT_EQ(position.spineIndex, 2);
+  EXPECT_EQ(position.pageNumber, 4);
+  EXPECT_EQ(position.pageCount, 10);
+
   EXPECT_FALSE(DashboardProgress::decode(valid.data(), 4, position));
   auto invalid = valid;
   invalid[2] = 10;

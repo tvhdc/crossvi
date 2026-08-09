@@ -1,9 +1,11 @@
 #include "Txt.h"
 
 #include <Arduino.h>
+#include <Bitmap.h>
 #include <FsHelpers.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
+#include <StagedFileTransaction.h>
 
 #include <algorithm>
 #include <array>
@@ -161,10 +163,12 @@ std::string Txt::findCoverImage() const {
 std::string Txt::getCoverBmpPath() const { return cachePath + "/cover.bmp"; }
 
 bool Txt::generateCoverBmp() const {
-  // Already generated, return true
-  if (Storage.exists(getCoverBmpPath().c_str())) {
-    return true;
-  }
+  const std::string finalPath = getCoverBmpPath();
+  const std::string stagingPath = finalPath + ".tmp";
+  const std::string backupPath = finalPath + ".bak";
+  const BitmapCacheState cacheState = Bitmap::inspectDerivedCache(finalPath);
+  if (cacheState == BitmapCacheState::Ready) return true;
+  if (cacheState == BitmapCacheState::IoError) return false;
 
   std::string coverImagePath = findCoverImage();
   if (coverImagePath.empty()) {
@@ -175,58 +179,58 @@ bool Txt::generateCoverBmp() const {
   // Setup cache directory
   setupCacheDir();
 
-  if (FsHelpers::hasBmpExtension(coverImagePath)) {
+  if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) return false;
+
+  const bool bmpSource = FsHelpers::hasBmpExtension(coverImagePath);
+  const bool jpegSource = FsHelpers::hasJpgExtension(coverImagePath);
+  if (!bmpSource && !jpegSource) {
+    // PNG files are not supported by this lightweight sidecar-cover path.
+    LOG_ERR("TXT", "Cover image format not supported (only BMP/JPG/JPEG)");
+    return false;
+  }
+
+  HalFile source;
+  if (!Storage.openFileForRead("TXT", coverImagePath, source)) return false;
+  HalFile output;
+  if (!Storage.openFileForWrite("TXT", stagingPath, output)) {
+    source.close();
+    return false;
+  }
+
+  bool converted = true;
+  if (bmpSource) {
     // Copy BMP file to cache
     LOG_DBG("TXT", "Copying BMP cover image to cache");
-    HalFile src, dst;
-    if (!Storage.openFileForRead("TXT", coverImagePath, src)) {
-      return false;
-    }
-    if (!Storage.openFileForWrite("TXT", getCoverBmpPath(), dst)) {
-      return false;
-    }
-    bool copyOk = true;
     uint8_t buffer[1024];
-    while (src.available()) {
-      const int bytesRead = src.read(buffer, sizeof(buffer));
-      if (bytesRead <= 0 || dst.write(buffer, static_cast<size_t>(bytesRead)) != static_cast<size_t>(bytesRead)) {
-        copyOk = false;
+    while (source.available()) {
+      const int bytesRead = source.read(buffer, sizeof(buffer));
+      if (bytesRead <= 0 || output.write(buffer, static_cast<size_t>(bytesRead)) != static_cast<size_t>(bytesRead)) {
+        converted = false;
         break;
       }
     }
-    src.close();
-    copyOk = dst.close() && copyOk;
-    if (!copyOk) {
-      Storage.remove(getCoverBmpPath().c_str());
-      LOG_ERR("TXT", "Failed to copy BMP cover image");
-      return false;
-    }
-    LOG_DBG("TXT", "Copied BMP cover to cache");
-    return true;
-  } else if (FsHelpers::hasJpgExtension(coverImagePath)) {
+  } else {
     // Convert JPG/JPEG to BMP (same approach as Epub)
     LOG_DBG("TXT", "Generating BMP from JPG cover image");
-    HalFile coverJpg, coverBmp;
-    if (!Storage.openFileForRead("TXT", coverImagePath, coverJpg)) {
-      return false;
-    }
-    if (!Storage.openFileForWrite("TXT", getCoverBmpPath(), coverBmp)) {
-      return false;
-    }
-    const bool success = JpegToBmpConverter::jpegFileToBmpStream(coverJpg, coverBmp);
-
-    if (!success) {
-      LOG_ERR("TXT", "Failed to generate BMP from JPG cover image");
-      Storage.remove(getCoverBmpPath().c_str());
-    } else {
-      LOG_DBG("TXT", "Generated BMP from JPG cover image");
-    }
-    return success;
+    converted = JpegToBmpConverter::jpegFileToBmpStream(source, output);
   }
 
-  // PNG files are not supported (would need a PNG decoder)
-  LOG_ERR("TXT", "Cover image format not supported (only BMP/JPG/JPEG)");
-  return false;
+  const bool inputOk = source.getError() == 0;
+  const bool inputClosed = source.close();
+  const bool outputSynced = output.sync();
+  const bool outputClosed = output.close();
+  const auto published = converted && inputOk && inputClosed && outputSynced && outputClosed
+                             ? StagedFileTransaction::publish(finalPath.c_str(), stagingPath.c_str(),
+                                                              backupPath.c_str(), Bitmap::validateFile)
+                             : StagedFileTransaction::Status::IoError;
+  if (published != StagedFileTransaction::Status::Published) {
+    Storage.remove(stagingPath.c_str());
+    LOG_ERR("TXT", "Failed to publish BMP cover cache");
+    return false;
+  }
+
+  LOG_DBG("TXT", "Published BMP cover cache: %s", finalPath.c_str());
+  return true;
 }
 
 bool Txt::clearCache() const {

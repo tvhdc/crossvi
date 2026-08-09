@@ -1,5 +1,7 @@
 #include "ClippingCodec.h"
 
+#include <Utf8.h>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -305,44 +307,7 @@ uint32_t crc32(const uint8_t* data, const size_t length, const uint32_t seed) {
   return ~value;
 }
 
-bool isValidUtf8(const std::string_view text) {
-  for (size_t i = 0; i < text.size();) {
-    const uint8_t first = static_cast<uint8_t>(text[i]);
-    if (first <= 0x7F) {
-      if (first == 0) return false;
-      ++i;
-      continue;
-    }
-
-    size_t continuationCount = 0;
-    uint32_t codePoint = 0;
-    uint32_t minimum = 0;
-    if (first >= 0xC2 && first <= 0xDF) {
-      continuationCount = 1;
-      codePoint = first & 0x1FU;
-      minimum = 0x80;
-    } else if (first >= 0xE0 && first <= 0xEF) {
-      continuationCount = 2;
-      codePoint = first & 0x0FU;
-      minimum = 0x800;
-    } else if (first >= 0xF0 && first <= 0xF4) {
-      continuationCount = 3;
-      codePoint = first & 0x07U;
-      minimum = 0x10000;
-    } else {
-      return false;
-    }
-    if (continuationCount > text.size() - i - 1) return false;
-    for (size_t j = 1; j <= continuationCount; ++j) {
-      const uint8_t continuation = static_cast<uint8_t>(text[i + j]);
-      if ((continuation & 0xC0U) != 0x80U) return false;
-      codePoint = (codePoint << 6) | (continuation & 0x3FU);
-    }
-    if (codePoint < minimum || codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) return false;
-    i += continuationCount + 1;
-  }
-  return true;
-}
+bool isValidUtf8(const std::string_view text) { return utf8IsValid(text); }
 
 std::string filePathForBook(const std::string_view bookPath, const std::string_view bookType) {
   if (bookPath.empty() || !isValidUtf8(bookPath) || !validBookType(bookType)) return {};

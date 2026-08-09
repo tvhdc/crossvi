@@ -7,6 +7,7 @@
 
 #include "XtcReaderActivity.h"
 
+#include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -29,6 +30,7 @@
 #include "ReadingStatsCompletionTransaction.h"
 #include "ReadingStatsDateEditActivity.h"
 #include "RecentBooksStore.h"
+#include "SdCardFontSystem.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
@@ -93,6 +95,9 @@ xtc::XtcError streamXtchRenderPass(const Xtc& book, const uint32_t page, const x
 void XtcReaderActivity::onEnter() {
   Activity::onEnter();
 
+  // Fixed-layout books do not use the reflowable reader font.
+  sdFontSystem.releaseLoadedFont(renderer);
+
   if (!xtc) {
     return;
   }
@@ -148,7 +153,9 @@ void XtcReaderActivity::onEnter() {
   // Save current XTC as last opened book and add to recent books
   APP_STATE.openEpubPath = xtc->getPath();
   APP_STATE.saveToFile();
-  RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), xtc->getThumbBmpPath());
+  if (!skipStartupRecentUpdate) {
+    RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), xtc->getThumbBmpPath());
+  }
 
   // Trigger first update
   requestUpdate();
@@ -163,9 +170,14 @@ void XtcReaderActivity::onExit() {
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   xtc.reset();
+
+  sdFontSystem.releaseLoadedFont(renderer);
+
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
 }
 
 void XtcReaderActivity::onPause() {
+  clearBlockingFeedback();
   consumeReadingViewSignal();
   stopReadingPage(false, static_cast<uint32_t>(millis()));
   lastPageTurnTime = millis();
@@ -327,7 +339,14 @@ void XtcReaderActivity::loop() {
     pageSnapshot = currentPage;
   }
   const bool atEndOfBook = pageSnapshot >= xtc->getPageCount();
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) confirmHold.onPress();
+  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    confirmHold.onPress();
+    if (!automaticPageTurnActive && !(atEndOfBook && endOfBookOptions.menuActive())) {
+      queueBlockingFeedback(SETTINGS.longPressMenuFunction == CrossPointSettings::LP_MENU_DISABLED
+                                ? StrId::STR_OPENING_READER_MENU
+                                : StrId::STR_PROCESSING);
+    }
+  }
   const bool suppressConfirmRelease =
       mappedInput.wasReleased(MappedInputManager::Button::Confirm) && ignoreNextConfirmRelease;
   if (suppressConfirmRelease) {
@@ -413,6 +432,7 @@ void XtcReaderActivity::loop() {
       mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       confirmHold.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Confirm), ReaderUtils::CONFIRM_HOLD_MS)) {
     ignoreNextConfirmRelease = true;
+    clearBlockingFeedback();
     if (handleReaderShortcut(SETTINGS.longPressMenuFunction)) return;
   }
 
@@ -544,6 +564,7 @@ bool XtcReaderActivity::handleReaderShortcut(const uint8_t function) {
 
 void XtcReaderActivity::render(RenderLock&&) {
   if (renderReaderExitOverlay()) return;
+  if (renderBlockingFeedbackOverlay()) return;
   const std::shared_ptr<Xtc> book = xtc;
   const uint32_t page = currentPage;
   if (!book) {
@@ -558,11 +579,14 @@ void XtcReaderActivity::render(RenderLock&&) {
     endOfBookOptions.loadOnce(book->getPath());
     renderer.clearScreen();
     endOfBookOptions.render(renderer, mappedInput);
-    renderer.displayBuffer();
     if (pendingBookmarkStorageError.exchange(false)) {
       GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
     } else if (pendingShortcutUnsupportedNotice.exchange(false)) {
       GUI.drawPopup(renderer, tr(STR_SHORTCUT_NOT_SUPPORTED));
+    }
+    renderer.displayBuffer();
+    if (pendingScreenshot.exchange(false)) {
+      ScreenshotUtil::takeScreenshot(renderer);
     }
     return;
   }

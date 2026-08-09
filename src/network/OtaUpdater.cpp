@@ -14,8 +14,12 @@
 #include <SemanticVersion.h>
 #include <Version.h>
 
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <string>
 
+#include "FirmwareFlasher.h"
 #include "HttpTransportPolicy.h"
 
 namespace {
@@ -46,6 +50,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   if (!ok) {
     LOG_ERR("OTA", "Release check fetch failed");
     return HTTP_ERROR;
+  }
+  if (!releaseParser.finish()) {
+    LOG_ERR("OTA", "Release JSON was incomplete or malformed");
+    return JSON_PARSE_ERROR;
   }
 
   LOG_DBG("OTA", "Parser results: tag=%s firmware=%s digest=%s", releaseParser.foundTag() ? "yes" : "no",
@@ -127,11 +135,13 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   processedSize = 0;
   int lastReportedPct = -1;
   bool flashOk = true;
-  const bool fetchOk = HttpDownloader::fetchGithubReleaseAsset(otaUrl, otaDigest, [&](const uint8_t* data, size_t len) {
-    // Establish and verify TLS before esp_ota_begin allocates its persistent
-    // state. X3 otherwise lacks a large enough contiguous block for GitHub's
-    // release-assets RSA certificate verification. The first body chunk stays
-    // owned by HttpDownloader while the destination is prepared here.
+  bool wrongDevice = false;
+  std::array<uint8_t, firmware_flash::IMAGE_CHIP_HEADER_SIZE> imageHeader{};
+  size_t imageHeaderLength = 0;
+  bool imageHeaderValidated = false;
+
+  const auto writeChunk = [&](const uint8_t* data, const size_t len) {
+    if (len == 0) return true;
     if (!otaStarted) {
       const esp_err_t beginResult = esp_ota_begin(updatePartition, otaSize, &otaHandle);
       if (beginResult != ESP_OK) {
@@ -148,12 +158,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     }
     if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
       flashOk = false;
-      return false;  // abort the transfer
+      return false;
     }
     processedSize += len;
-    // Fire the callback only on whole-percent change. Per-chunk updates wake the
-    // render task, whose framebuffer work contends with TLS on the internal arena,
-    // and e-ink can't repaint faster than a percent tick anyway.
     if (onProgress && totalSize > 0) {
       const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
       if (pct != lastReportedPct) {
@@ -162,12 +169,43 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
       }
     }
     return true;
+  };
+
+  const bool fetchOk = HttpDownloader::fetchGithubReleaseAsset(otaUrl, otaDigest, [&](const uint8_t* data, size_t len) {
+    if (!imageHeaderValidated) {
+      const size_t needed = imageHeader.size() - imageHeaderLength;
+      const size_t take = std::min(len, needed);
+      std::memcpy(imageHeader.data() + imageHeaderLength, data, take);
+      imageHeaderLength += take;
+      data += take;
+      len -= take;
+      if (imageHeaderLength < imageHeader.size()) return true;
+
+      uint16_t imageChipId = firmware_flash::UNKNOWN_CHIP_ID;
+      firmware_flash::readImageChipId(imageHeader.data(), imageHeader.size(), imageChipId);
+      const uint16_t deviceChipId = firmware_flash::runningPartitionChipId();
+      if (!firmware_flash::imageChipMatchesDevice(imageChipId, deviceChipId)) {
+        LOG_ERR("OTA", "wrong chip: image=0x%04X device=0x%04X", imageChipId, deviceChipId);
+        wrongDevice = true;
+        return false;
+      }
+      imageHeaderValidated = true;
+      // TLS is already established. Only now allocate OTA state and write the
+      // buffered header, so a wrong-device image never reaches flash.
+      if (!writeChunk(imageHeader.data(), imageHeader.size())) return false;
+    }
+    return writeChunk(data, len);
   });
 
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
-  if (!fetchOk || !flashOk || !otaStarted || processedSize != otaSize) {
+  if (wrongDevice) {
+    if (otaStarted) esp_ota_abort(otaHandle);
+    return WRONG_DEVICE_ERROR;
+  }
+
+  if (!fetchOk || !flashOk || !imageHeaderValidated || !otaStarted || processedSize != otaSize) {
     if (fetchOk && processedSize != otaSize) {
       LOG_ERR("OTA", "Firmware size mismatch: received %u, declared %u", static_cast<unsigned>(processedSize),
               static_cast<unsigned>(otaSize));

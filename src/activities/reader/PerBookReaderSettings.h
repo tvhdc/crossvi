@@ -40,6 +40,19 @@ struct PerBookReaderSettings {
   bool operator==(const PerBookReaderSettings&) const = default;
 };
 
+inline bool setPerBookAutoPageTurnState(PerBookReaderSettings& settings, const uint8_t seconds,
+                                        const bool startsOnOpen) {
+  const bool hasInterval = seconds != 0;
+  const bool shouldStart = hasInterval && startsOnOpen;
+  const bool changed = settings.hasAutoPageTurnInterval != hasInterval ||
+                       settings.autoPageTurnSeconds != (hasInterval ? seconds : 0) ||
+                       settings.autoPageTurnStartsOnOpen != shouldStart;
+  settings.hasAutoPageTurnInterval = hasInterval;
+  settings.autoPageTurnSeconds = hasInterval ? seconds : 0;
+  settings.autoPageTurnStartsOnOpen = shouldStart;
+  return changed;
+}
+
 inline void setPerBookSdFontFamilyName(PerBookReaderSettings& settings, const std::string_view name) {
   settings.sdFontFamilyName.fill('\0');
   const size_t len = std::min(name.size(), settings.sdFontFamilyName.size() - 1);

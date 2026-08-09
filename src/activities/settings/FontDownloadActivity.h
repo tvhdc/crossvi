@@ -14,16 +14,25 @@
 // support a new manifest schema.
 #define FONTS_MANIFEST_VERSION 1
 
-#ifndef FONT_MANIFEST_URL
 // Manifest + .cpfont assets are published by .github/workflows/release-fonts.yml
 // to the crosspoint-fonts repo under the "sd-fonts-m<META>-b<BIN>" tag. The tag
 // pattern must stay in sync with the workflow; it derives its version numbers
 // from lib/EpdFont/scripts/cpfont_version.py.
 #define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
 #define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
-#define FONT_MANIFEST_URL                                                                                           \
-  "https://github.com/crosspoint-reader/crosspoint-fonts/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
-      FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION) "/fonts.json"
+#ifndef FONT_RELEASE_TAG
+#define FONT_RELEASE_TAG \
+  "sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY(FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION)
+#endif
+
+#ifndef FONT_MANIFEST_URL
+#define FONT_MANIFEST_URL \
+  "https://github.com/crosspoint-reader/crosspoint-fonts/releases/download/" FONT_RELEASE_TAG "/fonts.json"
+#endif
+
+#ifndef FONT_RELEASE_API_URL
+#define FONT_RELEASE_API_URL \
+  "https://api.github.com/repos/crosspoint-reader/crosspoint-fonts/releases/tags/" FONT_RELEASE_TAG
 #endif
 
 class FontDownloadActivity : public Activity {
@@ -55,8 +64,10 @@ class FontDownloadActivity : public Activity {
 
   struct ManifestFile {
     std::string name;
+    std::string sha256;
     size_t size = 0;
     uint32_t crc32 = 0;
+    bool releaseDigestSeen = false;
   };
 
   struct ManifestFamily {
@@ -92,6 +103,8 @@ class FontDownloadActivity : public Activity {
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifest();
   bool parseCachedManifest();
+  bool attachReleaseDigests();
+  static bool attachReleaseDigest(void* context, const char* name, const char* url, size_t size, const char* digest);
   void downloadFamily(ManifestFamily& family);
   void downloadAll();
   void updateAll();

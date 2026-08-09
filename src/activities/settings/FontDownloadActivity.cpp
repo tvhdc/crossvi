@@ -8,10 +8,13 @@
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <array>
+#include <cstring>
 #include <limits>
 
 #include "FontStorageUtils.h"
 #include "MappedInputManager.h"
+#include "ReleaseJsonParser.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -23,7 +26,61 @@
 
 namespace {
 constexpr const char* FONT_MANIFEST_TMP = "/fonts_manifest.tmp";
+constexpr const char* FONT_RELEASE_TMP = "/fonts_release.tmp";
+constexpr size_t MAX_FONT_MANIFEST_BYTES = 256 * 1024;
+constexpr size_t MAX_FONT_RELEASE_METADATA_BYTES = 2 * 1024 * 1024;
+constexpr size_t RELEASE_READ_CHUNK = 512;
+
+bool extractSha256(const char* digest, std::string& sha256) {
+  if (!digest || strlen(digest) != 71 || memcmp(digest, "sha256:", 7) != 0) return false;
+  for (size_t i = 7; i < 71; ++i) {
+    const char byte = digest[i];
+    if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F'))) {
+      return false;
+    }
+  }
+  sha256.assign(digest + 7, 64);
+  return true;
 }
+
+bool parseReleaseMetadata(const ReleaseJsonParser::AssetVisitor visitor, void* context) {
+  HalFile file;
+  if (!Storage.openFileForRead("FONT", FONT_RELEASE_TMP, file)) {
+    LOG_ERR("FONT", "Failed to open font release metadata");
+    return false;
+  }
+
+  ReleaseJsonParser parser;
+  parser.setAssetVisitor(visitor, context);
+  std::array<char, RELEASE_READ_CHUNK> buffer{};
+  while (true) {
+    const int read = file.read(buffer.data(), buffer.size());
+    if (read <= 0) break;
+    parser.feed(buffer.data(), static_cast<size_t>(read));
+  }
+  const bool readOk = file.getError() == 0;
+  const bool closed = file.close();
+  const bool parsed = readOk && parser.finish();
+  if (!parsed || !closed || !parser.foundTag() || strcmp(parser.getTagName(), FONT_RELEASE_TAG) != 0) {
+    LOG_ERR("FONT", "Invalid font release metadata or tag");
+    return false;
+  }
+  return true;
+}
+
+struct ManifestDigestCapture {
+  std::string sha256;
+  bool seen = false;
+};
+
+bool captureManifestDigest(void* context, const char* name, const char*, size_t, const char* digest) {
+  if (strcmp(name, "fonts.json") != 0) return true;
+  auto* capture = static_cast<ManifestDigestCapture*>(context);
+  if (capture->seen || !extractSha256(digest, capture->sha256)) return false;
+  capture->seen = true;
+  return true;
+}
+}  // namespace
 
 FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : Activity("FontDownload", renderer, mappedInput), fontInstaller_(sdFontSystem.registry()) {}
@@ -32,6 +89,9 @@ FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputMan
 
 void FontDownloadActivity::onEnter() {
   Activity::onEnter();
+  // TLS certificate parsing needs a large contiguous allocation. A selected
+  // SD reader font is unrelated to this screen and must not remain resident.
+  sdFontSystem.releaseLoadedFont(renderer);
   WiFi.mode(WIFI_STA);
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
@@ -40,6 +100,7 @@ void FontDownloadActivity::onEnter() {
 void FontDownloadActivity::onExit() {
   Activity::onExit();
   Storage.remove(FONT_MANIFEST_TMP);
+  Storage.remove(FONT_RELEASE_TMP);
 
   std::vector<ManifestFamily>().swap(families_);
   std::string().swap(baseUrl_);
@@ -85,20 +146,59 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
 // --- Manifest fetching ---
 
 bool FontDownloadActivity::fetchAndParseManifest() {
-  // Download manifest to a temp file on SD card to avoid holding both
-  // TLS buffers and the full JSON string in RAM simultaneously.
+  // GitHub's API stays on the low-memory-friendly origin and supplies a
+  // SHA-256 for every release asset. Keep the response on SD and stream-parse
+  // it so the TLS stack never competes with a large JSON document in RAM.
   if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
-  LOG_DBG("FONT", "Manifest request heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-  auto result = HttpDownloader::downloadToFile(FONT_MANIFEST_URL, FONT_MANIFEST_TMP, nullptr);
+  LOG_DBG("FONT", "Release metadata request heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  auto result = HttpDownloader::downloadToFile(FONT_RELEASE_API_URL, FONT_RELEASE_TMP, nullptr, nullptr, "", "", true,
+                                               MAX_FONT_RELEASE_METADATA_BYTES);
   if (result == HttpDownloader::HTTP_ERROR) {
-    LOG_DBG("FONT", "Retrying font manifest after network failure");
+    LOG_DBG("FONT", "Retrying font release metadata after network failure");
     if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
-    result = HttpDownloader::downloadToFile(FONT_MANIFEST_URL, FONT_MANIFEST_TMP, nullptr);
+    result = HttpDownloader::downloadToFile(FONT_RELEASE_API_URL, FONT_RELEASE_TMP, nullptr, nullptr, "", "", true,
+                                            MAX_FONT_RELEASE_METADATA_BYTES);
   }
   if (result != HttpDownloader::OK) {
-    LOG_ERR("FONT", "Failed to fetch manifest from %s (result %d)", FONT_MANIFEST_URL, static_cast<int>(result));
+    LOG_ERR("FONT", "Failed to fetch release metadata from %s (result %d)", FONT_RELEASE_API_URL,
+            static_cast<int>(result));
     errorMessage_ = result == HttpDownloader::FILE_ERROR ? "Could not save font list to SD card"
                                                          : "Could not connect to font server";
+    Storage.remove(FONT_RELEASE_TMP);
+    Storage.remove(FONT_MANIFEST_TMP);
+    return false;
+  }
+
+  ManifestDigestCapture manifestDigest;
+  if (!parseReleaseMetadata(captureManifestDigest, &manifestDigest) || !manifestDigest.seen) {
+    errorMessage_ = "Invalid font release metadata";
+    Storage.remove(FONT_RELEASE_TMP);
+    Storage.remove(FONT_MANIFEST_TMP);
+    return false;
+  }
+
+  // The manifest itself is now authenticated before it can select filenames,
+  // sizes or checksums. The verified digest permits the GitHub CDN hop to use
+  // the downloader's low-memory transport without weakening file integrity.
+  LOG_DBG("FONT", "Manifest request heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  result = HttpDownloader::downloadGithubReleaseAssetToFile(FONT_MANIFEST_URL, manifestDigest.sha256, FONT_MANIFEST_TMP,
+                                                            nullptr, nullptr, true, MAX_FONT_MANIFEST_BYTES);
+  if (result == HttpDownloader::HTTP_ERROR) {
+    LOG_DBG("FONT", "Retrying verified font manifest after network failure");
+    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    result = HttpDownloader::downloadGithubReleaseAssetToFile(
+        FONT_MANIFEST_URL, manifestDigest.sha256, FONT_MANIFEST_TMP, nullptr, nullptr, true, MAX_FONT_MANIFEST_BYTES);
+  }
+  if (result != HttpDownloader::OK) {
+    LOG_ERR("FONT", "Failed to fetch verified manifest from %s (result %d)", FONT_MANIFEST_URL,
+            static_cast<int>(result));
+    if (result == HttpDownloader::FILE_ERROR)
+      errorMessage_ = "Could not save font list to SD card";
+    else if (result == HttpDownloader::INTEGRITY_ERROR)
+      errorMessage_ = "Font list verification failed";
+    else
+      errorMessage_ = "Could not connect to font server";
+    Storage.remove(FONT_RELEASE_TMP);
     Storage.remove(FONT_MANIFEST_TMP);
     return false;
   }
@@ -166,8 +266,7 @@ bool FontDownloadActivity::parseCachedManifest() {
 
     family.totalSize = 0;
     JsonArray fileEntries = fObj["files"].as<JsonArray>();
-    static constexpr size_t MAX_FILES_PER_FAMILY = 16;
-    if (fileEntries.size() == 0 || fileEntries.size() > MAX_FILES_PER_FAMILY) {
+    if (fileEntries.size() == 0 || fileEntries.size() > SdCardFontRegistry::MAX_FILES_PER_FAMILY) {
       LOG_ERR("FONT", "Invalid file count for family %s: %zu", family.name.c_str(), fileEntries.size());
       errorMessage_ = "Invalid font manifest";
       return false;
@@ -175,10 +274,12 @@ bool FontDownloadActivity::parseCachedManifest() {
     for (JsonObject fileObj : fileEntries) {
       ManifestFile file;
       file.name = fileObj["name"] | "";
+      file.sha256 = fileObj["sha256"] | "";
       file.size = fileObj["size"] | 0;
 
       if (!FontInstaller::isValidCpfontFilename(file.name.c_str()) || file.size == 0 ||
-          !fileObj["crc32"].is<uint32_t>() || family.totalSize > std::numeric_limits<size_t>::max() - file.size) {
+          (!file.sha256.empty() && file.sha256.size() != 64) || !fileObj["crc32"].is<uint32_t>() ||
+          family.totalSize > std::numeric_limits<size_t>::max() - file.size) {
         LOG_ERR("FONT", "Malformed manifest file entry: missing or invalid crc32 for %s", file.name.c_str());
         errorMessage_ = "Invalid font manifest";
         return false;
@@ -211,7 +312,46 @@ bool FontDownloadActivity::parseCachedManifest() {
     families_.push_back(std::move(family));
   }
 
+  if (!attachReleaseDigests()) {
+    errorMessage_ = "Font release verification failed";
+    return false;
+  }
+
   LOG_DBG("FONT", "Manifest loaded: %zu families", families_.size());
+  return true;
+}
+
+bool FontDownloadActivity::attachReleaseDigest(void* context, const char* name, const char*, const size_t size,
+                                               const char* digest) {
+  auto* activity = static_cast<FontDownloadActivity*>(context);
+  for (auto& family : activity->families_) {
+    for (auto& file : family.files) {
+      if (file.name != name) continue;
+      std::string sha256;
+      if (file.releaseDigestSeen || size != file.size || !extractSha256(digest, sha256) ||
+          (!file.sha256.empty() && file.sha256 != sha256)) {
+        return false;
+      }
+      file.sha256 = std::move(sha256);
+      file.releaseDigestSeen = true;
+    }
+  }
+  return true;
+}
+
+bool FontDownloadActivity::attachReleaseDigests() {
+  for (auto& family : families_) {
+    for (auto& file : family.files) file.releaseDigestSeen = false;
+  }
+  if (!parseReleaseMetadata(attachReleaseDigest, this)) return false;
+  for (const auto& family : families_) {
+    for (const auto& file : family.files) {
+      if (!file.releaseDigestSeen || file.sha256.size() != 64) {
+        LOG_ERR("FONT", "Missing verified release digest for %s", file.name.c_str());
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -447,9 +587,9 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     std::string url = baseUrl_ + file.name;
 
-    const auto downloadFile = [this, &url, &stagingPath]() {
-      return HttpDownloader::downloadToFile(
-          url, stagingPath,
+    const auto downloadFile = [this, &url, &stagingPath, &file]() {
+      return HttpDownloader::downloadGithubReleaseAssetToFile(
+          url, file.sha256, stagingPath,
           [this](size_t downloaded, size_t total) {
             fileProgress_ = downloaded;
             if (total > 0) fileTotal_ = total;
@@ -467,7 +607,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
               requestUpdate(true);
             }
           },
-          &cancelRequested_, "", "", false);
+          &cancelRequested_, false, file.size);
     };
 
     auto result = downloadFile();
@@ -497,7 +637,12 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     if (result != HttpDownloader::OK) {
       LOG_ERR("FONT", "Download failed: %s (%d)", file.name.c_str(), result);
-      failDownload((result == HttpDownloader::FILE_ERROR ? "SD card write failed: " : "Network error: ") + file.name);
+      if (result == HttpDownloader::FILE_ERROR)
+        failDownload("SD card write failed: " + file.name);
+      else if (result == HttpDownloader::INTEGRITY_ERROR)
+        failDownload("Font verification failed: " + file.name);
+      else
+        failDownload("Network error: " + file.name);
       return;
     }
 

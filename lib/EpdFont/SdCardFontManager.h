@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 class GfxRenderer;
 class SdCardFont;
@@ -41,14 +40,13 @@ class SdCardFontManager {
   bool currentSupportsVietnamese() const;
 
  private:
-  struct LoadedFont {
-    SdCardFont* font;  // heap-allocated, owned
-    int fontId;
-    uint8_t size;
-  };
   static int computeFontId(uint32_t contentHash, const char* familyName, uint8_t pointSize);
 
   std::string loadedFamilyName_;
   uint8_t loadedPointSize_ = 0;
-  std::vector<LoadedFont> loaded_;
+  // The manager's public contract loads exactly one physical .cpfont file.
+  // Store it directly instead of allocating a vector node after the large
+  // font has already consumed most of the contiguous heap.
+  SdCardFont* loadedFont_ = nullptr;
+  int loadedFontId_ = 0;
 };

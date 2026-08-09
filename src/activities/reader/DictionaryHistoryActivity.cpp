@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -83,11 +84,20 @@ void DictionaryHistoryActivity::lookupSelected() {
     return;
   }
 
+  auto definitionActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
+      renderer, mappedInput, std::move(headword), std::move(definition));
+  if (!definitionActivity) {
+    LOG_ERR("DHIST", "OOM allocating DictionaryDefinitionActivity (%u bytes)",
+            static_cast<unsigned>(sizeof(DictionaryDefinitionActivity)));
+    errorMessage_ = StrId::STR_DICT_LOW_MEMORY;
+    error_ = true;
+    errorAt_ = millis();
+    requestUpdate();
+    return;
+  }
   DICTIONARY_HISTORY.record(entries_[selected_]);
   refreshEntries();
-  startActivityForResult(
-      std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword), std::move(definition)),
-      [this](const ActivityResult&) { requestUpdate(); });
+  startActivityForResult(std::move(definitionActivity), [this](const ActivityResult&) { requestUpdate(); });
 }
 
 void DictionaryHistoryActivity::confirmClear() {

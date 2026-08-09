@@ -93,10 +93,11 @@ struct HighlightPlan {
   size_t count = 0;
   bool truncated = false;
 
-  // Backgrounds are drawn before page text. Underlines are drawn afterward;
-  // fallbackOnly limits them to regions whose direction/geometry cannot be
-  // safely filled with a background.
-  void drawBackground(GfxRenderer& renderer) const;
+  // Invert after page text is rendered: light pages become black with white
+  // text, while the reader's final dark-mode inversion produces the opposite.
+  // Grayscale passes clear these bands so the crisp B/W highlight survives.
+  void drawInverse(GfxRenderer& renderer) const;
+  void clearGrayscale(GfxRenderer& renderer) const;
   void drawUnderline(GfxRenderer& renderer, bool fallbackOnly = false) const;
   // Compatibility path for existing readers until they adopt the two-pass
   // background API.

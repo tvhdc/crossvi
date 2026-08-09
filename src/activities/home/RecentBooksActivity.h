@@ -18,6 +18,7 @@
 #include "components/OptionPopup.h"
 #include "util/BookSearchUtils.h"
 #include "util/ButtonNavigator.h"
+#include "util/PressReleaseLatch.h"
 
 class Epub;
 
@@ -74,6 +75,7 @@ class RecentBooksActivity final : public Activity {
   ReaderUtils::HoldGestureState holdLeft;
   ReaderUtils::HoldGestureState holdRight;
   ReaderUtils::HoldGestureState holdBack;
+  ReleaseDebounceGuard navigationReleaseGuard;
 
   std::vector<RecentBook> recentBooks;
   std::array<bool, 2> searchActive{};

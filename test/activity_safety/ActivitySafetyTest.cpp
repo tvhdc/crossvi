@@ -22,6 +22,15 @@ TEST(PressReleaseLatchTest, AcceptsSyntheticPressAndReleaseInSameFrame) {
   EXPECT_TRUE(latch.update(true, true));
 }
 
+TEST(ReleaseDebounceGuardTest, CoalescesReleaseBounceButAcceptsTheNextClick) {
+  ReleaseDebounceGuard guard;
+
+  EXPECT_TRUE(guard.accept(1000, 150));
+  EXPECT_FALSE(guard.accept(1040, 150));
+  EXPECT_FALSE(guard.accept(1120, 150));
+  EXPECT_TRUE(guard.accept(1150, 150));
+}
+
 TEST(RenderGenerationTest, OlderRenderDoesNotSatisfyNewWaiter) { EXPECT_FALSE(RenderGeneration::reached(7, 8)); }
 
 TEST(RenderGenerationTest, CoalescedNewerRenderSatisfiesWaiter) { EXPECT_TRUE(RenderGeneration::reached(10, 8)); }

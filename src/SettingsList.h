@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ClockDateFormat.h>
 #include <HalClock.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
@@ -37,6 +38,13 @@ inline SettingInfo buildDictionaryFontSizeSetting() {
   }
   return SettingInfo::EnumStrings(StrId::STR_DICTIONARY_FONT_SIZE, &CrossPointSettings::dictionaryFontSize,
                                   std::move(labels), "dictionaryFontSize", StrId::STR_CAT_READER);
+}
+
+inline std::vector<std::string> dateFormatPatternLabels() {
+  std::vector<std::string> labels;
+  labels.reserve(ClockDateFormat::FormatCount);
+  for (const char* pattern : ClockDateFormat::FORMAT_PATTERNS) labels.emplace_back(pattern);
+  return labels;
 }
 
 inline SettingInfo buildScreenMarginSetting() {
@@ -245,9 +253,8 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                           "homeLayout", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_SHOW_DEVICE_NAME_HOME, &CrossPointSettings::showDeviceNameOnHome,
                             "showDeviceNameOnHome", StrId::STR_CAT_DISPLAY),
-        SettingInfo::Enum(StrId::STR_CLOCK_OUTSIDE_READER, &CrossPointSettings::outsideReaderClock,
-                          {StrId::STR_HIDE, StrId::STR_DIR_RIGHT, StrId::STR_DIR_LEFT}, "outsideReaderClock",
-                          StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_CLOCK_OUTSIDE_READER, &CrossPointSettings::outsideReaderClock,
+                            "outsideReaderClock", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_DATE_OUTSIDE_READER, &CrossPointSettings::showDateOutsideReader,
                             "showDateOutsideReader", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_LIBRARY_DISPLAY_MODE, &CrossPointSettings::libraryView,
@@ -257,15 +264,17 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                           StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_HIDE_TXT_BOOKS, &CrossPointSettings::hideTxtBooks, "hideTxtBooks",
                             StrId::STR_CAT_DISPLAY),
-        SettingInfo::Toggle(StrId::STR_REMOVE_READ_FROM_RECENTS, &CrossPointSettings::removeReadBooksFromRecents,
-                            "removeReadBooksFromRecents", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_READ_BOOKS_IN_RECENTS, &CrossPointSettings::removeReadBooksFromRecents,
+                          {StrId::STR_KEEP, StrId::STR_AUTO_REMOVE}, "removeReadBooksFromRecents",
+                          StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_MOVE_FINISHED_TO_READ, &CrossPointSettings::moveFinishedToReadFolder,
                             "moveFinishedToReadFolder", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_QUICK_RESUME, &CrossPointSettings::quickResumeSleepScreen,
                             "quickResumeSleepScreen", StrId::STR_CAT_DISPLAY),
         SettingInfo::DynamicEnum(
             StrId::STR_SLEEP_SCREEN,
-            {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT},
+            {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT,
+             StrId::STR_READING_STATS},
             [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
             [](const uint8_t selection) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(selection); },
             "sleepScreen", StrId::STR_CAT_DISPLAY),
@@ -274,11 +283,12 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
                           {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
                           "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY),
-        SettingInfo::Enum(StrId::STR_HIDE_BATTERY, &CrossPointSettings::hideBatteryPercentage,
-                          {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
-                          StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(
-            StrId::STR_REFRESH_FREQ, &CrossPointSettings::refreshFrequency,
+            StrId::STR_SHOW_BATTERY_PERCENTAGE, &CrossPointSettings::hideBatteryPercentage,
+            {StrId::STR_BATTERY_ALWAYS_SHOW, StrId::STR_BATTERY_HIDE_WHILE_READING, StrId::STR_BATTERY_ALWAYS_HIDE},
+            "hideBatteryPercentage", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(
+            StrId::STR_REFRESH_EVERY, &CrossPointSettings::refreshFrequency,
             {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30},
             "refreshFrequency", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
@@ -296,10 +306,6 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         buildDictionaryFontSizeSetting(),
         SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                             StrId::STR_CAT_READER),
-        SettingInfo::Enum(
-            StrId::STR_TEXT_DARKNESS, &CrossPointSettings::textDarkness,
-            {StrId::STR_TEXT_DARKNESS_NORMAL, StrId::STR_TEXT_DARKNESS_DARK, StrId::STR_TEXT_DARKNESS_EXTRA_DARK},
-            "textDarkness", StrId::STR_CAT_READER),
         SettingInfo::Toggle(StrId::STR_READER_DARK_MODE, &CrossPointSettings::readerDarkMode, "readerDarkMode",
                             StrId::STR_CAT_READER),
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
@@ -323,7 +329,7 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                             StrId::STR_CAT_READER),
         SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                             StrId::STR_CAT_READER),
-        SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
+        SettingInfo::Enum(StrId::STR_EPUB_IMAGES, &CrossPointSettings::imageRendering,
                           {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                           "imageRendering", StrId::STR_CAT_READER),
         SettingInfo::Toggle(StrId::STR_SKIP_EPUB_COVER_PAGE, &CrossPointSettings::skipEpubCoverPage,
@@ -362,14 +368,18 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                           {StrId::STR_DISABLED, StrId::STR_DOUBLE_POWER_HOME, StrId::STR_DOUBLE_POWER_RESUME,
                            StrId::STR_DOUBLE_POWER_REFRESH, StrId::STR_SCREENSHOT_BUTTON},
                           "doublePowerAction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,
-                            "backShortToFileBrowser", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_WHEN_LEAVING_READER, &CrossPointSettings::backShortToFileBrowser,
+                          {StrId::STR_DESTINATION_HOME, StrId::STR_DESTINATION_FILE_BROWSER}, "backShortToFileBrowser",
+                          StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_HOME_BACK_BUTTON, &CrossPointSettings::homeBackAction,
+                          {StrId::STR_SHORTCUTS, StrId::STR_CONTINUE_READING, StrId::STR_NONE_OPT}, "homeBackAction",
+                          StrId::STR_CAT_CONTROLS),
 
         // --- System ---
         SettingInfo::Value(
             StrId::STR_TIME_TO_SLEEP, &CrossPointSettings::sleepTimeoutMinutes,
             {CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1},
-            "sleepTimeoutMinutes", StrId::STR_CAT_SYSTEM),
+            "sleepTimeoutMinutes", StrId::STR_CAT_DISPLAY),
         SettingInfo::String(StrId::STR_DEVICE_DISPLAY_NAME, &SETTINGS.deviceDisplayName[0],
                             sizeof(SETTINGS.deviceDisplayName), "deviceDisplayName", StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
@@ -432,6 +442,9 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
             },
             "koSyncBehavior", StrId::STR_KOREADER_SYNC),
         // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
+        SettingInfo::Enum(StrId::STR_TITLE, &CrossPointSettings::statusBarTitle,
+                          {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE}, "statusBarTitle",
+                          StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
                             "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Toggle(StrId::STR_BOOK_PROGRESS_PERCENTAGE, &CrossPointSettings::statusBarBookProgressPercentage,
@@ -442,11 +455,6 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_PROGRESS_BAR_THICKNESS, &CrossPointSettings::statusBarProgressBarThickness,
                           {StrId::STR_PROGRESS_BAR_THIN, StrId::STR_PROGRESS_BAR_MEDIUM, StrId::STR_PROGRESS_BAR_THICK},
                           "statusBarProgressBarThickness", StrId::STR_CUSTOMISE_STATUS_BAR),
-        SettingInfo::Enum(StrId::STR_TITLE, &CrossPointSettings::statusBarTitle,
-                          {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE}, "statusBarTitle",
-                          StrId::STR_CUSTOMISE_STATUS_BAR),
-        SettingInfo::Toggle(StrId::STR_BATTERY, &CrossPointSettings::statusBarBattery, "statusBarBattery",
-                            StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Enum(StrId::STR_XTC_STATUS_BAR, &CrossPointSettings::xtcStatusBarMode,
                           {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP}, "xtcStatusBarMode",
                           StrId::STR_CUSTOMISE_STATUS_BAR),
@@ -459,13 +467,8 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat,
                           {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H}, "clockFormat",
                           StrId::STR_CUSTOMISE_STATUS_BAR),
-        SettingInfo::Enum(StrId::STR_DATE_FORMAT, &CrossPointSettings::dateFormat,
-                          {StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_LONG, StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_LONG,
-                           StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_NUMERIC, StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_NUMERIC,
-                           StrId::STR_DATE_FORMAT_YEAR_MONTH_DAY_NUMERIC, StrId::STR_DATE_FORMAT_MONTH_DAY_NUMERIC,
-                           StrId::STR_DATE_FORMAT_DAY_MONTH_NUMERIC, StrId::STR_DATE_FORMAT_MONTH_DAY_LONG,
-                           StrId::STR_DATE_FORMAT_DAY_MONTH_LONG},
-                          "dateFormat", StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::EnumStrings(StrId::STR_DATE_FORMAT, &CrossPointSettings::dateFormat, dateFormatPatternLabels(),
+                                 "dateFormat", StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Enum(
             StrId::STR_DATE_SEPARATOR, &CrossPointSettings::dateSeparator,
             {StrId::STR_DATE_SEPARATOR_PERIOD, StrId::STR_DATE_SEPARATOR_HYPHEN, StrId::STR_DATE_SEPARATOR_SLASH},

@@ -12,8 +12,10 @@ OVERRIDES = f"""
 #ifndef HAVE_FFDHE_2048
 #define HAVE_FFDHE_2048
 #endif
+/* 8192 handles public-CA RSA keys up to 4096 bits while halving the
+   WOLFSSL_SMALL_STACK fast-math temporary allocations versus 16384. */
 #undef FP_MAX_BITS
-#define FP_MAX_BITS 16384
+#define FP_MAX_BITS 8192
 """
 
 

@@ -64,7 +64,9 @@ class HalStorage {
       failNextRemove_ = false;
       return false;
     }
-    return files_.erase(path) != 0;
+    const bool removed = files_.erase(path) != 0;
+    if (removed) unreadablePaths_.erase(path);
+    return removed;
   }
   bool rename(const char* oldPath, const char* newPath) {
     ++renameCalls_;

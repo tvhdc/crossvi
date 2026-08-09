@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "Epub/VisibleTextUtils.h"
+
 namespace {
 std::string stripPrefix(const XML_Char* name) {
   if (!name) {
@@ -55,7 +57,7 @@ std::string buildParagraphXPath(const int spineIndex, const std::vector<PathSegm
   for (const auto& segment : path) {
     xpath += "/" + segment.name + "[" + std::to_string(segment.index) + "]";
   }
-  if (textNodeIndex > 0 && charOffset > 0) {
+  if (textNodeIndex > 0) {
     xpath += "/text()[" + std::to_string(textNodeIndex) + "]." + std::to_string(charOffset);
   }
   return xpath;
@@ -155,9 +157,7 @@ class ParagraphTextCounter final : public Print {
       return;
     }
 
-    if (name == "p") {
-      paragraphDepth++;
-    }
+    if (nonVisibleDepth > 0 || VisibleTextUtils::isNonVisibleElement(name)) nonVisibleDepth++;
     depth++;
   }
 
@@ -174,13 +174,11 @@ class ParagraphTextCounter final : public Print {
       return;
     }
 
-    if (name == "p" && paragraphDepth > 0) {
-      paragraphDepth--;
-    }
+    if (nonVisibleDepth > 0) nonVisibleDepth--;
   }
 
   void onCharacterData(const XML_Char* data, const int len) {
-    if (!insideBody || paragraphDepth <= 0 || len <= 0) {
+    if (!insideBody || nonVisibleDepth > 0 || len <= 0) {
       return;
     }
 
@@ -194,7 +192,7 @@ class ParagraphTextCounter final : public Print {
   bool stopped = false;
   int depth = 0;
   int bodyDepth = -1;
-  int paragraphDepth = 0;
+  uint16_t nonVisibleDepth = 0;
   size_t visibleChars = 0;
 };
 
@@ -355,6 +353,7 @@ class XPathProgressResolver final : public Print {
       LOG_ERR("KOX", "Final XML parse error: %s", XML_ErrorString(XML_GetErrorCode(parser)));
       parseOk = false;
     }
+    if (parseOk && xpath.empty() && targetVisibleChar == visibleChars) xpath = boundaryXPath;
     return parseOk;
   }
 
@@ -405,6 +404,7 @@ class XPathProgressResolver final : public Print {
         insideBody = true;
         bodyDepth = depth;
         parentStates.emplace_back();
+        textNodeIndexStack.push_back(0);
       }
       depth++;
       return;
@@ -415,13 +415,7 @@ class XPathProgressResolver final : public Print {
     parentStates.emplace_back();
     textNodeIndexStack.push_back(0);
     pendingTextNode = true;
-
-    if (name == "p") {
-      paragraphDepth++;
-    }
-    if (name == "li") {
-      liDepth++;
-    }
+    if (nonVisibleDepth > 0 || VisibleTextUtils::isNonVisibleElement(name)) nonVisibleDepth++;
 
     depth++;
   }
@@ -442,19 +436,12 @@ class XPathProgressResolver final : public Print {
       return;
     }
 
-    if (name == "p" && paragraphDepth > 0) {
-      paragraphDepth--;
-    }
-    if (name == "li" && liDepth > 0) {
-      liDepth--;
-    }
+    if (nonVisibleDepth > 0) nonVisibleDepth--;
 
     if (!textNodeIndexStack.empty()) {
       textNodeIndexStack.pop_back();
     }
-    if (paragraphDepth > 0 || liDepth > 0) {
-      pendingTextNode = true;
-    }
+    pendingTextNode = true;
     if (!path.empty()) {
       path.pop_back();
     }
@@ -464,7 +451,7 @@ class XPathProgressResolver final : public Print {
   }
 
   void onCharacterData(const XML_Char* data, const int len) {
-    if (!insideBody || (paragraphDepth <= 0 && liDepth <= 0) || len <= 0 || stopped) {
+    if (!insideBody || nonVisibleDepth > 0 || len <= 0 || stopped) {
       return;
     }
 
@@ -485,7 +472,7 @@ class XPathProgressResolver final : public Print {
     }
 
     const size_t nextVisibleChars = visibleChars + codepointCount;
-    if (targetVisibleChar <= nextVisibleChars) {
+    if (targetVisibleChar < nextVisibleChars) {
       const size_t delta = targetVisibleChar - visibleChars;
       const int texNode = textNodeIndexStack.empty() ? 0 : textNodeIndexStack.back();
       const size_t charOff = visibleChars - textNodeStartChars + delta;
@@ -493,6 +480,12 @@ class XPathProgressResolver final : public Print {
       stopped = true;
       XML_StopParser(parser, XML_FALSE);
       return;
+    }
+
+    if (targetVisibleChar == nextVisibleChars) {
+      const int textNode = textNodeIndexStack.empty() ? 0 : textNodeIndexStack.back();
+      const size_t charOffset = nextVisibleChars - textNodeStartChars;
+      boundaryXPath = buildParagraphXPath(spineIndex, path, textNode, charOffset);
     }
 
     visibleChars = nextVisibleChars;
@@ -506,14 +499,14 @@ class XPathProgressResolver final : public Print {
   bool pendingTextNode = true;
   int depth = 0;
   int bodyDepth = -1;
-  int paragraphDepth = 0;
-  int liDepth = 0;
+  uint16_t nonVisibleDepth = 0;
   size_t visibleChars = 0;
   size_t textNodeStartChars = 0;
   std::vector<int> textNodeIndexStack;
   std::vector<ParentState> parentStates;
   std::vector<PathSegment> path;
   std::string xpath;
+  std::string boundaryXPath;
 };
 }  // namespace
 
@@ -545,6 +538,29 @@ std::string ChapterXPathResolver::findXPathForParagraph(const std::shared_ptr<Ep
 
   LOG_DBG("KOX", "Paragraph %u not found in spine %d", paragraphIndex, spineIndex);
   return "";
+}
+
+std::string ChapterXPathResolver::findXPathForVisibleOffset(const std::shared_ptr<Epub>& epub, const int spineIndex,
+                                                            const uint32_t visibleTextOffset) {
+  if (!epub || spineIndex < 0 || spineIndex >= epub->getSpineItemsCount()) return "";
+
+  const auto href = epub->getSpineItem(spineIndex).href;
+  if (href.empty()) return "";
+  if (visibleTextOffset == 0) {
+    return "/body/DocFragment[" + std::to_string(spineIndex + 1) + "]/body";
+  }
+
+  XPathProgressResolver resolver(visibleTextOffset);
+  if (!resolver.ok()) return "";
+  resolver.spineIndex = spineIndex;
+  if (!epub->readItemContentsToStream(href, resolver, 1024) || !resolver.finish() || !resolver.hasMatch()) {
+    LOG_DBG("KOX", "Could not resolve visible offset %u in spine %d", visibleTextOffset, spineIndex);
+    return "";
+  }
+
+  LOG_DBG("KOX", "Resolved visible offset %u in spine %d -> %s", visibleTextOffset, spineIndex,
+          resolver.getXPath().c_str());
+  return resolver.getXPath();
 }
 
 std::string ChapterXPathResolver::findXPathForProgress(const std::shared_ptr<Epub>& epub, const int spineIndex,

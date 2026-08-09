@@ -41,7 +41,7 @@ void ButtonNavigator::onPress(const Buttons& buttons, const Callback& callback) 
     return pressed;
   });
 
-  if (wasPressed) {
+  if (wasPressed && acceptNavigationEdge()) {
     callback();
   }
 }
@@ -53,7 +53,7 @@ void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback
   });
 
   if (wasReleased) {
-    if (lastContinuousNavTime == 0) {
+    if (lastContinuousNavTime == 0 && acceptNavigationEdge()) {
       callback();
     }
 
@@ -68,7 +68,7 @@ void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callb
     return latch(button).isArmed() && mappedInput->isPressed(button) && shouldNavigateContinuously(button);
   });
 
-  if (isPressed) {
+  if (isPressed && acceptNavigationEdge()) {
     callback();
     lastContinuousNavTime = millis();
   }
@@ -81,6 +81,14 @@ bool ButtonNavigator::shouldNavigateContinuously(const MappedInputManager::Butto
   const bool navigationIntervalElapsed = (millis() - lastContinuousNavTime) > continuousIntervalMs;
 
   return buttonHeldLongEnough && navigationIntervalElapsed;
+}
+
+bool ButtonNavigator::acceptNavigationEdge() {
+  // X3/X4 buttons use ADC resistor ladders. A noisy physical transition can
+  // look like several complete press/release cycles even after the low-level
+  // debounce window. Treat that short burst as one navigation action while
+  // leaving deliberate clicks and the 500 ms hold-repeat cadence unchanged.
+  return navigationEdgeGuard_.accept(static_cast<uint32_t>(millis()), NAVIGATION_EDGE_GUARD_MS);
 }
 
 int ButtonNavigator::nextIndex(const int currentIndex, const int totalItems) {

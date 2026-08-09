@@ -45,9 +45,7 @@ class LibraryCatalogStore final {
   bool loadPage(size_t start, size_t count, std::vector<LibraryBookRecord>& records) const;
   bool loadRecords(const std::vector<size_t>& indices, std::vector<LibraryBookRecord>& records) const;
   bool loadRecord(size_t index, LibraryBookRecord& record) const;
-  // Stream the catalog once and return source indices whose format is not the
-  // excluded one. Only fixed-size indices are retained, not book metadata.
-  bool loadIndicesExcludingFormat(LibraryBookFormat excluded, std::vector<size_t>& indices) const;
+  // Return sorted source indices whose format is not the excluded one.
   bool loadOrderedIndices(uint8_t sortMode, LibraryBookFormat excluded, std::vector<size_t>& indices);
   bool findPathIndices(const std::vector<std::string>& paths, std::vector<size_t>& indices) const;
   FindPathResult findPath(const std::string& path, size_t preferredIndex, size_t& foundIndex) const;

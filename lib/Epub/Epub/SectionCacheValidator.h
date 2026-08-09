@@ -27,6 +27,7 @@ struct Layout {
   uint32_t anchorMapOffset = 0;
   uint32_t paragraphLutOffset = 0;
   uint32_t listItemLutOffset = 0;
+  uint32_t visibleTextLutOffset = 0;
   uint32_t partialBytesConsumed = 0;
   uint32_t partialTotalBytes = 0;
   uint64_t headerSize = 0;

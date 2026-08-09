@@ -5,6 +5,7 @@
 #include <SDCardManager.h>
 
 #include <cassert>
+#include <new>
 
 #define SDCard SDCardManager::getInstance()
 
@@ -98,7 +99,14 @@ HalFile& HalFile::operator=(HalFile&&) = default;
 
 HalFile HalStorage::open(const char* path, const oflag_t oflag) {
   StorageLock lock;  // ensure thread safety for the duration of this function
-  return HalFile(std::make_unique<HalFile::Impl>(SDCard.open(path, oflag)));
+  FsFile fsFile = SDCard.open(path, oflag);
+  if (!fsFile) return {};
+  auto impl = std::unique_ptr<HalFile::Impl>(new (std::nothrow) HalFile::Impl(std::move(fsFile)));
+  if (!impl) {
+    LOG_ERR("HAL", "Out of memory while opening: %s", path);
+    return {};
+  }
+  return HalFile(std::move(impl));
 }
 
 bool HalStorage::mkdir(const char* path, const bool pFlag) { HAL_STORAGE_WRAPPED_CALL(mkdir, path, pFlag); }
@@ -118,9 +126,19 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
   // first calls exists(), causing a second FAT lookup and open/close.
   FsFile fsFile = SDCard.open(path, O_RDONLY);
   const bool ok = static_cast<bool>(fsFile);
-  if (!ok) LOG_DBG(moduleName, "File does not exist or cannot be opened: %s", path);
-  file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
-  return ok;
+  if (!ok) {
+    LOG_DBG(moduleName, "File does not exist or cannot be opened: %s", path);
+    file = {};
+    return false;
+  }
+  auto impl = std::unique_ptr<HalFile::Impl>(new (std::nothrow) HalFile::Impl(std::move(fsFile)));
+  if (!impl) {
+    LOG_ERR(moduleName, "Out of memory while opening: %s", path);
+    file = {};
+    return false;
+  }
+  file = HalFile(std::move(impl));
+  return true;
 }
 
 bool HalStorage::openFileForRead(const char* moduleName, const std::string& path, HalFile& file) {
@@ -134,9 +152,18 @@ bool HalStorage::openFileForRead(const char* moduleName, const String& path, Hal
 bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function
   FsFile fsFile;
-  bool ok = SDCard.openFileForWrite(moduleName, path, fsFile);
-  file = HalFile(std::make_unique<HalFile::Impl>(std::move(fsFile)));
-  return ok;
+  if (!SDCard.openFileForWrite(moduleName, path, fsFile) || !fsFile) {
+    file = {};
+    return false;
+  }
+  auto impl = std::unique_ptr<HalFile::Impl>(new (std::nothrow) HalFile::Impl(std::move(fsFile)));
+  if (!impl) {
+    LOG_ERR(moduleName, "Out of memory while opening for write: %s", path);
+    file = {};
+    return false;
+  }
+  file = HalFile(std::move(impl));
+  return true;
 }
 
 bool HalStorage::openFileForWrite(const char* moduleName, const std::string& path, HalFile& file) {
@@ -196,11 +223,21 @@ size_t HalFile::write(uint8_t b) { HAL_FILE_WRAPPED_CALL(write, b); }
 bool HalFile::rename(const char* newPath) { HAL_FILE_WRAPPED_CALL(rename, newPath); }
 bool HalFile::isDirectory() const { HAL_FILE_FORWARD_CALL(isDirectory, ); }  // already thread-safe, no need to wrap
 void HalFile::rewindDirectory() { HAL_FILE_WRAPPED_CALL(rewindDirectory, ); }
-bool HalFile::close() { HAL_FILE_WRAPPED_CALL(close, ); }
+bool HalFile::close() {
+  if (!impl) return true;
+  HAL_FILE_WRAPPED_CALL(close, );
+}
 HalFile HalFile::openNextFile() {
   HalStorage::StorageLock lock;
   assert(impl != nullptr);
-  return HalFile(std::make_unique<Impl>(impl->file.openNextFile()));
+  FsFile fsFile = impl->file.openNextFile();
+  if (!fsFile) return {};
+  auto next = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(fsFile)));
+  if (!next) {
+    LOG_ERR("HAL", "Out of memory while opening next directory entry");
+    return {};
+  }
+  return HalFile(std::move(next));
 }
 bool HalFile::isOpen() const { return impl != nullptr && impl->file.isOpen(); }  // already thread-safe, no need to wrap
 HalFile::operator bool() const { return isOpen(); }

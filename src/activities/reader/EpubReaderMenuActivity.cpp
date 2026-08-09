@@ -89,8 +89,6 @@ void EpubReaderMenuActivity::onEnter() {
   requestUpdate();
 }
 
-void EpubReaderMenuActivity::onExit() { Activity::onExit(); }
-
 void EpubReaderMenuActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
@@ -104,6 +102,14 @@ void EpubReaderMenuActivity::loop() {
     selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(menuItems.size()));
     requestUpdate();
   });
+
+  // The selected action is already known on the press edge. Paint lengthy
+  // action feedback now instead of waiting for Confirm to be released and the
+  // parent reader to resume.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    const StrId feedback = feedbackForSelectedAction();
+    if (feedback != StrId::_COUNT) queueBlockingFeedback(feedback);
+  }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const auto selectedAction = menuItems[selectedIndex].action;
@@ -150,6 +156,7 @@ void EpubReaderMenuActivity::loop() {
 }
 
 void EpubReaderMenuActivity::render(RenderLock&&) {
+  if (renderBlockingFeedbackOverlay()) return;
   if (optionPopup.processRender(renderer, mappedInput)) return;
 
   renderer.clearScreen();
@@ -204,6 +211,27 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
+}
+
+StrId EpubReaderMenuActivity::feedbackForSelectedAction() const {
+  if (selectedIndex < 0 || selectedIndex >= static_cast<int>(menuItems.size())) return StrId::_COUNT;
+  switch (menuItems[selectedIndex].action) {
+    case MenuAction::SELECT_CHAPTER:
+    case MenuAction::BOOKMARKS:
+    case MenuAction::SAVED_ITEMS:
+    case MenuAction::VIEW_CLIPPINGS:
+      return StrId::STR_LOADING_POPUP;
+    case MenuAction::DISPLAY_QR:
+      return StrId::STR_GENERATING_QR;
+    case MenuAction::GO_HOME:
+      return StrId::STR_EXITING_READER;
+    case MenuAction::DELETE_CACHE:
+      // TXT asks for confirmation first; its confirmation screen owns the
+      // clearing feedback after the user accepts.
+      return readerKind == ReaderKind::Epub ? StrId::STR_CLEARING_CACHE : StrId::_COUNT;
+    default:
+      return StrId::_COUNT;
+  }
 }
 
 std::string EpubReaderMenuActivity::autoPageTurnValue() const {

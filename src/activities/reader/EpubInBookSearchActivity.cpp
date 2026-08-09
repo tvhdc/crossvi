@@ -8,7 +8,9 @@
 
 #include <algorithm>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/EpubSearchTraversal.h"
@@ -27,6 +29,10 @@ EpubInBookSearchActivity::EpubInBookSearchActivity(GfxRenderer& renderer, Mapped
 
 void EpubInBookSearchActivity::onEnter() {
   Activity::onEnter();
+  // Missing section caches must be laid out with the same font as the reader.
+  // Keep that font only for the bounded search activity, then release it.
+  sdFontSystem.ensureLoaded(renderer, false);
+  layout_.fontId = SETTINGS.getReaderFontId();
   normalized_ = makeBookSearchQuery(query_);
   if (!epub_ || normalized_.empty() || epub_->getSpineItemsCount() <= 0 || layout_.viewportWidth == 0 ||
       layout_.viewportHeight == 0) {
@@ -37,6 +43,12 @@ void EpubInBookSearchActivity::onEnter() {
     searching_ = true;
   }
   requestUpdate();
+}
+
+void EpubInBookSearchActivity::onExit() {
+  section_.reset();
+  sdFontSystem.releaseLoadedFont(renderer);
+  Activity::onExit();
 }
 
 bool EpubInBookSearchActivity::openSection() {

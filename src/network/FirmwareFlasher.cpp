@@ -46,6 +46,8 @@ const char* resultName(Result r) {
       return "BAD_CHECKSUM";
     case Result::BAD_SHA:
       return "BAD_SHA";
+    case Result::BAD_CHIP:
+      return "BAD_CHIP";
     case Result::BAD_SIZE:
       return "BAD_SIZE";
     case Result::NO_PARTITION:
@@ -62,6 +64,19 @@ const char* resultName(Result r) {
       return "OTADATA_FAIL";
   }
   return "?";
+}
+
+uint16_t runningPartitionChipId() {
+  static const uint16_t cached = [] {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (!running) return UNKNOWN_CHIP_ID;
+    uint16_t chipId = UNKNOWN_CHIP_ID;
+    if (esp_partition_read(running, IMAGE_CHIP_ID_OFFSET, &chipId, sizeof(chipId)) != ESP_OK) {
+      return UNKNOWN_CHIP_ID;
+    }
+    return chipId;
+  }();
+  return cached;
 }
 
 namespace {
@@ -116,6 +131,13 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
     LOG_ERR("FLASH", "validate: bad magic 0x%02X", header[0]);
     file.close();
     return Result::BAD_MAGIC;
+  }
+  uint16_t imageChipId = UNKNOWN_CHIP_ID;
+  if (!readImageChipId(header, sizeof(header), imageChipId) ||
+      !imageChipMatchesDevice(imageChipId, runningPartitionChipId())) {
+    LOG_ERR("FLASH", "validate: wrong chip: image=0x%04X device=0x%04X", imageChipId, runningPartitionChipId());
+    file.close();
+    return Result::BAD_CHIP;
   }
   const uint8_t segCount = header[1];
   const bool hashAppended = header[23] != 0;

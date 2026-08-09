@@ -60,7 +60,7 @@ struct NativeServerState {
   int fd = -1;
   std::thread worker;
   mutable std::mutex uploadMutex;
-  CrossPointWebServer::WsUploadStatus uploadStatus;
+  CrossPointWebServer::UploadStatus uploadStatus;
   std::string pendingOpenPath;
 };
 
@@ -1121,11 +1121,11 @@ void CrossPointWebServer::stop() {
 void CrossPointWebServer::handleClient() {}
 
 bool CrossPointWebServer::hasActiveTransfer() const {
-  return getWsUploadStatus().inProgress;
+  return getUploadStatus().inProgress;
 }
 
-CrossPointWebServer::WsUploadStatus
-CrossPointWebServer::getWsUploadStatus() const {
+CrossPointWebServer::UploadStatus
+CrossPointWebServer::getUploadStatus() const {
   std::lock_guard<std::mutex> statesLock(statesMutex);
   auto it = states.find(this);
   if (it == states.end())

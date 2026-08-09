@@ -421,12 +421,6 @@ bool GlobalReadingStats::hasSyncedStats() { return Storage.exists(SYNCED_STATS_D
 
 bool GlobalReadingStats::canPublish() { return storageAllowsPublish(); }
 
-GlobalReadingStats GlobalReadingStats::loadAggregated() { return loadAggregatedWithReport(load()).stats; }
-
-GlobalReadingStats GlobalReadingStats::loadAggregated(const GlobalReadingStats& localStats) {
-  return loadAggregatedWithReport(localStats).stats;
-}
-
 GlobalReadingStatsAggregation GlobalReadingStats::loadAggregatedWithReport(const GlobalReadingStats& localStats) {
   GlobalReadingStatsAggregation report;
   report.stats = localStats;

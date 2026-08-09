@@ -15,8 +15,6 @@ void EpubReaderFootnotesActivity::onEnter() {
   requestUpdate();
 }
 
-void EpubReaderFootnotesActivity::onExit() { Activity::onExit(); }
-
 void EpubReaderFootnotesActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     ActivityResult result;

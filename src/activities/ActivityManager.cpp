@@ -257,8 +257,8 @@ void ActivityManager::goToReader(std::string path, SavedBookmarkJumpResult bookm
       std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), std::move(bookmarkJump), openOrigin));
 }
 
-void ActivityManager::goToSleep(bool fromTimeout) {
-  replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout));
+void ActivityManager::goToSleep() {
+  replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput));
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 

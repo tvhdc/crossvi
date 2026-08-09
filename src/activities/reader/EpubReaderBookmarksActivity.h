@@ -27,7 +27,6 @@ class EpubReaderBookmarksActivity final : public Activity {
                                        const std::string& textPath)
       : Activity("TextReaderBookmarks", renderer, mappedInput), bookPath(textPath), textMode(true) {}
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

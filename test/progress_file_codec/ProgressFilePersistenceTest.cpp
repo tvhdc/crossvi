@@ -75,6 +75,45 @@ TEST(ProgressFilePersistence, AcceptsLegacyEpubButKeepsPageLayoutsStrict) {
   EXPECT_EQ(ProgressFile::loadPage(CACHE_PATH, page, sizeof(page)).source, ProgressFile::LoadSource::Invalid);
 }
 
+TEST(ProgressFilePersistence, LoadsAndSafelyMigratesContentAnchoredEpubProgress) {
+  Storage.reset();
+  const std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> anchored{
+      12, 0, 3, 0, 20, 0, 0x44, 0x33, 0x22, 0x11};
+  const std::array<uint8_t, ProgressFile::EPUB_PROGRESS_SIZE> next{12, 0, 4, 0, 20, 0};
+  const std::array<uint8_t, ProgressFile::EPUB_PROGRESS_SIZE> oldBackup{12, 0, 2, 0, 20, 0};
+  const ProgressFile::EpubBounds bounds{53};
+  const ProgressFile::CandidateValidator validator{ProgressFile::validateEpubBounds, &bounds};
+  Storage.setFile(PRIMARY, bytes(anchored));
+  Storage.setFile(BACKUP, bytes(oldBackup));
+
+  uint8_t loaded[ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE]{};
+  const auto result = ProgressFile::loadEpub(CACHE_PATH, loaded, sizeof(loaded), validator);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result.source, ProgressFile::LoadSource::Primary);
+  EXPECT_EQ(result.size, anchored.size());
+  EXPECT_EQ(std::vector<uint8_t>(loaded, loaded + result.size), bytes(anchored));
+
+  ASSERT_TRUE(ProgressFile::writeEpubAtomic(CACHE_PATH, next.data(), next.size(), validator));
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(next));
+  EXPECT_EQ(Storage.file(BACKUP), bytes(anchored));
+  EXPECT_FALSE(Storage.exists(TEMP));
+}
+
+TEST(ProgressFilePersistence, UpgradesSixByteEpubProgressWithoutDiscardingRollbackCopy) {
+  Storage.reset();
+  const std::array<uint8_t, ProgressFile::EPUB_PROGRESS_SIZE> previous{12, 0, 3, 0, 20, 0};
+  const std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> anchored{
+      12, 0, 4, 0, 20, 0, 0x44, 0x33, 0x22, 0x11};
+  const ProgressFile::EpubBounds bounds{53};
+  const ProgressFile::CandidateValidator validator{ProgressFile::validateEpubBounds, &bounds};
+  Storage.setFile(PRIMARY, bytes(previous));
+
+  ASSERT_TRUE(ProgressFile::writeEpubAtomic(CACHE_PATH, anchored.data(), anchored.size(), validator));
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(anchored));
+  EXPECT_EQ(Storage.file(BACKUP), bytes(previous));
+  EXPECT_FALSE(Storage.exists(TEMP));
+}
+
 TEST(ProgressFilePersistence, SkipsCorruptPrimaryForValidBackup) {
   Storage.reset();
   const std::array<uint8_t, 4> backup{9, 8, 7, 6};
@@ -245,6 +284,68 @@ TEST(ProgressFilePersistence, PreservesUnknownLargerLayouts) {
   EXPECT_FALSE(ProgressFile::writeAtomic(CACHE_PATH, next.data(), next.size()));
   EXPECT_EQ(Storage.file(PRIMARY), unknown);
   EXPECT_FALSE(Storage.exists(TEMP));
+}
+
+TEST(ProgressFilePersistence, ValidPrimaryHealsUnreadableRecoverySiblings) {
+  for (const char* stalePath : {BACKUP, TEMP}) {
+    SCOPED_TRACE(stalePath);
+    Storage.reset();
+    const std::array<uint8_t, 6> primary{12, 0, 3, 0, 20, 0};
+    const std::array<uint8_t, 6> next{12, 0, 4, 0, 20, 0};
+    const ProgressFile::EpubBounds bounds{53};
+    const ProgressFile::CandidateValidator validator{ProgressFile::validateEpubBounds, &bounds};
+    Storage.setFile(PRIMARY, bytes(primary));
+    Storage.setFile(stalePath, {0xA5});
+    Storage.makeUnreadable(stalePath);
+
+    ASSERT_TRUE(ProgressFile::writeEpubAtomic(CACHE_PATH, next.data(), next.size(), validator));
+    EXPECT_EQ(Storage.file(PRIMARY), bytes(next));
+    EXPECT_EQ(Storage.file(BACKUP), bytes(primary));
+    EXPECT_FALSE(Storage.exists(TEMP));
+  }
+}
+
+TEST(ProgressFilePersistence, ValidPrimaryHealsUnknownLargerRecoverySiblings) {
+  for (const char* stalePath : {BACKUP, TEMP}) {
+    SCOPED_TRACE(stalePath);
+    Storage.reset();
+    const auto primary = pageBytes(3);
+    const auto next = pageBytes(4);
+    Storage.setFile(PRIMARY, bytes(primary));
+    Storage.setFile(stalePath, {1, 2, 3, 4, 5});
+
+    ASSERT_TRUE(ProgressFile::writeAtomic(CACHE_PATH, next.data(), next.size()));
+    EXPECT_EQ(Storage.file(PRIMARY), bytes(next));
+    EXPECT_EQ(Storage.file(BACKUP), bytes(primary));
+    EXPECT_FALSE(Storage.exists(TEMP));
+  }
+}
+
+TEST(ProgressFilePersistence, DoesNotDiscardUnknownRecoveryStateWithoutValidPrimary) {
+  Storage.reset();
+  const auto next = pageBytes(4);
+  const std::vector<uint8_t> unknown{1, 2, 3, 4, 5};
+  Storage.setFile(BACKUP, unknown);
+
+  EXPECT_FALSE(ProgressFile::writeAtomic(CACHE_PATH, next.data(), next.size()));
+  EXPECT_FALSE(Storage.exists(PRIMARY));
+  EXPECT_EQ(Storage.file(BACKUP), unknown);
+  EXPECT_FALSE(Storage.exists(TEMP));
+}
+
+TEST(ProgressFilePersistence, FailedRecoveryCleanupLeavesValidPrimaryUntouched) {
+  Storage.reset();
+  const auto primary = pageBytes(3);
+  const auto next = pageBytes(4);
+  Storage.setFile(PRIMARY, bytes(primary));
+  Storage.setFile(TEMP, {0xA5});
+  Storage.makeUnreadable(TEMP);
+  Storage.failRemoveOnce();
+
+  EXPECT_FALSE(ProgressFile::writeAtomic(CACHE_PATH, next.data(), next.size()));
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(primary));
+  EXPECT_FALSE(Storage.exists(BACKUP));
+  EXPECT_TRUE(Storage.exists(TEMP));
 }
 
 TEST(ProgressFilePersistence, TxtLoadValidatesFormatAndFallsBackToLegacyBackup) {

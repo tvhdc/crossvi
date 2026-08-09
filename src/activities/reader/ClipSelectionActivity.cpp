@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "CrossPointSettings.h"
+#include "SdCardFontSystem.h"
 #include "clippings/ClippingCodec.h"
 #include "clippings/ClippingPageTools.h"
 #include "components/UITheme.h"
@@ -53,6 +54,10 @@ bool startsParagraph(const std::string_view text) {
 
 void ClipSelectionActivity::onEnter() {
   Activity::onEnter();
+  // Selecting a clipping draws the real reading page, so load the font only
+  // for this activity and release it again as soon as selection closes.
+  sdFontSystem.ensureLoaded(renderer, false);
+  fontId_ = SETTINGS.getReaderFontId();
   if (!page_ || fontId_ == 0 || sectionPageCount_ == 0 || startPage_ >= sectionPageCount_) {
     cancel();
     return;
@@ -77,6 +82,11 @@ void ClipSelectionActivity::onEnter() {
   const int initial = closestOrderInRow(static_cast<uint16_t>((rowCount_ - 1) / 2), renderer.getScreenWidth() / 2);
   if (initial >= 0) cursorOrder_ = initial;
   requestUpdate();
+}
+
+void ClipSelectionActivity::onExit() {
+  sdFontSystem.releaseLoadedFont(renderer);
+  Activity::onExit();
 }
 
 void ClipSelectionActivity::extractWords() {
@@ -600,10 +610,9 @@ void ClipSelectionActivity::render(RenderLock&&) {
                                                                  *existingClippings_, spineIndex_, currentPage_,
                                                                  currentPageFingerprint, layoutFingerprint_)
                          : ClippingPageTools::HighlightPlan{};
-  const bool underlineOnlyHighlights = SETTINGS.focusReadingEnabled != 0;
-  if (!underlineOnlyHighlights) existingHighlights.drawBackground(renderer);
   page_->render(renderer, fontId_, marginLeft_, marginTop_);
-  existingHighlights.drawUnderline(renderer, !underlineOnlyHighlights);
+  existingHighlights.drawInverse(renderer);
+  existingHighlights.drawUnderline(renderer, true);
 
   if (SETTINGS.readerDarkMode) renderer.invertScreen();
 

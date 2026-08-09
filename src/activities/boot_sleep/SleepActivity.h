@@ -5,7 +5,7 @@ class Bitmap;
 
 class SleepActivity final : public Activity {
  public:
-  explicit SleepActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool = false)
+  explicit SleepActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Sleep", renderer, mappedInput) {}
   void onEnter() override;
 
@@ -13,6 +13,7 @@ class SleepActivity final : public Activity {
   void renderDefaultSleepScreen() const;
   void renderCustomSleepScreen() const;
   void renderCoverSleepScreen() const;
+  void renderReadingCalendarSleepScreen() const;
   void renderBitmapSleepScreen(const Bitmap& bitmap, bool applyCoverSettings) const;
   void renderLastScreenSleepScreen() const;
   void renderBlankSleepScreen() const;

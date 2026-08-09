@@ -1,10 +1,12 @@
 #include "PngToFramebufferConverter.h"
 
+#include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <MemoryBudget.h>
 #include <PNGdec.h>
 
 #include <cstdlib>
@@ -80,9 +82,6 @@ int32_t pngSeekWithHandle(PNGFILE* pFile, int32_t pos) {
 // We heap-allocate it on demand rather than using a static instance, so this memory
 // is only consumed while actually decoding/querying PNG images. This is critical on
 // the ESP32-C3 where total RAM is ~320 KB.
-constexpr size_t PNG_DECODER_APPROX_SIZE = 44 * 1024;                          // ~42 KB + overhead
-constexpr size_t MIN_FREE_HEAP_FOR_PNG = PNG_DECODER_APPROX_SIZE + 16 * 1024;  // decoder + 16 KB headroom
-
 // PNGdec keeps TWO scanlines in its internal ucPixels buffer (current + previous)
 // and each scanline includes a leading filter byte.
 // Required storage is therefore approximately: 2 * (pitch + 1) + alignment slack.
@@ -300,9 +299,9 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 }  // namespace
 
 bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
-    LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
+  const auto memory = MemoryBudget::snapshot();
+  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::PNG_DECODE)) {
+    LOG_ERR("PNG", "Not enough heap for PNG decoder (free=%u maxalloc=%u)", memory.freeHeap, memory.maxAllocHeap);
     return false;
   }
 
@@ -331,11 +330,16 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
                                                     const RenderConfig& config) {
   LOG_DBG("PNG", "Decoding PNG: %s", imagePath.c_str());
 
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
-    LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
+  auto memory = MemoryBudget::snapshot();
+  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::PNG_DECODE)) {
+    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    memory = MemoryBudget::snapshot();
+  }
+  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::PNG_DECODE)) {
+    LOG_ERR("PNG", "Not enough heap for PNG decoder (free=%u maxalloc=%u)", memory.freeHeap, memory.maxAllocHeap);
     return false;
   }
+  MemoryBudget::logStage("PNG", "decode_begin");
 
   // Heap-allocate PNG decoder (~42 KB) - freed at end of function
   std::unique_ptr<PNG> png(new (std::nothrow) PNG());

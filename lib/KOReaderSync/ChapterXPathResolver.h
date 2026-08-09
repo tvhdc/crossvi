@@ -18,6 +18,10 @@ class ChapterXPathResolver {
    */
   static std::string findXPathForParagraph(const std::shared_ptr<Epub>& epub, int spineIndex, uint16_t paragraphIndex);
 
+  /** Resolve an exact zero-based visible body-text offset to a standard KOReader XPath. */
+  static std::string findXPathForVisibleOffset(const std::shared_ptr<Epub>& epub, int spineIndex,
+                                               uint32_t visibleTextOffset);
+
   /**
    * Resolve intra-spine progress to a real XHTML ancestry path plus text offset.
    *

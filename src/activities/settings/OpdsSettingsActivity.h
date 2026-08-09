@@ -18,7 +18,6 @@ class OpdsSettingsActivity final : public Activity {
       : Activity("OpdsSettings", renderer, mappedInput), serverIndex(serverIndex) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

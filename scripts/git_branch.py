@@ -37,7 +37,7 @@ def _git(project_dir: str, arguments: list[str], label: str) -> str:
 
 def base_version(project_dir: str) -> str:
     config = configparser.ConfigParser()
-    config.read(os.path.join(project_dir, "platformio.ini"))
+    config.read(os.path.join(project_dir, "platformio.ini"), encoding="utf-8")
     return config.get("crosspoint", "version", fallback="0.0.0")
 
 

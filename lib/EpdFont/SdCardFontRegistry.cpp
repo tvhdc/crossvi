@@ -155,7 +155,7 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
   if (!dir || !dir.isDirectory()) return;
 
   char nameBuffer[128];
-  while (true) {
+  while (family.files.size() < MAX_FILES_PER_FAMILY) {
     HalFile entry = dir.openNextFile();
     if (!entry) break;
     if (entry.isDirectory()) {
@@ -216,7 +216,7 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
   }
 
   char nameBuffer[128];
-  while (true) {
+  while (out.size() < static_cast<size_t>(MAX_SD_FAMILIES)) {
     HalFile entry = root.openNextFile();
     if (!entry) break;
     if (entry.isDirectory()) {
@@ -268,11 +268,6 @@ bool SdCardFontRegistry::discover() {
   // Sort families alphabetically
   std::sort(families_.begin(), families_.end(),
             [](const SdCardFontFamilyInfo& a, const SdCardFontFamilyInfo& b) { return a.name < b.name; });
-
-  // Cap at MAX_SD_FAMILIES
-  if (static_cast<int>(families_.size()) > MAX_SD_FAMILIES) {
-    families_.resize(MAX_SD_FAMILIES);
-  }
 
   LOG_DBG("SDREG", "Discovery complete: %d families", static_cast<int>(families_.size()));
   return !families_.empty();

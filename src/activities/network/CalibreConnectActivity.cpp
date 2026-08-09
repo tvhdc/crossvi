@@ -3,6 +3,7 @@
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
@@ -80,7 +81,13 @@ void CalibreConnectActivity::startWebServer() {
     LOG_DBG("CAL", "mDNS started: http://%s.local/", HOSTNAME);
   }
 
-  webServer.reset(new CrossPointWebServer());
+  webServer = makeUniqueNoThrow<CrossPointWebServer>();
+  if (!webServer) {
+    LOG_ERR("CAL", "Not enough memory to start the Calibre server");
+    state = CalibreConnectState::ERROR;
+    requestUpdate();
+    return;
+  }
   webServer->begin();
 
   if (webServer->isRunning()) {
@@ -111,10 +118,14 @@ void CalibreConnectActivity::loop() {
     }
 
     resetTaskWatchdogIfSubscribed();
-    WiFi.setSleep(false);
     constexpr int MAX_ITERATIONS = 80;
-    for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
+    const int maxIterations = webServer->hasCooperativeUpload() ? 1 : MAX_ITERATIONS;
+    for (int i = 0; i < maxIterations && webServer->isRunning(); i++) {
       webServer->handleClient();
+      // Cooperative uploads use one bounded HTTP request per chunk. Return to
+      // the activity loop after each request so physical input is never
+      // starved by a queued burst from Calibre.
+      if (webServer->hasCooperativeUpload()) break;
       if ((i & 0x07) == 0x07) {
         resetTaskWatchdogIfSubscribed();
       }
@@ -126,10 +137,9 @@ void CalibreConnectActivity::loop() {
         }
       }
     }
-    WiFi.setSleep(true);
     lastHandleClientTime = millis();
 
-    const auto status = webServer->getWsUploadStatus();
+    const auto status = webServer->getUploadStatus();
     bool changed = false;
     if (status.inProgress) {
       if (status.received != lastProgressReceived || status.total != lastProgressTotal ||

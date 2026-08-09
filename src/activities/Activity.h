@@ -1,4 +1,5 @@
 #pragma once
+#include <I18nKeys.h>
 #include <Logging.h>
 
 #include <atomic>
@@ -27,6 +28,7 @@ class Activity {
   ActivityResult result;
   std::atomic_bool openingBook{false};
   std::atomic_bool exitingReader{false};
+  std::atomic<StrId> blockingFeedback{StrId::_COUNT};
 
   // Opt-in helper for screens where global navigation is safe.
   bool handleSafeGlobalShortcut(GlobalShortcut shortcut);
@@ -35,6 +37,10 @@ class Activity {
   bool renderBookLoadingOverlay();
   void showReaderExitFeedback();
   bool renderReaderExitOverlay();
+  void queueBlockingFeedback(StrId message);
+  void clearBlockingFeedback();
+  void showBlockingFeedback(StrId message);
+  bool renderBlockingFeedbackOverlay();
 
  public:
   explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)

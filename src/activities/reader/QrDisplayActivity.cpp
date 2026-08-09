@@ -13,8 +13,6 @@ void QrDisplayActivity::onEnter() {
   requestUpdate();
 }
 
-void QrDisplayActivity::onExit() { Activity::onExit(); }
-
 void QrDisplayActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
       mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {

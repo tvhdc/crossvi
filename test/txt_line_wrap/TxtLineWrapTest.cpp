@@ -94,6 +94,15 @@ TEST(TxtLineWrapEligibility, AcceptsOnlySimpleMonotonicLtrText) {
   EXPECT_FALSE(TxtLineWrap::isMonotonicLtrText(embeddedNul));
 }
 
+TEST(TxtLineWrapInput, DetectsOnlyACompleteLeadingUtf8Bom) {
+  const std::array<uint8_t, 5> bomText = {0xEF, 0xBB, 0xBF, 'O', 'K'};
+  const std::array<uint8_t, 3> plainText = {'O', 'K', '!'};
+  EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(bomText.data(), bomText.size()), 3U);
+  EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(bomText.data(), 2), 0U);
+  EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(plainText.data(), plainText.size()), 0U);
+  EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(nullptr, 3), 0U);
+}
+
 TEST(TxtLineWrapSearch, PreservesLegacyWordBreakAcrossWidths) {
   const std::array<std::string, 4> texts = {"alpha beta gamma delta", "averylongfirstword then short words", "one two",
                                             encode({0x4E2D, ' ', 0x6587, 'A'})};

@@ -27,6 +27,8 @@ bool isSha256Digest(const char* value) {
 ReleaseJsonParser::ReleaseJsonParser()
     : parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
                            sOnArrayStart, sOnArrayEnd}) {
+  assetVisitor = nullptr;
+  assetVisitorContext = nullptr;
   reset();
 }
 
@@ -47,9 +49,27 @@ void ReleaseJsonParser::reset() {
   currentAssetUrl[0] = '\0';
   currentAssetDigest[0] = '\0';
   currentAssetSize = 0;
+  assetVisitorSucceeded = true;
 }
 
 void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, len); }
+
+bool ReleaseJsonParser::finish() {
+  if (parser.finish() && assetVisitorSucceeded) return true;
+  tagName[0] = '\0';
+  firmwareUrl[0] = '\0';
+  firmwareDigest[0] = '\0';
+  firmwareSize = 0;
+  tagFound = false;
+  firmwareFound = false;
+  firmwareDigestFound = false;
+  return false;
+}
+
+void ReleaseJsonParser::setAssetVisitor(const AssetVisitor visitor, void* context) {
+  assetVisitor = visitor;
+  assetVisitorContext = context;
+}
 
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
@@ -60,6 +80,10 @@ const char* ReleaseJsonParser::getFirmwareDigest() const { return firmwareDigest
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
+  if (assetVisitor && assetVisitorSucceeded && currentAssetName[0] != '\0') {
+    assetVisitorSucceeded =
+        assetVisitor(assetVisitorContext, currentAssetName, currentAssetUrl, currentAssetSize, currentAssetDigest);
+  }
   if (strcmp(currentAssetName, "firmware.bin") == 0) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;

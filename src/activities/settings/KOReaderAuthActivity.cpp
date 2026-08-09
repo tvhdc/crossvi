@@ -1,5 +1,6 @@
 #include "KOReaderAuthActivity.h"
 
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
@@ -29,7 +30,12 @@ void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
     state = AUTHENTICATING;
     statusMessage = mode == Mode::SIGN_UP ? tr(STR_CREATING_ACCOUNT) : tr(STR_AUTHENTICATING);
   }
-  requestUpdate();
+  requestUpdateAndWait();
+
+  // The authentication screen has finished rendering, so its glyph data is no
+  // longer in use. Reclaim reader/UI font caches before starting TLS; they are
+  // derived data and will be rebuilt lazily by the next render.
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
 
   performAuthentication();
 }

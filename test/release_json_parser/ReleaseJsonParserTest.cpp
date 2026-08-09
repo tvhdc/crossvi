@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "lib/JsonParser/ReleaseJsonParser.h"
 
@@ -119,6 +120,20 @@ void feedChunked(ReleaseJsonParser& p, const char* json, size_t chunkSize) {
     p.feed(json + off, n);
   }
 }
+
+struct VisitedAsset {
+  std::string name;
+  std::string url;
+  std::string digest;
+  size_t size;
+};
+
+bool collectAsset(void* context, const char* name, const char* url, const size_t size, const char* digest) {
+  static_cast<std::vector<VisitedAsset>*>(context)->push_back({name, url, digest, size});
+  return true;
+}
+
+bool rejectAsset(void*, const char*, const char*, size_t, const char*) { return false; }
 
 }  // namespace
 
@@ -403,6 +418,60 @@ TEST(ReleaseJsonParser, TruncatedRealisticJson) {
     (void)p.foundFirmware();
   }
   SUCCEED();
+}
+
+TEST(ReleaseJsonParser, FinishRejectsPartialFieldsAndClearsResults) {
+  const char* json = R"({"tag_name":"v1.2.3","assets":[])";
+  ReleaseJsonParser p;
+  p.feed(json, strlen(json));
+  ASSERT_TRUE(p.foundTag());
+  EXPECT_FALSE(p.finish());
+  EXPECT_FALSE(p.foundTag());
+  EXPECT_FALSE(p.foundFirmware());
+  EXPECT_FALSE(p.foundFirmwareDigest());
+}
+
+TEST(ReleaseJsonParser, FinishAcceptsCompleteReleaseJson) {
+  ReleaseJsonParser p;
+  p.feed(kRealisticMinified, strlen(kRealisticMinified));
+  EXPECT_TRUE(p.finish());
+  EXPECT_TRUE(p.foundTag());
+  EXPECT_TRUE(p.foundFirmware());
+}
+
+TEST(ReleaseJsonParser, VisitsEveryTopLevelReleaseAssetWithoutNestedFieldConfusion) {
+  const char* json = R"({
+    "tag_name":"sd-fonts-m1-b4",
+    "assets":[
+      {"name":"fonts.json","size":12,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+       "browser_download_url":"https://example/fonts.json","uploader":{"name":"wrong"}},
+      {"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "browser_download_url":"https://example/Bookerly_14.cpfont","size":34,"name":"Bookerly_14.cpfont"}
+    ]
+  })";
+  std::vector<VisitedAsset> assets;
+  ReleaseJsonParser parser;
+  parser.setAssetVisitor(collectAsset, &assets);
+  feedChunked(parser, json, 7);
+
+  ASSERT_TRUE(parser.finish());
+  ASSERT_EQ(assets.size(), 2u);
+  EXPECT_EQ(assets[0].name, "fonts.json");
+  EXPECT_EQ(assets[0].digest, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  EXPECT_EQ(assets[0].size, 12u);
+  EXPECT_EQ(assets[1].name, "Bookerly_14.cpfont");
+  EXPECT_EQ(assets[1].url, "https://example/Bookerly_14.cpfont");
+  EXPECT_EQ(assets[1].size, 34u);
+}
+
+TEST(ReleaseJsonParser, VisitorFailureMakesCompletedDocumentFailClosed) {
+  const char* json = R"({"tag_name":"v1","assets":[{"name":"fonts.json","size":1}]})";
+  ReleaseJsonParser parser;
+  parser.setAssetVisitor(rejectAsset, nullptr);
+  parser.feed(json, strlen(json));
+
+  EXPECT_FALSE(parser.finish());
+  EXPECT_FALSE(parser.foundTag());
 }
 
 TEST(ReleaseJsonParser, NestedObjectsInAsset) {

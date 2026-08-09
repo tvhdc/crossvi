@@ -49,6 +49,7 @@ class ClipSelectionActivity final : public Activity {
         spineIndex_(spineIndex) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
@@ -75,7 +76,7 @@ class ClipSelectionActivity final : public Activity {
   void drawHints() const;
 
   std::unique_ptr<Page> page_;
-  const int fontId_;
+  int fontId_;
   const int marginLeft_;
   const int marginTop_;
   const uint16_t startPage_;

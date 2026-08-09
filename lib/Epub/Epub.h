@@ -154,8 +154,8 @@ class Epub {
   bool generateThumbBmp(int height) const;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
-  bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,
-                                bool allowEarlyStop = false) const;
+  bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize, bool allowEarlyStop = false,
+                                size_t maxOutputSize = SIZE_MAX, bool* outputLimitExceeded = nullptr) const;
   // Deflated cover rasters are extracted one bounded chunk per main-loop
   // iteration. ZIP STORE covers instead report NeedsSynchronousGeneration so
   // callers can present progress before direct-range conversion.

@@ -125,7 +125,8 @@ bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHou
 }
 
 bool HalClock::formatDate(char* buf, const size_t bufSize, uint8_t utcOffsetQuarterHoursBiased,
-                          const DateFormat dateFormat, const char numericSeparator) const {
+                          const DateFormat dateFormat, const char numericSeparator,
+                          const bool vietnameseMonthNames) const {
   uint16_t year;
   uint8_t month;
   uint8_t day;
@@ -143,7 +144,7 @@ bool HalClock::formatDate(char* buf, const size_t bufSize, uint8_t utcOffsetQuar
   ClockCalendar::DateTime local;
   if (!ClockCalendar::fromEpoch(static_cast<time_t>(adjusted), local)) return false;
   return ClockDateFormat::format(local.year, local.month, local.day, static_cast<uint8_t>(dateFormat), numericSeparator,
-                                 buf, bufSize);
+                                 buf, bufSize, vietnameseMonthNames);
 }
 
 bool HalClock::writeDateTimeToRTC(const time_t epoch) {

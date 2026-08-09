@@ -2,6 +2,7 @@
 #include <HalStorage.h>
 
 #include <functional>
+#include <limits>
 #include <string>
 
 /**
@@ -21,6 +22,7 @@ class HttpDownloader {
     HTTP_ERROR,
     FILE_ERROR,
     ABORTED,
+    INTEGRITY_ERROR,
   };
 
   /**
@@ -47,6 +49,17 @@ class HttpDownloader {
                                       const DataCallback& onData);
 
   /**
+   * Download a public GitHub release asset to SD and verify the SHA-256
+   * supplied by GitHub's authenticated release API. Partial or mismatched
+   * files are removed before returning.
+   */
+  static DownloadError downloadGithubReleaseAssetToFile(const std::string& url, const std::string& expectedSha256,
+                                                        const std::string& destPath,
+                                                        ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
+                                                        bool overwriteExisting = true,
+                                                        size_t maxBytes = std::numeric_limits<size_t>::max());
+
+  /**
    * Download a file to the SD card with optional credentials. Set
    * overwriteExisting=false for caller-reserved transaction paths: an existing
    * file is then preserved and FILE_ERROR is returned.
@@ -54,5 +67,6 @@ class HttpDownloader {
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
-                                      bool overwriteExisting = true);
+                                      bool overwriteExisting = true,
+                                      size_t maxBytes = std::numeric_limits<size_t>::max());
 };

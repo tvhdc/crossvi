@@ -19,6 +19,7 @@ convention <FamilyName>_<size>.cpfont.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -147,6 +148,15 @@ def compute_crc32(filepath: Path) -> int:
     return crc & 0xFFFFFFFF
 
 
+def compute_sha256(filepath: Path) -> str:
+    """Compute the release-grade SHA-256 used by the device downloader."""
+    digest = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def scan_cpfont_files(input_dir: Path) -> dict[str, list[Path]]:
     """Scan input directory for .cpfont files, grouped by family name.
 
@@ -197,6 +207,7 @@ def build_manifest(
                     "name": filepath.name,
                     "size": filepath.stat().st_size,
                     "crc32": compute_crc32(filepath),
+                    "sha256": compute_sha256(filepath),
                 }
             )
 

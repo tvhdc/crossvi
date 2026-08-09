@@ -226,6 +226,12 @@ std::vector<uint8_t> fontBytes(const uint8_t marker) {
   return output;
 }
 
+StagedFileTransaction::Digest streamedDigest(const std::vector<uint8_t>& data) {
+  StagedFileTransaction::Digest digest;
+  StagedFileTransaction::updateDigest(digest, data.data(), data.size());
+  return digest;
+}
+
 TEST_F(AtomicPersistenceTest, FontPublishKeepsOldUntilNewFileVerifies) {
   Storage.setFile(FONT, fontBytes(1));
   Storage.setFile(FONT_TEMP, fontBytes(2));
@@ -261,6 +267,24 @@ TEST_F(AtomicPersistenceTest, FontPostPublishVerifyFailureRestoresOldFont) {
             StagedFileTransaction::Status::IoError);
   EXPECT_TRUE(Storage.exists(FONT));
   EXPECT_EQ(Storage.file(FONT).back(), 1);
+}
+
+TEST_F(AtomicPersistenceTest, StreamVerifiedFontIsReadOnceAfterPublishAndKeepsAtomicRollback) {
+  const auto uploaded = fontBytes(2);
+  Storage.setFile(FONT, fontBytes(1));
+  Storage.setFile(FONT_TEMP, uploaded);
+  EXPECT_EQ(StagedFileTransaction::publishAndVerify(FONT, FONT_TEMP, FONT_BACKUP, streamedDigest(uploaded),
+                                                    readableFontValidator),
+            StagedFileTransaction::Status::Published);
+  EXPECT_EQ(Storage.file(FONT), uploaded);
+  EXPECT_FALSE(Storage.exists(FONT_BACKUP));
+
+  Storage.setFile(FONT_TEMP, fontBytes(3));
+  Storage.corruptRenameTo(FONT);
+  EXPECT_EQ(StagedFileTransaction::publishAndVerify(FONT, FONT_TEMP, FONT_BACKUP, streamedDigest(fontBytes(3)),
+                                                    readableFontValidator),
+            StagedFileTransaction::Status::IoError);
+  EXPECT_EQ(Storage.file(FONT), uploaded);
 }
 
 TEST_F(AtomicPersistenceTest, InterruptedFontPublishRecoversBackup) {
@@ -455,8 +479,17 @@ TEST_F(AtomicPersistenceTest, FontPathContractRejectsTruncationAndAvoidsLongName
   char path[FontStorageUtils::FONT_PATH_CAPACITY];
   EXPECT_TRUE(FontStorageUtils::isValidFamilyName(exactFamily.c_str()));
   EXPECT_FALSE(FontStorageUtils::isValidFamilyName(tooLongFamily.c_str()));
-  EXPECT_FALSE(FontStorageUtils::isValidFamilyName("Family with spaces"));
+  EXPECT_TRUE(FontStorageUtils::isValidFamilyName("Family with spaces"));
+  EXPECT_TRUE(FontStorageUtils::isValidFamilyName("Phông chữ Việt"));
+  EXPECT_FALSE(FontStorageUtils::isValidFamilyName(" Family"));
+  EXPECT_FALSE(FontStorageUtils::isValidFamilyName("Family "));
+  EXPECT_FALSE(FontStorageUtils::isValidFamilyName("Family.name"));
+  std::string invalidUtf8 = "Family";
+  invalidUtf8.push_back(static_cast<char>(0xC3));
+  EXPECT_FALSE(FontStorageUtils::isValidFamilyName(invalidUtf8.c_str()));
   EXPECT_TRUE(FontStorageUtils::isValidCpfontFilename(exactFile.c_str()));
+  EXPECT_TRUE(FontStorageUtils::isValidCpfontFilename("Phông chữ Việt_18.cpfont"));
+  EXPECT_FALSE(FontStorageUtils::isValidCpfontFilename("Phông chữ Việt_18 .cpfont"));
   EXPECT_FALSE(FontStorageUtils::isValidCpfontFilename(("x" + exactFile).c_str()));
   char persistedFamily[FontStorageUtils::MAX_FAMILY_NAME_BYTES + 1];
   EXPECT_TRUE(FontStorageUtils::copyPersistedFamilyName(exactFamily.c_str(), persistedFamily, sizeof(persistedFamily)));
@@ -468,6 +501,9 @@ TEST_F(AtomicPersistenceTest, FontPathContractRejectsTruncationAndAvoidsLongName
   const std::string firstPath = path;
   EXPECT_FALSE(
       FontStorageUtils::buildFontPath("/.fonts", tooLongFamily.c_str(), exactFile.c_str(), path, sizeof(path)));
+  ASSERT_TRUE(
+      FontStorageUtils::buildFontPath("/.fonts", "Phông chữ Việt", "Phông chữ Việt_18.cpfont", path, sizeof(path)));
+  EXPECT_STREQ(path, "/.fonts/Phông chữ Việt/Phông chữ Việt_18.cpfont");
   std::string otherFamily = exactFamily;
   otherFamily.back() = 'z';
   ASSERT_TRUE(FontStorageUtils::buildFontPath("/.fonts", otherFamily.c_str(), exactFile.c_str(), path, sizeof(path)));

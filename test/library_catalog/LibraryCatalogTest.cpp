@@ -367,6 +367,35 @@ TEST_F(LibraryCatalogTest, OrderedIndicesPersistAcrossCatalogReopen) {
   EXPECT_EQ(reopened, first);
 }
 
+TEST_F(LibraryCatalogTest, OrderSidecarFiltersFormatsAndResolvesPinnedPaths) {
+  addBook("Zulu.txt");
+  addBook("alpha.md");
+  addBook("Middle.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+
+  std::vector<size_t> visible;
+  for (size_t steps = 0; steps < 20000; ++steps) {
+    if (LIBRARY_CATALOG.loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_TITLE_ASC, LibraryBookFormat::Text,
+                                           visible)) {
+      break;
+    }
+    ASSERT_TRUE(LIBRARY_CATALOG.isOrderBuilding());
+    LIBRARY_CATALOG.step();
+  }
+  ASSERT_EQ(visible.size(), 1U);
+  LibraryBookRecord markdown;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(visible.front(), markdown));
+  EXPECT_EQ(markdown.path, "/alpha.md");
+
+  std::vector<size_t> resolved;
+  ASSERT_TRUE(LIBRARY_CATALOG.findPathIndices({"/Middle.txt", "/missing.epub", "/alpha.md"}, resolved));
+  ASSERT_EQ(resolved.size(), 3U);
+  EXPECT_NE(resolved[0], static_cast<size_t>(-1));
+  EXPECT_EQ(resolved[1], static_cast<size_t>(-1));
+  EXPECT_EQ(resolved[2], visible.front());
+}
+
 TEST_F(LibraryCatalogTest, CorruptOrderSidecarIsRegeneratedFromCommittedCatalog) {
   addBook("Zulu.txt");
   addBook("alpha.txt");
@@ -427,6 +456,24 @@ TEST_F(LibraryCatalogTest, MultiplePendingPathsFallBackToFullRebuild) {
   advanceToReady();
 
   EXPECT_EQ(LIBRARY_CATALOG.count(), 3U);
+  EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.dirty"));
+}
+
+TEST_F(LibraryCatalogTest, OversizedDirtyMarkerFallsBackToBoundedFullRebuild) {
+  addBook("original.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+
+  addBook("new.txt");
+  {
+    std::ofstream marker(root_ / ".crosspoint/library.dirty", std::ios::binary | std::ios::trunc);
+    marker << std::string(64 * 1024, 'x');
+    ASSERT_TRUE(marker.good());
+  }
+
+  ASSERT_TRUE(LIBRARY_CATALOG.open());
+  advanceToReady();
+  EXPECT_EQ(LIBRARY_CATALOG.count(), 2U);
   EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.dirty"));
 }
 

@@ -8,7 +8,7 @@
 class GfxRenderer;
 
 /// Facade that owns the SD card font registry, manager, and resolver logic.
-/// Hides implementation details behind a single begin() + ensureLoaded() API.
+/// Hides implementation details behind the reader-owned font lifecycle.
 class SdCardFontSystem {
  public:
   SdCardFontSystem() = default;
@@ -22,6 +22,11 @@ class SdCardFontSystem {
   /// Call before entering the reader or after settings change.
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
   void ensureLoaded(GfxRenderer& renderer, bool persistInvalidSelection = true);
+
+  /// Release the loaded .cpfont and every derived glyph cache. Reader
+  /// activities call this before yielding to menus/network features so the
+  /// scarce contiguous heap is available outside page rendering.
+  void releaseLoadedFont(GfxRenderer& renderer);
 
   /// Resolve an SD card font ID from family name + fontSize enum.
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().

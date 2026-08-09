@@ -249,6 +249,41 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   return HttpDownloader::OK;
 }
 
+HttpDownloader::DownloadError runGithubReleaseAsset(const std::string& url, const std::string& expectedSha256,
+                                                    Sink& sink) {
+  std::array<uint8_t, 32> expected{};
+  if (!decodeSha256(expectedSha256, expected)) {
+    LOG_ERR("HTTP", "Rejected invalid GitHub release digest");
+    return HttpDownloader::INTEGRITY_ERROR;
+  }
+
+  mbedtls_sha256_context hash;
+  mbedtls_sha256_init(&hash);
+  mbedtls_sha256_starts(&hash, 0);
+
+  auto destinationWrite = std::move(sink.write);
+  sink.allowGithubReleaseHttpRedirect = true;
+  sink.write = [&hash, &destinationWrite](const uint8_t* data, const size_t len) {
+    mbedtls_sha256_update(&hash, data, len);
+    return destinationWrite(data, len);
+  };
+  const HttpDownloader::DownloadError result = runGetSecure(url, "", "", sink);
+  sink.write = std::move(destinationWrite);
+
+  std::array<uint8_t, 32> actual{};
+  mbedtls_sha256_finish(&hash, actual.data());
+  mbedtls_sha256_free(&hash);
+  if (result != HttpDownloader::OK) return result;
+
+  uint8_t difference = 0;
+  for (size_t i = 0; i < actual.size(); ++i) difference |= actual[i] ^ expected[i];
+  if (difference != 0) {
+    LOG_ERR("HTTP", "GitHub release SHA-256 mismatch");
+    return HttpDownloader::INTEGRITY_ERROR;
+  }
+  return HttpDownloader::OK;
+}
+
 }  // namespace
 
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
@@ -281,42 +316,61 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 
 bool HttpDownloader::fetchGithubReleaseAsset(const std::string& url, const std::string& expectedSha256,
                                              const DataCallback& onData) {
-  std::array<uint8_t, 32> expected{};
-  if (!decodeSha256(expectedSha256, expected)) {
-    LOG_ERR("HTTP", "Rejected invalid GitHub release digest");
-    return false;
+  Sink sink;
+  sink.write = onData;
+  return runGithubReleaseAsset(url, expectedSha256, sink) == OK;
+}
+
+HttpDownloader::DownloadError HttpDownloader::downloadGithubReleaseAssetToFile(
+    const std::string& url, const std::string& expectedSha256, const std::string& destPath, ProgressCallback progress,
+    bool* cancelFlag, const bool overwriteExisting, const size_t maxBytes) {
+  LOG_DBG("HTTP", "Downloading verified GitHub asset: %s -> %s", url.c_str(), destPath.c_str());
+
+  if (Storage.exists(destPath.c_str())) {
+    if (!overwriteExisting) {
+      LOG_ERR("HTTP", "Refusing to replace existing download destination");
+      return FILE_ERROR;
+    }
+    if (!Storage.remove(destPath.c_str())) {
+      LOG_ERR("HTTP", "Failed to remove stale destination before download");
+      return FILE_ERROR;
+    }
   }
 
-  mbedtls_sha256_context hash;
-  mbedtls_sha256_init(&hash);
-  mbedtls_sha256_starts(&hash, 0);
+  HalFile file;
+  if (!Storage.openFileForWrite("HTTP", destPath.c_str(), file)) {
+    LOG_ERR("HTTP", "Failed to open file for writing");
+    return FILE_ERROR;
+  }
 
   Sink sink;
-  sink.allowGithubReleaseHttpRedirect = true;
-  sink.write = [&hash, &onData](const uint8_t* data, const size_t len) {
-    mbedtls_sha256_update(&hash, data, len);
-    return onData(data, len);
-  };
-  const DownloadError result = runGetSecure(url, "", "", sink);
+  sink.progress = std::move(progress);
+  sink.cancelFlag = cancelFlag;
+  sink.maxBytes = maxBytes;
+  sink.write = [&file](const uint8_t* data, const size_t len) { return file.write(data, len) == len; };
 
-  std::array<uint8_t, 32> actual{};
-  mbedtls_sha256_finish(&hash, actual.data());
-  mbedtls_sha256_free(&hash);
-  if (result != OK) return false;
+  const DownloadError result = runGithubReleaseAsset(url, expectedSha256, sink);
+  file.flush();
+  const bool synced = file.sync();
+  const bool closed = file.close();
 
-  uint8_t difference = 0;
-  for (size_t i = 0; i < actual.size(); ++i) difference |= actual[i] ^ expected[i];
-  if (difference != 0) {
-    LOG_ERR("HTTP", "GitHub release SHA-256 mismatch");
-    return false;
+  if (result != OK || !synced || !closed) {
+    Storage.remove(destPath.c_str());
+    return result == OK ? FILE_ERROR : result;
   }
-  return true;
+  if (sink.downloaded == 0) {
+    LOG_ERR("HTTP", "no data received");
+    Storage.remove(destPath.c_str());
+    return HTTP_ERROR;
+  }
+  LOG_DBG("HTTP", "Downloaded and verified %zu bytes", sink.downloaded);
+  return OK;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
-                                                             const bool overwriteExisting) {
+                                                             const bool overwriteExisting, const size_t maxBytes) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   if (Storage.exists(destPath.c_str())) {
@@ -338,6 +392,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   Sink sink;
   sink.progress = std::move(progress);
   sink.cancelFlag = cancelFlag;
+  sink.maxBytes = maxBytes;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
   const DownloadError result = runGetSecure(url, username, password, sink);

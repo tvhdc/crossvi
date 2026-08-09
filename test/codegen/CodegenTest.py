@@ -22,6 +22,151 @@ def load_git_branch():
 
 
 class CodegenTest(unittest.TestCase):
+    def test_wake_refresh_is_strong_except_for_valid_quick_resume(self):
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        boot = (REPO_ROOT / "src/activities/boot_sleep/BootActivity.cpp").read_text(encoding="utf-8")
+        saved_frame = main[main.index("case BootResume::SavedFrame:") : main.index("case BootResume::Splash:")]
+        self.assertIn("const bool quickResumeWake", main)
+        self.assertIn("&& !quickResumeWake", main)
+        self.assertIn(
+            "quickResumeWake ? HalDisplay::FAST_REFRESH : HalDisplay::FULL_REFRESH", saved_frame
+        )
+        self.assertNotIn("displayGrayscaleBase(HalDisplay::FAST_REFRESH)", saved_frame)
+        self.assertIn("display.requestResync(WAKE_CONDITION_PASSES);", main)
+        self.assertEqual(boot.count("renderer.displayBuffer(HalDisplay::FULL_REFRESH);"), 2)
+
+    def test_every_sleep_screen_uses_the_strong_full_panel_refresh(self):
+        sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        helper = sleep[sleep.index("void displayStrongSleepFrame") : sleep.index("void SleepActivity::onEnter")]
+        self.assertIn("prepareStrongSleepRefresh();", helper)
+        self.assertIn("display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);", helper)
+        self.assertEqual(sleep.count("displayStrongSleepFrame();"), 5)
+        quick_resume = sleep[sleep.index("if (renderQuickResume)") : sleep.index("switch (SETTINGS.sleepScreen)")]
+        self.assertIn("renderLastScreenSleepScreen()", quick_resume)
+        last_screen = sleep[sleep.index("void SleepActivity::renderLastScreenSleepScreen") :]
+        self.assertIn("displayStrongSleepFrame();", last_screen)
+        grayscale = sleep[sleep.index("if (hasGreyscale)") : sleep.index("void SleepActivity::renderCoverSleepScreen")]
+        self.assertIn("prepareStrongSleepRefresh();", grayscale)
+        self.assertIn("renderer.displayGrayscaleBase(HalDisplay::FULL_REFRESH);", grayscale)
+        calendar = sleep[
+            sleep.index("void SleepActivity::renderReadingCalendarSleepScreen") :
+            sleep.index("void SleepActivity::renderCustomSleepScreen")
+        ]
+        self.assertIn("displayStrongSleepFrame();", calendar)
+        self.assertNotIn("displayBuffer", calendar)
+
+    def test_markdown_uses_the_text_sleep_cover_and_cache_clear_paths(self):
+        sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        cache = (REPO_ROOT / "src/util/BookCacheUtils.cpp").read_text(encoding="utf-8")
+        clear_cache = cache[cache.index("void clearBookCache(") : cache.index("bool clearBookCacheDirectory")]
+        expected = (
+            "FsHelpers::hasTxtExtension(APP_STATE.openEpubPath) ||\n"
+            "             FsHelpers::hasMarkdownExtension(APP_STATE.openEpubPath)"
+        )
+        self.assertIn(expected, sleep)
+        self.assertIn("FsHelpers::hasMarkdownExtension(path)", clear_cache)
+
+    def test_early_startup_sleep_uses_strong_refresh_before_deep_sleep(self):
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        helper = main[main.index("void enterStartupDeepSleep()") : main.index("// Enter deep sleep mode")]
+        self.assertIn("display.begin(false);", helper)
+        self.assertIn("display.clearScreen();", helper)
+        self.assertIn("display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);", helper)
+        self.assertIn(
+            "display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_REFRESH);", helper
+        )
+        self.assertLess(helper.index("display.deepSleep();"), helper.index("powerManager.startDeepSleep(gpio);"))
+        self.assertEqual(main.count("enterStartupDeepSleep();"), 2)
+
+    def test_date_outside_reader_does_not_depend_on_clock_visibility(self):
+        theme = (REPO_ROOT / "src/components/themes/crossvi/CrossViTheme.cpp").read_text(encoding="utf-8")
+        helper = theme[theme.index("bool outsideDateTimeText") : theme.index("int batteryClusterLeft")]
+        self.assertIn("const bool showTime", helper)
+        self.assertIn("const bool showDate", helper)
+        self.assertIn("if (!showTime && !showDate) return false;", helper)
+        self.assertNotIn("outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_HIDE) {\n    return false;", helper)
+        self.assertNotIn("outsideDateTimeOnLeft", theme)
+        self.assertIn("if (showDateTime) {", theme)
+
+        settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        outside_clock = settings[
+            settings.rfind("SettingInfo::", 0, settings.index("StrId::STR_CLOCK_OUTSIDE_READER")) :
+            settings.index("StrId::STR_DATE_OUTSIDE_READER")
+        ]
+        self.assertIn("SettingInfo::Toggle", outside_clock)
+
+    def test_opds_releases_font_cache_before_tls(self):
+        activity = (REPO_ROOT / "src/activities/browser/OpdsBookBrowserActivity.cpp").read_text(encoding="utf-8")
+        prepare = activity[activity.index("void OpdsBookBrowserActivity::prepareNetworkRequest") :
+                           activity.index("void OpdsBookBrowserActivity::onEnter")]
+        self.assertLess(prepare.index("requestUpdateAndWait()"), prepare.index("clearAllCaches()"))
+        fetch = activity[activity.index("void OpdsBookBrowserActivity::fetchFeed") :
+                         activity.index("void OpdsBookBrowserActivity::releaseEntries")]
+        download = activity[activity.index("void OpdsBookBrowserActivity::downloadBook") :
+                            activity.index("void OpdsBookBrowserActivity::launchSearch")]
+        self.assertLess(fetch.index('prepareNetworkRequest("feed_tls")'), fetch.index("OpdsParser parser"))
+        self.assertLess(download.index('prepareNetworkRequest("download_tls")'),
+                        download.index("HttpDownloader::downloadToFile"))
+
+    def test_settings_groups_interface_and_text_preferences(self):
+        settings = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
+        appearance = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        text_settings = (REPO_ROOT / "src/activities/settings/TextSettingsActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        font_selection = (REPO_ROOT / "src/activities/settings/FontSelectionActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        time_settings = (REPO_ROOT / "src/activities/settings/TimeSettingsActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("SettingAction::Appearance", settings)
+        self.assertIn("SettingAction::TextSettings", settings)
+        for name in (
+            "STR_HOME_LAYOUT",
+            "STR_SHOW_DEVICE_NAME_HOME",
+            "STR_CLOCK_OUTSIDE_READER",
+            "STR_DATE_OUTSIDE_READER",
+            "STR_LIBRARY_DISPLAY_MODE",
+        ):
+            self.assertIn(f"StrId::{name}", appearance)
+        for tab in ("STR_TEXT_TAB_FONT", "STR_TEXT_TAB_SIZE", "STR_TEXT_TAB_LAYOUT", "STR_TEXT_TAB_STYLE"):
+            self.assertIn(tab, text_settings)
+        self.assertIn(
+            "selectedRow_ < 0 ? tr(STR_BACK) : I18N.get(TAB_LABELS[selectedTab_])",
+            text_settings,
+        )
+        self.assertIn("rebuildFontOptions()", text_settings)
+        self.assertIn("rebuildSizeOptions()", text_settings)
+        self.assertNotIn("make_unique<FontSelectionActivity>", text_settings)
+        self.assertNotIn("make_unique<FontSizeSelectionActivity>", text_settings)
+        self.assertIn("preparedPreviewFontId_ != fontId", text_settings)
+        self.assertIn("cache->prewarmCache(fontId, tr(STR_FONT_PREVIEW_TEXT), 0x01)", text_settings)
+        self.assertIn("sdFontSystem.ensureLoaded(renderer, false);", text_settings)
+        self.assertIn("renderer.copyRegionToBuffer", text_settings)
+        self.assertIn("renderer.copyBufferToRegion", text_settings)
+        for preview_setting in (
+            "SETTINGS.screenMargin",
+            "SETTINGS.getReaderLineCompression()",
+            "SETTINGS.wordSpacing",
+            "SETTINGS.paragraphAlignment",
+            "SETTINGS.extraParagraphSpacing",
+            "SETTINGS.forceParagraphIndents",
+            "SETTINGS.readerDarkMode",
+        ):
+            self.assertIn(preview_setting, text_settings)
+        self.assertIn("refreshPreviewAfterSettingChange(setting.nameId)", text_settings)
+        self.assertIn("refreshPreviewAfterSettingChange(settingId)", text_settings)
+        self.assertIn("invalidatePreviewLocked();", text_settings)
+        self.assertIn("preparedPreviewFontId_ != fontId", font_selection)
+        self.assertNotIn("STR_FONT_PREVIEW_BOLD", font_selection)
+        self.assertNotIn("STR_FONT_PREVIEW_ITALIC", font_selection)
+        self.assertNotIn("renderer.displayBuffer();\n  if (auto* fcm", font_selection)
+        self.assertIn("ClockDateFormat::FORMAT_PATTERNS", time_settings)
+        self.assertNotIn("dateFormatNames", time_settings)
+
     def test_write_if_changed_preserves_file_when_bytes_match(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "generated.h"
@@ -66,11 +211,47 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("out.file(CROSSVI_CAROUSEL_THUMB_PATH, carouselThumbnailData, { compression: 'STORE'", files_page)
         self.assertIn("out.file(CROSSVI_CAROUSEL_X4_THUMB_PATH, carouselX4ThumbnailData", files_page)
 
-    def test_file_transfer_websocket_follows_the_http_port(self):
+    def test_file_transfer_uses_only_the_bounded_http_upload_path(self):
         files_page = (REPO_ROOT / "src/network/html/FilesPage.html").read_text(encoding="utf-8")
-        self.assertIn("const HTTP_PORT = Number(window.location.port || 80);", files_page)
-        self.assertIn("const WS_PORT = HTTP_PORT + 1;", files_page)
-        self.assertNotIn("const WS_PORT = 81;", files_page)
+        fonts_page = (REPO_ROOT / "src/network/html/FontsPage.html").read_text(encoding="utf-8")
+        server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/network/CrossPointWebServer.h").read_text(encoding="utf-8")
+        self.assertIn("await uploadFileHTTP(file, onProgress, null, null);", files_page)
+        self.assertNotIn("new WebSocket", files_page)
+        self.assertNotIn("WebSocketsServer", header)
+        self.assertNotIn("onWebSocketEvent", server)
+        self.assertIn("TRANSFER_BUFFER_SIZE = 4096", header)
+        self.assertIn("COOPERATIVE_UPLOAD_CHUNK_SIZE = 64U * 1024U", header)
+        self.assertIn("file.slice(offset, Math.min(offset + chunkSize, file.size))", files_page)
+        self.assertIn("for (let attempt = 0; attempt < 4; attempt++)", files_page)
+        self.assertIn("for (let attempt = 0; attempt < 4; attempt++)", fonts_page)
+        self.assertIn("'/api/upload/chunk'", files_page)
+        self.assertIn("X-CrossVi-Upload-Offset", files_page)
+        self.assertIn('server->on(\n      "/api/upload/chunk"', server)
+        self.assertIn("uploadFontInChunks(file, family, uploadName", fonts_page)
+        self.assertIn("'X-CrossVi-Upload-Type': 'font'", fonts_page)
+        self.assertIn("'X-CrossVi-Font-Family': encodeURIComponent(family)", fonts_page)
+        self.assertIn("StagedFileTransaction::Digest requestDigestStart", header)
+        self.assertIn("state.streamDigest = state.requestDigestStart", server)
+        self.assertNotIn("new FormData()", fonts_page)
+        self.assertNotIn('server->on("/api/fonts/upload"', server)
+
+    def test_legacy_multipart_upload_only_creates_empty_files(self):
+        files_page = (REPO_ROOT / "src/network/html/FilesPage.html").read_text(encoding="utf-8")
+        server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
+        handler = server[server.index("void CrossPointWebServer::handleUpload(UploadState& state)") :]
+        write_branch = handler[handler.index("UPLOAD_FILE_WRITE") : handler.index("UPLOAD_FILE_END")]
+
+        self.assertIn("if (file.size === 0)", files_page)
+        self.assertIn("Non-empty uploads require /api/upload/chunk", write_branch)
+        self.assertNotIn("memcpy(", write_branch)
+
+    def test_file_transfer_truncates_the_received_filename_to_the_screen(self):
+        activity = (REPO_ROOT / "src/activities/network/CrossPointWebServerActivity.cpp").read_text(encoding="utf-8")
+        footer = activity[activity.index("if (!lastReceivedName.empty())") :]
+        self.assertIn("renderer.truncatedText(", footer)
+        self.assertIn("pageWidth - metrics.contentSidePadding * 2", footer)
+        self.assertLess(footer.index("renderer.truncatedText("), footer.index("renderer.drawCenteredText("))
 
     def test_file_manager_does_not_embed_untrusted_names_in_html_handlers(self):
         files_page = (REPO_ROOT / "src/network/html/FilesPage.html").read_text(encoding="utf-8")
@@ -81,6 +262,15 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("const safeImageName = escapeHtml(img.name);", files_page)
         self.assertNotIn('${img.name}</div>', files_page)
 
+    def test_epub_optimizer_log_treats_dynamic_messages_as_text(self):
+        files_page = (REPO_ROOT / "src/network/html/FilesPage.html").read_text(encoding="utf-8")
+        self.assertIn("else msg.textContent = message;", files_page)
+        self.assertIn("appendLog(message, type, tag, false);", files_page)
+        self.assertIn("logHtml(`<strong>${escapeHtml(file.name)}</strong>", files_page)
+        self.assertIn("escapeHtml(String(type))", files_page)
+        self.assertIn("escapeHtml(String(detail))", files_page)
+        self.assertIn("escapeHtml(String(reason))", files_page)
+
     def test_json_post_handlers_are_bounded_before_webserver_string_allocation(self):
         header = (REPO_ROOT / "src/network/CrossPointWebServer.h").read_text(encoding="utf-8")
         server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
@@ -88,7 +278,9 @@ class CodegenTest(unittest.TestCase):
         handler = server[server.index("void CrossPointWebServer::handleJsonBody()") :]
         self.assertIn('server->header("Content-Type")', handler)
         self.assertLess(handler.index("acceptsRawContentType"), handler.index("server->raw()"))
-        self.assertIn('{"Content-Type", "Depth"', server)
+        self.assertIn('"Content-Type"', server)
+        self.assertIn('"X-CrossVi-Upload-Offset"', server)
+        self.assertIn("server->collectHeaders(requestHeaders, 13)", server)
         self.assertIn("JsonBodyBuffer::State body = jsonBody.take();", server)
         self.assertIn("HTTPRaw& raw = server->raw();", server)
         upload_handler = server[server.index("void CrossPointWebServer::handleUpload(UploadState& state)") :]
@@ -103,11 +295,126 @@ class CodegenTest(unittest.TestCase):
         begin = server[server.index("void CrossPointWebServer::begin()") :]
         self.assertLess(begin.index("WIFI_STORE.loadFromFile();"), begin.index('server->on("/api/wifi"'))
 
+    def test_streamed_credential_json_uses_emitted_entry_commas(self):
+        server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
+        opds = server[server.index("void CrossPointWebServer::handleGetOpdsServers() const") :]
+        opds = opds[: opds.index("void CrossPointWebServer::handlePostOpdsServer()")]
+        wifi = server[server.index("void CrossPointWebServer::handleGetWifiNetworks() const") :]
+        wifi = wifi[: wifi.index("void CrossPointWebServer::handlePostWifiNetwork()")]
+        for handler in (opds, wifi):
+            self.assertIn("bool seenFirst = false;", handler)
+            self.assertIn('if (seenFirst) server->sendContent(",");', handler)
+            self.assertIn("seenFirst = true;", handler)
+            self.assertNotIn("if (i > 0)", handler)
+
+    def test_network_store_failures_are_reported_and_stale_transactions_are_retryable(self):
+        server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
+        opds_update = server[server.index("void CrossPointWebServer::handlePostOpdsServer()") :]
+        opds_update = opds_update[: opds_update.index("void CrossPointWebServer::handleDeleteOpdsServer()")]
+        opds_delete = server[server.index("void CrossPointWebServer::handleDeleteOpdsServer()") :]
+        opds_delete = opds_delete[: opds_delete.index("void CrossPointWebServer::handleGetWifiNetworks()")]
+        wifi_update = server[server.index("void CrossPointWebServer::handlePostWifiNetwork()") :]
+        wifi_update = wifi_update[: wifi_update.index("void CrossPointWebServer::handleDeleteWifiNetwork()")]
+        self.assertIn("if (!OPDS_STORE.updateServer", opds_update)
+        self.assertIn("if (!OPDS_STORE.removeServer", opds_delete)
+        self.assertIn("WIFI_STORE.updateCredential", wifi_update)
+        self.assertNotIn("removeCredential(oldSsid)", wifi_update)
+
+        opds_browser = (REPO_ROOT / "src/activities/browser/OpdsBookBrowserActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        download = opds_browser[opds_browser.index("void OpdsBookBrowserActivity::downloadBook") :]
+        download = download[: download.index("void OpdsBookBrowserActivity::launchSearch")]
+        self.assertIn("Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())", download)
+
+        webdav = (REPO_ROOT / "src/network/WebDAVHandler.cpp").read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            webdav.count("Storage.exists(tempPath.c_str()) && !Storage.remove(tempPath.c_str())"), 1
+        )
+        self.assertIn("Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())", webdav)
+
+    def test_epub_text_reference_never_overrides_saved_spine_zero(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("if (!progress && currentSpineIndex == 0)", reader)
+        self.assertNotIn("if (currentSpineIndex == 0) {\n    int textSpineIndex", reader)
+
+    def test_txt_completion_does_not_count_a_nonexistent_page_turn(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        navigation = reader[reader.index("} else if (nextTriggered) {") :]
+        navigation = navigation[: navigation.index("bool TxtReaderActivity::handleReaderShortcut")]
+        advance = navigation.index("if (currentPage < totalPages - 1)")
+        self.assertGreater(navigation.index("stopReadingPage(true", advance), advance)
+        completion = navigation.index("markBookCompleted()")
+        self.assertLess(navigation.index("stopReadingPage(false", advance), completion)
+
+    def test_txt_bom_and_saved_offsets_fail_closed(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
+        self.assertIn("constexpr uint8_t CACHE_VERSION = 6", reader)
+        self.assertIn("TxtLineWrap::leadingUtf8BomBytes(buffer, chunkSize)", reader)
+        self.assertIn("bool jumpToStoredByteOffset(uint32_t byteOffset);", header)
+        helper = reader[reader.index("bool TxtReaderActivity::jumpToStoredByteOffset") :]
+        helper = helper[: helper.index("\n}") + 2]
+        self.assertIn("byteOffset >= txt->getFileSize()", helper)
+        self.assertGreaterEqual(reader.count("jumpToStoredByteOffset("), 5)
+
+    def test_thick_rectangle_border_stays_inside_declared_bounds(self):
+        renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")
+        overload = renderer[renderer.index("// Border is inside the rectangle") :]
+        overload = overload[: overload.index("void GfxRenderer::drawArc")]
+        self.assertIn("x + width - 1 - i", overload)
+        self.assertIn("y + height - 1 - i", overload)
+        self.assertNotIn("x + width - i", overload)
+        self.assertNotIn("y + height - i", overload)
+
+    def test_end_of_book_consumes_screenshot_and_draws_notices_before_display(self):
+        for source_path, marker, notice in (
+            (
+                "src/activities/reader/EpubReaderActivity.cpp",
+                "if (currentSpineIndex == epub->getSpineItemsCount())",
+                "showPendingSyncSaveError();",
+            ),
+            (
+                "src/activities/reader/XtcReaderActivity.cpp",
+                "if (page >= book->getPageCount())",
+                "GUI.drawPopup",
+            ),
+        ):
+            reader = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            branch = reader[reader.index(marker) :]
+            branch = branch[: branch.index("return;\n  }") + len("return;\n  }")]
+            self.assertIn("pendingScreenshot.exchange(false", branch)
+            self.assertLess(branch.index(notice), branch.index("renderer.displayBuffer()"))
+            self.assertLess(branch.index("renderer.displayBuffer()"), branch.index("ScreenshotUtil::takeScreenshot"))
+
+    def test_sd_font_discovery_caps_allocations_while_scanning(self):
+        registry = (REPO_ROOT / "lib/EpdFont/SdCardFontRegistry.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "lib/EpdFont/SdCardFontRegistry.h").read_text(encoding="utf-8")
+        download = (REPO_ROOT / "src/activities/settings/FontDownloadActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("MAX_FILES_PER_FAMILY = 16", header)
+        self.assertIn("while (family.files.size() < MAX_FILES_PER_FAMILY)", registry)
+        self.assertIn("while (out.size() < static_cast<size_t>(MAX_SD_FAMILIES))", registry)
+        self.assertIn("SdCardFontRegistry::MAX_FILES_PER_FAMILY", download)
+
     def test_crosspoint_sync_extension_is_not_sent_to_custom_servers(self):
+        credential_header = (REPO_ROOT / "lib/KOReaderSync/KOReaderCredentialStore.h").read_text(encoding="utf-8")
         credentials = (REPO_ROOT / "lib/KOReaderSync/KOReaderCredentialStore.cpp").read_text(encoding="utf-8")
         client = (REPO_ROOT / "lib/KOReaderSync/KOReaderSyncClient.cpp").read_text(encoding="utf-8")
         activity = (REPO_ROOT / "src/activities/reader/KOReaderSyncActivity.cpp").read_text(encoding="utf-8")
-        self.assertIn("getBaseUrl() == DEFAULT_SERVER_URL", credentials)
+        settings = (REPO_ROOT / "src/activities/settings/KOReaderSettingsActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn('DEFAULT_SERVER_URL[] = "https://sync.koreader.rocks:443"', credentials)
+        self.assertIn(
+            "KOReaderSyncBehavior syncBehavior = KOReaderSyncBehavior::ASK_EVERY_TIME;",
+            credential_header,
+        )
+        missing_store_defaults = credentials[
+            credentials.index("bool KOReaderCredentialStore::loadFromFile()") :
+            credentials.index("bool KOReaderCredentialStore::ensureLoaded()")
+        ]
+        self.assertIn("syncBehavior = KOReaderSyncBehavior::ASK_EVERY_TIME;", missing_store_defaults)
+        self.assertIn('CROSSPOINT_SERVER_URL[] = "https://sync.crosspointreader.com"', credentials)
+        self.assertIn("getBaseUrl() == CROSSPOINT_SERVER_URL", credentials)
+        self.assertIn("const std::string prefillUrl = KOREADER_STORE.getBaseUrl();", settings)
         self.assertGreaterEqual(client.count("KOREADER_STORE.usesCrossPointSyncServer()"), 2)
         self.assertIn("if (KOREADER_STORE.usesCrossPointSyncServer())", activity)
 
@@ -116,7 +423,131 @@ class CodegenTest(unittest.TestCase):
         fetch = activity[activity.index("void KOReaderSyncActivity::performSync()") :]
         upload = activity[activity.index("void KOReaderSyncActivity::performUpload()") :]
         self.assertLess(fetch.index("clearAllCaches()"), fetch.index("KOReaderSyncClient::getProgress"))
+        self.assertLess(
+            fetch.index("showBlockingFeedback(StrId::STR_LOADING_POPUP);"),
+            fetch.index("KOReaderSyncClient::getProgress"),
+        )
+        render = activity[activity.index("void KOReaderSyncActivity::render(RenderLock&&)") :]
+        self.assertIn("if (renderBlockingFeedbackOverlay()) return;", render)
         self.assertLess(upload.index("clearAllCaches()"), upload.index("KOReaderSyncClient::updateProgress"))
+
+        auth = (REPO_ROOT / "src/activities/settings/KOReaderAuthActivity.cpp").read_text(encoding="utf-8")
+        authenticate = auth[auth.index("void KOReaderAuthActivity::onWifiSelectionComplete") :
+                            auth.index("void KOReaderAuthActivity::performAuthentication")]
+        self.assertLess(authenticate.index("requestUpdateAndWait()"), authenticate.index("clearAllCaches()"))
+        self.assertLess(authenticate.index("clearAllCaches()"), authenticate.index("performAuthentication();"))
+
+        for source_path, activity_name in (
+            ("src/activities/reader/EpubReaderActivity.cpp", "EpubReaderActivity"),
+            ("src/activities/reader/TxtReaderActivity.cpp", "TxtReaderActivity"),
+            ("src/activities/reader/XtcReaderActivity.cpp", "XtcReaderActivity"),
+        ):
+            reader = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            on_exit = reader[reader.index(f"void {activity_name}::onExit()") :
+                             reader.index(f"void {activity_name}::onPause()")]
+            self.assertIn("clearAllCaches()", on_exit)
+
+        epub_reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        shortcut = epub_reader[epub_reader.index("case CrossPointSettings::LP_MENU_KOSYNC:") :
+                               epub_reader.index("case CrossPointSettings::LP_MENU_DICTIONARY:")]
+        menu_sync = epub_reader[epub_reader.index("case EpubReaderMenuActivity::MenuAction::SYNC:") :
+                                epub_reader.index("case EpubReaderMenuActivity::MenuAction::NEARBY_POSITION_SYNC:")]
+        self.assertIn("launchKOReaderSync()", shortcut)
+        self.assertIn("launchKOReaderSync()", menu_sync)
+        self.assertIn(
+            "activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>", epub_reader
+        )
+
+    def test_sd_reader_font_is_released_outside_active_page_rendering(self):
+        system_header = (REPO_ROOT / "src/SdCardFontSystem.h").read_text(encoding="utf-8")
+        system_source = (REPO_ROOT / "src/SdCardFontSystem.cpp").read_text(encoding="utf-8")
+        self.assertIn("void releaseLoadedFont(GfxRenderer& renderer);", system_header)
+        release = system_source[
+            system_source.index("void SdCardFontSystem::releaseLoadedFont") :
+            system_source.index("void SdCardFontSystem::ensureLoaded")
+        ]
+        self.assertLess(release.index("clearAllCaches()"), release.index("manager_.unloadAll(renderer)"))
+        self.assertIn("keeping selection for retry", system_source)
+
+        font_selection = (REPO_ROOT / "src/activities/settings/FontSelectionActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("currentSupportsVietnamese()", font_selection)
+        font_on_enter = font_selection[
+            font_selection.index("void FontSelectionActivity::onEnter()") :
+            font_selection.index("void FontSelectionActivity::onExit()")
+        ]
+        self.assertNotIn("sdFontSystem.ensureLoaded", font_on_enter)
+        self.assertIn("if (sdPreview && customPreviewPending_)", font_selection)
+        self.assertIn("sdFontSystem.ensureLoaded(renderer, false);", font_selection)
+        self.assertIn("renderer.copyRegionToBuffer", font_selection)
+        self.assertIn("renderer.copyBufferToRegion", font_selection)
+        self.assertLess(
+            font_selection.index("renderer.copyRegionToBuffer"),
+            font_selection.index("sdFontSystem.releaseLoadedFont(renderer);", font_selection.index("void FontSelectionActivity::render(")),
+        )
+
+        for source_path in ("src/activities/settings/FontSizeSelectionActivity.cpp",):
+            settings_preview = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            self.assertIn("const int fontId = sdFontSelected ? 0 : SETTINGS.getReaderFontId();", settings_preview)
+
+        for source_path, activity_name in (
+            ("src/activities/reader/EpubReaderActivity.cpp", "EpubReaderActivity"),
+            ("src/activities/reader/TxtReaderActivity.cpp", "TxtReaderActivity"),
+        ):
+            reader = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            on_exit = reader[reader.index(f"void {activity_name}::onExit()") :
+                             reader.index(f"void {activity_name}::onPause()")]
+            on_pause = reader[reader.index(f"void {activity_name}::onPause()") :
+                              reader.index(f"void {activity_name}::onResume()")]
+            resume_start = reader.index(f"void {activity_name}::onResume()")
+            resume_end = reader.find("\nvoid ", resume_start + 5)
+            on_resume = reader[resume_start : resume_end if resume_end >= 0 else len(reader)]
+            self.assertIn("releaseLoadedFont(renderer)", on_exit)
+            self.assertIn("releaseLoadedFont(renderer)", on_pause)
+            self.assertIn("ensureLoaded(renderer, false)", on_resume)
+
+        text_settings = (REPO_ROOT / "src/activities/settings/TextSettingsActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sdFontSystem.ensureLoaded(renderer, false);", text_settings)
+        self.assertIn("renderer.copyRegionToBuffer", text_settings)
+        self.assertIn("renderer.copyBufferToRegion", text_settings)
+        self.assertLess(
+            text_settings.index("renderer.copyRegionToBuffer"),
+            text_settings.index(
+                "sdFontSystem.releaseLoadedFont(renderer);",
+                text_settings.index("void TextSettingsActivity::render("),
+            ),
+        )
+
+        for source_path in (
+            "src/activities/settings/FontSizeSelectionActivity.cpp",
+            "src/activities/reader/BookReaderSettingsActivity.cpp",
+        ):
+            settings_activity = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            self.assertIn("releaseLoadedFont(renderer)", settings_activity)
+            self.assertNotIn("sdFontSystem.ensureLoaded", settings_activity)
+
+        font_download = (REPO_ROOT / "src/activities/settings/FontDownloadActivity.cpp").read_text(encoding="utf-8")
+        on_enter = font_download[
+            font_download.index("void FontDownloadActivity::onEnter()") :
+            font_download.index("void FontDownloadActivity::onExit()")
+        ]
+        self.assertIn("releaseLoadedFont(renderer)", on_enter)
+
+        for source_path, activity_name in (
+            ("src/activities/reader/DictionaryWordSelectActivity.cpp", "DictionaryWordSelectActivity"),
+            ("src/activities/reader/ClipSelectionActivity.cpp", "ClipSelectionActivity"),
+            ("src/activities/reader/EpubInBookSearchActivity.cpp", "EpubInBookSearchActivity"),
+            ("src/activities/reader/ClippingReanchorActivity.cpp", "ClippingReanchorActivity"),
+        ):
+            page_tool = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            on_enter = page_tool[page_tool.index(f"void {activity_name}::onEnter()") :
+                                 page_tool.index(f"void {activity_name}::onExit()")]
+            on_exit = page_tool[page_tool.index(f"void {activity_name}::onExit()") :]
+            self.assertIn("ensureLoaded(renderer, false)", on_enter)
+            self.assertIn("releaseLoadedFont(renderer)", on_exit)
 
     def test_web_server_does_not_subscribe_request_task_to_watchdog(self):
         header = (REPO_ROOT / "src/network/CrossPointWebServer.h").read_text(encoding="utf-8")
@@ -223,33 +654,38 @@ class CodegenTest(unittest.TestCase):
 
     def test_quick_resume_is_a_direct_toggle_and_sleep_screen_is_compact(self):
         settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
         self.assertIn("SettingInfo::Toggle(StrId::STR_QUICK_RESUME", settings)
         self.assertIn("SettingInfo::DynamicEnum(\n            StrId::STR_SLEEP_SCREEN", settings)
         self.assertNotIn("StrId::STR_COVER_CUSTOM", settings)
+        self.assertIn("StrId::STR_READING_STATS", settings)
+        self.assertIn("StrId::STR_READING_STATS", submenu)
 
     def test_settings_hide_inapplicable_choices_and_defer_dictionary_scan(self):
         settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
         activity = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
+        text_settings = (REPO_ROOT / "src/activities/settings/TextSettingsActivity.cpp").read_text(encoding="utf-8")
         web_server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
         web_page = (REPO_ROOT / "src/network/html/SettingsPage.html").read_text(encoding="utf-8")
         json_settings = (REPO_ROOT / "src/JsonSettingsIO.cpp").read_text(encoding="utf-8")
 
         self.assertNotIn("SettingInfo::Enum(StrId::STR_LIBRARY_GRID", settings)
         self.assertIn('doc["libraryGrid"] = s.libraryGrid;', json_settings)
-        self.assertLess(settings.index("STR_HIDE_TXT_BOOKS"), settings.index("STR_REMOVE_READ_FROM_RECENTS"))
-        self.assertLess(settings.index("STR_REMOVE_READ_FROM_RECENTS"), settings.index("STR_QUICK_RESUME"))
-        self.assertLess(settings.index("STR_TEXT_AA"), settings.index("STR_TEXT_DARKNESS"))
-        self.assertLess(settings.index("STR_EMBEDDED_STYLE"), settings.index("STR_PARA_ALIGNMENT"))
+        self.assertLess(submenu.index("STR_SHOW_TXT_BOOKS"), submenu.index("STR_READ_BOOKS_IN_RECENTS"))
+        text_layout = text_settings[text_settings.index("void TextSettingsActivity::rebuildSettings") :]
+        self.assertLess(text_layout.index("buildScreenMarginSetting()"), text_layout.index("STR_LINE_SPACING"))
+        self.assertLess(text_layout.index("STR_FORCE_PARAGRAPH_INDENTS"), text_layout.index("STR_EMBEDDED_STYLE"))
 
         on_enter = activity[
-            activity.index("void SettingsActivity::onEnter") : activity.index("void SettingsActivity::onExit")
+            activity.index("void SettingsActivity::onEnter") : activity.index("bool SettingsActivity::handleGlobalShortcut")
         ]
         self.assertNotIn("DictionaryRegistry::discover", on_enter)
         self.assertIn("selectedCategoryIndex == 1 && !dictionariesLoaded", activity)
-        self.assertIn("!SETTINGS.textAntiAliasing || SETTINGS.readerDarkMode", activity)
-        self.assertIn("setting.enumValues.pop_back()", activity)
+        self.assertIn("alignment.enumValues.pop_back()", text_settings)
         self.assertIn("!display.supportsStripGrayscale()", web_server)
-        self.assertIn("row-setting-textDarkness", web_page)
+        self.assertNotIn("textDarkness", settings)
+        self.assertNotIn("row-setting-textDarkness", web_page)
         self.assertIn("bookAlignment.hidden", web_page)
 
     def test_quick_resume_and_serial_screenshot_use_a_stable_framebuffer(self):

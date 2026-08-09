@@ -100,7 +100,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
     // Write to a temp file to avoid destroying the original on failed upload
     String tempPath = hiddenBookFileSibling(_putPath.c_str(), ".davtmp").c_str();
-    if (Storage.exists(tempPath.c_str())) {
+    if (Storage.exists(tempPath.c_str()) && !Storage.remove(tempPath.c_str())) {
       _putOk = false;
       return;
     }
@@ -115,6 +115,10 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
       if (written != raw.currentSize) {
         _putOk = false;
       }
+      // A standard WebDAV client owns this single PUT request, so it cannot use
+      // CrossVi's multi-request protocol. Still yield between parser chunks so
+      // Wi-Fi and storage tasks are not starved during a large transfer.
+      yield();
     }
 
   } else if (raw.status == RAW_END) {
@@ -686,9 +690,9 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   }
 
   const String stagingPath = hiddenBookFileSibling(dstPath.c_str(), ".davtmp").c_str();
-  if (Storage.exists(stagingPath.c_str())) {
+  if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) {
     srcFile.close();
-    s.send(409, "text/plain", "A copy transaction is already present");
+    s.send(409, "text/plain", "A stale copy transaction could not be removed");
     return;
   }
 

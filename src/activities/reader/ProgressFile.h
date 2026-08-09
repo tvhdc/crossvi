@@ -64,8 +64,19 @@ struct TxtBounds {
   uint32_t legacyPageCount = 0;
 };
 
+constexpr size_t EPUB_LEGACY_PROGRESS_SIZE = 4;
+constexpr size_t EPUB_PROGRESS_SIZE = 6;
+// The content-anchored layout appends a uint32 visible-text offset to the
+// shared six-byte position. Older four- and six-byte records remain readable.
+constexpr size_t EPUB_CONTENT_ANCHORED_PROGRESS_SIZE = 10;
+
 inline bool validateEpubBounds(const uint8_t* data, const size_t size, const void* context) {
-  if (!data || (size != 4 && size != 6) || !context) return false;
+  if (!data ||
+      (size != EPUB_LEGACY_PROGRESS_SIZE && size != EPUB_PROGRESS_SIZE &&
+       size != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) ||
+      !context) {
+    return false;
+  }
   const auto& bounds = *static_cast<const EpubBounds*>(context);
   if (bounds.spineCount == 0) return false;
 
@@ -73,7 +84,7 @@ inline bool validateEpubBounds(const uint8_t* data, const size_t size, const voi
   const uint16_t pageNumber = static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8);
   if (spineIndex >= bounds.spineCount || pageNumber == UINT16_MAX) return false;
 
-  if (size == 6) {
+  if (size >= EPUB_PROGRESS_SIZE) {
     const uint16_t pageCount = static_cast<uint16_t>(data[4]) | (static_cast<uint16_t>(data[5]) << 8);
     // A zero count is intentionally supported for legacy/footnote save paths
     // that know the exact resume page but do not yet know the chapter total.
@@ -169,7 +180,7 @@ inline LoadResult load(const std::string& cachePath, uint8_t* data, const size_t
 }
 
 inline bool verifyExact(const std::string& path, const uint8_t* expected, const size_t size) {
-  uint8_t actual[6]{};
+  uint8_t actual[EPUB_CONTENT_ANCHORED_PROGRESS_SIZE]{};
   const size_t acceptedSize = size;
   const CandidateResult result = readCandidate(path, actual, sizeof(actual), &acceptedSize, 1);
   return result.status == CandidateStatus::Valid && memcmp(actual, expected, size) == 0;
@@ -251,12 +262,12 @@ inline bool txtCandidatesAllowLoad(const std::string& cachePath) {
 
 }  // namespace detail
 
-// EPUB progress is six bytes today and four bytes in the legacy layout. Both
-// are intentionally accepted without changing either on-disk format.
+// Prefer content-anchored EPUB progress while retaining both older layouts.
 inline LoadResult loadEpub(const std::string& cachePath, uint8_t* data, const size_t capacity,
                            const CandidateValidator validator = {}) {
-  constexpr size_t ACCEPTED_SIZES[] = {6, 4};
-  return detail::load(cachePath, data, capacity, ACCEPTED_SIZES, 2, validator);
+  constexpr size_t ACCEPTED_SIZES[] = {EPUB_CONTENT_ANCHORED_PROGRESS_SIZE, EPUB_PROGRESS_SIZE,
+                                       EPUB_LEGACY_PROGRESS_SIZE};
+  return detail::load(cachePath, data, capacity, ACCEPTED_SIZES, 3, validator);
 }
 
 // TXT v2 stores a layout-independent byte offset. Four-byte legacy page
@@ -281,20 +292,33 @@ inline LoadResult loadPage(const std::string& cachePath, uint8_t* data, const si
   return detail::load(cachePath, data, capacity, &ACCEPTED_SIZE, 1, validator);
 }
 
-// Writes the existing four- or six-byte layout through progress.bin.tmp,
+// Writes a recognized progress layout through progress.bin.tmp,
 // keeps the previous committed file as progress.bin.bak, and verifies bytes
 // before and after publication. Readers fall back to backup and then temp, so
 // every interruption point retains at least one usable copy on a healthy FAT.
 inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const size_t len,
-                        const CandidateValidator validator = {}, const CandidateProtector protector = {}) {
-  if (!data || (len != 4 && len != 6) || !validator.accepts(data, len)) return false;
+                        const CandidateValidator validator = {}, const CandidateProtector protector = {},
+                        const size_t compatibleExistingSize = 0) {
+  if (!data || (len != 4 && len != 6 && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) ||
+      !validator.accepts(data, len)) {
+    return false;
+  }
 
   const std::string primaryPath = cachePath + "/progress.bin";
   const std::string backupPath = primaryPath + ".bak";
   const std::string tempPath = primaryPath + ".tmp";
-  const size_t acceptedSizes[] = {len, 4};
-  const size_t acceptedSizeCount = len == 6 ? 2 : 1;
-  uint8_t scratch[6]{};
+  size_t acceptedSizes[3] = {len, 0, 0};
+  size_t acceptedSizeCount = 1;
+  const auto addAcceptedSize = [&](const size_t size) {
+    if (size == 0) return;
+    for (size_t i = 0; i < acceptedSizeCount; ++i) {
+      if (acceptedSizes[i] == size) return;
+    }
+    acceptedSizes[acceptedSizeCount++] = size;
+  };
+  addAcceptedSize(EPUB_LEGACY_PROGRESS_SIZE);
+  addAcceptedSize(compatibleExistingSize);
+  uint8_t scratch[EPUB_CONTENT_ANCHORED_PROGRESS_SIZE]{};
   auto primary = detail::readCandidate(primaryPath, scratch, sizeof(scratch), acceptedSizes, acceptedSizeCount,
                                        validator, protector);
   const auto backup = detail::readCandidate(backupPath, scratch, sizeof(scratch), acceptedSizes, acceptedSizeCount,
@@ -303,16 +327,29 @@ inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const
       detail::readCandidate(tempPath, scratch, sizeof(scratch), acceptedSizes, acceptedSizeCount, validator, protector);
   const std::array<detail::CandidateResult, 3> candidates = {primary, backup, temp};
 
-  // An unreadable sibling suggests an SD/FAT problem. A recognized newer
-  // record or a file larger than any known layout may belong to newer
-  // firmware. Preserve all of them unchanged.
-  const bool hasProtectedSibling = std::any_of(candidates.begin(), candidates.end(), [len](const auto& candidate) {
+  // The canonical primary is authoritative once it has been read and
+  // validated. Corrupt/unreadable backup and temp files are then stale
+  // recovery artefacts: the normal remove/rotate steps below can heal them
+  // without risking the committed primary. If the primary is not valid, keep
+  // every unreadable or unknown candidate because it may be the only usable
+  // progress copy. A recognized newer-version record is always protected,
+  // regardless of which recovery path contains it.
+  const auto isUnreadableOrUnknown = [len](const auto& candidate) {
     return candidate.status == detail::CandidateStatus::IoError ||
-           candidate.status == detail::CandidateStatus::Protected ||
            (candidate.status == detail::CandidateStatus::Invalid && candidate.size > len);
+  };
+  const bool hasProtectedRecord = std::any_of(candidates.begin(), candidates.end(), [](const auto& candidate) {
+    return candidate.status == detail::CandidateStatus::Protected;
   });
-  if (hasProtectedSibling) {
-    LOG_ERR("PRG", "Refusing to overwrite unreadable or unknown progress state");
+  const bool primaryIsValid = primary.status == detail::CandidateStatus::Valid;
+  const bool hasUnrecoverableState = isUnreadableOrUnknown(primary) ||
+                                     (!primaryIsValid &&
+                                      (isUnreadableOrUnknown(backup) || isUnreadableOrUnknown(temp)));
+  if (hasProtectedRecord || hasUnrecoverableState) {
+    LOG_ERR("PRG", "Refusing progress write: primary=%u/%u backup=%u/%u temp=%u/%u",
+            static_cast<unsigned>(primary.status), static_cast<unsigned>(primary.size),
+            static_cast<unsigned>(backup.status), static_cast<unsigned>(backup.size),
+            static_cast<unsigned>(temp.status), static_cast<unsigned>(temp.size));
     return false;
   }
 
@@ -378,8 +415,20 @@ inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const
   return true;
 }
 
+// Writes either the legacy six-byte EPUB position or the content-anchored
+// ten-byte position while accepting the other compatible layout as the
+// previous committed copy.
+inline bool writeEpubAtomic(const std::string& cachePath, const uint8_t* data, const size_t len,
+                            const CandidateValidator validator = {}) {
+  if (len != EPUB_PROGRESS_SIZE && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) return false;
+  const size_t compatibleSize =
+      len == EPUB_PROGRESS_SIZE ? EPUB_CONTENT_ANCHORED_PROGRESS_SIZE : EPUB_PROGRESS_SIZE;
+  return writeAtomic(cachePath, data, len, validator, {}, compatibleSize);
+}
+
 inline bool writeTxtAtomic(const std::string& cachePath, const uint8_t (&data)[ProgressFileCodec::TXT_V2_SIZE],
                            const CandidateValidator validator = {}) {
+  if (!detail::txtCandidatesAllowLoad(cachePath)) return false;
   uint32_t ignored = 0;
   if (ProgressFileCodec::decodeTxt(data, sizeof(data), ignored) != ProgressFileCodec::TxtDecodeStatus::Ok) {
     return false;

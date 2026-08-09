@@ -16,6 +16,43 @@ constexpr char CACHE_PATH[] = "/.crosspoint/txt_123";
 
 std::vector<uint8_t> bytes(const std::string& value) { return {value.begin(), value.end()}; }
 
+void appendLe16(std::vector<uint8_t>& output, const uint16_t value) {
+  output.push_back(static_cast<uint8_t>(value));
+  output.push_back(static_cast<uint8_t>(value >> 8U));
+}
+
+void appendLe32(std::vector<uint8_t>& output, const uint32_t value) {
+  output.push_back(static_cast<uint8_t>(value));
+  output.push_back(static_cast<uint8_t>(value >> 8U));
+  output.push_back(static_cast<uint8_t>(value >> 16U));
+  output.push_back(static_cast<uint8_t>(value >> 24U));
+}
+
+std::vector<uint8_t> validBmp(const uint8_t pixel = 0x80U) {
+  constexpr uint32_t pixelOffset = 14U + 40U + 8U;
+  constexpr uint32_t fileSize = pixelOffset + 4U;
+  std::vector<uint8_t> output;
+  output.reserve(fileSize);
+  appendLe16(output, 0x4D42U);
+  appendLe32(output, fileSize);
+  appendLe32(output, 0);
+  appendLe32(output, pixelOffset);
+  appendLe32(output, 40);
+  appendLe32(output, 1);
+  appendLe32(output, 1);
+  appendLe16(output, 1);
+  appendLe16(output, 1);
+  appendLe32(output, 0);
+  appendLe32(output, 4);
+  appendLe32(output, 0);
+  appendLe32(output, 0);
+  appendLe32(output, 2);
+  appendLe32(output, 0);
+  output.insert(output.end(), {0, 0, 0, 0, 255, 255, 255, 0});
+  output.insert(output.end(), {pixel, 0, 0, 0});
+  return output;
+}
+
 ZipFile::SourceIdentity loadIdentity(const std::string& content) {
   Storage.setFile(BOOK_PATH, bytes(content));
   Txt txt(BOOK_PATH, "/.crosspoint");
@@ -62,6 +99,30 @@ TEST_F(TxtSourceIdentityTest, EmptyFileHasAValidDistinctRawIdentity) {
 TEST_F(TxtSourceIdentityTest, RemovesTxtAndMarkdownExtensionsFromDisplayTitle) {
   EXPECT_EQ(Txt("/books/novel.txt", "/.crosspoint").getTitle(), "novel");
   EXPECT_EQ(Txt("/books/notes.md", "/.crosspoint").getTitle(), "notes");
+}
+
+TEST_F(TxtSourceIdentityTest, InvalidCachedCoverIsReplacedFromMarkdownSiblingAtomically) {
+  Txt txt("/books/notes.md", "/.crosspoint");
+  const std::string finalPath = txt.getCoverBmpPath();
+  const auto replacement = validBmp(0x00U);
+  Storage.setFile("/books/notes.bmp", replacement);
+  Storage.setFile(finalPath, {0x42U, 0x4DU});
+
+  ASSERT_TRUE(txt.generateCoverBmp());
+  EXPECT_EQ(Storage.file(finalPath), replacement);
+  EXPECT_FALSE(Storage.exists((finalPath + ".tmp").c_str()));
+  EXPECT_FALSE(Storage.exists((finalPath + ".bak").c_str()));
+}
+
+TEST_F(TxtSourceIdentityTest, FailedCoverStagingWriteNeverPublishesPartialCache) {
+  Txt txt("/books/novel.txt", "/.crosspoint");
+  const std::string finalPath = txt.getCoverBmpPath();
+  Storage.setFile("/books/novel.bmp", validBmp());
+  Storage.shortWriteFor(finalPath + ".tmp");
+
+  EXPECT_FALSE(txt.generateCoverBmp());
+  EXPECT_FALSE(Storage.exists(finalPath.c_str()));
+  EXPECT_FALSE(Storage.exists((finalPath + ".tmp").c_str()));
 }
 
 TEST_F(TxtSourceIdentityTest, SameSizeReplacementChangesIdentity) {

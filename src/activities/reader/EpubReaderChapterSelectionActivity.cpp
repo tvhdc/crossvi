@@ -25,8 +25,6 @@ void EpubReaderChapterSelectionActivity::onEnter() {
   requestUpdate();
 }
 
-void EpubReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
-
 void EpubReaderChapterSelectionActivity::loop() {
   const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
   const int totalItems = getTotalItems();
@@ -86,7 +84,8 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
   GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, totalItems, selectorIndex,
                [this](int index) {
                  auto item = epub->getTocItem(index);
-                 std::string indent((item.level - 1) * 2, ' ');
+                 const size_t indentLevel = item.level > 0 ? static_cast<size_t>(item.level - 1) : 0;
+                 std::string indent(indentLevel * 2, ' ');
                  return indent + item.title;
                });
 

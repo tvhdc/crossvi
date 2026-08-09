@@ -16,7 +16,6 @@ class EpubReaderFootnotesActivity final : public Activity {
       : Activity("EpubReaderFootnotes", renderer, mappedInput), footnotes(footnotes) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

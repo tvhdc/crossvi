@@ -10,6 +10,10 @@ namespace TxtLineWrap {
 
 inline bool isContinuationByte(const char byte) { return (static_cast<uint8_t>(byte) & 0xC0) == 0x80; }
 
+inline size_t leadingUtf8BomBytes(const uint8_t* data, const size_t size) {
+  return size >= 3 && data && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF ? 3U : 0U;
+}
+
 // SD-card fonts measure these codepoints as a sum of unsigned advances. Keeping
 // this guard to printable ASCII and CJK avoids bidi shaping, combining marks,
 // and font ligatures, making prefix widths monotonic and safe to binary-search.

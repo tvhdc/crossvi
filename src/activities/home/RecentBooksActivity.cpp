@@ -28,6 +28,7 @@
 
 namespace {
 constexpr unsigned long LONG_PRESS_MS = 500;
+constexpr uint32_t NAVIGATION_RELEASE_GUARD_MS = 150;
 constexpr unsigned long POPUP_DURATION_MS = 1500;
 constexpr unsigned long CATALOG_LOOP_BUDGET_MS = 8;
 constexpr uint8_t CATALOG_STEPS_PER_LOOP = 8;
@@ -445,21 +446,26 @@ void RecentBooksActivity::queueNavigationInput() {
     requestUpdate();
   }
 
+  const auto queueShortNavigation = [this](const int delta) {
+    if (navigationReleaseGuard.accept(static_cast<uint32_t>(millis()), NAVIGATION_RELEASE_GUARD_MS)) {
+      pendingNavigation += delta;
+    }
+  };
   if (mappedInput.wasReleased(MappedInputManager::Button::Up) &&
       holdUp.onRelease() == ReaderUtils::HoldRelease::Short) {
-    --pendingNavigation;
+    queueShortNavigation(-1);
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Down) &&
       holdDown.onRelease() == ReaderUtils::HoldRelease::Short) {
-    ++pendingNavigation;
+    queueShortNavigation(1);
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left) &&
       holdLeft.onRelease() == ReaderUtils::HoldRelease::Short) {
-    --pendingNavigation;
+    queueShortNavigation(-1);
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Right) &&
       holdRight.onRelease() == ReaderUtils::HoldRelease::Short) {
-    ++pendingNavigation;
+    queueShortNavigation(1);
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (holdBack.onRelease() == ReaderUtils::HoldRelease::Short) pendingBack = true;
@@ -1107,6 +1113,7 @@ void RecentBooksActivity::onEnter() {
   holdLeft.reset();
   holdRight.reset();
   holdBack.reset();
+  navigationReleaseGuard.reset();
   pinnedSourceIndices.clear();
   allSourceIndices.clear();
   allSourceIndicesValid = false;

@@ -1,8 +1,10 @@
 #include "OpdsParser.h"
 
 #include <Logging.h>
+#include <Utf8.h>
 #include <XmlParserUtils.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace {
@@ -14,6 +16,12 @@ constexpr size_t MAX_ID_CHARS = 128;
 constexpr size_t MAX_HREF_CHARS = 768;
 constexpr size_t MAX_SEARCH_TEMPLATE_CHARS = 768;
 constexpr size_t MAX_PAGE_URL_CHARS = 768;
+
+bool localNameEquals(const char* name, const char* expected) {
+  if (!name || !expected) return false;
+  const char* colon = strrchr(name, ':');
+  return strcmp(colon ? colon + 1 : name, expected) == 0;
+}
 }  // namespace
 
 OpdsParser::OpdsParser() {
@@ -107,19 +115,23 @@ void OpdsParser::assignBounded(std::string& target, const char* value, const siz
     target.clear();
     return;
   }
-  target.assign(value, strnlen(value, maxLen));
+  size_t length = strnlen(value, maxLen);
+  length = static_cast<size_t>(utf8SafeTruncateBuffer(value, static_cast<int>(length)));
+  target.assign(value, length);
 }
 
 void OpdsParser::appendBounded(std::string& target, const char* value, const size_t len, const size_t maxLen) {
   if (target.size() >= maxLen) return;
   const size_t remaining = maxLen - target.size();
-  target.append(value, len < remaining ? len : remaining);
+  size_t length = std::min(len, remaining);
+  length = static_cast<size_t>(utf8SafeTruncateBuffer(value, static_cast<int>(length)));
+  target.append(value, length);
 }
 
 void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<OpdsParser*>(userData);
 
-  if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
+  if (localNameEquals(name, "entry")) {
     self->inEntry = true;
     self->collectCurrentEntry = self->entries.size() < MAX_ENTRIES;
     self->feedTruncated = self->feedTruncated || !self->collectCurrentEntry;
@@ -129,7 +141,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
     return;
   }
 
-  if (strcmp(name, "link") == 0 || strstr(name, ":link") != nullptr) {
+  if (localNameEquals(name, "link")) {
     const char* href = findAttribute(atts, "href");
     if (href) {
       const char* rel = findAttribute(atts, "rel");
@@ -170,15 +182,15 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 
   if (!self->inEntry || !self->collectCurrentEntry) return;
 
-  if (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr) {
+  if (localNameEquals(name, "title")) {
     self->inTitle = true;
     self->currentText.clear();
-  } else if (strcmp(name, "author") == 0 || strstr(name, ":author") != nullptr) {
+  } else if (localNameEquals(name, "author")) {
     self->inAuthor = true;
-  } else if (self->inAuthor && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
+  } else if (self->inAuthor && localNameEquals(name, "name")) {
     self->inAuthorName = true;
     self->currentText.clear();
-  } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
+  } else if (localNameEquals(name, "id")) {
     self->inId = true;
     self->currentText.clear();
   }
@@ -187,22 +199,22 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<OpdsParser*>(userData);
 
-  if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
+  if (localNameEquals(name, "entry")) {
     if (self->collectCurrentEntry && !self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {
       self->entries.push_back(self->currentEntry);
     }
     self->inEntry = false;
     self->collectCurrentEntry = false;
   } else if (self->inEntry) {
-    if (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr) {
+    if (localNameEquals(name, "title")) {
       if (self->inTitle) self->currentEntry.title = self->currentText;
       self->inTitle = false;
-    } else if (strcmp(name, "author") == 0 || strstr(name, ":author") != nullptr) {
+    } else if (localNameEquals(name, "author")) {
       self->inAuthor = false;
-    } else if (self->inAuthorName && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
+    } else if (self->inAuthorName && localNameEquals(name, "name")) {
       self->currentEntry.author = self->currentText;
       self->inAuthorName = false;
-    } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
+    } else if (localNameEquals(name, "id")) {
       if (self->inId) self->currentEntry.id = self->currentText;
       self->inId = false;
     }

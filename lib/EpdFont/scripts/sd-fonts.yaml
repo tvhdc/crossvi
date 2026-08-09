@@ -102,7 +102,7 @@ families:
 
   - name: GentiumBookPlus
     description: "Scholarly serif with wide Unicode coverage (Latin, Greek, Cyrillic, IPA)"
-    intervals: vietnamese-reading,latin-ext,greek,cyrillic
+    intervals: vietnamese-reading,latin-ext,greek,cyrillic,ipa-chars
     sizes: [12, 14, 16, 18]
     styles:
       regular:    {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/gentiumbookplus/GentiumBookPlus-Regular.ttf"}

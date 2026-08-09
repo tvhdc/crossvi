@@ -121,4 +121,8 @@ bool parseSize(const char* token, size_t& value) {
   return true;
 }
 
+bool isValidChunkRange(const size_t offset, const size_t total, const size_t chunkSize, const size_t maximumChunkSize) {
+  return total > 0 && chunkSize > 0 && chunkSize <= maximumChunkSize && offset <= total && chunkSize <= total - offset;
+}
+
 }  // namespace UploadPathGuard

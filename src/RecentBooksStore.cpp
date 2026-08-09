@@ -57,8 +57,36 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
   return true;
 }
 
+bool RecentBooksStore::loadFromFile() {
+  if (loadState.usable()) return true;
+  if (loadState.failed() || !loadState.beginLoad()) return false;
+  const bool loaded = PersistableStore<RecentBooksStore>::loadFromFile();
+  const bool usable = loaded || isPersistenceWritable();  // Missing file is a valid empty store.
+  if (!loaded && usable) {
+    recentBooks.clear();
+    pinnedPaths.clear();
+  }
+  loadState.finish(usable);
+  return usable;
+}
+
+bool RecentBooksStore::ensureLoaded() { return loadFromFile(); }
+
+bool RecentBooksStore::saveToFile() const {
+  if (!const_cast<RecentBooksStore*>(this)->ensureLoaded()) return false;
+  return PersistableStore<RecentBooksStore>::saveToFile();
+}
+
+void RecentBooksStore::markReadOnlyForRecovery() {
+  recentBooks.clear();
+  pinnedPaths.clear();
+  loadState.markLoaded();
+  PersistableStore<RecentBooksStore>::markReadOnlyForRecovery();
+}
+
 void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
                                const std::string& coverBmpPath) {
+  if (!ensureLoaded()) return;
   // Drop stale entries first so a new add can't evict a valid book in their stead.
   pruneMissing();
 
@@ -82,6 +110,7 @@ void RecentBooksStore::addBook(const std::string& path, const std::string& title
 
 void RecentBooksStore::updateBook(const std::string& path, const std::string& title, const std::string& author,
                                   const std::string& coverBmpPath) {
+  if (!ensureLoaded()) return;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
@@ -94,6 +123,7 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
 }
 
 bool RecentBooksStore::removeByPath(const std::string& path) {
+  if (!ensureLoaded()) return false;
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it == recentBooks.end()) {
@@ -108,6 +138,7 @@ bool RecentBooksStore::removeByPath(const std::string& path) {
 
 void RecentBooksStore::updatePath(const std::string& oldPath, const std::string& newPath,
                                   const std::string& oldCachePath, const std::string& newCachePath) {
+  if (!ensureLoaded()) return;
   auto it = std::find_if(recentBooks.begin(), recentBooks.end(),
                          [&](const RecentBook& book) { return book.path == oldPath; });
   bool changed = false;
@@ -133,6 +164,7 @@ void RecentBooksStore::updatePath(const std::string& oldPath, const std::string&
 }
 
 RecentBooksStore::PinResult RecentBooksStore::togglePin(const std::string& path) {
+  if (!ensureLoaded()) return PinResult::SaveFailed;
   auto existing = std::find(pinnedPaths.begin(), pinnedPaths.end(), path);
   if (existing != pinnedPaths.end()) {
     const size_t index = static_cast<size_t>(std::distance(pinnedPaths.begin(), existing));
@@ -160,12 +192,14 @@ RecentBooksStore::PinResult RecentBooksStore::togglePin(const std::string& path)
 }
 
 bool RecentBooksStore::isPinned(const std::string& path) const {
+  if (!const_cast<RecentBooksStore*>(this)->ensureLoaded()) return false;
   return std::find(pinnedPaths.begin(), pinnedPaths.end(), path) != pinnedPaths.end();
 }
 
 bool RecentBooksStore::isMissing(const RecentBook& book) { return !Storage.exists(book.path.c_str()); }
 
 bool RecentBooksStore::pruneMissing() {
+  if (!ensureLoaded()) return false;
   const size_t before = recentBooks.size();
   recentBooks.erase(std::remove_if(recentBooks.begin(), recentBooks.end(), &isMissing), recentBooks.end());
   const size_t pinnedBefore = pinnedPaths.size();

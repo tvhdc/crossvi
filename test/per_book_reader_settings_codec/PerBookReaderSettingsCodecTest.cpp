@@ -78,6 +78,24 @@ TEST(PerBookReaderSettingsCodec, RoundTripsAllFields) {
   EXPECT_EQ(decoded, expected);
 }
 
+TEST(PerBookReaderSettings, StoppingAutoTurnKeepsIntervalButDisablesRestart) {
+  auto settings = populatedSettings();
+
+  EXPECT_TRUE(setPerBookAutoPageTurnState(settings, 45, false));
+  EXPECT_TRUE(settings.hasAutoPageTurnInterval);
+  EXPECT_EQ(settings.autoPageTurnSeconds, 45);
+  EXPECT_FALSE(settings.autoPageTurnStartsOnOpen);
+  EXPECT_FALSE(setPerBookAutoPageTurnState(settings, 45, false));
+
+  EXPECT_TRUE(setPerBookAutoPageTurnState(settings, 45, true));
+  EXPECT_TRUE(settings.autoPageTurnStartsOnOpen);
+
+  EXPECT_TRUE(setPerBookAutoPageTurnState(settings, 0, true));
+  EXPECT_FALSE(settings.hasAutoPageTurnInterval);
+  EXPECT_EQ(settings.autoPageTurnSeconds, 0);
+  EXPECT_FALSE(settings.autoPageTurnStartsOnOpen);
+}
+
 TEST(PerBookReaderSettingsCodec, UsesStableExactByteLayout) {
   Encoded encoded;
   ASSERT_TRUE(encode(populatedSettings(), encoded));

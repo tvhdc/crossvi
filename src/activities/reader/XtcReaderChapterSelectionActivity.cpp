@@ -50,8 +50,6 @@ void XtcReaderChapterSelectionActivity::onEnter() {
   requestUpdate();
 }
 
-void XtcReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
-
 void XtcReaderChapterSelectionActivity::loop() {
   const int pageItems = getPageItems();
   const int totalItems = static_cast<int>(xtc->getChapters().size());

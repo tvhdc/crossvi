@@ -28,6 +28,17 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   DeviceInfo,
+  Appearance,
+  TextSettings,
+  CustomizeHomeShortcuts,
+  SleepSettings,
+  DictionarySettings,
+  PageButtonSettings,
+  ConfirmButtonSettings,
+  PowerButtonSettings,
+  BackButtonSettings,
+  TiltSensorSettings,
+  FirmwareUpdates,
 };
 
 struct SettingInfo {
@@ -195,8 +206,6 @@ class SettingsActivity final : public Activity {
   static const StrId categoryNames[categoryCount];
 
   void toggleCurrentSetting();
-  void openSleepTimeoutPicker();
-  void openValuePicker(const SettingInfo& setting);
   void rebuildSettingsLists();
   void releaseSettingsLists();
 
@@ -204,7 +213,6 @@ class SettingsActivity final : public Activity {
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Settings", renderer, mappedInput) {}
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool handleGlobalShortcut(GlobalShortcut shortcut) override;

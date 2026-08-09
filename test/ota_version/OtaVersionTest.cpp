@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Version/SemanticVersion.h"
+#include "network/FirmwareFlasher.h"
 
 TEST(OtaVersion, AcceptsOptionalVPrefixAndBuildSuffix) {
   EXPECT_TRUE(ota_version::isNewer("v1.4.2", "1.4.1"));
@@ -34,4 +35,17 @@ TEST(OtaVersion, RejectsMalformedOrOverflowingVersions) {
   EXPECT_FALSE(ota_version::isValid("01.4.2"));
   EXPECT_FALSE(ota_version::isValid("1.4294967296.2"));
   EXPECT_FALSE(ota_version::isNewer("not-a-version", "1.4.1"));
+}
+
+TEST(FirmwareImageGuard, ReadsLittleEndianChipIdAndRejectsOtherDevices) {
+  uint8_t header[firmware_flash::IMAGE_CHIP_HEADER_SIZE]{};
+  header[firmware_flash::IMAGE_CHIP_ID_OFFSET] = 0x34;
+  header[firmware_flash::IMAGE_CHIP_ID_OFFSET + 1] = 0x12;
+  uint16_t chipId = 0;
+  EXPECT_FALSE(firmware_flash::readImageChipId(header, firmware_flash::IMAGE_CHIP_HEADER_SIZE - 1, chipId));
+  ASSERT_TRUE(firmware_flash::readImageChipId(header, sizeof(header), chipId));
+  EXPECT_EQ(chipId, 0x1234);
+  EXPECT_TRUE(firmware_flash::imageChipMatchesDevice(chipId, 0x1234));
+  EXPECT_FALSE(firmware_flash::imageChipMatchesDevice(chipId, 0x5678));
+  EXPECT_TRUE(firmware_flash::imageChipMatchesDevice(chipId, firmware_flash::UNKNOWN_CHIP_ID));
 }

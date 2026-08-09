@@ -64,7 +64,7 @@ constexpr size_t INITIAL_INDEX_CAPACITY = 256;
 constexpr size_t MAX_INDEX_PAGES = 16U * 1024U;
 // Cache file magic and version
 constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
-constexpr uint8_t CACHE_VERSION = 5;          // Increment when pagination behavior changes
+constexpr uint8_t CACHE_VERSION = 6;          // Increment when pagination behavior changes
 constexpr uint8_t MIN_AUTO_PAGE_TURN_SECONDS = 5;
 constexpr uint8_t MAX_AUTO_PAGE_TURN_SECONDS = 120;
 constexpr unsigned long MILLISECONDS_PER_SECOND = 1000UL;
@@ -128,7 +128,7 @@ void TxtReaderActivity::onEnter() {
   auto fileName = filePath.substr(filePath.rfind('/') + 1);
   APP_STATE.openEpubPath = filePath;
   APP_STATE.saveToFile();
-  RECENT_BOOKS.addBook(filePath, fileName, "", "");
+  if (!skipStartupRecentUpdate) RECENT_BOOKS.addBook(filePath, fileName, "", "");
 
   // Trigger first update
   requestUpdate();
@@ -145,7 +145,7 @@ void TxtReaderActivity::onExit() {
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   applyReaderSettings(globalReaderSettings);
-  sdFontSystem.ensureLoaded(renderer);
+  sdFontSystem.releaseLoadedFont(renderer);
 
   pageOffsets.reset();
   pageOffsetCount = 0;
@@ -156,15 +156,20 @@ void TxtReaderActivity::onExit() {
   APP_STATE.saveToFile();
   txt.reset();
   clippingStore.unload();
+
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
 }
 
 void TxtReaderActivity::onPause() {
+  clearBlockingFeedback();
   consumeReadingViewSignal();
   stopReadingPage(false, static_cast<uint32_t>(millis()));
   lastPageTurnTime = millis();
+  sdFontSystem.releaseLoadedFont(renderer);
 }
 
 void TxtReaderActivity::onResume() {
+  sdFontSystem.ensureLoaded(renderer, false);
   // A child activity owns the panel until this reader successfully redraws.
   pendingReadingViewSignal.store(0, std::memory_order_release);
   lastPageTurnTime = millis();
@@ -185,6 +190,10 @@ void TxtReaderActivity::loop() {
     showDictionaryMessage = false;
     requestUpdate();
   }
+  if (showClippingSavedMessage && millis() - clippingSavedMessageTime >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
+    showClippingSavedMessage = false;
+    requestUpdate();
+  }
   if (readingSessionTracker.discardIfIdle(static_cast<uint32_t>(millis()))) {
     hasActiveReadingSpanStartLocalDateTime = false;
     LOG_DBG("TRS", "Reading interval discarded after idle threshold");
@@ -196,7 +205,14 @@ void TxtReaderActivity::loop() {
   }
 
   const bool readerReady = initialized.load(std::memory_order_acquire) && !initializationFailed && pageOffsetCount > 0;
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) confirmHold.onPress();
+  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    confirmHold.onPress();
+    if (readerReady && !automaticPageTurnActive) {
+      queueBlockingFeedback(SETTINGS.longPressMenuFunction == CrossPointSettings::LP_MENU_DISABLED
+                                ? StrId::STR_OPENING_READER_MENU
+                                : StrId::STR_PROCESSING);
+    }
+  }
   const bool suppressConfirmRelease =
       mappedInput.wasReleased(MappedInputManager::Button::Confirm) && ignoreNextConfirmRelease;
   if (suppressConfirmRelease) {
@@ -207,7 +223,7 @@ void TxtReaderActivity::loop() {
   if (automaticPageTurnActive) {
     if ((mappedInput.wasReleased(MappedInputManager::Button::Confirm) && !suppressConfirmRelease) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      automaticPageTurnActive = false;
+      updateAutoPageTurnPreference(autoPageTurnSeconds, false);
       requestUpdate();
       return;
     }
@@ -237,6 +253,7 @@ void TxtReaderActivity::loop() {
       mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       confirmHold.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Confirm), ReaderUtils::CONFIRM_HOLD_MS)) {
     ignoreNextConfirmRelease = true;
+    clearBlockingFeedback();
     if (handleReaderShortcut(SETTINGS.longPressMenuFunction)) return;
   }
 
@@ -289,8 +306,8 @@ void TxtReaderActivity::loop() {
     {
       RenderLock lock(*this);
       consumeReadingViewSignal();
-      stopReadingPage(true, static_cast<uint32_t>(millis()));
       if (currentPage < totalPages - 1) {
+        stopReadingPage(true, static_cast<uint32_t>(millis()));
         currentPage = std::min(totalPages - 1, currentPage + pageDelta);
         changed = true;
       } else if (lastSuccessfullyRenderedPage != currentPage) {
@@ -298,6 +315,9 @@ void TxtReaderActivity::loop() {
         // complete a book until its actual last page has reached the panel.
         changed = true;
       } else {
+        // Finishing from the already-visible last page ends its reading span,
+        // but is not another page turn.
+        stopReadingPage(false, static_cast<uint32_t>(millis()));
         markBookCompleted();
         // Surface a protected/corrupt-store failure once before allowing the
         // next press (or Back) to leave the book.
@@ -330,9 +350,8 @@ bool TxtReaderActivity::handleReaderShortcut(const uint8_t function) {
       openReadingStats();
       return true;
     case CrossPointSettings::LP_MENU_AUTO_PAGE_TURN:
-      autoPageTurnSeconds = ReaderUtils::autoPageTurnShortcutSeconds(autoPageTurnSeconds);
-      automaticPageTurnActive = !automaticPageTurnActive;
-      lastPageTurnTime = millis();
+      updateAutoPageTurnPreference(ReaderUtils::autoPageTurnShortcutSeconds(autoPageTurnSeconds),
+                                   !automaticPageTurnActive);
       requestUpdate();
       return true;
     case CrossPointSettings::LP_MENU_HIGHLIGHT:
@@ -415,9 +434,7 @@ void TxtReaderActivity::initializeReader() {
       initialClippingJump.reset();
     }
     if (initialBookmarkJump) {
-      if (initialBookmarkJump->hasTextByteOffset && initialBookmarkJump->textByteOffset < txt->getFileSize()) {
-        jumpToByteOffset(initialBookmarkJump->textByteOffset);
-      } else {
+      if (!initialBookmarkJump->hasTextByteOffset || !jumpToStoredByteOffset(initialBookmarkJump->textByteOffset)) {
         pendingClippingNotice = ClippingNotice::JumpUnavailable;
       }
       initialBookmarkJump.reset();
@@ -434,6 +451,13 @@ bool TxtReaderActivity::buildPageIndex() {
   size_t offset = 0;
   const size_t fileSize = txt->getFileSize();
   if (fileSize == 0) {
+    totalPages = 0;
+    return true;
+  }
+
+  uint8_t prefix[3] = {};
+  if (fileSize == sizeof(prefix) && txt->readContent(prefix, 0, sizeof(prefix)) &&
+      TxtLineWrap::leadingUtf8BomBytes(prefix, sizeof(prefix)) != 0) {
     totalPages = 0;
     return true;
   }
@@ -528,12 +552,12 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
   // floods the heap with short-lived bitmap allocations, and eventually
   // corrupts FreeRTOS state. The advance table persists across calls per
   // font, so the cost amortizes to ~ASCII-size after the first chunk.
-  if (renderer.isSdCardFont(cachedFontId)) {
-    renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
-  }
-
   // Parse lines from buffer
-  size_t pos = 0;
+  size_t pos = offset == 0 ? TxtLineWrap::leadingUtf8BomBytes(buffer, chunkSize) : 0;
+
+  if (renderer.isSdCardFont(cachedFontId)) {
+    renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer + pos), /*styleMask=*/0x01);
+  }
 
   while (pos < chunkSize && static_cast<int>(outLines.size()) < linesPerPage) {
     // Find end of line
@@ -757,6 +781,7 @@ std::unique_ptr<Page> TxtReaderActivity::buildInteractivePageFromLines(const std
 
 void TxtReaderActivity::render(RenderLock&&) {
   if (renderReaderExitOverlay()) return;
+  if (renderBlockingFeedbackOverlay()) return;
   if (!txt) {
     lastSuccessfullyRenderedPage = -1;
     signalReadingPageHidden();
@@ -836,7 +861,8 @@ void TxtReaderActivity::render(RenderLock&&) {
     signalReadingPageHidden();
     switch (notice) {
       case ClippingNotice::Saved:
-        GUI.drawPopup(renderer, tr(STR_CLIPPING_SAVED));
+        showClippingSavedMessage = true;
+        clippingSavedMessageTime = millis();
         break;
       case ClippingNotice::LimitReached:
         GUI.drawPopup(renderer, tr(STR_CLIPPING_LIMIT_REACHED));
@@ -867,6 +893,7 @@ void TxtReaderActivity::render(RenderLock&&) {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
   if (showDictionaryMessage) GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+  if (showClippingSavedMessage) GUI.drawPopup(renderer, tr(STR_CLIPPING_SAVED));
   lastPageTurnTime = millis();
 }
 
@@ -934,16 +961,14 @@ void TxtReaderActivity::renderPage() {
           renderer, *interactivePage, cachedFontId, 0, 0, anchors.data(), anchors.size(), clippingStore.entries());
     }
   }
-  const bool underlineOnlyHighlights = SETTINGS.focusReadingEnabled != 0;
-  const auto drawClippingBackgrounds = [&]() {
-    if (!underlineOnlyHighlights) clippingHighlights.drawBackground(renderer);
+  const auto drawClippingHighlights = [&]() {
+    clippingHighlights.drawInverse(renderer);
+    clippingHighlights.drawUnderline(renderer, true);
   };
-  const auto drawClippingUnderlines = [&]() { clippingHighlights.drawUnderline(renderer, !underlineOnlyHighlights); };
 
   // BW rendering
-  drawClippingBackgrounds();
   renderCurrentPageLines();
-  drawClippingUnderlines();
+  drawClippingHighlights();
   renderStatusBar();
 
   if (SETTINGS.readerDarkMode) {
@@ -956,9 +981,9 @@ void TxtReaderActivity::renderPage() {
 
   if (SETTINGS.textAntiAliasing) {
     ReaderUtils::renderAntiAliased(renderer, [&]() {
-      drawClippingBackgrounds();
       renderCurrentPageLines();
-      drawClippingUnderlines();
+      clippingHighlights.clearGrayscale(renderer);
+      clippingHighlights.drawUnderline(renderer, true);
     });
   }
 }
@@ -1171,7 +1196,9 @@ void TxtReaderActivity::openReaderMenu() {
           return;
         }
         applyOrientation(menu->orientation);
-        if (menu->autoPageTurnChanged) updateAutoPageTurnFromMenu(menu->autoPageTurnSeconds);
+        if (menu->autoPageTurnChanged) {
+          updateAutoPageTurnPreference(menu->autoPageTurnSeconds, menu->autoPageTurnSeconds != 0);
+        }
         if (!result.isCancelled) {
           onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu->action));
         } else {
@@ -1203,7 +1230,9 @@ void TxtReaderActivity::onReaderMenuConfirm(const EpubReaderMenuActivity::MenuAc
                 [this](const ActivityResult& searchResult) {
                   if (!searchResult.isCancelled) {
                     const auto* jump = std::get_if<ProgressChangeResult>(&searchResult.data);
-                    if (jump && jump->hasTextByteOffset) jumpToByteOffset(jump->textByteOffset);
+                    if (jump && jump->hasTextByteOffset && !jumpToStoredByteOffset(jump->textByteOffset)) {
+                      pendingClippingNotice = ClippingNotice::JumpUnavailable;
+                    }
                   }
                   requestUpdate();
                 });
@@ -1224,16 +1253,18 @@ void TxtReaderActivity::onReaderMenuConfirm(const EpubReaderMenuActivity::MenuAc
       break;
     }
     case EpubReaderMenuActivity::MenuAction::BOOKMARKS:
-      startActivityForResult(std::make_unique<EpubReaderBookmarksActivity>(renderer, mappedInput, txt->getPath()),
-                             [this](const ActivityResult& result) {
-                               loadCachedBookmarks();
-                               if (!result.isCancelled) {
-                                 const auto* progress = std::get_if<ProgressChangeResult>(&result.data);
-                                 if (progress && progress->hasTextByteOffset)
-                                   jumpToByteOffset(progress->textByteOffset);
-                               }
-                               requestUpdate();
-                             });
+      startActivityForResult(
+          std::make_unique<EpubReaderBookmarksActivity>(renderer, mappedInput, txt->getPath()),
+          [this](const ActivityResult& result) {
+            loadCachedBookmarks();
+            if (!result.isCancelled) {
+              const auto* progress = std::get_if<ProgressChangeResult>(&result.data);
+              if (progress && progress->hasTextByteOffset && !jumpToStoredByteOffset(progress->textByteOffset)) {
+                pendingClippingNotice = ClippingNotice::JumpUnavailable;
+              }
+            }
+            requestUpdate();
+          });
       break;
     case EpubReaderMenuActivity::MenuAction::TOGGLE_BOOKMARK:
       showBookmarkMessage = toggleBookmark();
@@ -1267,7 +1298,8 @@ void TxtReaderActivity::onReaderMenuConfirm(const EpubReaderMenuActivity::MenuAc
       break;
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE:
       startActivityForResult(
-          std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_CLEAR_READING_CACHE), ""),
+          std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_CLEAR_READING_CACHE), "", "", "",
+                                                 StrId::STR_CLEARING_CACHE),
           [this](const ActivityResult& result) {
             if (result.isCancelled || !txt) {
               requestUpdate();
@@ -1443,7 +1475,9 @@ void TxtReaderActivity::openSavedItems() {
           return;
         }
         if (const auto* progress = std::get_if<ProgressChangeResult>(&result.data)) {
-          if (progress->hasTextByteOffset) jumpToByteOffset(progress->textByteOffset);
+          if (progress->hasTextByteOffset && !jumpToStoredByteOffset(progress->textByteOffset)) {
+            pendingClippingNotice = ClippingNotice::JumpUnavailable;
+          }
           requestUpdate();
           return;
         }
@@ -1562,16 +1596,10 @@ void TxtReaderActivity::applyOrientation(const uint8_t orientation) {
   requestUpdate();
 }
 
-void TxtReaderActivity::updateAutoPageTurnFromMenu(const uint8_t seconds) {
+void TxtReaderActivity::updateAutoPageTurnPreference(const uint8_t seconds, const bool active) {
   const uint8_t normalized = normalizeAutoPageTurnSeconds(seconds);
-  const PerBookReaderSettings previous = bookReaderSettings;
-  bookReaderSettings.hasAutoPageTurnInterval = normalized != 0;
-  bookReaderSettings.autoPageTurnSeconds = normalized;
-  bookReaderSettings.autoPageTurnStartsOnOpen = normalized != 0;
-  if (!persistBookReaderSettings()) {
-    bookReaderSettings = previous;
-    pendingBookSettingsSaveError = true;
-  }
+  const bool settingsChanged = setPerBookAutoPageTurnState(bookReaderSettings, normalized, active && normalized != 0);
+  if (settingsChanged && !persistBookReaderSettings()) pendingBookSettingsSaveError = true;
   autoPageTurnSeconds = normalizeAutoPageTurnSeconds(
       bookReaderSettings.hasAutoPageTurnInterval ? bookReaderSettings.autoPageTurnSeconds : 0);
   automaticPageTurnActive = bookReaderSettings.autoPageTurnStartsOnOpen && autoPageTurnSeconds != 0;
@@ -1594,6 +1622,12 @@ void TxtReaderActivity::jumpToByteOffset(const uint32_t byteOffset) {
   currentPage = after == begin ? 0 : static_cast<int>(after - begin - 1);
   completionAttemptBlocked = false;
   requestUpdate();
+}
+
+bool TxtReaderActivity::jumpToStoredByteOffset(const uint32_t byteOffset) {
+  if (!txt || byteOffset >= txt->getFileSize()) return false;
+  jumpToByteOffset(byteOffset);
+  return true;
 }
 
 void TxtReaderActivity::loadCachedBookmarks() {

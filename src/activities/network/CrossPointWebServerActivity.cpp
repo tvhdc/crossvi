@@ -6,6 +6,7 @@
 #include <I18n.h>
 #include <WiFi.h>
 
+#include <atomic>
 #include <cstddef>
 #include <new>
 
@@ -30,6 +31,20 @@ constexpr uint8_t AP_CHANNEL = 1;
 constexpr uint8_t AP_MAX_CONNECTIONS = 4;
 constexpr int QR_CODE_WIDTH = 198;
 constexpr int QR_CODE_HEIGHT = 198;
+
+#ifndef SIMULATOR
+std::atomic<uint32_t> wifiDisconnectSequence{0};
+std::atomic<uint32_t> wifiDisconnectAt{0};
+std::atomic<uint8_t> wifiDisconnectReason{0};
+WiFiEventId_t wifiDisconnectEventId = 0;
+uint32_t reportedWifiDisconnectSequence = 0;
+
+void recordWifiDisconnect(WiFiEvent_t, WiFiEventInfo_t info) {
+  wifiDisconnectReason.store(info.wifi_sta_disconnected.reason, std::memory_order_relaxed);
+  wifiDisconnectAt.store(millis(), std::memory_order_relaxed);
+  wifiDisconnectSequence.fetch_add(1, std::memory_order_release);
+}
+#endif
 
 // DNS server for captive portal (redirects all DNS queries to our IP)
 DNSServer* dnsServer = nullptr;
@@ -79,6 +94,12 @@ void CrossPointWebServerActivity::onEnter() {
   lastReceivedPath.clear();
   lastReceivedAt = 0;
   restartToReader = false;
+
+#ifndef SIMULATOR
+  if (wifiDisconnectEventId != 0) WiFi.removeEvent(wifiDisconnectEventId);
+  reportedWifiDisconnectSequence = wifiDisconnectSequence.load(std::memory_order_acquire);
+  wifiDisconnectEventId = WiFi.onEvent(recordWifiDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+#endif
   requestUpdate();
 
   // Launch network mode selection subactivity
@@ -99,6 +120,12 @@ void CrossPointWebServerActivity::onExit() {
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
+#ifndef SIMULATOR
+  if (wifiDisconnectEventId != 0) {
+    WiFi.removeEvent(wifiDisconnectEventId);
+    wifiDisconnectEventId = 0;
+  }
+#endif
   if (webServer) {
     webServer->stop();
     webServer.reset();
@@ -278,6 +305,12 @@ void CrossPointWebServerActivity::startWebServer() {
     state = WebServerActivityState::SERVER_RUNNING;
     LOG_DBG("WEBACT", "Web server started successfully");
     lastWifiBars = isApMode ? 0 : barsForRssi(WiFi.RSSI(), 0);
+#ifndef SIMULATOR
+    if (!isApMode) {
+      LOG_DBG("WEBACT", "WiFi diagnostics: RSSI=%d dBm channel=%d BSSID=%s modemSleep=%d", WiFi.RSSI(), WiFi.channel(),
+              WiFi.BSSIDstr().c_str(), static_cast<int>(WiFi.getSleep()));
+    }
+#endif
 
     // Force an immediate render since we're transitioning from a subactivity
     // that had its own rendering task. We need to make sure our display is shown.
@@ -293,6 +326,17 @@ void CrossPointWebServerActivity::startWebServer() {
 void CrossPointWebServerActivity::loop() {
   // Handle different states
   if (state == WebServerActivityState::SERVER_RUNNING) {
+#ifndef SIMULATOR
+    const uint32_t disconnectSequence = wifiDisconnectSequence.load(std::memory_order_acquire);
+    if (disconnectSequence != reportedWifiDisconnectSequence) {
+      const uint8_t reason = wifiDisconnectReason.load(std::memory_order_relaxed);
+      const uint32_t disconnectedAt = wifiDisconnectAt.load(std::memory_order_relaxed);
+      LOG_DBG("WEBACT", "WiFi disconnected at %lu ms: reason=%u (%s), status=%d, RSSI=%d dBm, channel=%d",
+              disconnectedAt, reason, WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason)), WiFi.status(),
+              WiFi.RSSI(), WiFi.channel());
+      reportedWifiDisconnectSequence = disconnectSequence;
+    }
+#endif
     // Handle DNS requests for captive portal (AP mode only)
     if (isApMode && dnsServer) {
       dnsServer->processNextRequest();
@@ -357,17 +401,22 @@ void CrossPointWebServerActivity::loop() {
 
       // A client that is only browsing (or an idle keep-alive) needs a few
       // iterations per main-loop cycle; the full burst is reserved for active
-      // transfers, which also keep the radio awake for the duration.
+      // transfers. Modem sleep remains disabled for the lifetime of this
+      // activity because it has caused real-device association drops.
       const bool transferActive = webServer->hasActiveTransfer();
-      if (!isApMode && transferActive) WiFi.setSleep(false);
 
       // Process HTTP requests in a bounded loop.
       // More iterations = more data processed per main loop cycle.
       constexpr int TRANSFER_ITERATIONS = 500;
       constexpr int IDLE_ITERATIONS = 12;
-      const int maxIterations = transferActive ? TRANSFER_ITERATIONS : IDLE_ITERATIONS;
+      const int maxIterations =
+          webServer->hasCooperativeUpload() ? 1 : (transferActive ? TRANSFER_ITERATIONS : IDLE_ITERATIONS);
       for (int i = 0; i < maxIterations && webServer->isRunning(); i++) {
         webServer->handleClient();
+        // The browser sends cooperative uploads as independent 64 KiB
+        // requests. Return to the activity loop after each one so button
+        // input and WiFi health checks cannot be starved by a queued burst.
+        if (webServer->hasCooperativeUpload()) break;
         // Reset watchdog every 32 iterations
         if ((i & 0x1F) == 0x1F) {
           resetTaskWatchdogIfSubscribed();
@@ -385,10 +434,9 @@ void CrossPointWebServerActivity::loop() {
           }
         }
       }
-      if (!isApMode) WiFi.setSleep(true);
       lastHandleClientTime = millis();
 
-      const auto uploadStatus = webServer->getWsUploadStatus();
+      const auto uploadStatus = webServer->getUploadStatus();
       if (uploadStatus.lastCompleteAt != 0 && uploadStatus.lastCompleteAt != lastReceivedAt) {
         lastReceivedAt = uploadStatus.lastCompleteAt;
         lastReceivedName = uploadStatus.lastCompleteName;
@@ -531,7 +579,9 @@ void CrossPointWebServerActivity::renderServerRunning() const {
   if (!lastReceivedName.empty()) {
     const int footerY = renderer.getScreenHeight() - metrics.buttonHintsHeight - renderer.getLineHeight(SMALL_FONT_ID) -
                         metrics.verticalSpacing;
-    const std::string received = std::string(tr(STR_LAST_RECEIVED)) + ": " + lastReceivedName;
+    const std::string received =
+        renderer.truncatedText(SMALL_FONT_ID, (std::string(tr(STR_LAST_RECEIVED)) + ": " + lastReceivedName).c_str(),
+                               pageWidth - metrics.contentSidePadding * 2, EpdFontFamily::REGULAR);
     renderer.drawCenteredText(SMALL_FONT_ID, footerY, received.c_str(), true);
   }
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), lastReceivedPath.empty() ? "" : tr(STR_OPEN_NOW), "", "");

@@ -541,13 +541,6 @@
     if (coverModeRow) coverModeRow.style.display = showCoverOptions ? '' : 'none';
     if (coverFilterRow) coverFilterRow.style.display = showCoverOptions ? '' : 'none';
 
-    const textDarknessRow = document.getElementById('row-setting-textDarkness');
-    if (textDarknessRow) {
-      const showTextDarkness = getControlValue('textAntiAliasing') === 1 &&
-        getControlValue('readerDarkMode') !== 1;
-      textDarknessRow.style.display = showTextDarkness ? '' : 'none';
-    }
-
     const paragraphAlignment = getControl('paragraphAlignment');
     if (paragraphAlignment && paragraphAlignment.options.length > 4) {
       const bookAlignment = paragraphAlignment.options[4];

@@ -44,25 +44,7 @@ namespace {
 constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
-
-// Static pointer for WebSocket callback (WebSocketsServer requires C-style callback)
-CrossPointWebServer* wsInstance = nullptr;
-
-// WebSocket upload state
-HalFile wsUploadFile;
-String wsUploadFileName;
-String wsUploadPath;
-String wsUploadStagingPath;
-size_t wsUploadSize = 0;
-size_t wsUploadReceived = 0;
-unsigned long wsUploadStartTime = 0;
-bool wsUploadInProgress = false;
-bool wsUploadOwnsStagingFile = false;
-uint8_t wsUploadClientNum = 255;  // 255 = no active upload client
-size_t wsLastProgressSent = 0;
-String wsLastCompleteName;
-size_t wsLastCompleteSize = 0;
-unsigned long wsLastCompleteAt = 0;
+constexpr unsigned long UPLOAD_SOCKET_TIMEOUT_MS = 30000;
 
 String normalizeWebPath(const String& inputPath) {
   if (inputPath.isEmpty() || inputPath == "/") {
@@ -80,6 +62,19 @@ String normalizeWebPath(const String& inputPath) {
     result = result.substring(0, result.length() - 1);
   }
   return result;
+}
+
+bool normalizeSafeWebPath(const String& inputPath, String& outputPath, const bool allowRoot = true) {
+  String candidate = inputPath;
+  if (candidate.isEmpty()) candidate = "/";
+  if (!candidate.startsWith("/")) candidate = "/" + candidate;
+
+  // Validate before normalising so traversal/repeated-separator spellings are
+  // rejected instead of being silently canonicalised into a protected path.
+  if (!UploadPathGuard::isSafeAbsolutePath(candidate.c_str(), allowRoot)) return false;
+
+  outputPath = normalizeWebPath(candidate);
+  return UploadPathGuard::isSafeAbsolutePath(outputPath.c_str(), allowRoot);
 }
 
 bool isProtectedItemName(const String& name) {
@@ -138,11 +133,17 @@ void CrossPointWebServer::begin() {
 
   LOG_DBG("WEB", "Creating web server on port %d...", port);
 
-  server.reset(new WebServer(port));
+  server = makeUniqueNoThrow<WebServer>(port);
 
-  // Callers disable modem sleep around each request batch and while an upload
-  // is active. Leave it enabled while the transfer screen is only waiting.
-  WiFi.setSleep(true);
+  if (!server) {
+    LOG_ERR("WEB", "Failed to create WebServer");
+    return;
+  }
+
+  // Keep the radio awake while the file-transfer server is open. This matches
+  // the upstream reliability policy and avoids beacon/association loss seen on
+  // real X3 hardware. Wi-Fi is still shut down when the activity exits.
+  WiFi.setSleep(false);
   // Default varies by ESP32 core version. The activity's loss-recovery loop
   // relies on driver retries during transient disconnects.
   WiFi.setAutoReconnect(true);
@@ -151,11 +152,6 @@ void CrossPointWebServer::begin() {
   // We rely on disabling WiFi sleep for responsiveness.
 
   LOG_DBG("WEB", "[MEM] Free heap after WebServer allocation: %d bytes", ESP.getFreeHeap());
-
-  if (!server) {
-    LOG_ERR("WEB", "Failed to create WebServer!");
-    return;
-  }
 
   // Setup routes
   LOG_DBG("WEB", "Setting up routes...");
@@ -170,6 +166,10 @@ void CrossPointWebServer::begin() {
 
   // Upload endpoint with special handling for multipart form data
   server->on("/upload", HTTP_POST, [this] { handleUploadPost(upload); }, [this] { handleUpload(upload); });
+  server->on(
+      "/api/upload/chunk", HTTP_POST, [this] { handleCooperativeUploadPost(); },
+      [this] { handleCooperativeUploadData(); });
+  server->on("/api/upload/cancel", HTTP_POST, [this] { handleCooperativeUploadCancel(); });
   server->on("/api/inbox/open", HTTP_POST, [this] { handleInboxOpen(); }, jsonBodyHandler);
 
   // Create folder endpoint
@@ -192,7 +192,6 @@ void CrossPointWebServer::begin() {
   // Font management endpoints
   server->on("/fonts", HTTP_GET, [this] { handleFontsPage(); });
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
-  server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
   server->on("/api/fonts/delete", HTTP_POST, [this] { handleFontDelete(); }, jsonBodyHandler);
 
   // OPDS server endpoints
@@ -209,25 +208,36 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "[MEM] Free heap after route setup: %d bytes", ESP.getFreeHeap());
 
   // Collect WebDAV headers and register handler
-  const char* requestHeaders[] = {"Content-Type", "Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout"};
-  server->collectHeaders(requestHeaders, 7);
-  server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
+  const char* requestHeaders[] = {"Content-Type",
+                                  "Depth",
+                                  "Destination",
+                                  "Overwrite",
+                                  "If",
+                                  "Lock-Token",
+                                  "Timeout",
+                                  "X-CrossVi-Upload-Path",
+                                  "X-CrossVi-Upload-Name",
+                                  "X-CrossVi-Upload-Offset",
+                                  "X-CrossVi-Upload-Total",
+                                  "X-CrossVi-Upload-Type",
+                                  "X-CrossVi-Font-Family"};
+  server->collectHeaders(requestHeaders, 13);
+  auto* webDavHandler = new (std::nothrow) WebDAVHandler();
+  if (!webDavHandler) {
+    LOG_ERR("WEB", "Failed to allocate WebDAV handler");
+    server.reset();
+    return;
+  }
+  server->addHandler(webDavHandler);  // WebServer owns and deletes the handler.
   LOG_DBG("WEB", "WebDAV handler initialized");
 
   server->begin();
 
-  // Start WebSocket server for fast binary uploads
-  LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
-  wsServer.reset(new WebSocketsServer(wsPort));
-  wsLastCompleteName = "";
-  wsLastCompleteSize = 0;
-  wsLastCompleteAt = 0;
+  lastCompleteName.clear();
+  lastCompleteSize = 0;
+  lastCompleteAt = 0;
   lastCompletePath.clear();
   pendingOpenPath.clear();
-  wsInstance = const_cast<CrossPointWebServer*>(this);
-  wsServer->begin();
-  wsServer->onEvent(wsEventCallback);
-  LOG_DBG("WEB", "WebSocket server started");
 
   udpActive = udp.begin(LOCAL_UDP_PORT);
   LOG_DBG("WEB", "Discovery UDP %s on port %d", udpActive ? "enabled" : "failed", LOCAL_UDP_PORT);
@@ -238,37 +248,20 @@ void CrossPointWebServer::begin() {
   // Show the correct IP based on network mode
   const String ipAddr = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
-  LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
-}
-
-void CrossPointWebServer::abortWsUpload(const char* tag) {
-  LOG_DBG(tag, "Upload aborted at %zu/%zu bytes: free=%u maxalloc=%u", wsUploadReceived, wsUploadSize,
-          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-  // Explicit close() required: file-scope global persists beyond function scope
-  wsUploadFile.close();
-  if (wsUploadOwnsStagingFile && !wsUploadStagingPath.isEmpty()) {
-    if (Storage.remove(wsUploadStagingPath.c_str())) {
-      LOG_DBG(tag, "Deleted incomplete upload: %s", wsUploadStagingPath.c_str());
-    } else {
-      LOG_DBG(tag, "Failed to delete incomplete upload: %s", wsUploadStagingPath.c_str());
-    }
-  }
-  wsUploadOwnsStagingFile = false;
-  wsUploadStagingPath = "";
-  wsUploadInProgress = false;
-  wsUploadClientNum = 255;
-  wsLastProgressSent = 0;
 }
 
 bool CrossPointWebServer::clearStaleBookUploadStaging(const String& stagingPath) {
   if (!Storage.exists(stagingPath.c_str())) return true;
 
-  // A live HTTP or WebSocket upload owns its staging file.  Never discard it
-  // merely because another client retries the same name.
-  if ((upload.ownsStagingFile && upload.stagingPath == stagingPath) ||
-      (wsUploadOwnsStagingFile && wsUploadStagingPath == stagingPath)) {
+  // A live HTTP upload owns its staging file. Never discard it merely because
+  // another client retries the same name.
+  if (upload.ownsStagingFile && upload.stagingPath == stagingPath) {
     LOG_DBG("WEB", "[UPLOAD] Staging file is still owned: %s", stagingPath.c_str());
+    return false;
+  }
+  if (cooperativeUpload.ownsStagingFile && cooperativeUpload.stagingPath == stagingPath) {
+    LOG_DBG("WEB", "[UPLOAD] Cooperative staging file is still owned: %s", stagingPath.c_str());
     return false;
   }
 
@@ -284,7 +277,7 @@ bool CrossPointWebServer::clearStaleBookUploadStaging(const String& stagingPath)
 
 void CrossPointWebServer::stop() {
   jsonBody = {};
-  abortFontUpload("WEB");
+  discardCooperativeUpload(true);
   if (upload.file) upload.file.close();
   if (upload.ownsStagingFile && !upload.stagingPath.isEmpty()) Storage.remove(upload.stagingPath.c_str());
   upload.ownsStagingFile = false;
@@ -299,19 +292,6 @@ void CrossPointWebServer::stop() {
   running = false;  // Set this FIRST to prevent handleClient from using server
 
   LOG_DBG("WEB", "[MEM] Free heap before stop: %d bytes", ESP.getFreeHeap());
-
-  // Close any in-progress WebSocket upload and remove partial file
-  if (wsUploadInProgress && wsUploadFile) {
-    abortWsUpload("WEB");
-  }
-  // Stop WebSocket server
-  if (wsServer) {
-    LOG_DBG("WEB", "Stopping WebSocket server...");
-    wsServer->close();
-    wsServer.reset();
-    wsInstance = nullptr;
-    LOG_DBG("WEB", "WebSocket server stopped");
-  }
 
   if (udpActive) {
     udp.stop();
@@ -358,11 +338,6 @@ void CrossPointWebServer::handleClient() {
 
   server->handleClient();
 
-  // Handle WebSocket events
-  if (wsServer) {
-    wsServer->loop();
-  }
-
   // Respond to discovery broadcasts
   if (udpActive) {
     int packetSize = udp.parsePacket();
@@ -376,7 +351,7 @@ void CrossPointWebServer::handleClient() {
           if (hostname.isEmpty()) {
             hostname = "crosspoint";
           }
-          String message = "crosspoint (on " + hostname + ");" + String(wsPort);
+          String message = "crosspoint (on " + hostname + ");" + String(port);
           udp.beginPacket(udp.remoteIP(), udp.remotePort());
           udp.write(reinterpret_cast<const uint8_t*>(message.c_str()), message.length());
           udp.endPacket();
@@ -386,21 +361,26 @@ void CrossPointWebServer::handleClient() {
   }
 }
 
-CrossPointWebServer::WsUploadStatus CrossPointWebServer::getWsUploadStatus() const {
-  WsUploadStatus status;
-  status.inProgress = wsUploadInProgress;
-  status.received = wsUploadReceived;
-  status.total = wsUploadSize;
-  status.filename = wsUploadFileName.c_str();
-  status.lastCompleteName = wsLastCompleteName.c_str();
+CrossPointWebServer::UploadStatus CrossPointWebServer::getUploadStatus() const {
+  UploadStatus status;
+  status.inProgress = upload.ownsStagingFile || cooperativeUpload.ownsStagingFile;
+  if (cooperativeUpload.ownsStagingFile) {
+    status.received = cooperativeUpload.committed + cooperativeUpload.requestReceived;
+    status.total = cooperativeUpload.total;
+    status.filename = cooperativeUpload.fileName.c_str();
+  } else {
+    status.received = upload.size;
+    status.filename = upload.fileName.c_str();
+  }
+  status.lastCompleteName = lastCompleteName;
   status.lastCompletePath = lastCompletePath;
-  status.lastCompleteSize = wsLastCompleteSize;
-  status.lastCompleteAt = wsLastCompleteAt;
+  status.lastCompleteSize = lastCompleteSize;
+  status.lastCompleteAt = lastCompleteAt;
   return status;
 }
 
 bool CrossPointWebServer::hasActiveTransfer() const {
-  return upload.ownsStagingFile || wsUploadInProgress || fontUpload.file.isOpen();
+  return upload.ownsStagingFile || cooperativeUpload.ownsStagingFile;
 }
 
 bool CrossPointWebServer::takeOpenRequest(std::string& path) {
@@ -594,17 +574,11 @@ void CrossPointWebServer::handleFileList() const {
 
 void CrossPointWebServer::handleFileListData() const {
   // Get current path from query string (default to root)
-  String currentPath = "/";
-  if (server->hasArg("path")) {
-    currentPath = server->arg("path");
-    // Ensure path starts with /
-    if (!currentPath.startsWith("/")) {
-      currentPath = "/" + currentPath;
-    }
-    // Remove trailing slash unless it's root
-    if (currentPath.length() > 1 && currentPath.endsWith("/")) {
-      currentPath = currentPath.substring(0, currentPath.length() - 1);
-    }
+  String currentPath;
+  const String requestedPath = server->hasArg("path") ? server->arg("path") : String("/");
+  if (!normalizeSafeWebPath(requestedPath, currentPath)) {
+    server->send(403, "application/json", "{\"error\":\"Cannot access protected path\"}");
+    return;
   }
 
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -685,25 +659,10 @@ void CrossPointWebServer::handleDownload() const {
     return;
   }
 
-  String itemPath = server->arg("path");
-  if (itemPath.isEmpty() || itemPath == "/") {
+  String itemPath;
+  if (!normalizeSafeWebPath(server->arg("path"), itemPath, false)) {
     server->send(400, "text/plain", "Invalid path");
     return;
-  }
-  if (!itemPath.startsWith("/")) {
-    itemPath = "/" + itemPath;
-  }
-
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (itemName.startsWith(".")) {
-    server->send(403, "text/plain", "Cannot access system files");
-    return;
-  }
-  for (const auto* item : HIDDEN_ITEMS) {
-    if (itemName.equals(item)) {
-      server->send(403, "text/plain", "Cannot access protected items");
-      return;
-    }
   }
 
   if (!Storage.exists(itemPath.c_str())) {
@@ -743,8 +702,7 @@ void CrossPointWebServer::handleDownload() const {
   // call, which can take seconds. The activity's per-batch modem-sleep toggle
   // was already decided before the request was processed, so keep the radio
   // awake here — like the upload path — or throughput drops during the stream.
-  // Restore the previous sleep state afterwards: another transfer (e.g. a
-  // WebSocket upload) may still be running and needs the radio awake.
+  // Restore the previous sleep state afterwards.
   const bool modemSleep = !apMode && WiFi.getSleep();
   if (modemSleep) WiFi.setSleep(false);
   const auto result = streamHttpFile(file, client, buffer, sizeof(buffer), [] {
@@ -766,11 +724,11 @@ static unsigned long uploadStartTime = 0;
 static unsigned long totalWriteTime = 0;
 static size_t writeCount = 0;
 
-static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
+bool CrossPointWebServer::flushUploadBuffer(UploadState& state) {
   if (state.bufferPos > 0 && state.file) {
     resetTaskWatchdogIfSubscribed();  // Reset watchdog before potentially slow SD write
     const unsigned long writeStart = millis();
-    const size_t written = state.file.write(state.buffer.data(), state.bufferPos);
+    const size_t written = state.file.write(transferBuffer.data(), state.bufferPos);
     totalWriteTime += millis() - writeStart;
     writeCount++;
     resetTaskWatchdogIfSubscribed();  // Reset watchdog after SD write
@@ -785,9 +743,422 @@ static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
   return true;
 }
 
-void CrossPointWebServer::handleUpload(UploadState& state) {
-  static size_t lastLoggedSize = 0;
+bool CrossPointWebServer::flushCooperativeUploadBuffer() {
+  auto& state = cooperativeUpload;
+  if (state.bufferPos == 0) return true;
+  if (!state.file) {
+    state.bufferPos = 0;
+    return false;
+  }
 
+  resetTaskWatchdogIfSubscribed();
+  const unsigned long writeStart = millis();
+  const size_t written = state.file.write(transferBuffer.data(), state.bufferPos);
+  totalWriteTime += millis() - writeStart;
+  ++writeCount;
+  resetTaskWatchdogIfSubscribed();
+  if (written != state.bufferPos) {
+    LOG_ERR("WEB", "[UPLOAD-COOP] Buffer flush failed: expected=%u wrote=%u", static_cast<unsigned>(state.bufferPos),
+            static_cast<unsigned>(written));
+    state.bufferPos = 0;
+    return false;
+  }
+  state.bufferPos = 0;
+  return true;
+}
+
+void CrossPointWebServer::discardCooperativeUpload(const bool removeStaging) {
+  auto& state = cooperativeUpload;
+  if (state.file) state.file.close();
+  if (removeStaging && state.ownsStagingFile && !state.stagingPath.isEmpty()) {
+    Storage.remove(state.stagingPath.c_str());
+  }
+  state = CooperativeUploadState{};
+}
+
+void CrossPointWebServer::handleCooperativeUploadData() {
+  auto& state = cooperativeUpload;
+  resetTaskWatchdogIfSubscribed();
+
+  const String contentType = server->header("Content-Type");
+  if (!contentType.startsWith("application/octet-stream")) {
+    state.requestAccepted = false;
+    state.requestComplete = true;
+    state.responseStatus = 400;
+    state.error = "Chunk upload requires application/octet-stream";
+    return;
+  }
+
+  HTTPRaw& raw = server->raw();
+  const auto failRequest = [&](const int status, const String& error, const bool discardUpload) {
+    if (discardUpload) discardCooperativeUpload(true);
+    state.requestAccepted = false;
+    state.requestComplete = true;
+    state.responseStatus = status;
+    state.error = error;
+  };
+
+  if (raw.status == RAW_START) {
+    state.requestAccepted = false;
+    state.requestComplete = false;
+    state.requestSize = 0;
+    state.requestReceived = 0;
+    state.bufferPos = 0;
+    state.requestReplay = false;
+    state.responseStatus = 400;
+    state.error = "";
+
+    if (!server->hasHeader("X-CrossVi-Upload-Name") || !server->hasHeader("X-CrossVi-Upload-Offset") ||
+        !server->hasHeader("X-CrossVi-Upload-Total")) {
+      failRequest(400, "Missing chunk upload parameters", false);
+      return;
+    }
+
+    const String uploadType =
+        server->hasHeader("X-CrossVi-Upload-Type") ? server->header("X-CrossVi-Upload-Type") : String("book");
+    const CooperativeUploadKind requestedKind =
+        uploadType == "font" ? CooperativeUploadKind::Font : CooperativeUploadKind::Book;
+    if (uploadType != "book" && uploadType != "font") {
+      failRequest(400, "Unsupported upload type", false);
+      return;
+    }
+
+    String path = "/";
+    String familyName;
+    if (requestedKind == CooperativeUploadKind::Book) {
+      if (!server->hasHeader("X-CrossVi-Upload-Path")) {
+        failRequest(400, "Missing upload path", false);
+        return;
+      }
+      path = WebServer::urlDecode(server->header("X-CrossVi-Upload-Path"));
+      if (!path.startsWith("/")) path = "/" + path;
+      if (path.length() > 1 && path.endsWith("/")) path.remove(path.length() - 1);
+    } else {
+      if (!server->hasHeader("X-CrossVi-Font-Family")) {
+        failRequest(400, "Missing font family", false);
+        return;
+      }
+      familyName = WebServer::urlDecode(server->header("X-CrossVi-Font-Family"));
+    }
+
+    const String fileName = WebServer::urlDecode(server->header("X-CrossVi-Upload-Name"));
+    size_t offset = 0;
+    size_t total = 0;
+    const long contentLength = server->clientContentLength();
+    if (!UploadPathGuard::parseSize(server->header("X-CrossVi-Upload-Offset").c_str(), offset) ||
+        !UploadPathGuard::parseSize(server->header("X-CrossVi-Upload-Total").c_str(), total) || contentLength <= 0 ||
+        !UploadPathGuard::isValidChunkRange(offset, total, static_cast<size_t>(contentLength),
+                                            COOPERATIVE_UPLOAD_CHUNK_SIZE)) {
+      failRequest(contentLength > static_cast<long>(COOPERATIVE_UPLOAD_CHUNK_SIZE) ? 413 : 400, "Invalid chunk range",
+                  false);
+      return;
+    }
+    const bool validDestination =
+        requestedKind == CooperativeUploadKind::Font
+            ? FontInstaller::isValidFamilyName(familyName.c_str()) &&
+                  FontInstaller::isValidCpfontFilename(fileName.c_str())
+            : UploadPathGuard::isSafeLeafName(fileName.c_str()) && UploadPathGuard::isSafeAbsolutePath(path.c_str());
+    if (!validDestination) {
+      failRequest(400,
+                  requestedKind == CooperativeUploadKind::Font ? "Invalid font family or file name"
+                                                               : "Invalid upload path or file name",
+                  false);
+      return;
+    }
+
+    const size_t requestEnd = offset + static_cast<size_t>(contentLength);
+    const bool sameActiveUpload = state.ownsStagingFile && state.kind == requestedKind && state.fileName == fileName &&
+                                  state.path == path && state.familyName == familyName && state.total == total;
+    const bool canResumeRequest = sameActiveUpload && (state.committed == offset || state.committed == requestEnd);
+
+    if (offset == 0) {
+      if (upload.ownsStagingFile) {
+        failRequest(409, "Another upload is already in progress", false);
+        return;
+      }
+      if (state.ownsStagingFile && !canResumeRequest) {
+        // A normal offset-zero request starts a fresh upload. An exact retry
+        // keeps the existing staging file so a transient socket failure does
+        // not force the client to resend the whole book.
+        discardCooperativeUpload(true);
+      }
+
+      if (!state.ownsStagingFile) {
+        String finalPath;
+        String stagingPath;
+        String backupPath;
+        if (requestedKind == CooperativeUploadKind::Font) {
+          FontInstaller installer(sdFontSystem.registry());
+          if (!installer.ensureFamilyDir(familyName.c_str())) {
+            failRequest(500, "Could not create the font folder", false);
+            return;
+          }
+          char destination[FontStorageUtils::FONT_PATH_CAPACITY];
+          if (!FontInstaller::buildFontPath(familyName.c_str(), fileName.c_str(), destination, sizeof(destination))) {
+            failRequest(400, "Font name or path is too long", false);
+            return;
+          }
+          finalPath = destination;
+          stagingPath = finalPath + ".upload.tmp";
+          backupPath = finalPath + ".upload.bak";
+          const auto validateFont = [](const char* candidate, void* context) {
+            return static_cast<FontInstaller*>(context)->validateCpfontFile(candidate);
+          };
+          if (StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateFont, &installer) ==
+                  StagedFileTransaction::Status::IoError ||
+              (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str()))) {
+            failRequest(500, "Could not recover an interrupted font upload", false);
+            return;
+          }
+        } else {
+          if (path == "/Inbox" && !isSupportedReaderFile(fileName.c_str())) {
+            failRequest(400, "Inbox accepts reader files only", false);
+            return;
+          }
+          if (path == "/Inbox" && !Storage.exists("/Inbox") && !Storage.mkdir("/Inbox")) {
+            failRequest(500, "Could not create Inbox", false);
+            return;
+          }
+          HalFile uploadDirectory = Storage.open(path.c_str());
+          if (!uploadDirectory || !uploadDirectory.isDirectory()) {
+            if (uploadDirectory) uploadDirectory.close();
+            failRequest(400, "Upload folder does not exist", false);
+            return;
+          }
+          uploadDirectory.close();
+
+          finalPath = path;
+          if (!finalPath.endsWith("/")) finalPath += "/";
+          finalPath += fileName;
+          if (Storage.exists(finalPath.c_str())) {
+            failRequest(409, "File already exists: " + fileName, false);
+            return;
+          }
+          stagingPath = hiddenBookFileSibling(finalPath.c_str(), ".crossvi-upload.tmp").c_str();
+          if (!clearStaleBookUploadStaging(stagingPath)) {
+            failRequest(500, "Could not clear interrupted upload", false);
+            return;
+          }
+        }
+
+        state.fileName = fileName;
+        state.path = path;
+        state.familyName = familyName;
+        state.finalPath = finalPath;
+        state.stagingPath = stagingPath;
+        state.backupPath = backupPath;
+        state.kind = requestedKind;
+        state.total = total;
+        state.streamDigest = {};
+        if (!Storage.openFileForWrite("WEB", state.stagingPath, state.file)) {
+          failRequest(500,
+                      requestedKind == CooperativeUploadKind::Font ? "Could not create the temporary font file"
+                                                                   : "Failed to create file on SD card",
+                      false);
+          return;
+        }
+        state.ownsStagingFile = true;
+        uploadStartTime = millis();
+        totalWriteTime = 0;
+        writeCount = 0;
+        LOG_DBG("WEB", "[UPLOAD-COOP] START: type=%s %s (%u bytes) to %s", uploadType.c_str(), state.fileName.c_str(),
+                static_cast<unsigned>(state.total), state.finalPath.c_str());
+#ifndef SIMULATOR
+        if (!apMode) {
+          LOG_DBG("WEB", "[UPLOAD-COOP] WiFi: RSSI=%d dBm channel=%d BSSID=%s", WiFi.RSSI(), WiFi.channel(),
+                  WiFi.BSSIDstr().c_str());
+        }
+#endif
+        LOG_DBG("WEB", "[UPLOAD-COOP] Heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+      }
+    } else if (!canResumeRequest) {
+      failRequest(409, "Chunk does not match the active upload", false);
+      return;
+    }
+
+    state.requestReplay = state.committed == requestEnd;
+    if (!state.requestReplay && (!state.file || !state.file.seek(state.committed))) {
+      failRequest(500, "Could not resume the interrupted upload", true);
+      return;
+    }
+    state.requestDigestStart = state.streamDigest;
+
+    server->client().setTimeout(UPLOAD_SOCKET_TIMEOUT_MS);
+    state.requestSize = static_cast<size_t>(contentLength);
+    state.requestAccepted = true;
+    state.responseStatus = 200;
+    return;
+  }
+
+  if (raw.status == RAW_WRITE) {
+    if (!state.requestAccepted) return;
+    if (raw.currentSize > state.requestSize - state.requestReceived) {
+      failRequest(400, "Chunk body exceeds declared range", true);
+      return;
+    }
+
+    if (state.requestReplay) {
+      state.requestReceived += raw.currentSize;
+      return;
+    }
+
+    const uint8_t* data = raw.buf;
+    size_t remaining = raw.currentSize;
+    while (remaining > 0) {
+      const size_t space = transferBuffer.size() - state.bufferPos;
+      const size_t toCopy = std::min(remaining, space);
+      memcpy(transferBuffer.data() + state.bufferPos, data, toCopy);
+      if (state.kind == CooperativeUploadKind::Font) {
+        StagedFileTransaction::updateDigest(state.streamDigest, data, toCopy);
+      }
+      state.bufferPos += toCopy;
+      data += toCopy;
+      remaining -= toCopy;
+      if (state.bufferPos == transferBuffer.size() && !flushCooperativeUploadBuffer()) {
+        failRequest(500, "Failed to write to SD card", true);
+        return;
+      }
+    }
+    state.requestReceived += raw.currentSize;
+    return;
+  }
+
+  if (raw.status == RAW_ABORTED) {
+    const size_t partialBytes = state.requestReceived;
+    state.bufferPos = 0;
+    state.streamDigest = state.requestDigestStart;
+    const bool rewound = state.file && state.file.seek(state.committed);
+    LOG_ERR("WEB", "[UPLOAD-COOP] Request aborted at %u/%u bytes (%u-byte request discarded)",
+            static_cast<unsigned>(state.committed), static_cast<unsigned>(state.total),
+            static_cast<unsigned>(partialBytes));
+    if (!rewound) {
+      discardCooperativeUpload(true);
+      return;
+    }
+    state.requestAccepted = false;
+    state.requestComplete = false;
+    state.requestReplay = false;
+    state.requestSize = 0;
+    state.requestReceived = 0;
+    state.error = "";
+    return;
+  }
+
+  if (!state.requestAccepted) {
+    state.requestComplete = true;
+    return;
+  }
+  if (state.requestReceived != state.requestSize || (!state.requestReplay && !flushCooperativeUploadBuffer())) {
+    failRequest(500, "Incomplete chunk or SD write failure", true);
+    return;
+  }
+
+  if (state.requestReplay) {
+    state.requestComplete = true;
+    return;
+  }
+
+  state.committed += state.requestReceived;
+  state.requestComplete = true;
+  if (state.committed - state.lastLoggedSize >= 1024U * 1024U || state.committed == state.total) {
+    const unsigned long elapsed = millis() - uploadStartTime;
+    const float kbps = elapsed > 0 ? (state.committed / 1024.0f) / (elapsed / 1000.0f) : 0;
+    LOG_DBG("WEB", "[UPLOAD-COOP] %u/%u bytes, %.1f KB/s, %u writes", static_cast<unsigned>(state.committed),
+            static_cast<unsigned>(state.total), kbps, static_cast<unsigned>(writeCount));
+    state.lastLoggedSize = state.committed;
+  }
+  if (state.committed < state.total) return;
+
+  state.file.flush();
+  const bool sizeMatches = state.file.size() == state.total;
+  const bool synced = state.file.sync();
+  const bool closed = state.file.close();
+  if (!sizeMatches || !synced || !closed) {
+    failRequest(500, "Could not safely store uploaded file", true);
+    return;
+  }
+
+  if (state.kind == CooperativeUploadKind::Font) {
+    FontInstaller installer(sdFontSystem.registry());
+    const auto validateFont = [](const char* candidate, void* context) {
+      return static_cast<FontInstaller*>(context)->validateCpfontFile(candidate);
+    };
+    const auto published =
+        StagedFileTransaction::publishAndVerify(state.finalPath.c_str(), state.stagingPath.c_str(),
+                                                state.backupPath.c_str(), state.streamDigest, validateFont, &installer);
+    if (published != StagedFileTransaction::Status::Published) {
+      failRequest(published == StagedFileTransaction::Status::InvalidStaging ? 400 : 500,
+                  published == StagedFileTransaction::Status::InvalidStaging
+                      ? "The uploaded file is not a valid compatible .cpfont"
+                      : "The validated font could not be installed",
+                  true);
+      return;
+    }
+    sdFontSystem.markRegistryDirty();
+  } else {
+    const BookFilePublishResult published = publishStagedBookFile(state.stagingPath.c_str(), state.finalPath.c_str());
+    if (published != BookFilePublishResult::Published && published != BookFilePublishResult::Unchanged) {
+      failRequest(published == BookFilePublishResult::InvalidStagedFile ? 400 : 500,
+                  published == BookFilePublishResult::InvalidStagedFile ? "Uploaded book file is invalid"
+                                                                        : "Could not safely publish uploaded file",
+                  true);
+      return;
+    }
+  }
+
+  state.ownsStagingFile = false;
+  state.uploadComplete = true;
+  if (state.kind == CooperativeUploadKind::Book) {
+    lastCompletePath =
+        isSupportedReaderFile(state.finalPath.c_str()) ? std::string(state.finalPath.c_str()) : std::string{};
+    lastCompleteName = state.fileName.c_str();
+    lastCompleteSize = state.total;
+    lastCompleteAt = millis();
+  }
+  const unsigned long elapsed = millis() - uploadStartTime;
+  const float writePercent = elapsed > 0 ? totalWriteTime * 100.0f / elapsed : 0;
+  LOG_DBG("WEB", "[UPLOAD-COOP] Complete: %s (%u bytes in %lu ms, %u writes, SD %.1f%%)", state.fileName.c_str(),
+          static_cast<unsigned>(state.total), elapsed, static_cast<unsigned>(writeCount), writePercent);
+}
+
+void CrossPointWebServer::handleCooperativeUploadPost() {
+  auto& state = cooperativeUpload;
+  if (!state.requestComplete) {
+    server->send(400, "text/plain", "Incomplete cooperative upload request");
+    return;
+  }
+
+  if (!state.error.isEmpty()) {
+    const int status = state.responseStatus;
+    const String error = state.error;
+    const bool activeUploadRemains = state.ownsStagingFile;
+    state.requestAccepted = false;
+    state.requestComplete = false;
+    state.requestSize = 0;
+    state.requestReceived = 0;
+    state.error = "";
+    if (!activeUploadRemains) discardCooperativeUpload(false);
+    server->send(status, "text/plain", error);
+    return;
+  }
+
+  const bool complete = state.uploadComplete;
+  const size_t committed = state.committed;
+  state.requestAccepted = false;
+  state.requestComplete = false;
+  state.requestSize = 0;
+  state.requestReceived = 0;
+  server->send(200, "text/plain", String(committed));
+  if (complete) discardCooperativeUpload(false);
+}
+
+void CrossPointWebServer::handleCooperativeUploadCancel() {
+  const bool hadUpload = cooperativeUpload.ownsStagingFile;
+  discardCooperativeUpload(true);
+  server->send(hadUpload ? 200 : 204, "text/plain", hadUpload ? "Upload cancelled" : "");
+}
+
+void CrossPointWebServer::handleUpload(UploadState& state) {
   // Reset watchdog at start of every upload callback - HTTP parsing can be slow
   resetTaskWatchdogIfSubscribed();
 
@@ -810,10 +1181,18 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     // Reset watchdog - this is the critical 1% crash point
     resetTaskWatchdogIfSubscribed();
 
-    if (state.ownsStagingFile) {
+    // Arduino-ESP32 resets every accepted client to a 5-second read timeout.
+    // A brief Wi-Fi retry can otherwise abort an otherwise healthy large
+    // multipart upload. This only extends the active upload socket; a closed
+    // connection still fails immediately.
+    server->client().setTimeout(UPLOAD_SOCKET_TIMEOUT_MS);
+
+    if (state.ownsStagingFile || cooperativeUpload.ownsStagingFile) {
       state.error = "Upload already in progress";
       return;
     }
+    state.restoreModemSleep = !apMode && WiFi.getSleep();
+    if (state.restoreModemSleep) WiFi.setSleep(false);
     if (state.file) state.file.close();
     state.fileName = upload.filename;
     state.size = 0;
@@ -821,7 +1200,6 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     state.error = "";
     state.stagingPath = "";
     uploadStartTime = millis();
-    lastLoggedSize = 0;
     state.bufferPos = 0;
     totalWriteTime = 0;
     writeCount = 0;
@@ -868,7 +1246,14 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     }
     uploadDirectory.close();
 
-    LOG_DBG("WEB", "[UPLOAD] START: %s to path: %s", state.fileName.c_str(), state.path.c_str());
+    LOG_DBG("WEB", "[UPLOAD] START: %s to path: %s (socket timeout=%lu ms)", state.fileName.c_str(), state.path.c_str(),
+            UPLOAD_SOCKET_TIMEOUT_MS);
+#ifndef SIMULATOR
+    if (!apMode) {
+      LOG_DBG("WEB", "[UPLOAD] WiFi: RSSI=%d dBm channel=%d BSSID=%s", WiFi.RSSI(), WiFi.channel(),
+              WiFi.BSSIDstr().c_str());
+    }
+#endif
     LOG_DBG("WEB", "[UPLOAD] Heap: free=%u maxalloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     String filePath = state.path;
@@ -900,41 +1285,16 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
 
     LOG_DBG("WEB", "[UPLOAD] Staging file created successfully: %s", state.stagingPath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (state.file && state.error.isEmpty()) {
-      // Buffer incoming data and flush when buffer is full
-      // This reduces SD card write operations and improves throughput
-      const uint8_t* data = upload.buf;
-      size_t remaining = upload.currentSize;
-
-      while (remaining > 0) {
-        const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
-        const size_t toCopy = (remaining < space) ? remaining : space;
-
-        memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
-        state.bufferPos += toCopy;
-        data += toCopy;
-        remaining -= toCopy;
-
-        // Flush buffer when full
-        if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
-          if (!flushUploadBuffer(state)) {
-            state.error = "Failed to write to SD card - disk may be full";
-            state.file.close();
-            return;
-          }
-        }
-      }
-
-      state.size += upload.currentSize;
-
-      // Log progress every 100KB
-      if (state.size - lastLoggedSize >= 102400) {
-        const unsigned long elapsed = millis() - uploadStartTime;
-        const float kbps = (elapsed > 0) ? (state.size / 1024.0) / (elapsed / 1000.0) : 0;
-        LOG_DBG("WEB", "[UPLOAD] %d bytes (%.1f KB), %.1f KB/s, %d writes", state.size, state.size / 1024.0, kbps,
-                writeCount);
-        lastLoggedSize = state.size;
-      }
+    // The bundled UI uses multipart only to create a zero-byte file because an
+    // empty raw request never reaches WebServer's raw-body callback. Every
+    // upload with content must use the short, retryable cooperative requests.
+    if (upload.currentSize > 0 && state.error.isEmpty()) {
+      state.bufferPos = 0;
+      if (state.file) state.file.close();
+      if (state.ownsStagingFile && !state.stagingPath.isEmpty()) Storage.remove(state.stagingPath.c_str());
+      state.ownsStagingFile = false;
+      state.error = "Non-empty uploads require /api/upload/chunk";
+      LOG_DBG("WEB", "[UPLOAD] Rejected legacy multipart data for: %s", state.fileName.c_str());
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (state.file) {
@@ -964,9 +1324,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
           state.ownsStagingFile = false;
           state.success = true;
           lastCompletePath = isSupportedReaderFile(filePath.c_str()) ? std::string(filePath.c_str()) : std::string{};
-          wsLastCompleteName = state.fileName;
-          wsLastCompleteSize = state.size;
-          wsLastCompleteAt = millis();
+          lastCompleteName = state.fileName.c_str();
+          lastCompleteSize = state.size;
+          lastCompleteAt = millis();
         } else {
           state.error = published == BookFilePublishResult::InvalidStagedFile
                             ? "Uploaded book file is invalid"
@@ -982,13 +1342,15 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     if (state.ownsStagingFile && !state.stagingPath.isEmpty()) Storage.remove(state.stagingPath.c_str());
     state.ownsStagingFile = false;
     state.error = "Upload aborted";
+    if (state.restoreModemSleep) WiFi.setSleep(true);
+    state.restoreModemSleep = false;
     LOG_DBG("WEB", "Upload aborted at %zu bytes: free=%u maxalloc=%u", state.size, ESP.getFreeHeap(),
             ESP.getMaxAllocHeap());
   }
 }
 
 void CrossPointWebServer::handleInboxOpen() {
-  if (upload.ownsStagingFile || wsUploadInProgress) {
+  if (upload.ownsStagingFile || cooperativeUpload.ownsStagingFile) {
     server->send(409, "text/plain", "An upload is still in progress");
     return;
   }
@@ -1033,6 +1395,8 @@ void CrossPointWebServer::handleUploadPost(UploadState& state) const {
   state.error = "";
   state.fileName = "";
   state.size = 0;
+  if (state.restoreModemSleep) WiFi.setSleep(true);
+  state.restoreModemSleep = false;
 }
 
 void CrossPointWebServer::handleCreateFolder() const {
@@ -1042,24 +1406,21 @@ void CrossPointWebServer::handleCreateFolder() const {
     return;
   }
 
-  const String folderName = server->arg("name");
+  String folderName = server->arg("name");
+  folderName.trim();
 
   // Validate folder name
-  if (folderName.isEmpty()) {
-    server->send(400, "text/plain", "Folder name cannot be empty");
+  if (!UploadPathGuard::isSafeLeafName(folderName.c_str())) {
+    server->send(400, "text/plain", "Invalid folder name");
     return;
   }
 
   // Get parent path
-  String parentPath = "/";
-  if (server->hasArg("path")) {
-    parentPath = server->arg("path");
-    if (!parentPath.startsWith("/")) {
-      parentPath = "/" + parentPath;
-    }
-    if (parentPath.length() > 1 && parentPath.endsWith("/")) {
-      parentPath = parentPath.substring(0, parentPath.length() - 1);
-    }
+  String parentPath;
+  const String requestedParent = server->hasArg("path") ? server->arg("path") : String("/");
+  if (!normalizeSafeWebPath(requestedParent, parentPath)) {
+    server->send(403, "text/plain", "Cannot create folder in protected path");
+    return;
   }
 
   // Build full folder path
@@ -1091,19 +1452,15 @@ void CrossPointWebServer::handleRename() const {
     return;
   }
 
-  String itemPath = normalizeWebPath(server->arg("path"));
+  String itemPath;
   String newName = server->arg("name");
   newName.trim();
 
-  if (itemPath.isEmpty() || itemPath == "/") {
+  if (!normalizeSafeWebPath(server->arg("path"), itemPath, false)) {
     server->send(400, "text/plain", "Invalid path");
     return;
   }
-  if (newName.isEmpty()) {
-    server->send(400, "text/plain", "New name cannot be empty");
-    return;
-  }
-  if (newName.indexOf('/') >= 0 || newName.indexOf('\\') >= 0) {
+  if (!UploadPathGuard::isSafeLeafName(newName.c_str())) {
     server->send(400, "text/plain", "Invalid file name");
     return;
   }
@@ -1174,14 +1531,14 @@ void CrossPointWebServer::handleMove() const {
     return;
   }
 
-  String itemPath = normalizeWebPath(server->arg("path"));
-  String destPath = normalizeWebPath(server->arg("dest"));
+  String itemPath;
+  String destPath;
 
-  if (itemPath.isEmpty() || itemPath == "/") {
+  if (!normalizeSafeWebPath(server->arg("path"), itemPath, false)) {
     server->send(400, "text/plain", "Invalid path");
     return;
   }
-  if (destPath.isEmpty()) {
+  if (!normalizeSafeWebPath(server->arg("dest"), destPath)) {
     server->send(400, "text/plain", "Invalid destination");
     return;
   }
@@ -1326,19 +1683,15 @@ void CrossPointWebServer::handleDelete() const {
 
   for (const auto& p : paths) {
     resetTaskWatchdogIfSubscribed();
-    auto itemPath = p.as<String>();
+    String itemPath;
+    const String requestedPath = p.as<String>();
     bool success = false;
     String failure;
 
     // Validate path
-    if (itemPath.isEmpty() || itemPath == "/") {
-      failure = itemPath + " (cannot delete root)";
+    if (!normalizeSafeWebPath(requestedPath, itemPath, false)) {
+      failure = requestedPath + " (invalid or protected path)";
     } else {
-      // Ensure path starts with /
-      if (!itemPath.startsWith("/")) {
-        itemPath = "/" + itemPath;
-      }
-
       // Security check: prevent deletion of protected items
       const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
 
@@ -1457,10 +1810,7 @@ void CrossPointWebServer::handleGetSettings() const {
 
   for (const auto& s : settings) {
     if (!s.key) continue;
-    if (!display.supportsStripGrayscale() &&
-        (s.valuePtr == &CrossPointSettings::textAntiAliasing || s.valuePtr == &CrossPointSettings::textDarkness)) {
-      continue;
-    }
+    if (!display.supportsStripGrayscale() && s.valuePtr == &CrossPointSettings::textAntiAliasing) continue;
 
     doc.clear();
     doc["key"] = s.key;
@@ -1639,6 +1989,7 @@ void CrossPointWebServer::handleGetOpdsServers() const {
   char output[512];
   constexpr size_t outputSize = sizeof(output);
   JsonDocument doc;
+  bool seenFirst = false;
 
   for (size_t i = 0; i < servers.size(); i++) {
     doc.clear();
@@ -1652,8 +2003,9 @@ void CrossPointWebServer::handleGetOpdsServers() const {
     const size_t written = serializeJson(doc, output, outputSize);
     if (written >= outputSize) continue;
 
-    if (i > 0) server->sendContent(",");
+    if (seenFirst) server->sendContent(",");
     server->sendContent(output);
+    seenFirst = true;
     yield();
     resetTaskWatchdogIfSubscribed();
   }
@@ -1695,7 +2047,10 @@ void CrossPointWebServer::handlePostOpdsServer() {
       if (existing) password = existing->password;
     }
     opdsServer.password = password;
-    OPDS_STORE.updateServer(static_cast<size_t>(idx), opdsServer);
+    if (!OPDS_STORE.updateServer(static_cast<size_t>(idx), opdsServer)) {
+      server->send(400, "text/plain", "Failed to update OPDS server");
+      return;
+    }
     LOG_DBG("WEB", "Updated OPDS server at index %d", idx);
   } else {
     opdsServer.password = password;
@@ -1731,7 +2086,10 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
     return;
   }
 
-  OPDS_STORE.removeServer(static_cast<size_t>(idx));
+  if (!OPDS_STORE.removeServer(static_cast<size_t>(idx))) {
+    server->send(400, "text/plain", "Failed to delete OPDS server");
+    return;
+  }
   LOG_DBG("WEB", "Deleted OPDS server at index %d", idx);
   server->send(200, "text/plain", "OK");
 }
@@ -1739,8 +2097,7 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
 // ---- Wi-Fi Credentials API ----
 
 void CrossPointWebServer::handleGetWifiNetworks() const {
-  const auto& credentials = WIFI_STORE.getCredentials();
-  const std::string& lastConnectedSsid = WIFI_STORE.getLastConnectedSsid();
+  const auto credentials = WIFI_STORE.getCredentialSummaries();
 
   // Stream JSON array incrementally to avoid allocating the full response in memory
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -1750,20 +2107,22 @@ void CrossPointWebServer::handleGetWifiNetworks() const {
   char output[320];
   constexpr size_t outputSize = sizeof(output);
   JsonDocument doc;
+  bool seenFirst = false;
 
   for (size_t i = 0; i < credentials.size(); i++) {
     doc.clear();
     doc["index"] = i;
     doc["ssid"] = credentials[i].ssid;
     // Never expose Wi-Fi passwords over the API — only indicate whether one is set
-    doc["hasPassword"] = !credentials[i].password.empty();
-    doc["isLastConnected"] = credentials[i].ssid == lastConnectedSsid;
+    doc["hasPassword"] = credentials[i].hasPassword;
+    doc["isLastConnected"] = credentials[i].isLastConnected;
 
     const size_t written = serializeJson(doc, output, outputSize);
     if (written >= outputSize) continue;
 
-    if (i > 0) server->sendContent(",");
+    if (seenFirst) server->sendContent(",");
     server->sendContent(output);
+    seenFirst = true;
     yield();
     resetTaskWatchdogIfSubscribed();
   }
@@ -1796,25 +2155,21 @@ void CrossPointWebServer::handlePostWifiNetwork() {
 
   if (doc["index"].is<int>()) {
     int idx = doc["index"].as<int>();
-    const auto& credentials = WIFI_STORE.getCredentials();
-    if (idx < 0 || idx >= static_cast<int>(credentials.size())) {
+    if (idx < 0) {
+      server->send(400, "text/plain", "Invalid network index");
+      return;
+    }
+    const auto credential = WIFI_STORE.getCredentialAt(static_cast<size_t>(idx));
+    if (!credential) {
       server->send(400, "text/plain", "Invalid network index");
       return;
     }
 
-    const std::string oldSsid = credentials[static_cast<size_t>(idx)].ssid;
     if (!hasPasswordField) {
-      password = credentials[static_cast<size_t>(idx)].password;
+      password = credential->password;
     }
 
-    bool ok = true;
-    if (oldSsid != ssid) {
-      ok = WIFI_STORE.removeCredential(oldSsid) && WIFI_STORE.addCredential(ssid, password);
-    } else {
-      ok = WIFI_STORE.addCredential(ssid, password);
-    }
-
-    if (!ok) {
+    if (!WIFI_STORE.updateCredential(static_cast<size_t>(idx), ssid, password)) {
       server->send(400, "text/plain", "Failed to update Wi-Fi network");
       return;
     }
@@ -1848,257 +2203,23 @@ void CrossPointWebServer::handleDeleteWifiNetwork() {
   }
 
   int idx = doc["index"].as<int>();
-  const auto& credentials = WIFI_STORE.getCredentials();
-  if (idx < 0 || idx >= static_cast<int>(credentials.size())) {
+  if (idx < 0) {
+    server->send(400, "text/plain", "Invalid network index");
+    return;
+  }
+  const auto ssid = WIFI_STORE.getSsidAt(static_cast<size_t>(idx));
+  if (!ssid) {
     server->send(400, "text/plain", "Invalid network index");
     return;
   }
 
-  const std::string ssid = credentials[static_cast<size_t>(idx)].ssid;
-  if (!WIFI_STORE.removeCredential(ssid)) {
+  if (!WIFI_STORE.removeCredential(*ssid)) {
     server->send(400, "text/plain", "Failed to delete Wi-Fi network");
     return;
   }
 
-  LOG_DBG("WEB", "Deleted Wi-Fi network at index %d (SSID: %s)", idx, ssid.c_str());
+  LOG_DBG("WEB", "Deleted Wi-Fi network at index %d (SSID: %s)", idx, ssid->c_str());
   server->send(200, "text/plain", "OK");
-}
-
-// WebSocket callback trampoline
-void CrossPointWebServer::wsEventCallback(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-  if (wsInstance) {
-    wsInstance->onWebSocketEvent(num, type, payload, length);
-  }
-}
-
-// WebSocket event handler for fast binary uploads
-// Protocol:
-//   1. Client sends TEXT message: "START:<filename>:<size>:<path>"
-//   2. Client sends BINARY messages with file data chunks
-//   3. Server sends TEXT "PROGRESS:<received>:<total>" after each chunk
-//   4. Server sends TEXT "DONE" or "ERROR:<message>" when complete
-void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-  switch (type) {
-    case WStype_DISCONNECTED:
-      LOG_DBG("WS", "Client %u disconnected", num);
-      // Only clean up if this is the client that owns the active upload.
-      // A new client may have already started a fresh upload before this
-      // DISCONNECTED event fires (race condition on quick cancel + retry).
-      if (num == wsUploadClientNum && wsUploadInProgress && wsUploadFile) {
-        abortWsUpload("WS");
-      }
-      break;
-
-    case WStype_CONNECTED: {
-      LOG_DBG("WS", "Client %u connected", num);
-      break;
-    }
-
-    case WStype_TEXT: {
-      // Parse control messages
-      String msg = String(reinterpret_cast<char*>(payload), length);
-      LOG_DBG("WS", "Text from client %u: %s", num, msg.c_str());
-
-      if (msg.startsWith("START:")) {
-        // Reject any START while an upload is already active to prevent
-        // leaking the open wsUploadFile handle (owning client re-START included)
-        if (wsUploadInProgress) {
-          wsServer->sendTXT(num, "ERROR:Upload already in progress");
-          break;
-        }
-        if (wsUploadOwnsStagingFile) abortWsUpload("WS");
-
-        // Parse: START:<filename>:<size>:<path>
-        int firstColon = msg.indexOf(':', 6);
-        int secondColon = msg.indexOf(':', firstColon + 1);
-
-        if (firstColon > 0 && secondColon > 0) {
-          wsUploadFileName = msg.substring(6, firstColon);
-          String sizeToken = msg.substring(firstColon + 1, secondColon);
-          if (!UploadPathGuard::isSafeLeafName(wsUploadFileName.c_str()) ||
-              !UploadPathGuard::parseSize(sizeToken.c_str(), wsUploadSize)) {
-            LOG_DBG("WS", "START rejected: invalid size token '%s'", sizeToken.c_str());
-            wsServer->sendTXT(num, "ERROR:Invalid START format");
-            return;
-          }
-          wsUploadPath = msg.substring(secondColon + 1);
-          wsUploadReceived = 0;
-          wsLastProgressSent = 0;
-          wsUploadStartTime = millis();
-
-          // Ensure path is valid
-          if (!wsUploadPath.startsWith("/")) wsUploadPath = "/" + wsUploadPath;
-          if (wsUploadPath.length() > 1 && wsUploadPath.endsWith("/")) {
-            wsUploadPath = wsUploadPath.substring(0, wsUploadPath.length() - 1);
-          }
-          if (!UploadPathGuard::isSafeAbsolutePath(wsUploadPath.c_str())) {
-            wsServer->sendTXT(num, "ERROR:Invalid upload path");
-            return;
-          }
-          if (wsUploadPath == "/Inbox" && !isSupportedReaderFile(wsUploadFileName.c_str())) {
-            wsServer->sendTXT(num, "ERROR:Inbox accepts reader files only");
-            return;
-          }
-          if (wsUploadPath == "/Inbox" && !Storage.exists("/Inbox") && !Storage.mkdir("/Inbox")) {
-            wsServer->sendTXT(num, "ERROR:Could not create Inbox");
-            return;
-          }
-          HalFile uploadDirectory = Storage.open(wsUploadPath.c_str());
-          if (!uploadDirectory || !uploadDirectory.isDirectory()) {
-            if (uploadDirectory) uploadDirectory.close();
-            wsServer->sendTXT(num, "ERROR:Upload folder does not exist");
-            return;
-          }
-          uploadDirectory.close();
-
-          String filePath = wsUploadPath;
-          if (!filePath.endsWith("/")) filePath += "/";
-          filePath += wsUploadFileName;
-
-          resetTaskWatchdogIfSubscribed();
-          if (Storage.exists(filePath.c_str())) {
-            LOG_DBG("WS", "Upload collision: %s", filePath.c_str());
-            wsServer->sendTXT(num, "ERROR:File already exists: " + wsUploadFileName);
-            return;
-          }
-
-          LOG_DBG("WS", "Starting upload: %s (%u bytes) to %s, free=%u maxalloc=%u", wsUploadFileName.c_str(),
-                  static_cast<unsigned>(wsUploadSize), filePath.c_str(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-
-          wsUploadStagingPath = hiddenBookFileSibling(filePath.c_str(), ".crossvi-upload.tmp").c_str();
-          if (!clearStaleBookUploadStaging(wsUploadStagingPath)) {
-            wsServer->sendTXT(num, "ERROR:Could not clear interrupted upload");
-            return;
-          }
-
-          // Open file for writing
-          resetTaskWatchdogIfSubscribed();
-          if (!Storage.openFileForWrite("WS", wsUploadStagingPath, wsUploadFile)) {
-            wsServer->sendTXT(num, "ERROR:Failed to create file");
-            wsUploadInProgress = false;
-            wsUploadClientNum = 255;
-            return;
-          }
-          wsUploadOwnsStagingFile = true;
-          resetTaskWatchdogIfSubscribed();
-
-          // Zero-byte upload: complete immediately without waiting for BIN frames
-          if (wsUploadSize == 0) {
-            // Explicit close() required: file-scope global persists beyond function scope
-            wsUploadFile.flush();
-            const bool synced = wsUploadFile.sync();
-            const bool closed = wsUploadFile.close();
-            const bool durable = synced && closed;
-            const BookFilePublishResult published =
-                durable ? publishStagedBookFile(wsUploadStagingPath.c_str(), filePath.c_str())
-                        : BookFilePublishResult::StorageError;
-            if (published == BookFilePublishResult::Published || published == BookFilePublishResult::Unchanged) {
-              wsUploadOwnsStagingFile = false;
-              wsUploadStagingPath = "";
-              wsLastCompleteName = wsUploadFileName;
-              wsLastCompleteSize = 0;
-              wsLastCompleteAt = millis();
-              lastCompletePath =
-                  isSupportedReaderFile(filePath.c_str()) ? std::string(filePath.c_str()) : std::string{};
-              LOG_DBG("WS", "Zero-byte upload complete: %s", filePath.c_str());
-              wsServer->sendTXT(num, "DONE");
-            } else {
-              if (wsUploadOwnsStagingFile) Storage.remove(wsUploadStagingPath.c_str());
-              wsUploadOwnsStagingFile = false;
-              wsUploadStagingPath = "";
-              wsServer->sendTXT(num, "ERROR:Could not safely publish upload");
-            }
-            wsLastProgressSent = 0;
-            break;
-          }
-
-          wsUploadClientNum = num;
-          wsUploadInProgress = true;
-          wsServer->sendTXT(num, "READY");
-        } else {
-          wsServer->sendTXT(num, "ERROR:Invalid START format");
-        }
-      }
-      break;
-    }
-
-    case WStype_BIN: {
-      if (!wsUploadInProgress || !wsUploadFile || num != wsUploadClientNum) {
-        wsServer->sendTXT(num, "ERROR:No upload in progress");
-        return;
-      }
-
-      // Write binary data directly to file
-      size_t remaining = wsUploadSize - wsUploadReceived;
-      if (length > remaining) {
-        abortWsUpload("WS");
-        wsServer->sendTXT(num, "ERROR:Upload overflow");
-        return;
-      }
-      resetTaskWatchdogIfSubscribed();
-      size_t written = wsUploadFile.write(payload, length);
-      resetTaskWatchdogIfSubscribed();
-
-      if (written != length) {
-        abortWsUpload("WS");
-        wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
-        return;
-      }
-
-      wsUploadReceived += written;
-
-      // Send progress update (every 64KB or at end)
-      if (wsUploadReceived - wsLastProgressSent >= 65536 || wsUploadReceived >= wsUploadSize) {
-        String progress = "PROGRESS:" + String(wsUploadReceived) + ":" + String(wsUploadSize);
-        wsServer->sendTXT(num, progress);
-        wsLastProgressSent = wsUploadReceived;
-      }
-
-      // Check if upload complete
-      if (wsUploadReceived >= wsUploadSize) {
-        // Explicit close() required: file-scope global persists beyond function scope
-        wsUploadFile.flush();
-        const bool synced = wsUploadFile.sync();
-        const bool closed = wsUploadFile.close();
-        const bool durable = synced && closed;
-        wsUploadInProgress = false;
-        wsUploadClientNum = 255;
-
-        unsigned long elapsed = millis() - wsUploadStartTime;
-        float kbps = (elapsed > 0) ? (wsUploadSize / 1024.0) / (elapsed / 1000.0) : 0;
-
-        LOG_DBG("WS", "Upload complete: %s (%u bytes in %lu ms, %.1f KB/s, free=%u maxalloc=%u)",
-                wsUploadFileName.c_str(), static_cast<unsigned>(wsUploadSize), elapsed, kbps, ESP.getFreeHeap(),
-                ESP.getMaxAllocHeap());
-
-        String filePath = wsUploadPath;
-        if (!filePath.endsWith("/")) filePath += "/";
-        filePath += wsUploadFileName;
-        const BookFilePublishResult published =
-            durable ? publishStagedBookFile(wsUploadStagingPath.c_str(), filePath.c_str())
-                    : BookFilePublishResult::StorageError;
-        if (published == BookFilePublishResult::Published || published == BookFilePublishResult::Unchanged) {
-          wsUploadOwnsStagingFile = false;
-          wsUploadStagingPath = "";
-          wsLastCompleteName = wsUploadFileName;
-          wsLastCompleteSize = wsUploadSize;
-          wsLastCompleteAt = millis();
-          lastCompletePath = isSupportedReaderFile(filePath.c_str()) ? std::string(filePath.c_str()) : std::string{};
-          wsServer->sendTXT(num, "DONE");
-        } else {
-          if (wsUploadOwnsStagingFile) Storage.remove(wsUploadStagingPath.c_str());
-          wsUploadOwnsStagingFile = false;
-          wsUploadStagingPath = "";
-          wsServer->sendTXT(num, "ERROR:Could not safely publish upload");
-        }
-        wsLastProgressSent = 0;
-      }
-      break;
-    }
-
-    default:
-      break;
-  }
 }
 
 // --- Font management handlers ---
@@ -2147,243 +2268,6 @@ void CrossPointWebServer::handleFontList() const {
   String json;
   serializeJson(doc, json);
   server->send(200, "application/json", json);
-}
-
-void CrossPointWebServer::handleFontUploadData() {
-  HTTPUpload& upload = server->upload();
-
-  switch (upload.status) {
-    case UPLOAD_FILE_START: {
-      resetTaskWatchdogIfSubscribed();
-      abortFontUpload("WEB");
-      String family = server->arg("family");
-      fontUpload.familyName.clear();
-      fontUpload.finalPath.clear();
-      fontUpload.stagingPath.clear();
-      fontUpload.backupPath.clear();
-      fontUpload.valid = false;
-      fontUpload.published = false;
-      fontUpload.writeOk = false;
-      fontUpload.error = FontUploadState::Error::None;
-      fontUpload.bytesWritten = 0;
-      fontUpload.bufferPos = 0;
-
-      if (!FontInstaller::isValidFamilyName(family.c_str())) {
-        fontUpload.error = FontUploadState::Error::InvalidFamily;
-        LOG_ERR("WEB", "Invalid font family name: %s", family.c_str());
-        break;
-      }
-
-      String filename = upload.filename;
-      filename.replace(' ', '_');
-      // Validate filename: rejects path traversal (../, /, \) and enforces
-      // a .cpfont basename of alphanumeric + hyphen + underscore. Without
-      // this an attacker could supply "../../.crosspoint/settings.json" as
-      // a "filename" and have it written outside the fonts directory.
-      if (!FontInstaller::isValidCpfontFilename(filename.c_str())) {
-        fontUpload.error = FontUploadState::Error::InvalidFilename;
-        LOG_ERR("WEB", "Invalid font filename: %s", filename.c_str());
-        break;
-      }
-
-      fontUpload.familyName = family.c_str();
-
-      // Create a temporary FontInstaller for directory creation
-      FontInstaller installer(sdFontSystem.registry());
-      if (!installer.ensureFamilyDir(family.c_str())) {
-        fontUpload.error = FontUploadState::Error::CreateDirectory;
-        LOG_ERR("WEB", "Failed to create font family dir");
-        break;
-      }
-
-      char path[FontStorageUtils::FONT_PATH_CAPACITY];
-      if (!FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path))) {
-        fontUpload.error = FontUploadState::Error::PathTooLong;
-        LOG_ERR("WEB", "Font destination path is too long");
-        break;
-      }
-      fontUpload.finalPath = path;
-      fontUpload.stagingPath = fontUpload.finalPath + ".upload.tmp";
-      fontUpload.backupPath = fontUpload.finalPath + ".upload.bak";
-
-      FontInstaller validator(sdFontSystem.registry());
-      const auto validateFont = [](const char* candidate, void* context) {
-        return static_cast<FontInstaller*>(context)->validateCpfontFile(candidate);
-      };
-      if (StagedFileTransaction::recover(fontUpload.finalPath.c_str(), fontUpload.backupPath.c_str(), validateFont,
-                                         &validator) == StagedFileTransaction::Status::IoError ||
-          (Storage.exists(fontUpload.stagingPath.c_str()) && !Storage.remove(fontUpload.stagingPath.c_str()))) {
-        fontUpload.error = FontUploadState::Error::Recovery;
-        LOG_ERR("WEB", "Failed to recover previous font upload: %s", path);
-        break;
-      }
-
-      if (!Storage.openFileForWrite("WEB", fontUpload.stagingPath.c_str(), fontUpload.file)) {
-        fontUpload.error = FontUploadState::Error::OpenStaging;
-        LOG_ERR("WEB", "Failed to open font staging file: %s", fontUpload.stagingPath.c_str());
-        break;
-      }
-
-      fontUpload.valid = true;
-      fontUpload.writeOk = true;
-      LOG_DBG("WEB", "Font upload started: %s -> %s, free=%u maxalloc=%u", filename.c_str(), path, ESP.getFreeHeap(),
-              ESP.getMaxAllocHeap());
-      break;
-    }
-
-    case UPLOAD_FILE_WRITE: {
-      if (!fontUpload.valid) break;
-      resetTaskWatchdogIfSubscribed();
-
-      // Buffer writes for efficiency
-      size_t remaining = upload.currentSize;
-      const uint8_t* src = upload.buf;
-      while (remaining > 0) {
-        size_t space = FontUploadState::BUFFER_SIZE - fontUpload.bufferPos;
-        size_t chunk = (remaining < space) ? remaining : space;
-        memcpy(fontUpload.buffer.data() + fontUpload.bufferPos, src, chunk);
-        fontUpload.bufferPos += chunk;
-        src += chunk;
-        remaining -= chunk;
-
-        if (fontUpload.bufferPos >= FontUploadState::BUFFER_SIZE) {
-          const size_t written = fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-          fontUpload.bytesWritten += written;
-          fontUpload.writeOk = fontUpload.writeOk && written == fontUpload.bufferPos;
-          fontUpload.bufferPos = 0;
-          if (!fontUpload.writeOk) {
-            fontUpload.valid = false;
-            fontUpload.error = FontUploadState::Error::ShortWrite;
-            break;
-          }
-          resetTaskWatchdogIfSubscribed();
-        }
-      }
-      break;
-    }
-
-    case UPLOAD_FILE_END: {
-      // Flush remaining buffer
-      if (fontUpload.valid && fontUpload.bufferPos > 0) {
-        const size_t written = fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-        fontUpload.bytesWritten += written;
-        fontUpload.writeOk = fontUpload.writeOk && written == fontUpload.bufferPos;
-        fontUpload.bufferPos = 0;
-      }
-      if (fontUpload.file.isOpen()) {
-        fontUpload.file.flush();
-        fontUpload.writeOk = fontUpload.writeOk && fontUpload.file.sync();
-        fontUpload.writeOk = fontUpload.file.close() && fontUpload.writeOk;
-      }
-
-      if (!fontUpload.writeOk && fontUpload.error == FontUploadState::Error::None) {
-        fontUpload.error = FontUploadState::Error::SyncClose;
-      }
-      if (fontUpload.writeOk && fontUpload.bytesWritten != upload.totalSize) {
-        fontUpload.writeOk = false;
-        fontUpload.error = FontUploadState::Error::SizeMismatch;
-      }
-
-      if (fontUpload.valid && fontUpload.writeOk) {
-        fontUpload.valid = publishFontUpload();
-      } else {
-        fontUpload.valid = false;
-      }
-      fontUpload.published = fontUpload.valid;
-      if (!fontUpload.valid && !fontUpload.stagingPath.empty()) Storage.remove(fontUpload.stagingPath.c_str());
-
-      LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes, free=%u maxalloc=%u", fontUpload.valid,
-              fontUpload.bytesWritten, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-      break;
-    }
-
-    case UPLOAD_FILE_ABORTED: {
-      abortFontUpload("WEB");
-      fontUpload.error = FontUploadState::Error::Aborted;
-      break;
-    }
-  }
-}
-
-void CrossPointWebServer::handleFontUpload() {
-  if (fontUpload.valid && fontUpload.published) {
-    sdFontSystem.markRegistryDirty();
-    server->send(200, "application/json", "{\"ok\":true}");
-    LOG_DBG("WEB", "Font upload complete: %s", fontUpload.finalPath.c_str());
-  } else {
-    const char* message = "Font upload failed";
-    switch (fontUpload.error) {
-      case FontUploadState::Error::InvalidFamily:
-        message = "Invalid font family name";
-        break;
-      case FontUploadState::Error::InvalidFilename:
-        message = "Invalid .cpfont filename";
-        break;
-      case FontUploadState::Error::CreateDirectory:
-        message = "Could not create the font folder";
-        break;
-      case FontUploadState::Error::PathTooLong:
-        message = "Font name or path is too long";
-        break;
-      case FontUploadState::Error::Recovery:
-        message = "Could not recover an interrupted font upload";
-        break;
-      case FontUploadState::Error::OpenStaging:
-        message = "Could not create the temporary font file";
-        break;
-      case FontUploadState::Error::ShortWrite:
-        message = "The SD card stopped accepting font data";
-        break;
-      case FontUploadState::Error::SyncClose:
-        message = "The font file could not be safely saved to the SD card";
-        break;
-      case FontUploadState::Error::SizeMismatch:
-        message = "The font upload was incomplete";
-        break;
-      case FontUploadState::Error::InvalidFont:
-        message = "The uploaded file is not a valid compatible .cpfont";
-        break;
-      case FontUploadState::Error::Publish:
-        message = "The validated font could not be installed";
-        break;
-      case FontUploadState::Error::Aborted:
-        message = "The font upload was cancelled or the connection closed";
-        break;
-      case FontUploadState::Error::None:
-        break;
-    }
-    String response = "{\"error\":\"";
-    response += message;
-    response += "\"}";
-    server->send(400, "application/json", response);
-  }
-}
-
-void CrossPointWebServer::abortFontUpload(const char* tag) {
-  if (fontUpload.file.isOpen()) fontUpload.file.close();
-  if (!fontUpload.stagingPath.empty() && Storage.exists(fontUpload.stagingPath.c_str())) {
-    Storage.remove(fontUpload.stagingPath.c_str());
-  }
-  fontUpload.valid = false;
-  fontUpload.published = false;
-  fontUpload.writeOk = false;
-  fontUpload.bufferPos = 0;
-  LOG_DBG(tag, "Font upload staging closed");
-}
-
-bool CrossPointWebServer::publishFontUpload() {
-  FontInstaller installer(sdFontSystem.registry());
-  const auto validateFont = [](const char* candidate, void* context) {
-    return static_cast<FontInstaller*>(context)->validateCpfontFile(candidate);
-  };
-  const auto status = StagedFileTransaction::publish(fontUpload.finalPath.c_str(), fontUpload.stagingPath.c_str(),
-                                                     fontUpload.backupPath.c_str(), validateFont, &installer);
-  if (status == StagedFileTransaction::Status::InvalidStaging) {
-    fontUpload.error = FontUploadState::Error::InvalidFont;
-  } else if (status != StagedFileTransaction::Status::Published) {
-    fontUpload.error = FontUploadState::Error::Publish;
-  }
-  return status == StagedFileTransaction::Status::Published;
 }
 
 void CrossPointWebServer::handleFontDelete() {

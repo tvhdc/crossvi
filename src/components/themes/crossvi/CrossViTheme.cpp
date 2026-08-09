@@ -239,13 +239,18 @@ Rect topRightBatteryRect(const Rect rect) {
               rect.y + 8, CrossViMetrics::values.batteryWidth, CrossViMetrics::values.batteryHeight};
 }
 
-bool outsideClockText(char (&value)[32]) {
-  if (!halClock.isAvailable() || SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_HIDE) {
-    return false;
-  }
+bool outsideDateTimeText(char (&value)[40]) {
+  if (!halClock.isAvailable()) return false;
+
+  const bool showTime = SETTINGS.outsideReaderClock != 0;
+  const bool showDate = SETTINGS.showDateOutsideReader;
+  if (!showTime && !showDate) return false;
+
   char time[9]{};
-  if (!halClock.formatTime(time, sizeof(time), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) return false;
-  if (!SETTINGS.showDateOutsideReader) {
+  const bool haveTime =
+      showTime && halClock.formatTime(time, sizeof(time), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1);
+  if (!showDate) {
+    if (!haveTime) return false;
     std::snprintf(value, sizeof(value), "%s", time);
     return true;
   }
@@ -256,13 +261,17 @@ bool outsideClockText(char (&value)[32]) {
   } else if (SETTINGS.dateSeparator == CrossPointSettings::DATE_SEPARATOR_HYPHEN) {
     separator = '-';
   }
-  char date[16]{};
-  if (!halClock.formatDate(date, sizeof(date), SETTINGS.clockUtcOffsetQ,
-                           static_cast<HalClock::DateFormat>(SETTINGS.dateFormat), separator)) {
+  char date[24]{};
+  const bool haveDate = halClock.formatDate(date, sizeof(date), SETTINGS.clockUtcOffsetQ,
+                                            static_cast<HalClock::DateFormat>(SETTINGS.dateFormat), separator,
+                                            I18N.getLanguage() == Language::VI);
+  if (!haveDate && !haveTime) return false;
+  if (!haveDate)
     std::snprintf(value, sizeof(value), "%s", time);
-    return true;
-  }
-  std::snprintf(value, sizeof(value), "%s %s", date, time);
+  else if (!haveTime)
+    std::snprintf(value, sizeof(value), "%s", date);
+  else
+    std::snprintf(value, sizeof(value), "%s %s", date, time);
   return true;
 }
 
@@ -488,13 +497,9 @@ void CrossViTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   const Rect battery = topRightBatteryRect(rect);
   drawBatteryRight(renderer, battery, showBatteryPercentage);
-  char timeValue[32]{};
-  if (outsideClockText(timeValue)) {
-    if (SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_LEFT) {
-      renderer.drawText(SMALL_FONT_ID, rect.x + CrossViMetrics::values.contentSidePadding, rect.y + 8, timeValue);
-    } else {
-      drawOutsideClockRight(renderer, rect, battery, showBatteryPercentage, timeValue);
-    }
+  char timeValue[40]{};
+  if (outsideDateTimeText(timeValue)) {
+    drawOutsideClockRight(renderer, rect, battery, showBatteryPercentage, timeValue);
   }
 
   int titleWidth = title ? renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD) : 0;
@@ -727,31 +732,23 @@ void CrossViTheme::drawHomeHeader(const GfxRenderer& renderer, const Rect rect, 
   const Rect battery = topRightBatteryRect(rect);
   drawBatteryRight(renderer, battery, showBatteryPercentage);
 
-  char timeValue[32]{};
-  const bool showClock = outsideClockText(timeValue);
-  const int clockWidth = showClock ? renderer.getTextWidth(SMALL_FONT_ID, timeValue) : 0;
-  const int rightLimit = showClock && SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_RIGHT
-                             ? batteryClusterLeft(renderer, battery, showBatteryPercentage) - clockWidth - 18
+  char timeValue[40]{};
+  const bool showDateTime = outsideDateTimeText(timeValue);
+  const int dateTimeWidth = showDateTime ? renderer.getTextWidth(SMALL_FONT_ID, timeValue) : 0;
+  const int rightLimit = showDateTime
+                             ? batteryClusterLeft(renderer, battery, showBatteryPercentage) - dateTimeWidth - 18
                              : batteryClusterLeft(renderer, battery, showBatteryPercentage) - 10;
 
   if (SETTINGS.showDeviceNameOnHome) {
     const char* displayName = SETTINGS.deviceDisplayName[0] != '\0' ? SETTINGS.deviceDisplayName
                                                                     : (gpio.deviceIsX3() ? "Xteink X3" : "Xteink X4");
     const int left = rect.x + CrossViMetrics::values.contentSidePadding;
-    const int leftClockReserve =
-        showClock && SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_LEFT ? clockWidth + 10 : 0;
-    const int nameMaxWidth = std::max(0, rightLimit - left - leftClockReserve);
+    const int nameMaxWidth = std::max(0, rightLimit - left);
     const std::string safeName =
         renderer.truncatedText(UI_10_FONT_ID, displayName, nameMaxWidth, EpdFontFamily::REGULAR);
     renderer.drawText(UI_10_FONT_ID, left, rect.y + 9, safeName.c_str());
-    if (showClock && SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_LEFT) {
-      renderer.drawText(SMALL_FONT_ID, left + renderer.getTextWidth(UI_10_FONT_ID, safeName.c_str()) + 10, rect.y + 8,
-                        timeValue);
-    }
-  } else if (showClock && SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_LEFT) {
-    renderer.drawText(SMALL_FONT_ID, rect.x + CrossViMetrics::values.contentSidePadding, rect.y + 8, timeValue);
   }
-  if (showClock && SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_RIGHT) {
+  if (showDateTime) {
     drawOutsideClockRight(renderer, rect, battery, showBatteryPercentage, timeValue);
   }
 }

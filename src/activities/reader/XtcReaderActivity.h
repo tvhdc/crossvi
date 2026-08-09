@@ -32,6 +32,7 @@ class XtcReaderActivity final : public Activity {
   uint32_t lastSavedPage = static_cast<uint32_t>(-1);
   std::atomic<uint32_t> lastSuccessfullyRenderedPage{std::numeric_limits<uint32_t>::max()};
   int pagesUntilFullRefresh = 0;
+  bool skipStartupRecentUpdate = false;
   // Next-book suggestion menu for the End-of-Book screen
   EndOfBookOptions endOfBookOptions;
 
@@ -108,11 +109,12 @@ class XtcReaderActivity final : public Activity {
  public:
   explicit XtcReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc,
                              std::optional<uint32_t> initialBookmarkPage = std::nullopt,
-                             int initialRefreshCountdown = 0)
+                             int initialRefreshCountdown = 0, bool skipStartupRecentUpdate = false)
       : Activity("XtcReader", renderer, mappedInput),
         xtc(std::move(xtc)),
         initialBookmarkPage(initialBookmarkPage),
-        pagesUntilFullRefresh(initialRefreshCountdown) {}
+        pagesUntilFullRefresh(initialRefreshCountdown),
+        skipStartupRecentUpdate(skipStartupRecentUpdate) {}
   void onEnter() override;
   void onExit() override;
   void onPause() override;

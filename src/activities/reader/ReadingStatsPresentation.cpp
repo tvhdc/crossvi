@@ -132,8 +132,10 @@ GlobalReadingStatsPresentation buildGlobalPresentation(const GlobalReadingStats&
   return model;
 }
 
-ReadingCalendarSnapshot buildCalendarSnapshot(const GlobalReadingStats& stats, const bool trusted,
-                                              const ReadingStatsDate* today) {
+}  // namespace
+
+ReadingCalendarSnapshot buildReadingCalendarSnapshot(const GlobalReadingStats& stats, const bool trusted,
+                                                     const ReadingStatsDate* today) {
   ReadingCalendarSnapshot snapshot;
   if (!trusted) return snapshot;
 
@@ -160,7 +162,6 @@ ReadingCalendarSnapshot buildCalendarSnapshot(const GlobalReadingStats& stats, c
   }
   return snapshot;
 }
-}  // namespace
 
 ReadingStatsPresentation buildReadingStatsPresentation(
     const BookReadingStats& bookStats, const bool bookStatsTrusted, const GlobalReadingStats& deviceStats,
@@ -170,7 +171,7 @@ ReadingStatsPresentation buildReadingStatsPresentation(
   model.book = buildBookPresentation(bookStats, bookStatsTrusted, now, progress, hasFreshTimeEstimate);
   const ReadingStatsDate* today = now && now->isValid() ? &now->date : nullptr;
   model.device = buildGlobalPresentation(deviceStats, deviceStatsTrusted, today);
-  model.deviceCalendar = buildCalendarSnapshot(deviceStats, deviceStatsTrusted, today);
+  model.deviceCalendar = buildReadingCalendarSnapshot(deviceStats, deviceStatsTrusted, today);
   model.validPeerCount = allSyncedStats.validPeerCount;
   model.skippedPeerCount = allSyncedStats.skippedPeerCount;
   model.showAllSynced = allSyncedStats.validPeerCount > 0;

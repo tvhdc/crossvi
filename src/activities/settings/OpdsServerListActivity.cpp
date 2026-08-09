@@ -61,8 +61,6 @@ void OpdsServerListActivity::onEnter() {
   requestUpdate();
 }
 
-void OpdsServerListActivity::onExit() { Activity::onExit(); }
-
 void OpdsServerListActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     if (pickerMode) {

@@ -29,7 +29,6 @@ class EpubReaderChapterSelectionActivity final : public Activity {
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex) {}
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 };

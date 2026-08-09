@@ -5,4 +5,6 @@ target_link_libraries(OtaVersionTest PRIVATE
   GTest::gtest_main
 )
 
+target_include_directories(OtaVersionTest PRIVATE ${REPO_ROOT}/src)
+
 gtest_discover_tests(OtaVersionTest)

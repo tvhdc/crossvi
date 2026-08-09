@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #define REPLACEMENT_GLYPH 0xFFFD
 
 uint32_t utf8NextCodepoint(const unsigned char** string);
@@ -27,6 +28,98 @@ std::string utf8CleanLookupWord(const std::string& text);
 // Returns the new length (<= len). If the buffer ends mid-sequence, the
 // incomplete trailing bytes are excluded.
 int utf8SafeTruncateBuffer(const char* buf, int len);
+
+inline bool utf8IsValid(const std::string_view text) {
+  for (size_t i = 0; i < text.size();) {
+    const uint8_t first = static_cast<uint8_t>(text[i]);
+    if (first <= 0x7F) {
+      if (first == 0) return false;
+      ++i;
+      continue;
+    }
+
+    size_t continuationCount = 0;
+    uint32_t codePoint = 0;
+    uint32_t minimum = 0;
+    if (first >= 0xC2 && first <= 0xDF) {
+      continuationCount = 1;
+      codePoint = first & 0x1FU;
+      minimum = 0x80;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+      continuationCount = 2;
+      codePoint = first & 0x0FU;
+      minimum = 0x800;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+      continuationCount = 3;
+      codePoint = first & 0x07U;
+      minimum = 0x10000;
+    } else {
+      return false;
+    }
+    if (continuationCount > text.size() - i - 1) return false;
+    for (size_t j = 1; j <= continuationCount; ++j) {
+      const uint8_t continuation = static_cast<uint8_t>(text[i + j]);
+      if ((continuation & 0xC0U) != 0x80U) return false;
+      codePoint = (codePoint << 6) | (continuation & 0x3FU);
+    }
+    if (codePoint < minimum || codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) return false;
+    i += continuationCount + 1;
+  }
+  return true;
+}
+
+inline uint32_t utf8LowerVietnamese(const uint32_t cp) {
+  if (cp >= 'A' && cp <= 'Z') return cp + ('a' - 'A');
+  if (cp >= 0x1EA0 && cp <= 0x1EF8 && (cp & 1U) == 0) return cp + 1;
+  switch (cp) {
+    case 0x00C0:
+      return 0x00E0;
+    case 0x00C1:
+      return 0x00E1;
+    case 0x00C2:
+      return 0x00E2;
+    case 0x00C3:
+      return 0x00E3;
+    case 0x00C8:
+      return 0x00E8;
+    case 0x00C9:
+      return 0x00E9;
+    case 0x00CA:
+      return 0x00EA;
+    case 0x00CC:
+      return 0x00EC;
+    case 0x00CD:
+      return 0x00ED;
+    case 0x00D2:
+      return 0x00F2;
+    case 0x00D3:
+      return 0x00F3;
+    case 0x00D4:
+      return 0x00F4;
+    case 0x00D5:
+      return 0x00F5;
+    case 0x00D9:
+      return 0x00F9;
+    case 0x00DA:
+      return 0x00FA;
+    case 0x00DD:
+      return 0x00FD;
+    case 0x0102:
+      return 0x0103;
+    case 0x0110:
+      return 0x0111;
+    case 0x0128:
+      return 0x0129;
+    case 0x0168:
+      return 0x0169;
+    case 0x01A0:
+      return 0x01A1;
+    case 0x01AF:
+      return 0x01B0;
+    default:
+      return cp;
+  }
+}
 
 // Returns true for CJK characters that allow line breaks on either side without hyphenation.
 // Covers CJK Unified Ideographs, Hiragana, Katakana, Hangul Syllables, CJK punctuation,

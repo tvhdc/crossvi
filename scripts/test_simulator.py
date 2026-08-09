@@ -271,11 +271,11 @@ def prime_book_cache(device: str, sd: Path, book_format: str) -> Path:
 
 
 def run_typography_case(
-    device: str, book_format: str, normalization: str, darkness: int, font_family: int = 0,
-    font_size: int = 1, sd_font_family: Path | None = None,
+    device: str, book_format: str, normalization: str, font_family: int = 0, font_size: int = 1,
+    sd_font_family: Path | None = None,
 ) -> tuple[list[int], str]:
     family_key = sd_font_family.name if sd_font_family else str(font_family)
-    output = BUILD / f"{device}-typography-{family_key}-{font_size}-{book_format}-{normalization.lower()}-{darkness}"
+    output = BUILD / f"{device}-typography-{family_key}-{font_size}-{book_format}-{normalization.lower()}"
     if output.exists():
         shutil.rmtree(output)
     sd = output / "sd"
@@ -293,7 +293,6 @@ def run_typography_case(
         "embeddedStyle": 1,
         "hyphenationEnabled": 0,
         "textAntiAliasing": 1,
-        "textDarkness": darkness,
         "statusBarChapterPageCount": 0,
         "statusBarProgressBar": 2,
         "statusBarTitle": 2,
@@ -337,36 +336,29 @@ def run_typography_case(
 
 
 def smoke_large_sd_font_typography(device: str, family_dir: Path) -> None:
-    size20, log20 = run_typography_case(device, "txt", "NFC", 0, font_size=4, sd_font_family=family_dir)
-    size28, log28 = run_typography_case(device, "txt", "NFD", 0, font_size=8, sd_font_family=family_dir)
+    size20, log20 = run_typography_case(device, "txt", "NFC", font_size=4, sd_font_family=family_dir)
+    size28, log28 = run_typography_case(device, "txt", "NFD", font_size=8, sd_font_family=family_dir)
     for point_size, log in ((20, log20), (28, log28)):
         if not re.search(rf"Loaded .* size={point_size}\b", log):
             raise AssertionError(f"{device.upper()} did not load the physical {point_size} pt SD font")
     if not any(pixel < 255 for pixel in size20) or not any(pixel < 255 for pixel in size28):
         raise AssertionError(f"{device.upper()} large SD font rendered no text")
 
-    normal, normal_log = run_typography_case(
-        device, "epub", "NFC", 0, font_size=8, sd_font_family=family_dir
-    )
-    decomposed, _ = run_typography_case(device, "epub", "NFD", 0, font_size=8, sd_font_family=family_dir)
-    dark, _ = run_typography_case(device, "epub", "NFC", 1, font_size=8, sd_font_family=family_dir)
-    extra_dark, _ = run_typography_case(device, "epub", "NFC", 2, font_size=8, sd_font_family=family_dir)
+    normal, normal_log = run_typography_case(device, "epub", "NFC", font_size=8, sd_font_family=family_dir)
+    decomposed, _ = run_typography_case(device, "epub", "NFD", font_size=8, sd_font_family=family_dir)
     if normal != decomposed:
         raise AssertionError(f"{device.upper()} 28 pt SD font differs for NFC/NFD text")
-    normal_mask = [pixel < 255 for pixel in normal]
-    if normal_mask != [pixel < 255 for pixel in dark] or normal_mask != [pixel < 255 for pixel in extra_dark]:
-        raise AssertionError(f"{device.upper()} 28 pt text darkness changed typography geometry")
     if not re.search(r"Loaded .* size=28\b", normal_log):
         raise AssertionError(f"{device.upper()} EPUB did not use the 28 pt SD font")
-    print(f"{device.upper()}: 20/28 pt SD font content with four styles and text-darkness smoke passed")
+    print(f"{device.upper()}: 20/28 pt SD font content with four styles smoke passed")
 
 
 def smoke_vietnamese_typography(device: str) -> None:
     if unicodedata.normalize("NFC", TYPOGRAPHY_LINES[1]) == unicodedata.normalize("NFD", TYPOGRAPHY_LINES[1]):
         raise AssertionError("Vietnamese typography fixture does not exercise normalization")
 
-    txt_nfc, txt_nfc_log = run_typography_case(device, "txt", "NFC", 0)
-    txt_nfd, txt_nfd_log = run_typography_case(device, "txt", "NFD", 0)
+    txt_nfc, txt_nfc_log = run_typography_case(device, "txt", "NFC")
+    txt_nfd, txt_nfd_log = run_typography_case(device, "txt", "NFD")
     txt_nfc_pages = re.search(r"Built page index: (\d+) pages", txt_nfc_log)
     txt_nfd_pages = re.search(r"Built page index: (\d+) pages", txt_nfd_log)
     if not txt_nfc_pages or not txt_nfd_pages or txt_nfc_pages.group(1) != txt_nfd_pages.group(1):
@@ -374,27 +366,16 @@ def smoke_vietnamese_typography(device: str) -> None:
     if not any(pixel < 255 for pixel in txt_nfc) or not any(pixel < 255 for pixel in txt_nfd):
         raise AssertionError(f"{device.upper()} TXT typography fixture rendered no ink")
 
-    normal, _ = run_typography_case(device, "epub", "NFC", 0)
-    decomposed, _ = run_typography_case(device, "epub", "NFD", 0)
+    normal, _ = run_typography_case(device, "epub", "NFC")
+    decomposed, _ = run_typography_case(device, "epub", "NFD")
     if normal != decomposed:
         raise AssertionError(f"{device.upper()} EPUB NFC/NFD typography differs after normalization")
-    dark, _ = run_typography_case(device, "epub", "NFC", 1)
-    extra_dark, _ = run_typography_case(device, "epub", "NFC", 2)
-    if any(not (extra <= darker <= base) for base, darker, extra in zip(normal, dark, extra_dark)):
-        raise AssertionError(f"{device.upper()} text darkness brightened at least one pixel")
-    if not any(darker < base for base, darker in zip(normal, dark)):
-        raise AssertionError(f"{device.upper()} Dark text did not differ from Normal")
-    if not any(extra < darker for darker, extra in zip(dark, extra_dark)):
-        raise AssertionError(f"{device.upper()} Extra Dark text did not differ from Dark")
-    normal_mask = [pixel < 255 for pixel in normal]
-    if normal_mask != [pixel < 255 for pixel in dark] or normal_mask != [pixel < 255 for pixel in extra_dark]:
-        raise AssertionError(f"{device.upper()} text darkness changed typography geometry")
 
-    sans_txt, _ = run_typography_case(device, "txt", "NFC", 0, 1)
-    sans_epub, _ = run_typography_case(device, "epub", "NFD", 0, 1)
+    sans_txt, _ = run_typography_case(device, "txt", "NFC", font_family=1)
+    sans_epub, _ = run_typography_case(device, "epub", "NFD", font_family=1)
     if not any(pixel < 255 for pixel in sans_txt) or not any(pixel < 255 for pixel in sans_epub):
         raise AssertionError(f"{device.upper()} Noto Sans typography fixture rendered no ink")
-    print(f"{device.upper()}: Noto Serif/Sans Vietnamese typography and text-darkness smoke passed")
+    print(f"{device.upper()}: Noto Serif/Sans Vietnamese typography smoke passed")
 
 
 def xtg_source(path: Path) -> tuple[int, int, bytes]:
@@ -1920,22 +1901,25 @@ def smoke_settings_directional_navigation(device: str) -> None:
             {
                 "uiTheme": 5,
                 "language": "VI",
-                "sleepScreenCoverMode": 0,
-                "fadingFix": False,
+                "homeLayout": 0,
+                "fontSize": 1,
             }
         )
         + "\n",
         encoding="utf-8",
     )
 
-    # Sequential Home menu -> Settings. The tab bar is the initial focus;
-    # navigation enters rows, Confirm opens the Fit/Crop popup, and returning to
-    # the tab then pressing Confirm changes category.
+    # Sequential Home menu -> Settings. Exercise both grouped settings screens:
+    # Appearance owns the Home-layout popup. Text Settings exposes the
+    # Font/Size/Layout/Style tab bar and renders font/size choices inline.
     events = (
         "1200:DOWN,1400:DOWN,1600:DOWN,1800:DOWN,2000:DOWN,2400:CONFIRM,"
-        "3200:DOWN,3500:DOWN,3700:DOWN,3850:DOWN,4000:CONFIRM,4400:SCREENSHOT,"
-        "4800:DOWN,5200:CONFIRM,5700:SCREENSHOT,6100:UP,6400:UP,6500:UP,"
-        "6800:SCREENSHOT,7200:CONFIRM,7700:SCREENSHOT,8100:BACK"
+        "3200:DOWN,3600:CONFIRM,4200:SCREENSHOT,4600:CONFIRM,5100:SCREENSHOT,"
+        "5500:DOWN,5900:CONFIRM,6400:BACK,7000:SCREENSHOT,7400:BACK,"
+        "7800:CONFIRM,8300:SCREENSHOT,8700:DOWN,9100:CONFIRM,9600:SCREENSHOT,"
+        "10000:DOWN,10400:DOWN,10800:CONFIRM,11300:SCREENSHOT,11700:BACK,"
+        "12100:CONFIRM,12600:SCREENSHOT,13000:DOWN,13400:DOWN,13800:DOWN,"
+        "14200:CONFIRM,14700:SCREENSHOT"
     )
     environment = os.environ.copy()
     environment.update(
@@ -1944,23 +1928,33 @@ def smoke_settings_directional_navigation(device: str) -> None:
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "8600",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "15400",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
-    completed = run([str(binary)], env=environment, capture_output=True, timeout=15)
+    completed = run([str(binary)], env=environment, capture_output=True, timeout=22)
     log = completed.stdout + completed.stderr
-    if "Entering activity: Settings" not in log:
+    if "Entering activity: Settings" not in log or "Entering activity: AppearanceSettings" not in log:
         raise AssertionError(f"{device.upper()} did not enter Settings through the Home grid:\n{log}")
+    if "Entering activity: TextSettings" not in log or "Entering activity: FontSizeSelect" in log:
+        raise AssertionError(f"{device.upper()} did not keep font and size choices inside Text Settings:\n{log}")
     screenshots = sorted(shots.glob("*.framebuffer.bin"))
-    if len(screenshots) != 4 or screenshots[0].read_bytes() == screenshots[1].read_bytes():
-        raise AssertionError(f"{device.upper()} did not render the Fit/Crop option popup")
+    if len(screenshots) != 8 or screenshots[0].read_bytes() == screenshots[1].read_bytes():
+        raise AssertionError(f"{device.upper()} did not render the Home-layout option popup")
     if screenshots[2].read_bytes() == screenshots[3].read_bytes():
         raise AssertionError(f"{device.upper()} Confirm on the tab did not change category")
+    if (
+        screenshots[4].read_bytes() == screenshots[5].read_bytes()
+        or screenshots[5].read_bytes() == screenshots[6].read_bytes()
+        or screenshots[6].read_bytes() == screenshots[7].read_bytes()
+    ):
+        raise AssertionError(f"{device.upper()} inline font/size lists did not render distinct states")
     saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
-    if saved.get("sleepScreenCoverMode") != 1:
-        raise AssertionError(f"{device.upper()} Settings did not preserve the popup selection")
-    print(f"{device.upper()}: Settings tab focus, Confirm category switch and option popup smoke passed")
+    if saved.get("homeLayout") != 1:
+        raise AssertionError(f"{device.upper()} Appearance Settings did not preserve the Home-layout selection")
+    if saved.get("fontSize") != 2:
+        raise AssertionError(f"{device.upper()} inline Size tab did not persist the selected 16 pt size")
+    print(f"{device.upper()}: grouped Appearance/Text settings navigation and rendering smoke passed")
 
 
 def smoke_screen_margin_settings(device: str) -> None:
@@ -1977,7 +1971,8 @@ def smoke_screen_margin_settings(device: str) -> None:
 
     enter_margin_picker = (
         "700:DOWN,900:DOWN,1100:DOWN,1300:DOWN,1500:DOWN,1700:CONFIRM,"
-        "2300:CONFIRM,2500:DOWN,2750:DOWN,3000:DOWN,3250:DOWN,3500:DOWN,3800:CONFIRM"
+        "2300:CONFIRM,2600:DOWN,2900:CONFIRM,3300:CONFIRM,3600:CONFIRM,"
+        "3900:DOWN,4200:DOWN,4500:DOWN,4800:CONFIRM"
     )
 
     def run_case(name: str, actions: str, exit_after_ms: int) -> str:
@@ -2001,18 +1996,18 @@ def smoke_screen_margin_settings(device: str) -> None:
 
     # Starting at 5, nine rows reach 70. Starting at the last row, one more
     # Down wraps to 5; cancel must retain 70, while Confirm must persist 5.
-    down_to_70 = ",".join(f"{4400 + index * 280}:DOWN" for index in range(9))
-    run_case("confirm-70", down_to_70 + ",7100:CONFIRM,7700:BACK", 8400)
+    down_to_70 = ",".join(f"{5400 + index * 280}:DOWN" for index in range(9))
+    run_case("confirm-70", down_to_70 + ",8000:CONFIRM,8600:BACK", 9300)
     saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
     if saved.get("screenMargin") != 70:
         raise AssertionError(f"{device.upper()} screen-margin picker did not persist 70")
 
-    run_case("cancel-5", "4500:DOWN,5100:BACK,5700:BACK", 6400)
+    run_case("cancel-5", "5400:DOWN,6000:BACK,6600:BACK", 7300)
     saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
     if saved.get("screenMargin") != 70:
         raise AssertionError(f"{device.upper()} Back changed the persisted screen margin")
 
-    run_case("confirm-5", "4500:DOWN,5100:CONFIRM,5700:BACK", 6400)
+    run_case("confirm-5", "5400:DOWN,6000:CONFIRM,6600:BACK", 7300)
     saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
     if saved.get("screenMargin") != 5:
         raise AssertionError(f"{device.upper()} ten-row screen-margin picker did not wrap and persist 5")
@@ -2093,9 +2088,9 @@ def smoke_font_size_settings(device: str) -> None:
     # reopen, confirm Large, leave Settings and verify the persisted value.
     events = (
         "800:DOWN,1050:DOWN,1300:DOWN,1550:DOWN,1800:DOWN,2400:CONFIRM,"
-        "3100:CONFIRM,3400:DOWN,3700:DOWN,4000:DOWN,4500:CONFIRM,"
-        "5000:SCREENSHOT,5400:DOWN,5800:SCREENSHOT,6200:BACK,"
-        "6900:CONFIRM,7300:DOWN,7700:CONFIRM,8400:BACK,8800:BACK"
+        "3100:CONFIRM,3400:DOWN,3800:CONFIRM,4300:CONFIRM,4700:DOWN,5100:CONFIRM,"
+        "5600:SCREENSHOT,6000:DOWN,6400:SCREENSHOT,6800:BACK,"
+        "7500:CONFIRM,7900:DOWN,8300:CONFIRM,9000:BACK,9400:BACK"
     )
     environment = os.environ.copy()
     environment.update(
@@ -2104,7 +2099,7 @@ def smoke_font_size_settings(device: str) -> None:
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "9500",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "10000",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
@@ -2149,11 +2144,11 @@ def smoke_extended_sd_font_sizes(device: str, family_dir: Path) -> None:
     # cancel, then repeat and confirm. This covers scrolling and Back restore.
     events = (
         "800:DOWN,1050:DOWN,1300:DOWN,1550:DOWN,1800:DOWN,2400:CONFIRM,"
-        "3100:CONFIRM,3400:DOWN,3700:DOWN,4000:DOWN,4500:CONFIRM,"
-        "4900:DOWN,5200:DOWN,5500:DOWN,5800:DOWN,6100:DOWN,6400:DOWN,6700:DOWN,"
-        "7100:SCREENSHOT,7500:BACK,8100:CONFIRM,"
-        "8500:DOWN,8800:DOWN,9100:DOWN,9400:DOWN,9700:DOWN,10000:DOWN,10300:DOWN,"
-        "10700:SCREENSHOT,11100:CONFIRM,11700:BACK,12100:BACK"
+        "3100:CONFIRM,3400:DOWN,3800:CONFIRM,4300:CONFIRM,4700:DOWN,5100:CONFIRM,"
+        "5500:DOWN,5800:DOWN,6100:DOWN,6400:DOWN,6700:DOWN,7000:DOWN,7300:DOWN,"
+        "7700:SCREENSHOT,8100:BACK,8700:CONFIRM,"
+        "9100:DOWN,9400:DOWN,9700:DOWN,10000:DOWN,10300:DOWN,10600:DOWN,10900:DOWN,"
+        "11300:SCREENSHOT,11700:CONFIRM,12300:BACK,12700:BACK"
     )
     environment = os.environ.copy()
     environment.update(
@@ -2162,7 +2157,7 @@ def smoke_extended_sd_font_sizes(device: str, family_dir: Path) -> None:
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "12800",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "13400",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
@@ -2206,8 +2201,8 @@ def smoke_failed_font_size_preview_rollback(device: str, family_dir: Path) -> No
     )
     events = (
         "800:DOWN,1050:DOWN,1300:DOWN,1550:DOWN,1800:DOWN,2400:CONFIRM,"
-        "3100:CONFIRM,3400:DOWN,3700:DOWN,4000:DOWN,4500:CONFIRM,"
-        "5200:DOWN,6100:BACK,6900:BACK,7500:BACK"
+        "3100:CONFIRM,3400:DOWN,3800:CONFIRM,4300:CONFIRM,4700:DOWN,5100:CONFIRM,"
+        "5800:DOWN,6500:BACK,7200:BACK,7800:BACK"
     )
     environment = os.environ.copy()
     environment.update(
@@ -2215,7 +2210,7 @@ def smoke_failed_font_size_preview_rollback(device: str, family_dir: Path) -> No
             "SDL_VIDEODRIVER": "dummy",
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "8400",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "8500",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
@@ -2573,6 +2568,7 @@ def main() -> int:
             raw_digest, bmp_digest = smoke_device(device, golden[device], args.update_golden)
             golden[device]["sha256"] = raw_digest
             golden[device]["bmp_sha256"] = bmp_digest
+            smoke_settings_directional_navigation(device)
             smoke_xtc_navigation(device)
             continue
         smoke_home_layouts_without_reading_summary(device)

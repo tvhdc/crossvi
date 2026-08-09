@@ -76,7 +76,9 @@ void XMLCALL ContainerParser::startElement(void* userData, const XML_Char* name,
     }
 
     // Check if this is the standard OEBPS package
-    if (mediaType && path && strcmp(mediaType, "application/oebps-package+xml") == 0) {
+    // The first supported rootfile is the default rendition. Do not let a
+    // later alternate rendition silently replace it.
+    if (self->fullPath.empty() && mediaType && path && strcmp(mediaType, "application/oebps-package+xml") == 0) {
       self->fullPath = path;
     }
   }

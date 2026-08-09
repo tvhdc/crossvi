@@ -30,6 +30,13 @@ bool startsWithImageMediaType(const std::string& mediaType) {
 
   return true;
 }
+
+std::string trimAsciiWhitespace(const std::string& value) {
+  const size_t first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const size_t last = value.find_last_not_of(" \t\r\n");
+  return value.substr(first, last - first + 1);
+}
 }  // namespace
 
 bool ContentOpfParser::setup() {
@@ -174,6 +181,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_METADATA && strcmp(name, "dc:language") == 0) {
+    self->currentLanguage.clear();
     self->state = IN_BOOK_LANGUAGE;
     return;
   }
@@ -396,7 +404,7 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
   }
 
   if (self->state == IN_BOOK_LANGUAGE) {
-    self->language.append(s, len);
+    self->currentLanguage.append(s, len);
     return;
   }
 }
@@ -440,6 +448,8 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
   }
 
   if (self->state == IN_BOOK_LANGUAGE && strcmp(name, "dc:language") == 0) {
+    if (self->language.empty()) self->language = trimAsciiWhitespace(self->currentLanguage);
+    self->currentLanguage.clear();
     self->state = IN_METADATA;
     return;
   }

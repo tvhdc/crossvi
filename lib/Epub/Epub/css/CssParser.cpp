@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 
 #include <algorithm>
 #include <array>
@@ -492,6 +493,14 @@ void CssParser::processRuleBlockWithStyle(std::string_view selectorGroup, const 
   // silently; the only heap allocation per kept selector is the std::string
   // map key, which is unavoidable since the map owns its keys.
   bool limitReached = false;
+  const auto hasHeapForRuleGrowth = [&]() {
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+    if (MemoryBudget::hasHeadroom(freeHeap, maxAllocHeap, MemoryBudget::CSS_RULE_GROWTH)) return true;
+    LOG_ERR("CSS", "Stopping CSS parse before rule allocation (free=%u maxAlloc=%u rules=%u)", freeHeap, maxAllocHeap,
+            static_cast<unsigned>(rulesBySelector_.size()));
+    return false;
+  };
   forEachDelimitedToken(
       selectorGroup, [](char c) { return c == ','; },
       [&](std::string_view sel) {
@@ -549,17 +558,23 @@ void CssParser::processRuleBlockWithStyle(std::string_view selectorGroup, const 
           return;
         }
 
-        // Store or merge with existing. Hash/equal are case-insensitive, so two
-        // selectors that differ only in ASCII case collide on insert and merge.
-        std::string normalizedSelector(selectorParts[0]);
-        if (selectorPartCount == 2) {
-          normalizedSelector.push_back(' ');
-          normalizedSelector.append(selectorParts[1]);
-        }
-        auto it = rulesBySelector_.find(normalizedSelector);
+        // Check for an existing rule without allocating a temporary key. Low
+        // memory must not prevent a duplicate selector from updating a rule
+        // that is already resident.
+        auto it = selectorPartCount == 1 ? rulesBySelector_.find(selectorParts[0])
+                                         : rulesBySelector_.find(CompositeKey{selectorParts[0], " ", selectorParts[1]});
         if (it != rulesBySelector_.end()) {
           it->second.applyOver(style);
         } else {
+          if (!hasHeapForRuleGrowth()) {
+            limitReached = true;
+            return;
+          }
+          std::string normalizedSelector(selectorParts[0]);
+          if (selectorPartCount == 2) {
+            normalizedSelector.push_back(' ');
+            normalizedSelector.append(selectorParts[1]);
+          }
           rulesBySelector_.emplace(std::move(normalizedSelector), style);
         }
       });
@@ -963,6 +978,7 @@ bool CssParser::loadFromCache() {
   clear();
   uint16_t decodedRuleCount = 0;
   uint32_t crc = UINT32_MAX;
+  bool insufficientMemory = false;
   const auto readPayload = [&file, &crc](void* data, const size_t size) {
     const int available = file.available();
     if (available < 0 || static_cast<size_t>(available) < size || file.read(data, size) != static_cast<int>(size)) {
@@ -979,6 +995,12 @@ bool CssParser::loadFromCache() {
     }
     if (!readPayload(&decodedRuleCount, sizeof(decodedRuleCount)) || decodedRuleCount > MAX_RULES) return false;
 
+    if (decodedRuleCount > 0 &&
+        !MemoryBudget::hasHeadroom(ESP.getFreeHeap(), ESP.getMaxAllocHeap(), MemoryBudget::CSS_RULE_GROWTH)) {
+      LOG_ERR("CSS", "Not enough memory to load %u cached CSS rules", decodedRuleCount);
+      insufficientMemory = true;
+      return false;
+    }
     rulesBySelector_.reserve(decodedRuleCount);
     constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
     constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
@@ -1083,7 +1105,9 @@ bool CssParser::loadFromCache() {
   const bool closed = file.close();
   if (!decoded || !closed) {
     clear();
-    if (Storage.exists(canonicalPath.c_str())) Storage.remove(canonicalPath.c_str());
+    // A valid cache rejected only because RAM is currently low must remain
+    // available for the next load. Corrupt or unreadable caches are removed.
+    if (!insufficientMemory && Storage.exists(canonicalPath.c_str())) Storage.remove(canonicalPath.c_str());
     return false;
   }
 

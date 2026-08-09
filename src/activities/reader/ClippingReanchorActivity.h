@@ -21,6 +21,7 @@ class ClippingReanchorActivity final : public Activity {
                            uint32_t layoutFingerprint, int fontId, int marginLeft, int marginTop);
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

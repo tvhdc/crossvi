@@ -7,11 +7,13 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <climits>
 #include <cstdlib>
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
+#include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 #include "util/DictionaryHistoryStore.h"
 #include "util/DictionaryQuery.h"
@@ -45,6 +47,9 @@ StrId indexErrorMessage(const Dictionary::IndexResult result) {
 
 void DictionaryWordSelectActivity::onEnter() {
   Activity::onEnter();
+  // This activity is the narrow exception to the UI-font-only rule: it must
+  // reproduce the active reading page exactly while selecting a word.
+  sdFontSystem.ensureLoaded(renderer, false);
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
   // No null check: a failed allocation just disables the differential
@@ -59,6 +64,27 @@ void DictionaryWordSelectActivity::onEnter() {
     if (initial >= 0) selected = initial;
   }
   requestUpdate();
+}
+
+void DictionaryWordSelectActivity::onExit() {
+  sdFontSystem.releaseLoadedFont(renderer);
+  Activity::onExit();
+}
+
+void DictionaryWordSelectActivity::onPause() {
+  // Definition/history screens render only UI/dictionary text and benefit
+  // from the same contiguous-heap recovery as the rest of the reader menu.
+  sdFontSystem.releaseLoadedFont(renderer);
+}
+
+void DictionaryWordSelectActivity::onResume() {
+  sdFontSystem.ensureLoaded(renderer, false);
+  fontId = SETTINGS.getReaderFontId();
+  lineHeight = renderer.getLineHeight(fontId);
+  const int oldSelection = selected;
+  extractWords();
+  selected = words.empty() ? 0 : std::clamp(oldSelection, 0, static_cast<int>(words.size()) - 1);
+  snapshotIdx = -1;
 }
 
 void DictionaryWordSelectActivity::extractWords() {
@@ -240,10 +266,20 @@ void DictionaryWordSelectActivity::performLookup() {
   }
 
   if (found) {
+    auto definitionActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
+        renderer, mappedInput, std::move(headword), std::move(definition));
+    if (!definitionActivity) {
+      LOG_ERR("DICT", "OOM allocating DictionaryDefinitionActivity (%u bytes)",
+              static_cast<unsigned>(sizeof(DictionaryDefinitionActivity)));
+      popup = Popup::Error;
+      popupMsg = StrId::STR_DICT_LOW_MEMORY;
+      popupTime = millis();
+      requestUpdate();
+      return;
+    }
     DICTIONARY_HISTORY.record(successfulQuery);
     popup = Popup::None;
-    startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
-                                                                          std::move(definition)),
+    startActivityForResult(std::move(definitionActivity),
                            [this](const ActivityResult&) { requestUpdate(); });
     return;
   }

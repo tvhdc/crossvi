@@ -20,7 +20,6 @@ class LanguageSelectActivity final : public Activity {
       : Activity("LanguageSelect", renderer, mappedInput) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

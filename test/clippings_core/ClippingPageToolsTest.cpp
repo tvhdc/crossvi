@@ -165,10 +165,10 @@ TEST(ClippingPageTools, BuildsHighlightsOnlyForTheExactFingerprint) {
 
   const auto plan =
       ClippingPageTools::buildExactHighlightPlan(renderer, page, 101, 12, 18, {clipping}, 2, 3, fingerprint);
-  ASSERT_EQ(plan.count, 2U);
+  ASSERT_EQ(plan.count, 1U);
   EXPECT_EQ(plan.lines[0].left, 17);
+  EXPECT_EQ(plan.lines[0].right, 76);
   EXPECT_EQ(plan.lines[0].y, 60);
-  EXPECT_EQ(plan.lines[1].left, 47);
 
   EXPECT_EQ(
       ClippingPageTools::buildExactHighlightPlan(renderer, page, 101, 12, 18, {clipping}, 2, 3, fingerprint ^ 1U).count,
@@ -219,9 +219,11 @@ TEST(ClippingPageTools, MergesOverlappingGeometryAndOffersBackgroundAndUnderline
   ASSERT_EQ(plan.count, 1U);
   EXPECT_EQ(plan.lines[0].left, 5);
   EXPECT_EQ(plan.lines[0].right, 28);
-  plan.drawBackground(renderer);
+  plan.drawInverse(renderer);
+  plan.clearGrayscale(renderer);
   plan.drawUnderline(renderer);
-  EXPECT_EQ(renderer.backgroundCount(), 1);
+  EXPECT_EQ(renderer.inverseCount(), 1);
+  EXPECT_EQ(renderer.grayscaleClearCount(), 1);
   EXPECT_EQ(renderer.underlineCount(), 1);
 
   const Page rtlPage = makeTextPage({"phải"}, true);
@@ -230,10 +232,32 @@ TEST(ClippingPageTools, MergesOverlappingGeometryAndOffersBackgroundAndUnderline
                                                               {clippingForWord(0, rtlExact)}, 2, 3, rtlExact);
   ASSERT_EQ(rtl.count, 1U);
   EXPECT_FALSE(rtl.lines[0].backgroundSafe);
-  rtl.drawBackground(renderer);
+  rtl.drawInverse(renderer);
+  rtl.clearGrayscale(renderer);
   rtl.drawUnderline(renderer, true);
-  EXPECT_EQ(renderer.backgroundCount(), 1);
+  EXPECT_EQ(renderer.inverseCount(), 1);
+  EXPECT_EQ(renderer.grayscaleClearCount(), 1);
   EXPECT_EQ(renderer.underlineCount(), 2);
+}
+
+TEST(ClippingPageTools, FillsWordSpacingButKeepsSeparateHighlightsApart) {
+  const Page page = makeTextPage({"một", "hai", "ba"});
+  GfxRenderer renderer(480, 800, 24);
+  const uint32_t exact = ClippingPageTools::fingerprint(page, renderer, 101, 0, 0);
+
+  auto continuous = clippingForWord(0, exact);
+  continuous.endWordIndex = 2;
+  continuous.wordCount = 3;
+  const auto band = ClippingPageTools::buildExactHighlightPlan(renderer, page, 101, 0, 0, {continuous}, 2, 3, exact);
+  ASSERT_EQ(band.count, 1U);
+  EXPECT_EQ(band.lines[0].left, 5);
+  EXPECT_EQ(band.lines[0].right, 96);
+
+  const auto separate = ClippingPageTools::buildExactHighlightPlan(
+      renderer, page, 101, 0, 0, {clippingForWord(0, exact), clippingForWord(2, exact)}, 2, 3, exact);
+  ASSERT_EQ(separate.count, 2U);
+  EXPECT_EQ(separate.lines[0].left, 5);
+  EXPECT_EQ(separate.lines[1].left, 85);
 }
 
 TEST(ClippingPageTools, BuildsTxtHighlightsOnlyFromExactSourceAnchorOverlap) {
@@ -254,7 +278,9 @@ TEST(ClippingPageTools, BuildsTxtHighlightsOnlyFromExactSourceAnchorOverlap) {
 
   const auto plan = ClippingPageTools::buildTextAnchorHighlightPlan(renderer, page, 101, 0, 0, anchors.data(),
                                                                     anchors.size(), {clipping});
-  EXPECT_EQ(plan.count, 2U);
+  EXPECT_EQ(plan.count, 1U);
+  EXPECT_EQ(plan.lines[0].left, 45);
+  EXPECT_EQ(plan.lines[0].right, 96);
   EXPECT_EQ(
       ClippingPageTools::buildTextAnchorHighlightPlan(renderer, page, 101, 0, 0, anchors.data(), 2, {clipping}).count,
       0U);
@@ -280,9 +306,9 @@ TEST(ClippingPageTools, EpubTextAnchorsSurvivePageAndLayoutChanges) {
 
   const auto plan =
       ClippingPageTools::buildHighlightPlan(renderer, page, 101, 0, 0, {clipping}, 2, 1, 0xDEADBEEFU, 0xCAFEBABEU);
-  EXPECT_EQ(plan.count, 2U);
+  EXPECT_EQ(plan.count, 1U);
   EXPECT_EQ(plan.lines[0].left, 45);
-  EXPECT_EQ(plan.lines[1].left, 85);
+  EXPECT_EQ(plan.lines[0].right, 114);
 }
 
 TEST(ClippingPageTools, UsesFocusSplitGeometryForBoldPrefixAndRegularSuffix) {

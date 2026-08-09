@@ -1,10 +1,12 @@
 #include "OpdsBookBrowserActivity.h"
 
 #include <Arduino.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 #include <OpdsStream.h>
 #include <WiFi.h>
 
@@ -29,6 +31,14 @@ constexpr int PAGE_ITEMS = 23;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
 }  // namespace
+
+void OpdsBookBrowserActivity::prepareNetworkRequest(const char* stage) {
+  // Match KOReader Sync's low-memory boundary: first make the status frame
+  // visible, then release disposable glyph data before TLS allocates.
+  requestUpdateAndWait();
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+  MemoryBudget::logStage("OPDS", stage);
+}
 
 void OpdsBookBrowserActivity::onEnter() {
   Activity::onEnter();
@@ -202,6 +212,7 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
 
   std::string url = UrlUtils::buildUrl(server.url, path);
   LOG_DBG("OPDS", "Fetching: %s", url.c_str());
+  prepareNetworkRequest("feed_tls");
   OpdsParser parser;
   {
     OpdsParserStream stream{parser};
@@ -278,7 +289,7 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   state = BrowserState::DOWNLOADING;
   statusMessage = book.title;
   downloadProgress = downloadTotal = 0;
-  requestUpdate(true);
+  prepareNetworkRequest("download_tls");
 
   // Build full download URL relative to the current feed, not the root server URL
   const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
@@ -313,8 +324,8 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   filename += opdsBookFilename(book.author, book.title, static_cast<OpdsFilenameFormat>(SETTINGS.opdsFilenameFormat));
   LOG_DBG("OPDS", "Downloading: %s -> %s", downloadUrl.c_str(), filename.c_str());
   const std::string stagingPath = hiddenBookFileSibling(filename, ".crossvi-download.tmp");
-  if (Storage.exists(stagingPath.c_str())) {
-    LOG_ERR("OPDS", "Existing download transaction requires manual recovery: %s", stagingPath.c_str());
+  if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) {
+    LOG_ERR("OPDS", "Could not clear stale download transaction: %s", stagingPath.c_str());
     state = BrowserState::ERROR;
     errorMessage = tr(STR_DOWNLOAD_FAILED);
     requestUpdate();

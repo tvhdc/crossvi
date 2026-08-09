@@ -74,7 +74,7 @@ bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHou
 }
 
 bool HalClock::formatDate(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased, const DateFormat dateFormat,
-                          const char numericSeparator) const {
+                          const char numericSeparator, const bool vietnameseMonthNames) const {
   if (!_available) return false;
 
   if (utcOffsetQuarterHoursBiased > 104) utcOffsetQuarterHoursBiased = 104;
@@ -88,7 +88,8 @@ bool HalClock::formatDate(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHou
 #endif
   return ClockDateFormat::format(static_cast<uint16_t>(utcTime.tm_year + 1900),
                                  static_cast<uint8_t>(utcTime.tm_mon + 1), static_cast<uint8_t>(utcTime.tm_mday),
-                                 static_cast<uint8_t>(dateFormat), numericSeparator, buf, bufSize);
+                                 static_cast<uint8_t>(dateFormat), numericSeparator, buf, bufSize,
+                                 vietnameseMonthNames);
 }
 
 bool HalClock::syncFromNTP() { return isSystemTimeValid(); }

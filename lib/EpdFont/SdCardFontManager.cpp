@@ -6,11 +6,7 @@
 #include <SdCardFont.h>
 #include <SdCardFontRegistry.h>
 
-SdCardFontManager::~SdCardFontManager() {
-  for (auto& lf : loaded_) {
-    delete lf.font;
-  }
-}
+SdCardFontManager::~SdCardFontManager() { delete loadedFont_; }
 
 // FNV-1a continuation: seeds with contentHash, then hashes family name + point size.
 // Produces a deterministic ID that is stable across load/unload cycles and reboots,
@@ -64,7 +60,8 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
     return false;
   }
   renderer.registerSdCardFont(fontId, font);
-  loaded_.push_back({font, fontId, selected->pointSize});
+  loadedFont_ = font;
+  loadedFontId_ = fontId;
 
   LOG_DBG("SDMGR", "Loaded %s size=%u id=%d styles=%u (sizeEnum=%u)", selected->path.c_str(), selected->pointSize,
           fontId, font->styleCount(), fontSizeEnum);
@@ -79,20 +76,19 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
 
 void SdCardFontManager::unloadAll(GfxRenderer& renderer) {
   renderer.clearSdCardFonts();
-  for (auto& lf : loaded_) {
-    renderer.removeFont(lf.fontId);
-    delete lf.font;
+  if (loadedFont_) {
+    renderer.removeFont(loadedFontId_);
+    delete loadedFont_;
   }
-  loaded_.clear();
+  loadedFont_ = nullptr;
+  loadedFontId_ = 0;
   loadedFamilyName_.clear();
   loadedPointSize_ = 0;
 }
 
 int SdCardFontManager::getFontId(const std::string& familyName) const {
-  if (familyName != loadedFamilyName_ || loaded_.empty()) return 0;
-  return loaded_.front().fontId;
+  if (familyName != loadedFamilyName_ || !loadedFont_) return 0;
+  return loadedFontId_;
 }
 
-bool SdCardFontManager::currentSupportsVietnamese() const {
-  return !loaded_.empty() && loaded_.front().font && loaded_.front().font->supportsVietnamese();
-}
+bool SdCardFontManager::currentSupportsVietnamese() const { return loadedFont_ && loadedFont_->supportsVietnamese(); }

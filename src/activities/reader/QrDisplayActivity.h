@@ -11,7 +11,6 @@ class QrDisplayActivity final : public Activity {
       : Activity("QrDisplay", renderer, mappedInput), textPayload(textPayload) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

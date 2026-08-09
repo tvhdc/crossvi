@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include "ClockDateFormat.h"
 #include "ClockOffsetActivity.h"
 #include "ClockSyncActivity.h"
 #include "CrossPointSettings.h"
@@ -24,14 +25,6 @@ constexpr int CLOCK_FORMAT_ITEMS = 2;
 const StrId clockFormatNames[CLOCK_FORMAT_ITEMS] = {
     StrId::STR_CLOCK_FORMAT_24H,
     StrId::STR_CLOCK_FORMAT_12H,
-};
-
-const StrId dateFormatNames[CrossPointSettings::DATE_FORMAT_COUNT] = {
-    StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_LONG,    StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_LONG,
-    StrId::STR_DATE_FORMAT_MONTH_DAY_YEAR_NUMERIC, StrId::STR_DATE_FORMAT_DAY_MONTH_YEAR_NUMERIC,
-    StrId::STR_DATE_FORMAT_YEAR_MONTH_DAY_NUMERIC, StrId::STR_DATE_FORMAT_MONTH_DAY_NUMERIC,
-    StrId::STR_DATE_FORMAT_DAY_MONTH_NUMERIC,      StrId::STR_DATE_FORMAT_MONTH_DAY_LONG,
-    StrId::STR_DATE_FORMAT_DAY_MONTH_LONG,
 };
 
 const StrId dateSeparatorNames[CrossPointSettings::DATE_SEPARATOR_COUNT] = {
@@ -102,7 +95,7 @@ void TimeSettingsActivity::handleSelection() {
                              [this](const ActivityResult&) { requestUpdate(); });
       return;
     case ITEM_DATE_FORMAT:
-      optionPopup.show(StrId::STR_DATE_FORMAT, dateFormatNames, CrossPointSettings::DATE_FORMAT_COUNT,
+      optionPopup.show(tr(STR_DATE_FORMAT), ClockDateFormat::FORMAT_PATTERNS, ClockDateFormat::FormatCount,
                        SETTINGS.dateFormat, [this](const int index) {
                          SETTINGS.dateFormat = static_cast<uint8_t>(index);
                          SETTINGS.saveToFile();
@@ -148,9 +141,7 @@ void TimeSettingsActivity::render(RenderLock&&) {
           case ITEM_UTC_OFFSET:
             return formatUtcOffset(SETTINGS.clockUtcOffsetQ);
           case ITEM_DATE_FORMAT:
-            return std::string(I18N.get(
-                dateFormatNames[SETTINGS.dateFormat < CrossPointSettings::DATE_FORMAT_COUNT ? SETTINGS.dateFormat
-                                                                                            : 0]));
+            return std::string(ClockDateFormat::formatPattern(SETTINGS.dateFormat));
           case ITEM_DATE_SEPARATOR:
             return std::string(
                 I18N.get(dateSeparatorNames[SETTINGS.dateSeparator < CrossPointSettings::DATE_SEPARATOR_COUNT

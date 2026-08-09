@@ -2,12 +2,12 @@
 
 #include <HalStorage.h>
 #include <NetworkUdp.h>
+#include <StagedFileTransaction.h>
 #include <WebServer.h>
-#include <WebSocketsServer.h>
 
+#include <array>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "network/JsonBodyBuffer.h"
 
@@ -21,7 +21,7 @@ struct FileInfo {
 
 class CrossPointWebServer {
  public:
-  struct WsUploadStatus {
+  struct UploadStatus {
     bool inProgress = false;
     size_t received = 0;
     size_t total = 0;
@@ -41,16 +41,10 @@ class CrossPointWebServer {
     size_t size = 0;
     bool ownsStagingFile = false;
     bool success = false;
+    bool restoreModemSleep = false;
     String error = "";
 
-    // Upload write buffer - batches small writes into larger SD card operations
-    // 4KB is a good balance: large enough to reduce syscall overhead, small enough
-    // to keep individual write times short and avoid watchdog issues
-    static constexpr size_t UPLOAD_BUFFER_SIZE = 4096;  // 4KB buffer
-    std::vector<uint8_t> buffer;
     size_t bufferPos = 0;
-
-    UploadState() { buffer.resize(UPLOAD_BUFFER_SIZE); }
   } upload;
 
   CrossPointWebServer();
@@ -68,8 +62,9 @@ class CrossPointWebServer {
   // Check if server is running
   bool isRunning() const { return running; }
   bool hasActiveTransfer() const;
+  bool hasCooperativeUpload() const { return cooperativeUpload.ownsStagingFile; }
 
-  WsUploadStatus getWsUploadStatus() const;
+  UploadStatus getUploadStatus() const;
   bool takeOpenRequest(std::string& path);
 
   // Get the port number
@@ -77,24 +72,58 @@ class CrossPointWebServer {
 
  private:
   std::unique_ptr<WebServer> server = nullptr;
-  std::unique_ptr<WebSocketsServer> wsServer = nullptr;
   bool running = false;
   bool apMode = false;  // true when running in AP mode, false for STA mode
   uint16_t port = 80;
-  uint16_t wsPort = 81;  // WebSocket port
   NetworkUDP udp;
   bool udpActive = false;
+  std::string lastCompleteName;
   std::string lastCompletePath;
+  size_t lastCompleteSize = 0;
+  unsigned long lastCompleteAt = 0;
   std::string pendingOpenPath;
+
+  // The HTTP server is single-threaded and only one upload is accepted at a
+  // time, so books and fonts can safely share one fixed staging buffer.
+  static constexpr size_t TRANSFER_BUFFER_SIZE = 4096;
+  static constexpr size_t COOPERATIVE_UPLOAD_CHUNK_SIZE = 64U * 1024U;
+  std::array<uint8_t, TRANSFER_BUFFER_SIZE> transferBuffer{};
+
+  enum class CooperativeUploadKind : uint8_t { None, Book, Font };
+
+  struct CooperativeUploadState {
+    HalFile file;
+    String fileName;
+    String path = "/";
+    String familyName;
+    String finalPath;
+    String stagingPath;
+    String backupPath;
+    String error;
+    StagedFileTransaction::Digest streamDigest;
+    StagedFileTransaction::Digest requestDigestStart;
+    size_t committed = 0;
+    size_t total = 0;
+    size_t requestSize = 0;
+    size_t requestReceived = 0;
+    size_t bufferPos = 0;
+    size_t lastLoggedSize = 0;
+    int responseStatus = 400;
+    bool ownsStagingFile = false;
+    bool requestAccepted = false;
+    bool requestComplete = false;
+    bool requestReplay = false;
+    bool uploadComplete = false;
+    CooperativeUploadKind kind = CooperativeUploadKind::None;
+  } cooperativeUpload;
 
   static constexpr size_t MAX_JSON_BODY_SIZE = 8192;
   JsonBodyBuffer::State jsonBody;
 
-  // WebSocket upload state
-  void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
-  static void wsEventCallback(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
-  void abortWsUpload(const char* tag);
   bool clearStaleBookUploadStaging(const String& stagingPath);
+  bool flushUploadBuffer(UploadState& state);
+  bool flushCooperativeUploadBuffer();
+  void discardCooperativeUpload(bool removeStaging);
 
   // File scanning
   using FileVisitor = void (*)(const FileInfo& info, void* context);
@@ -112,6 +141,9 @@ class CrossPointWebServer {
   void handleDownload() const;
   void handleUpload(UploadState& state);
   void handleUploadPost(UploadState& state) const;
+  void handleCooperativeUploadData();
+  void handleCooperativeUploadPost();
+  void handleCooperativeUploadCancel();
   void handleInboxOpen();
   void handleCreateFolder() const;
   void handleRename() const;
@@ -128,46 +160,7 @@ class CrossPointWebServer {
   // Font management handlers
   void handleFontsPage() const;
   void handleFontList() const;
-  void handleFontUpload();
-  void handleFontUploadData();
   void handleFontDelete();
-  void abortFontUpload(const char* tag);
-  bool publishFontUpload();
-
-  // Font upload state
-  struct FontUploadState {
-    enum class Error : uint8_t {
-      None,
-      InvalidFamily,
-      InvalidFilename,
-      CreateDirectory,
-      PathTooLong,
-      Recovery,
-      OpenStaging,
-      ShortWrite,
-      SyncClose,
-      SizeMismatch,
-      InvalidFont,
-      Publish,
-      Aborted,
-    };
-
-    HalFile file;
-    std::string familyName;
-    std::string finalPath;
-    std::string stagingPath;
-    std::string backupPath;
-    bool valid = false;
-    bool published = false;
-    bool writeOk = false;
-    Error error = Error::None;
-    size_t bytesWritten = 0;
-    static constexpr size_t BUFFER_SIZE = 4096;
-    std::vector<uint8_t> buffer;
-    size_t bufferPos = 0;
-
-    FontUploadState() { buffer.resize(BUFFER_SIZE); }
-  } fontUpload;
 
   // OPDS server handlers
   void handleGetOpdsServers() const;

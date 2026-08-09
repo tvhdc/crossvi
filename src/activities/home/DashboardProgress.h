@@ -16,7 +16,9 @@ struct Position {
 
 inline bool decode(const uint8_t* data, const size_t size, Position& position) {
   position = {};
-  if (!data || size != 6) return false;
+  // Six-byte CrossVi progress and CrossPoint's ten-byte content-anchored
+  // progress share these first three uint16 fields.
+  if (!data || (size != 6 && size != 10)) return false;
 
   position.spineIndex = static_cast<uint16_t>(data[0]) | static_cast<uint16_t>(data[1]) << 8;
   position.pageNumber = static_cast<uint16_t>(data[2]) | static_cast<uint16_t>(data[3]) << 8;

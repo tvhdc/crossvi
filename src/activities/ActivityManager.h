@@ -132,7 +132,7 @@ class ActivityManager {
                   ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
   void goToReader(std::string path, SavedBookmarkJumpResult bookmarkJump,
                   ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
-  void goToSleep(bool fromTimeout = false);
+  void goToSleep();
   void goToBoot(bool minimalWakeScreen = false);
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

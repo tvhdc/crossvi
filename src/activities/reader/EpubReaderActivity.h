@@ -39,6 +39,7 @@ class EpubReaderActivity final : public Activity {
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   std::optional<uint32_t> cachedContentSourceOffset;
+  std::optional<uint32_t> cachedVisibleTextOffset;
   std::optional<uint32_t> pendingBookmarkSourceOffset;
   std::optional<uint32_t> currentPageSourceOffset;
   unsigned long lastPageTurnTime = 0UL;
@@ -91,6 +92,7 @@ class EpubReaderActivity final : public Activity {
   bool pendingExternalCssWarning = false;
   unsigned long externalCssWarningTime = 0UL;
   bool pendingCacheClearError = false;
+  bool skipStartupRecentUpdate = false;
   std::atomic<bool> safeModePromptRequested{false};
   std::atomic<bool> pendingSafeModeFailureNotice{false};
   std::atomic<bool> pendingSafeModePersistence{false};
@@ -116,6 +118,8 @@ class EpubReaderActivity final : public Activity {
     ReanchorFailed,
   };
   ClippingNotice pendingClippingNotice = ClippingNotice::None;
+  bool showClippingSavedMessage = false;
+  unsigned long clippingSavedMessageTime = 0UL;
   bool pendingClippingHighlightsTruncatedNotice = false;
   std::optional<ClippingJumpResult> initialClippingJump;
   std::optional<ProgressChangeResult> initialBookmarkJump;
@@ -188,6 +192,13 @@ class EpubReaderActivity final : public Activity {
   // Set when the lazy extension start failed, so loop() doesn't retry (and log) every
   // tick; the blocking extension in render() remains the fallback past the watermark.
   bool partialRebuildStartFailed = false;
+
+  // Reused by every grayscale page once pagination is stable. Keeping one
+  // bounded 8 KiB strip avoids malloc/free churn and heap fragmentation across
+  // page turns; active indexing releases it before parser allocations.
+  std::unique_ptr<uint8_t[]> grayscaleStripScratch;
+  size_t grayscaleStripScratchSize = 0;
+  void releaseGrayscaleStripScratch();
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   enum class DebugSectionCacheStatus : uint8_t { Unknown, Miss, Partial, Hit };
@@ -288,7 +299,7 @@ class EpubReaderActivity final : public Activity {
   bool queueSafeModePromptIfEligible(EpubBuildStatus status);
   void invalidateReaderLayout();
   void applyAutoPageTurnRuntime(uint8_t seconds, bool active);
-  void updateAutoPageTurnFromMenu(uint8_t seconds);
+  void updateAutoPageTurnPreference(uint8_t seconds, bool active);
   void pageTurn(bool isForwardTurn);
   bool moveOnePageWithoutRendering(bool forward);
   bool skipCoverPageIfNeeded(const Page& page);
@@ -317,13 +328,15 @@ class EpubReaderActivity final : public Activity {
                               bool bookSettingsWritable,
                               std::optional<ClippingJumpResult> initialClippingJump = std::nullopt,
                               std::optional<ProgressChangeResult> initialBookmarkJump = std::nullopt,
-                              int initialRefreshCountdown = 0, bool deferCoverPreparation = false)
+                              int initialRefreshCountdown = 0, bool deferCoverPreparation = false,
+                              bool skipStartupRecentUpdate = false)
       : Activity("EpubReader", renderer, mappedInput),
         epub(std::move(epub)),
         pagesUntilFullRefresh(initialRefreshCountdown),
         globalReaderSettings(std::move(globalReaderSettings)),
         bookReaderSettings(std::move(bookReaderSettings)),
         bookSettingsWritable(bookSettingsWritable),
+        skipStartupRecentUpdate(skipStartupRecentUpdate),
         deferredCoverRequested(deferCoverPreparation),
         initialClippingJump(std::move(initialClippingJump)),
         initialBookmarkJump(std::move(initialBookmarkJump)) {}

@@ -255,7 +255,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
 
   LOG_ERR("READER", "Failed to load epub");
   applyReaderSettings(globalSettings);
-  sdFontSystem.ensureLoaded(renderer);
+  sdFontSystem.releaseLoadedFont(renderer);
   return nullptr;
 }
 
@@ -467,7 +467,8 @@ void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub, PerBookReaderS
   if (initialBookmarkJump) bookmarkJump = std::move(initialBookmarkJump->progress);
   activityManager.replaceActivity(std::make_unique<EpubReaderActivity>(
       renderer, mappedInput, std::move(epub), std::move(globalSettings), std::move(bookSettings), settingsWritable,
-      std::move(initialClippingJump), std::move(bookmarkJump), initialRefreshCountdown(), deferCoverPreparation));
+      std::move(initialClippingJump), std::move(bookmarkJump), initialRefreshCountdown(), deferCoverPreparation,
+      allowFastInitialRefresh));
 }
 
 void ReaderActivity::onGoToBmpViewer(const std::string& path) {
@@ -479,8 +480,8 @@ void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {
   currentBookPath = xtcPath;
   std::optional<uint32_t> bookmarkPage;
   if (initialBookmarkJump && initialBookmarkJump->hasFixedPage) bookmarkPage = initialBookmarkJump->page;
-  activityManager.replaceActivity(std::make_unique<XtcReaderActivity>(renderer, mappedInput, std::move(xtc),
-                                                                      bookmarkPage, initialRefreshCountdown()));
+  activityManager.replaceActivity(std::make_unique<XtcReaderActivity>(
+      renderer, mappedInput, std::move(xtc), bookmarkPage, initialRefreshCountdown(), allowFastInitialRefresh));
 }
 
 void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt, PerBookReaderSettings globalSettings,
@@ -491,7 +492,7 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt, PerBookReaderSett
   if (initialBookmarkJump) bookmarkJump = std::move(initialBookmarkJump->progress);
   activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(
       renderer, mappedInput, std::move(txt), std::move(globalSettings), std::move(bookSettings), settingsWritable,
-      std::move(initialClippingJump), std::move(bookmarkJump), initialRefreshCountdown()));
+      std::move(initialClippingJump), std::move(bookmarkJump), initialRefreshCountdown(), allowFastInitialRefresh));
 }
 
 void ReaderActivity::onEnter() {
@@ -535,10 +536,10 @@ void ReaderActivity::onEnter() {
 
   currentBookPath = initialBookPath;
   if (isBmpFile(initialBookPath)) {
-    sdFontSystem.ensureLoaded(renderer);
+    sdFontSystem.releaseLoadedFont(renderer);
     onGoToBmpViewer(initialBookPath);
   } else if (isXtcFile(initialBookPath)) {
-    sdFontSystem.ensureLoaded(renderer);
+    sdFontSystem.releaseLoadedFont(renderer);
     auto xtc = loadXtc(initialBookPath);
     if (!xtc) {
       onGoBack();
@@ -547,7 +548,6 @@ void ReaderActivity::onEnter() {
     validateInitialBookmarkJump(BookmarkEntry::PositionKind::FixedLayout);
     onGoToXtcReader(std::move(xtc));
   } else if (isTxtFile(initialBookPath)) {
-    sdFontSystem.ensureLoaded(renderer);
     PerBookReaderSettings globalSettings;
     PerBookReaderSettings bookSettings;
     bool settingsWritable = true;

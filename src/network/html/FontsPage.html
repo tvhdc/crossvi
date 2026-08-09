@@ -352,9 +352,19 @@
       return cut > 0 ? stem.slice(0, cut) : stem;
     }
 
-    // Sanitize to match firmware's [A-Za-z0-9_-]+ pattern.
+    // Preserve spaces and Unicode names while replacing ASCII characters that
+    // are unsafe or unsupported by the firmware's font storage contract.
+    function sanitizeFontNamePart(raw) {
+      const normalized = raw.normalize('NFC').trim();
+      return Array.from(normalized, ch => {
+        const codepoint = ch.codePointAt(0);
+        if (codepoint >= 0x80 && !(codepoint >= 0xD800 && codepoint <= 0xDFFF)) return ch;
+        return /[A-Za-z0-9 _-]/.test(ch) ? ch : '_';
+      }).join('');
+    }
+
     function sanitizeFamily(raw) {
-      return raw.replace(/[^A-Za-z0-9_-]/g, '_');
+      return sanitizeFontNamePart(raw);
     }
 
     // Keep the original browser File object, but send a safe multipart
@@ -362,11 +372,49 @@
     // commonly contains spaces (for example "EB Garamond_20.cpfont").
     function sanitizeCpfontFilename(name) {
       const stem = name.replace(/\.cpfont$/i, '');
-      return stem.replace(/[^A-Za-z0-9_-]/g, '_') + '.cpfont';
+      return sanitizeFontNamePart(stem) + '.cpfont';
     }
 
     function cpfontFilesOnly(fileList) {
       return Array.from(fileList).filter(f => /\.cpfont$/i.test(f.name));
+    }
+
+    async function uploadFontInChunks(file, family, uploadName, onProgress) {
+      if (file.size === 0) throw new Error('Empty .cpfont file');
+      const chunkSize = 64 * 1024;
+      let offset = 0;
+      while (offset < file.size) {
+        const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+        const nextOffset = offset + chunk.size;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            const response = await fetch('/api/upload/chunk', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-CrossVi-Upload-Type': 'font',
+                'X-CrossVi-Font-Family': encodeURIComponent(family),
+                'X-CrossVi-Upload-Name': encodeURIComponent(uploadName),
+                'X-CrossVi-Upload-Offset': String(offset),
+                'X-CrossVi-Upload-Total': String(file.size)
+              },
+              body: chunk
+            });
+            const responseText = await response.text();
+            if (!response.ok) throw new Error(responseText || ('HTTP ' + response.status));
+            if (Number(responseText) !== nextOffset) throw new Error('Upload progress mismatch');
+            break;
+          } catch (error) {
+            if (attempt === 3) throw error;
+            await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+          }
+        }
+        offset = nextOffset;
+        if (onProgress) onProgress(offset, file.size);
+        // Each chunk is a separate request so firmware returns to its input
+        // loop before the browser queues the next SD write.
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
 
     document.getElementById('fontFiles').addEventListener('change', function() {
@@ -418,28 +466,15 @@
       for (const file of files) {
         const uploadName = sanitizeCpfontFilename(file.name);
         status.textContent = webText('uploading') + ' ' + (uploaded + 1) + '/' + files.length + ': ' + file.name;
-        const formData = new FormData();
-        formData.append('family', family);
-        formData.append('file', file, uploadName);
         try {
-          const res = await fetch('/api/fonts/upload', { method: 'POST', body: formData });
-          const responseText = await res.text();
-          let data = {};
-          try {
-            data = responseText ? JSON.parse(responseText) : {};
-          } catch (_) {
-            data.error = responseText || ('HTTP ' + res.status);
-          }
-          if (!res.ok || !data.ok) {
-            status.className = 'status-err';
-            status.textContent = webText('uploadError') + file.name + ': ' + (data.error || webText('unknown'));
-            await loadFonts();
-            return;
-          }
+          await uploadFontInChunks(file, family, uploadName, (done, total) => {
+            const percent = Math.floor(done * 100 / total);
+            status.textContent = webText('uploading') + ' ' + (uploaded + 1) + '/' + files.length + ': ' +
+              file.name + ' (' + percent + '%)';
+          });
         } catch (err) {
           status.className = 'status-err';
-          status.textContent = webText('connectionLost') + ' ' + file.name +
-            '. Keep the reader on the transfer screen, reconnect to its Wi-Fi, then try this file again.';
+          status.textContent = webText('uploadError') + file.name + ': ' + (err.message || webText('unknown'));
           await loadFonts();
           return;
         }

@@ -23,6 +23,7 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "activities/home/DashboardProgress.h"
+#include "activities/home/HomeShortcutsActivity.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/ProgressFile.h"
 #include "activities/reader/ProgressFileCodec.h"
@@ -206,16 +207,17 @@ void HomeActivity::loadBookSummary() {
     return;
   }
 
-  std::array<uint8_t, 6> progressBytes{};
+  std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> progressBytes{};
   const DashboardProgressValidationContext progressContext{&recentEpub.getCachePath(), recentEpub.getSpineItemsCount()};
   const ProgressFile::CandidateValidator progressValidator{validateDashboardProgressCandidate, &progressContext};
   const ProgressFile::LoadResult progressLoad =
       ProgressFile::loadEpub(recentEpub.getCachePath(), progressBytes.data(), progressBytes.size(), progressValidator);
   logSummaryTiming("progress_file");
   // Legacy four-byte progress has no persisted chapter total, so it cannot
-  // support an honest Dashboard percentage. A verified six-byte backup/temp is
-  // still usable when the canonical file was interrupted or malformed.
-  if (!progressLoad || progressLoad.size != progressBytes.size()) {
+  // support an honest Dashboard percentage. Both the six-byte CrossVi layout
+  // and CrossPoint's compatible ten-byte layout persist that total.
+  if (!progressLoad || (progressLoad.size != ProgressFile::EPUB_PROGRESS_SIZE &&
+                        progressLoad.size != ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE)) {
     bookSummary.progressState = progressLoad.source == ProgressFile::LoadSource::Missing
                                     ? DashboardMetricState::NoData
                                     : DashboardMetricState::Unavailable;
@@ -224,7 +226,7 @@ void HomeActivity::loadBookSummary() {
   }
 
   DashboardProgress::Position progress;
-  if (!DashboardProgress::decode(progressBytes.data(), progressBytes.size(), progress)) {
+  if (!DashboardProgress::decode(progressBytes.data(), progressLoad.size, progress)) {
     bookSummary.progressState = DashboardMetricState::Unavailable;
     logSummaryTiming("progress_decode_failed");
     return;
@@ -402,18 +404,24 @@ void HomeActivity::loop() {
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) backPressSeen = true;
 
-  // Back is otherwise unused on the home menu: open the most recently read
-  // book directly (recentBooks is most-recent-first and already pruned of
-  // files missing from the SD card). backPressSeen guards against the stale
-  // release of the Back press that closed the previous activity.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backPressSeen && !recentBooks.empty()) {
-    const bool focusedRecentBook = (usesRecentListLayout() || usesTripleCoverLayout()) && selectorIndex >= 0 &&
-                                   selectorIndex < static_cast<int>(recentBooks.size());
-    const int bookIndex = usesCarouselLayout()
-                              ? std::clamp(carouselBookIndex, 0, static_cast<int>(recentBooks.size()) - 1)
-                              : (focusedRecentBook ? selectorIndex : 0);
-    onSelectBook(recentBooks[bookIndex].path);
-    return;
+  // backPressSeen guards against the stale release of the Back press that
+  // closed the previous activity.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backPressSeen) {
+    backPressSeen = false;
+    if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_SHORTCUTS) {
+      startActivityForResult(std::make_unique<HomeShortcutsActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { requestUpdate(); });
+      return;
+    }
+    if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_CONTINUE_READING && !recentBooks.empty()) {
+      const bool focusedRecentBook = (usesRecentListLayout() || usesTripleCoverLayout()) && selectorIndex >= 0 &&
+                                     selectorIndex < static_cast<int>(recentBooks.size());
+      const int bookIndex = usesCarouselLayout()
+                                ? std::clamp(carouselBookIndex, 0, static_cast<int>(recentBooks.size()) - 1)
+                                : (focusedRecentBook ? selectorIndex : 0);
+      onSelectBook(recentBooks[bookIndex].path);
+      return;
+    }
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -557,13 +565,17 @@ void HomeActivity::render(RenderLock&&) {
         [&menuIcons](int index) { return menuIcons[index]; });
   }
 
-  const char* resumeLabel = recentBooks.empty() ? "" : tr(STR_RESUME);
-  if (!recentBooks.empty()) resumeLabel = I18N.get(homeBookHintLabelId(bookSummary));
-  if (((carouselLayout || tripleCoverLayout) && carouselBookIndex > 0) ||
-      (recentListLayout && selectorIndex > 0 && selectorIndex < static_cast<int>(recentBooks.size()))) {
-    resumeLabel = tr(STR_OPEN);
+  const char* backLabel = "";
+  if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_SHORTCUTS) {
+    backLabel = tr(STR_SHORTCUTS);
+  } else if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_CONTINUE_READING && !recentBooks.empty()) {
+    backLabel = I18N.get(homeBookHintLabelId(bookSummary));
+    if (((carouselLayout || tripleCoverLayout) && carouselBookIndex > 0) ||
+        (recentListLayout && selectorIndex > 0 && selectorIndex < static_cast<int>(recentBooks.size()))) {
+      backLabel = tr(STR_OPEN);
+    }
   }
-  const auto labels = mappedInput.mapLabels(resumeLabel, tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(backLabel, tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();

@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 
 ClippingReanchorActivity::ClippingReanchorActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -30,6 +32,10 @@ ClippingReanchorActivity::ClippingReanchorActivity(GfxRenderer& renderer, Mapped
 
 void ClippingReanchorActivity::onEnter() {
   Activity::onEnter();
+  // Fingerprints depend on the exact reader glyph metrics. Load the selected
+  // font only while this bounded page scan is active.
+  sdFontSystem.ensureLoaded(renderer, false);
+  fontId_ = SETTINGS.getReaderFontId();
   const auto* clipping = store_.at(clippingIndex_);
   std::string text;
   if (!clipping || firstPage_ > lastPage_ ||
@@ -41,6 +47,12 @@ void ClippingReanchorActivity::onEnter() {
   matcher_ =
       std::make_unique<ClippingPageTools::ExactReanchorMatcher>(text, static_cast<size_t>(lastPage_ - firstPage_) + 1);
   requestUpdate();
+}
+
+void ClippingReanchorActivity::onExit() {
+  matcher_.reset();
+  sdFontSystem.releaseLoadedFont(renderer);
+  Activity::onExit();
 }
 
 void ClippingReanchorActivity::cancel() {

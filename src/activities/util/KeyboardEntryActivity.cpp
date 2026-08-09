@@ -64,8 +64,6 @@ void KeyboardEntryActivity::onEnter() {
   requestUpdate();
 }
 
-void KeyboardEntryActivity::onExit() { Activity::onExit(); }
-
 int KeyboardEntryActivity::getContentRowCount() const {
   if (urlMode) return 3;
   return ABC_ROWS;

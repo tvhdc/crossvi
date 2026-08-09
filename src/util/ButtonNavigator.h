@@ -15,11 +15,14 @@ class ButtonNavigator final {
   const uint16_t continuousStartMs;
   const uint16_t continuousIntervalMs;
   uint32_t lastContinuousNavTime = 0;
+  static constexpr uint32_t NAVIGATION_EDGE_GUARD_MS = 150;
   static constexpr size_t BUTTON_COUNT = static_cast<size_t>(MappedInputManager::Button::NavPrevious) + 1;
   std::array<PressReleaseLatch, BUTTON_COUNT> pressLatches{};
+  ReleaseDebounceGuard navigationEdgeGuard_;
   static const MappedInputManager* mappedInput;
 
   [[nodiscard]] bool shouldNavigateContinuously(MappedInputManager::Button button) const;
+  [[nodiscard]] bool acceptNavigationEdge();
   PressReleaseLatch& latch(MappedInputManager::Button button) { return pressLatches[static_cast<size_t>(button)]; }
 
  public:

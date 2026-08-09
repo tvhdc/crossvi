@@ -38,6 +38,7 @@ class EpubInBookSearchActivity final : public Activity {
                            std::string query, int startSpine, int startPage, const Layout& layout);
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return searching_; }

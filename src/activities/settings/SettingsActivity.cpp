@@ -3,6 +3,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalStorage.h>
+#include <HalTiltSensor.h>
 #include <Logging.h>
 #include <Version.h>
 
@@ -15,23 +16,17 @@
 #include "CrossPointSettings.h"
 #include "DeviceInfoActivity.h"
 #include "FontDownloadActivity.h"
-#include "FontSelectionActivity.h"
-#include "FontSizeSelectionActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
-#include "OtaUpdateActivity.h"
-#include "SdCardFontSystem.h"
-#include "SdFirmwareUpdateActivity.h"
-#include "SettingsList.h"
+#include "SettingsSubmenuActivity.h"
 #include "StatusBarSettingsActivity.h"
+#include "TextSettingsActivity.h"
 #include "TimeSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
-#include "activities/util/IntervalSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
@@ -49,104 +44,67 @@ void SettingsActivity::rebuildSettingsLists() {
     dictionariesLoaded = true;
   }
 
-  // Pick up any fonts uploaded/deleted over the web server since the last
-  // reader activity ran — otherwise the font-family picker shows stale list.
-  sdFontSystem.refreshIfDirty();
+  displaySettings.push_back(
+      SettingInfo::Action(StrId::STR_INTERFACE_CUSTOMIZATION, SettingAction::Appearance));
+  displaySettings.push_back(SettingInfo::Action(StrId::STR_SLEEP_SETTINGS, SettingAction::SleepSettings));
+  displaySettings.push_back(SettingInfo::Enum(
+      StrId::STR_SHOW_BATTERY_PERCENTAGE, &CrossPointSettings::hideBatteryPercentage,
+      {StrId::STR_BATTERY_ALWAYS_SHOW, StrId::STR_BATTERY_HIDE_WHILE_READING,
+       StrId::STR_BATTERY_ALWAYS_HIDE}));
+  displaySettings.push_back(SettingInfo::Enum(
+      StrId::STR_REFRESH_EVERY, &CrossPointSettings::refreshFrequency,
+      {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
+       StrId::STR_PAGES_30}));
+  displaySettings.push_back(
+      SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix));
 
-  for (auto& setting : getSettingsList(&sdFontSystem.registry(), dictionariesLoaded ? &dictionaries : nullptr)) {
-    if (setting.category == StrId::STR_NONE_OPT) continue;
-    if (setting.category == StrId::STR_CAT_DISPLAY) {
-      if ((setting.valuePtr == &CrossPointSettings::outsideReaderClock ||
-           setting.valuePtr == &CrossPointSettings::showDateOutsideReader) &&
-          !halClock.isAvailable()) {
-        continue;
-      }
-      if (setting.valuePtr == &CrossPointSettings::showDateOutsideReader &&
-          SETTINGS.outsideReaderClock == CrossPointSettings::STATUS_BAR_CLOCK_HIDE) {
-        continue;
-      }
-      const bool quickResume =
-          SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-      if (quickResume && (setting.nameId == StrId::STR_SLEEP_SCREEN || setting.nameId == StrId::STR_SLEEP_COVER_MODE ||
-                          setting.nameId == StrId::STR_SLEEP_COVER_FILTER)) {
-        continue;
-      }
-      if ((setting.nameId == StrId::STR_SLEEP_COVER_MODE || setting.nameId == StrId::STR_SLEEP_COVER_FILTER) &&
-          SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::COVER) {
-        continue;
-      }
-      displaySettings.push_back(setting);
-    } else if (setting.category == StrId::STR_CAT_READER) {
-      if ((setting.nameId == StrId::STR_DICTIONARY_FONT || setting.nameId == StrId::STR_DICTIONARY_FONT_SIZE) &&
-          dictionaries.empty()) {
-        continue;
-      }
-      const bool supportsTextGrayscale = renderer.supportsStripGrayscale();
-      if (!supportsTextGrayscale &&
-          (setting.nameId == StrId::STR_TEXT_AA || setting.nameId == StrId::STR_TEXT_DARKNESS)) {
-        continue;
-      }
-      if (setting.nameId == StrId::STR_TEXT_DARKNESS && (!SETTINGS.textAntiAliasing || SETTINGS.readerDarkMode)) {
-        continue;
-      }
-      if (setting.nameId == StrId::STR_PARA_ALIGNMENT && !SETTINGS.embeddedStyle &&
-          setting.enumValues.size() == CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT) {
-        // "Book alignment" has no source style to follow while embedded styles
-        // are disabled. Present its effective Justified value without changing
-        // the saved preference, so re-enabling book formatting restores it.
-        setting.enumValues.pop_back();
-        setting.valuePtr = nullptr;
-        setting.valueGetter = [] {
-          return SETTINGS.paragraphAlignment == CrossPointSettings::BOOK_STYLE
-                     ? static_cast<uint8_t>(CrossPointSettings::JUSTIFIED)
-                     : SETTINGS.paragraphAlignment;
-        };
-        setting.valueSetter = [](const uint8_t value) { SETTINGS.paragraphAlignment = value; };
-      }
-      readerSettings.push_back(setting);
-    } else if (setting.category == StrId::STR_CAT_CONTROLS) {
-      if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
-          SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
-        continue;
-      }
-      controlsSettings.push_back(setting);
-    } else if (setting.category == StrId::STR_CAT_SYSTEM) {
-      systemSettings.push_back(setting);
-    }
+  readerSettings.push_back(SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
+  readerSettings.push_back(SettingInfo::Enum(
+      StrId::STR_ORIENTATION, &CrossPointSettings::orientation,
+      {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_ORIENTATION_INVERTED,
+       StrId::STR_LANDSCAPE_CCW}));
+  readerSettings.push_back(SettingInfo::Enum(
+      StrId::STR_EPUB_IMAGES, &CrossPointSettings::imageRendering,
+      {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS}));
+  readerSettings.push_back(
+      SettingInfo::Toggle(StrId::STR_SKIP_EPUB_COVER_PAGE, &CrossPointSettings::skipEpubCoverPage));
+  readerSettings.push_back(
+      SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+  if (!dictionaries.empty()) {
+    readerSettings.push_back(SettingInfo::Action(StrId::STR_DICTIONARY, SettingAction::DictionarySettings));
   }
+  readerSettings.push_back(SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
 
-  // Append device-only ACTION items
-  controlsSettings.push_back(SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
-  auto unorderedSystemSettings = std::move(systemSettings);
-  systemSettings.clear();
-  const auto appendSystemSetting = [this, &unorderedSystemSettings](const StrId id) {
-    const auto it = std::find_if(unorderedSystemSettings.begin(), unorderedSystemSettings.end(),
-                                 [id](const SettingInfo& setting) { return setting.nameId == id; });
-    if (it == unorderedSystemSettings.end()) return;
-    systemSettings.push_back(std::move(*it));
-    unorderedSystemSettings.erase(it);
-  };
-  appendSystemSetting(StrId::STR_TIME_TO_SLEEP);
+  controlsSettings.push_back(
+      SettingInfo::Action(StrId::STR_PAGE_TURN_BUTTONS, SettingAction::PageButtonSettings));
+  controlsSettings.push_back(
+      SettingInfo::Action(StrId::STR_CONFIRM_BUTTON, SettingAction::ConfirmButtonSettings));
+  controlsSettings.push_back(
+      SettingInfo::Action(StrId::STR_POWER_BUTTON, SettingAction::PowerButtonSettings));
+  controlsSettings.push_back(
+      SettingInfo::Action(StrId::STR_BACK_BUTTON, SettingAction::BackButtonSettings));
+  if (halTiltSensor.isAvailable()) {
+    controlsSettings.push_back(
+        SettingInfo::Action(StrId::STR_TILT_SENSOR, SettingAction::TiltSensorSettings));
+  }
+  controlsSettings.push_back(
+      SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
+
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+  systemSettings.push_back(SettingInfo::String(StrId::STR_DEVICE_DISPLAY_NAME, &SETTINGS.deviceDisplayName[0],
+                                               sizeof(SETTINGS.deviceDisplayName)));
   if (halClock.isAvailable()) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_TIME_SETTINGS, SettingAction::Time));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
-  appendSystemSetting(StrId::STR_DEVICE_DISPLAY_NAME);
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
-  appendSystemSetting(StrId::STR_SHOW_HIDDEN_FILES);
-  // Preserve future persisted System settings even if their preferred order
-  // has not yet been added above.
-  for (auto& setting : unorderedSystemSettings) systemSettings.push_back(std::move(setting));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_DEVICE_INFO, SettingAction::DeviceInfo));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+  systemSettings.push_back(
+      SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
-  readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
-  // Font installation is a maintenance action; keep it after the reading
-  // preferences instead of displacing the common family/size controls.
-  readerSettings.push_back(SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
+  systemSettings.push_back(
+      SettingInfo::Action(StrId::STR_FIRMWARE_UPDATES, SettingAction::FirmwareUpdates));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_DEVICE_INFO, SettingAction::DeviceInfo));
 
   // Update currentSettings pointer and count for the active category
   switch (selectedCategoryIndex) {
@@ -192,8 +150,6 @@ void SettingsActivity::onEnter() {
   // Trigger first update
   requestUpdate();
 }
-
-void SettingsActivity::onExit() { Activity::onExit(); }
 
 bool SettingsActivity::handleGlobalShortcut(const GlobalShortcut shortcut) {
   if (optionPopup.isActive()) return false;
@@ -295,27 +251,6 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   const auto& setting = (*currentSettings)[selectedSetting];
-  if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
-    openSleepTimeoutPicker();
-    return;
-  }
-  if (setting.nameId == StrId::STR_FONT_SIZE) {
-    startActivityForResult(std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
-                           [this](const ActivityResult& result) {
-                             if (result.isCancelled) {
-                               rebuildSettingsLists();
-                               return;
-                             }
-                             SETTINGS.saveToFile();
-                             rebuildSettingsLists();
-                           });
-    return;
-  }
-  if (setting.type == SettingType::VALUE) {
-    openValuePicker(setting);
-    return;
-  }
-
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
     const bool currentValue = SETTINGS.*(setting.valuePtr);
@@ -334,15 +269,6 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
-    if (setting.nameId == StrId::STR_FONT_FAMILY) {
-      // Launch font selection submenu instead of cycling
-      startActivityForResult(std::make_unique<FontSelectionActivity>(renderer, mappedInput, &sdFontSystem.registry()),
-                             [this](const ActivityResult&) {
-                               SETTINGS.saveToFile();
-                               rebuildSettingsLists();
-                             });
-      return;
-    }
     const uint8_t totalValues = setting.enumStringValues.empty()
                                     ? static_cast<uint8_t>(setting.enumValues.size())
                                     : static_cast<uint8_t>(setting.enumStringValues.size());
@@ -389,6 +315,16 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   } else if (setting.type == SettingType::ACTION) {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
+    const auto openSubmenu = [this](const SettingsSubmenuActivity::Page page,
+                                    std::vector<DictionaryEntry> dictionaries) {
+      releaseSettingsLists();
+      startActivityForResult(
+          std::make_unique<SettingsSubmenuActivity>(renderer, mappedInput, page, std::move(dictionaries)),
+          [this](const ActivityResult&) {
+            SETTINGS.saveToFile();
+            rebuildSettingsLists();
+          });
+    };
 
     switch (setting.action) {
       case SettingAction::RemapFrontButtons:
@@ -412,12 +348,6 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::ClearCache:
         startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), resultHandler);
         break;
-      case SettingAction::CheckForUpdates:
-        startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::SdFirmwareUpdate:
-        startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
-        break;
       case SettingAction::DownloadFonts:
         // The parent Settings activity remains on the stack while the font
         // manager performs a TLS request. Release its copied setting rows so
@@ -435,6 +365,47 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::DeviceInfo:
         startActivityForResult(std::make_unique<DeviceInfoActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::Appearance:
+        openSubmenu(SettingsSubmenuActivity::Page::HomeLibrary, {});
+        break;
+      case SettingAction::TextSettings:
+        releaseSettingsLists();
+        startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) {
+                                 SETTINGS.saveToFile();
+                                 rebuildSettingsLists();
+                               });
+        break;
+      case SettingAction::SleepSettings:
+        openSubmenu(SettingsSubmenuActivity::Page::Sleep, {});
+        break;
+      case SettingAction::DictionarySettings:
+        openSubmenu(SettingsSubmenuActivity::Page::Dictionary, dictionaries);
+        break;
+      case SettingAction::PageButtonSettings:
+        openSubmenu(SettingsSubmenuActivity::Page::PageButtons, {});
+        break;
+      case SettingAction::ConfirmButtonSettings:
+        openSubmenu(SettingsSubmenuActivity::Page::ConfirmButton, {});
+        break;
+      case SettingAction::PowerButtonSettings:
+        openSubmenu(SettingsSubmenuActivity::Page::PowerButton, {});
+        break;
+      case SettingAction::BackButtonSettings:
+        openSubmenu(SettingsSubmenuActivity::Page::BackButton, {});
+        break;
+      case SettingAction::TiltSensorSettings:
+        openSubmenu(SettingsSubmenuActivity::Page::TiltSensor, {});
+        break;
+      case SettingAction::FirmwareUpdates:
+        openSubmenu(SettingsSubmenuActivity::Page::FirmwareUpdate, {});
+        break;
+      case SettingAction::CheckForUpdates:
+      case SettingAction::SdFirmwareUpdate:
+      case SettingAction::CustomizeHomeShortcuts:
+        // These actions belong to SettingsSubmenuActivity and are not exposed
+        // directly by the four top-level tabs.
+        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -447,45 +418,6 @@ void SettingsActivity::toggleCurrentSetting() {
   SETTINGS.saveToFile();
   rebuildSettingsLists();
   selectedSettingIndex = std::min(selectedSettingIndex, settingsCount);
-}
-
-void SettingsActivity::openSleepTimeoutPicker() {
-  startActivityForResult(
-      std::make_unique<IntervalSelectionActivity>(
-          renderer, mappedInput, "SleepTimeoutInterval", StrId::STR_TIME_TO_SLEEP, SETTINGS.sleepTimeoutMinutes,
-          CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1, 5,
-          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, true, StrId::STR_SLEEP_NEVER),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          SETTINGS.sleepTimeoutMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-          SETTINGS.saveToFile();
-        }
-        requestUpdate();
-      });
-}
-
-void SettingsActivity::openValuePicker(const SettingInfo& setting) {
-  const bool is16Bit = setting.value16Ptr != nullptr;
-  const int initialValue = is16Bit ? SETTINGS.*(setting.value16Ptr) : SETTINGS.*(setting.valuePtr);
-  const auto valuePtr = setting.valuePtr;
-  const auto value16Ptr = setting.value16Ptr;
-  startActivityForResult(
-      std::make_unique<IntervalSelectionActivity>(
-          renderer, mappedInput, "SettingsValueInterval", setting.nameId, initialValue, setting.valueRange.min,
-          setting.valueRange.max, setting.valueRange.step, setting.valueRange.step, StrId::STR_NONE_OPT, false, true),
-      [this, is16Bit, valuePtr, value16Ptr](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          const uint32_t value = std::get<IntervalResult>(result.data).value;
-          if (is16Bit) {
-            SETTINGS.*value16Ptr = static_cast<uint16_t>(value);
-          } else {
-            SETTINGS.*valuePtr = static_cast<uint8_t>(value);
-          }
-          SETTINGS.saveToFile();
-          rebuildSettingsLists();
-        }
-        requestUpdate();
-      });
 }
 
 void SettingsActivity::render(RenderLock&&) {

@@ -731,7 +731,9 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   return data;
 }
 
-bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop) {
+bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop,
+                               const size_t maxOutputSize, bool* const outputLimitExceeded) {
+  if (outputLimitExceeded) *outputLimitExceeded = false;
   const ScopedOpenClose zip{*this};
   if (!zip) return false;
 
@@ -744,6 +746,11 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
   file.seek(fileOffset);
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
+  if (static_cast<size_t>(inflatedDataSize) > maxOutputSize) {
+    if (outputLimitExceeded) *outputLimitExceeded = true;
+    LOG_ERR("ZIP", "Entry output is too large (%u bytes, limit %zu)", inflatedDataSize, maxOutputSize);
+    return false;
+  }
 
   if (fileStat.method == ZIP_METHOD_STORED) {
     // no deflation, just read content

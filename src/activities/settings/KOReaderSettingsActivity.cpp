@@ -26,8 +26,6 @@ void KOReaderSettingsActivity::onEnter() {
   requestUpdate();
 }
 
-void KOReaderSettingsActivity::onExit() { Activity::onExit(); }
-
 void KOReaderSettingsActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
@@ -77,9 +75,9 @@ void KOReaderSettingsActivity::handleSelection() {
           }
         });
   } else if (selectedIndex == 2) {
-    // Sync Server URL - prefill with https:// if empty to save typing
-    const std::string currentUrl = KOREADER_STORE.getServerUrl();
-    const std::string prefillUrl = currentUrl.empty() ? "https://" : currentUrl;
+    // Show the effective URL, including the default, so it can be inspected
+    // and edited directly instead of presenting only an empty scheme.
+    const std::string prefillUrl = KOREADER_STORE.getBaseUrl();
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SYNC_SERVER_URL),
                                                                    prefillUrl, 128, InputType::Url),
                            [this](const ActivityResult& result) {

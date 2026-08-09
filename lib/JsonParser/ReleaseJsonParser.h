@@ -7,6 +7,8 @@
 
 class ReleaseJsonParser {
  public:
+  using AssetVisitor = bool (*)(void* context, const char* name, const char* url, size_t size, const char* digest);
+
   ReleaseJsonParser();
 
   ReleaseJsonParser(const ReleaseJsonParser&) = delete;
@@ -14,6 +16,8 @@ class ReleaseJsonParser {
 
   void reset();
   void feed(const char* data, size_t len);
+  bool finish();
+  void setAssetVisitor(AssetVisitor visitor, void* context);
 
   bool foundTag() const;
   bool foundFirmware() const;
@@ -67,8 +71,11 @@ class ReleaseJsonParser {
   bool firmwareFound;
   bool firmwareDigestFound;
 
-  char currentAssetName[32];
+  char currentAssetName[128];
   char currentAssetUrl[512];
   char currentAssetDigest[72];
   size_t currentAssetSize;
+  AssetVisitor assetVisitor;
+  void* assetVisitorContext;
+  bool assetVisitorSucceeded;
 };

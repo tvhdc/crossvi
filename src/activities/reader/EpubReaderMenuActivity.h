@@ -48,7 +48,6 @@ class EpubReaderMenuActivity final : public Activity {
                                   bool bookCompleted = false);
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool handleGlobalShortcut(GlobalShortcut shortcut) override {
@@ -64,6 +63,7 @@ class EpubReaderMenuActivity final : public Activity {
   static std::vector<MenuItem> buildMenuItems(ReaderKind readerKind, bool hasFootnotes, bool hasBookmarks,
                                               bool currentPageBookmarked, bool canCreateClipping, bool hasClippings,
                                               bool hasChapters, bool bookCompleted);
+  StrId feedbackForSelectedAction() const;
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;

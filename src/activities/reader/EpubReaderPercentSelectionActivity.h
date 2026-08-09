@@ -12,7 +12,6 @@ class EpubReaderPercentSelectionActivity final : public Activity {
       : Activity("EpubReaderPercentSelection", renderer, mappedInput), percent(initialPercent) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

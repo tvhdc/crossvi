@@ -15,7 +15,6 @@ class OpdsServerListActivity final : public Activity {
       : Activity("OpdsServerList", renderer, mappedInput), pickerMode(pickerMode) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

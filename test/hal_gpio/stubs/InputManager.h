@@ -67,6 +67,7 @@ class InputManager {
   bool wasAnyPressed() const { return pressedEvents != 0; }
   bool wasReleased(uint8_t button) const { return (releasedEvents & (1U << button)) != 0; }
   bool wasAnyReleased() const { return releasedEvents != 0; }
+  bool isDebouncePending() const { return rawState != currentState; }
 
   unsigned long getHeldTime() const {
     const uint32_t elapsed = currentState != 0 ? ArduinoFake::now - pressStart : pressFinish - pressStart;

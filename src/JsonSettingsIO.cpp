@@ -142,6 +142,11 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (s.language < getLanguageCount()) ? LANGUAGE_CODES[s.language] : "EN";
 
+  JsonArray shortcutArray = doc["homeShortcuts"].to<JsonArray>();
+  for (uint8_t index = 0; index < s.homeShortcuts.count && index < HomeShortcutList::CAPACITY; ++index) {
+    shortcutArray.add(s.homeShortcuts.items[index]);
+  }
+
   String json;
   serializeJson(doc, json);
   const auto saved = AtomicJsonFile::save(path, json);
@@ -175,6 +180,18 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   // that CrossVi is the only UI, and removed on the next successful save.
   if (!doc["uiTheme"].isNull() && needsResave) *needsResave = true;
 
+  // outsideReaderClock used to share the reader clock's hide/right/left enum.
+  // Preserve either visible placement as the new boolean "shown on right".
+  if (!doc["outsideReaderClock"].isNull()) {
+    const int rawOutsideClock = doc["outsideReaderClock"] | 0;
+    const uint8_t canonicalOutsideClock = rawOutsideClock == CrossPointSettings::STATUS_BAR_CLOCK_RIGHT ||
+                                                  rawOutsideClock == CrossPointSettings::STATUS_BAR_CLOCK_LEFT
+                                              ? 1
+                                              : 0;
+    if (rawOutsideClock != canonicalOutsideClock && needsResave) *needsResave = true;
+    doc["outsideReaderClock"] = canonicalOutsideClock;
+  }
+
   for (const auto& info : getBaseSettingsList()) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
@@ -188,23 +205,27 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     } else if (info.stringOffset) {
       const char* strPtr = (const char*)&s + info.stringOffset;
       const std::string fieldDefault = strPtr;  // current buffer = struct-initializer default
-      std::string val;
-      if (info.obfuscated) {
-        bool ok = false;
-        val = obfuscation::deobfuscateFromBase64(doc[std::string(info.key) + "_obf"] | "", &ok);
-        if (!ok || val.empty()) {
-          val = doc[info.key] | fieldDefault;
-          if (val != fieldDefault && needsResave) *needsResave = true;
-        }
-      } else {
-        val = doc[info.key] | fieldDefault;
-      }
       char* destPtr = (char*)&s + info.stringOffset;
       if (info.stringMaxLen == 0) {
         LOG_ERR("CPS", "Misconfigured SettingInfo: stringMaxLen is 0 for key '%s'", info.key);
         destPtr[0] = '\0';
         if (needsResave) *needsResave = true;
         continue;
+      }
+      std::string val;
+      if (info.obfuscated) {
+        bool ok = false;
+        bool tooLong = false;
+        val = obfuscation::deobfuscateFromBase64(doc[std::string(info.key) + "_obf"] | "", info.stringMaxLen - 1, &ok,
+                                                 &tooLong);
+        if (tooLong && needsResave) *needsResave = true;
+        if (!ok || val.empty()) {
+          const char* legacyValue = doc[info.key] | fieldDefault.c_str();
+          val = std::strlen(legacyValue) < info.stringMaxLen ? legacyValue : fieldDefault;
+          if (val != fieldDefault && needsResave) *needsResave = true;
+        }
+      } else {
+        val = doc[info.key] | fieldDefault;
       }
       strncpy(destPtr, val.c_str(), info.stringMaxLen - 1);
       destPtr[info.stringMaxLen - 1] = '\0';
@@ -224,6 +245,27 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
           v = info.valueRange.max;
       }
       s.*(info.valuePtr) = v;
+    }
+  }
+
+  if (!doc["homeShortcuts"].isNull()) {
+    if (!doc["homeShortcuts"].is<JsonArrayConst>()) {
+      if (needsResave) *needsResave = true;
+    } else {
+      HomeShortcutList loaded;
+      loaded.clear();
+      for (JsonVariantConst item : doc["homeShortcuts"].as<JsonArrayConst>()) {
+        if (!item.is<int>()) {
+          if (needsResave) *needsResave = true;
+          continue;
+        }
+        const int raw = item.as<int>();
+        if (raw < 0 || raw > UINT8_MAX || !isValidHomeShortcutId(static_cast<uint8_t>(raw)) ||
+            !loaded.add(static_cast<HomeShortcutId>(raw))) {
+          if (needsResave) *needsResave = true;
+        }
+      }
+      s.homeShortcuts = loaded;
     }
   }
 

@@ -7,7 +7,6 @@
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
-#include <esp_wifi.h>
 
 #include <algorithm>
 #include <cassert>
@@ -24,6 +23,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/WifiLifecycle.h"
 
 namespace {
 std::string calculateDocumentHashForMethod(const std::string& path, const DocumentMatchMethod method) {
@@ -85,7 +85,11 @@ void KOReaderSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
   // epub is guaranteed non-null here: ensureEpubLoaded() was called in performSync() before
   // SHOWING_RESULT state is entered, and this method is only called from that state.
   assert(epub);
-  if (!EpubReaderUtils::saveProgress(*epub, spineIndex, page, 0)) {
+  std::optional<uint32_t> offset;
+  if (remotePosition.hasVisibleTextOffset && remotePosition.spineIndex == spineIndex) {
+    offset = remotePosition.visibleTextOffset;
+  }
+  if (!EpubReaderUtils::saveProgress(*epub, spineIndex, page, 0, offset)) {
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;
@@ -158,11 +162,7 @@ void KOReaderSyncActivity::performSync() {
 
   LOG_DBG("KOSync", "Document hash (%s): %s", matchMethodName(primaryMethod), documentHash.c_str());
 
-  {
-    RenderLock lock(*this);
-    statusMessage = tr(STR_FETCH_PROGRESS);
-  }
-  requestUpdateAndWait();
+  showBlockingFeedback(StrId::STR_LOADING_POPUP);
 
   // The status frame is now on-screen and no render is using glyph data.
   // Release font caches before TLS so the handshake gets the largest possible
@@ -183,7 +183,7 @@ void KOReaderSyncActivity::performSync() {
     const DocumentMatchMethod altMethod = alternateMatchMethod(primaryMethod);
     const std::string altHash = calculateDocumentHashForMethod(epubPath, altMethod);
     if (!altHash.empty() && altHash != documentHash) {
-      KOReaderProgress altProgress;
+      KOReaderProgress altProgress{};
       const auto altResult = KOReaderSyncClient::getProgress(altHash, altProgress);
       LOG_DBG("KOSync", "Alternate remote (%s): result=%d http=%d doc=%s local=%.6f remote=%.6f xpath=%s",
               matchMethodName(altMethod), altResult, KOReaderSyncClient::lastHttpCode, altHash.c_str(),
@@ -239,18 +239,15 @@ void KOReaderSyncActivity::performSync() {
     return;
   }
 
-  // Prefer the exact spine/page from a crosspoint-sync rich position (lossless
-  // CrossPoint<->CrossPoint sync); fall back to the approximate XPath mapping
-  // for plain kosync servers or when the rich position cannot be applied.
-  std::optional<CrossPointPosition> richMapped;
-  if (remoteProgress.position.has_value()) {
-    richMapped = ProgressMapper::fromRichPosition(epub, *remoteProgress.position, renderer);
-  }
-  if (richMapped.has_value()) {
-    remotePosition = *richMapped;
-  } else {
-    SavedProgressPosition koPos = {remoteProgress.progress, remoteProgress.percentage};
-    remotePosition = ProgressMapper::toCrossPoint(epub, koPos, renderer, currentSpineIndex, totalPagesInSpine);
+  // The standard KOReader XPath is the authoritative content anchor. Rich
+  // page hints from compatible servers remain a legacy fallback because their
+  // page numbers depend on the uploader's font and layout.
+  SavedProgressPosition koPos = {remoteProgress.progress, remoteProgress.percentage};
+  remotePosition = ProgressMapper::toCrossPoint(epub, koPos, renderer, currentSpineIndex, totalPagesInSpine);
+  if (!remotePosition.hasVisibleTextOffset && remoteProgress.position.has_value()) {
+    if (const auto richMapped = ProgressMapper::fromRichPosition(epub, *remoteProgress.position, renderer)) {
+      remotePosition = *richMapped;
+    }
   }
 
   if (smartSyncEnabled()) {
@@ -349,9 +346,6 @@ void KOReaderSyncActivity::performUpload() {
 
   const auto result = KOReaderSyncClient::updateProgress(progress);
 
-  // Drop the radio while user reads the result; full teardown happens at silent reboot.
-  esp_wifi_stop();
-
   if (result != KOReaderSyncClient::OK) {
     {
       RenderLock lock(*this);
@@ -401,14 +395,14 @@ void KOReaderSyncActivity::onEnter() {
 void KOReaderSyncActivity::onExit() {
   Activity::onExit();
 
-  if (wifiActivated) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (wifiActivated && !WifiLifecycle::shutDown()) {
     silentRestartToReader();
   }
 }
 
 void KOReaderSyncActivity::render(RenderLock&&) {
+  if (renderBlockingFeedbackOverlay()) return;
+
   renderer.clearScreen();
 
   auto metrics = UITheme::getInstance().getMetrics();

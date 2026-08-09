@@ -36,6 +36,7 @@ target_include_directories(crosspoint_test_common INTERFACE
   ${REPO_ROOT}
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/lib/Utf8
 )
 target_compile_options(crosspoint_test_common INTERFACE
   -Wall
@@ -70,6 +71,7 @@ add_subdirectory(differential_rounding)
 add_subdirectory(hyphenation_eval)
 add_subdirectory(utf8_compose)
 add_subdirectory(opds_filename)
+add_subdirectory(opds_parser)
 add_subdirectory(minibidi_arabic)
 add_subdirectory(combining_marks)
 add_subdirectory(txt_line_wrap)
@@ -101,3 +103,5 @@ add_subdirectory(button_navigator)
 add_subdirectory(activity_safety)
 add_subdirectory(mapped_input)
 add_subdirectory(koreader_xpath)
+add_subdirectory(credential_integrity)
+add_subdirectory(network_store)

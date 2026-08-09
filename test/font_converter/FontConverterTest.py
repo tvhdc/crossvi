@@ -24,9 +24,30 @@ if importlib.util.find_spec("yaml") is None:
 BUILDER_SPEC = importlib.util.spec_from_file_location("build_sd_fonts", SCRIPT_DIR / "build-sd-fonts.py")
 BUILDER = importlib.util.module_from_spec(BUILDER_SPEC)
 BUILDER_SPEC.loader.exec_module(BUILDER)
+MANIFEST_SPEC = importlib.util.spec_from_file_location(
+    "generate_font_manifest", REPO / "scripts" / "generate-font-manifest.py")
+MANIFEST = importlib.util.module_from_spec(MANIFEST_SPEC)
+MANIFEST_SPEC.loader.exec_module(MANIFEST)
 
 
 class FontConverterContractTest(unittest.TestCase):
+    def test_manifest_records_sha256_for_every_font_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            font_path = Path(tmp) / "Example_14.cpfont"
+            payload = b"cpfont-test-payload"
+            font_path.write_bytes(payload)
+            original_reader = MANIFEST.read_cpfont_styles
+            MANIFEST.read_cpfont_styles = lambda _: ["regular"]
+            try:
+                manifest = MANIFEST.build_manifest(
+                    {"Example": [font_path]}, "https://example.invalid/fonts/")
+            finally:
+                MANIFEST.read_cpfont_styles = original_reader
+
+            entry = manifest["families"][0]["files"][0]
+            self.assertEqual(entry["size"], len(payload))
+            self.assertEqual(entry["sha256"], hashlib.sha256(payload).hexdigest())
+
     def test_vietnamese_reading_preset_is_self_contained(self):
         resolved = CONVERTER.resolve_intervals("vietnamese-reading")
         covered = {cp for start, end in resolved for cp in range(start, end + 1)}
@@ -55,6 +76,21 @@ class FontConverterContractTest(unittest.TestCase):
     def test_legacy_vietnamese_preset_keeps_old_meaning(self):
         self.assertEqual(CONVERTER.INTERVAL_PRESETS["vietnamese"],
                          [(0x01A0, 0x01B0), (0x1EA0, 0x1EF9)])
+
+    def test_ipa_preset_and_gentium_catalog_cover_full_ipa_ranges(self):
+        resolved = CONVERTER.resolve_intervals("ipa-chars")
+        covered = {cp for start, end in resolved for cp in range(start, end + 1)}
+        for cp in (0x0250, 0x02AF, 0x02B0, 0x02FF):
+            self.assertIn(cp, covered)
+
+        catalog = (SCRIPT_DIR / "sd-fonts.yaml").read_text(encoding="utf-8")
+        gentium = re.search(
+            r"- name: GentiumBookPlus\n(?P<body>.*?)(?=\n\s*- name:|\Z)",
+            catalog,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(gentium)
+        self.assertRegex(gentium.group("body"), r"intervals:[^\n]*\bipa-chars\b")
 
     def test_codepoint_report_is_explicit(self):
         self.assertEqual(CONVERTER.format_codepoints([0x0102, 0x1EA0]),

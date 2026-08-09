@@ -35,8 +35,7 @@ void BookReaderSettingsActivity::rebuildSettings() {
     settings.push_back(SettingInfo::Toggle(StrId::STR_EPUB_SAFE_MODE, &CrossPointSettings::epubSafeMode));
   }
   for (auto& setting : getSettingsList(&sdFontSystem.registry())) {
-    if (setting.category != StrId::STR_CAT_READER || setting.nameId == StrId::STR_TEXT_DARKNESS ||
-        setting.nameId == StrId::STR_SKIP_EPUB_COVER_PAGE) {
+    if (setting.category != StrId::STR_CAT_READER || setting.nameId == StrId::STR_SKIP_EPUB_COVER_PAGE) {
       continue;
     }
     if (readerKind == ReaderKind::PlainText) {
@@ -70,6 +69,7 @@ bool BookReaderSettingsActivity::isIndependentBookOption(const SettingInfo& sett
 
 void BookReaderSettingsActivity::onEnter() {
   Activity::onEnter();
+  sdFontSystem.releaseLoadedFont(renderer);
   rebuildSettings();
   requestUpdate();
 }
@@ -87,7 +87,7 @@ void BookReaderSettingsActivity::setCustomEnabled(const bool enabled) {
     applyReaderSettings(savedCustom);
   }
   customEnabled = enabled;
-  sdFontSystem.ensureLoaded(renderer, false);
+  sdFontSystem.releaseLoadedFont(renderer);
 }
 
 void BookReaderSettingsActivity::finishWithResult() {
@@ -146,7 +146,7 @@ void BookReaderSettingsActivity::toggleSelected() {
     // snapshot; Reset is the explicit destructive action.
     savedCustom = captureReaderSettings(false, false, 0);
     customEnabled = false;
-    sdFontSystem.ensureLoaded(renderer, false);
+    sdFontSystem.releaseLoadedFont(renderer);
     requestUpdate();
     return;
   }
@@ -179,7 +179,7 @@ void BookReaderSettingsActivity::toggleSelected() {
           SETTINGS.fontSize = selectedSize;
           std::strncpy(SETTINGS.sdFontFamilyName, selectedSdFontFamily.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
           SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-          sdFontSystem.ensureLoaded(renderer, false);
+          sdFontSystem.releaseLoadedFont(renderer);
           customEnabled = true;
           savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
                                               savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);
@@ -208,7 +208,7 @@ void BookReaderSettingsActivity::toggleSelected() {
           SETTINGS.fontSize = selectedFontSize;
           std::strncpy(SETTINGS.sdFontFamilyName, selectedSdFontFamily.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
           SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-          sdFontSystem.ensureLoaded(renderer, false);
+          sdFontSystem.releaseLoadedFont(renderer);
           customEnabled = true;
           savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
                                               savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);

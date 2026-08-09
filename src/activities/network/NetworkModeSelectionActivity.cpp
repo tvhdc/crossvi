@@ -22,8 +22,6 @@ void NetworkModeSelectionActivity::onEnter() {
   requestUpdate();
 }
 
-void NetworkModeSelectionActivity::onExit() { Activity::onExit(); }
-
 void NetworkModeSelectionActivity::loop() {
   // Handle back button - cancel
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {

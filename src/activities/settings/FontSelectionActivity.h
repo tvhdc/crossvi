@@ -3,6 +3,7 @@
 #include <SdCardFontRegistry.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,8 +23,8 @@ class FontSelectionActivity final : public Activity {
 
  private:
   void handleSelection();
-  void applyFontSelection(int index);
-  void renderPreviewPane(int top, int height, int fontId, const char* fontName) const;
+  void applyFontSelection(int index, bool preparePreview = false);
+  void renderPreviewPane(int top, int height, int fontId, const char* fontName, bool cachedCustomPreview = false);
 
   struct FontEntry {
     std::string name;
@@ -37,6 +38,12 @@ class FontSelectionActivity final : public Activity {
   std::vector<FontEntry> fonts_;
   int selectedIndex_ = 0;
   int previewFontIndex_ = 0;
+  int preparedPreviewFontId_ = 0;
+  int customPreviewAttemptedIndex_ = -1;
+  int customPreviewSnapshotIndex_ = -1;
+  bool customPreviewPending_ = false;
+  std::unique_ptr<uint8_t[]> customPreviewSnapshot_;
+  size_t customPreviewSnapshotSize_ = 0;
   uint8_t originalFontFamily_ = 0;
   uint8_t originalFontSize_ = 0;
   uint8_t preferredPointSize_ = 14;

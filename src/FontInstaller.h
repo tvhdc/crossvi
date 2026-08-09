@@ -21,13 +21,13 @@ class FontInstaller {
 
   explicit FontInstaller(SdCardFontRegistry& registry);
 
-  /// Validate a bounded family name: at most 31 alphanumeric, hyphen or underscore
-  /// characters, with no path traversal.
+  /// Validate a bounded UTF-8 family name: at most 31 bytes, with internal
+  /// spaces allowed and no path traversal.
   static bool isValidFamilyName(const char* name);
 
   /// Validate a .cpfont filename: ends with ".cpfont", no path separators or
-  /// traversal sequences, basename uses only alphanumeric + hyphen + underscore
-  /// + dot (only as the extension separator). Rejects "../foo.cpfont" and
+  /// traversal sequences; its UTF-8 basename accepts internal spaces. Dot is
+  /// reserved for the extension separator. Rejects "../foo.cpfont" and
   /// "evil/foo.cpfont". The complete filename is capped at 96 bytes so the
   /// fixed-size device paths cannot be truncated into a different destination.
   static bool isValidCpfontFilename(const char* name);

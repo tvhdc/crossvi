@@ -3,15 +3,22 @@
 #include <ArduinoJson.h>
 #include <HttpTransportPolicy.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
+#include <SecureHttpClient.h>
+#if defined(ENABLE_SERIAL_LOG)
+#include <WiFi.h>
+#endif
 #include <base64.h>
-#include <esp_crt_bundle.h>
-#include <esp_http_client.h>
 
 #include <array>
+#include <ctime>
+#include <limits>
 #include <string>
 #include <string_view>
 
 #include "KOReaderCredentialStore.h"
+
+extern "C" void wolfSSL_Arduino_Serial_Print(const char* const message) { LOG_DBG("WOLFSSL", "%s", message); }
 
 int KOReaderSyncClient::lastHttpCode = 0;
 
@@ -20,10 +27,6 @@ namespace {
 constexpr char DEVICE_NAME[] = "CrossVi";
 constexpr char DEVICE_ID[] = "crosspoint-reader";
 
-// A verified TLS handshake still needs working heap. Keep a conservative floor
-// and check both total free heap and the largest contiguous block so fragmented
-// heap does not fall through into a failed allocation path.
-constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
 constexpr size_t MAX_RESPONSE_BYTES = 64 * 1024;
 constexpr size_t MAX_REQUEST_BYTES = 64 * 1024;
 constexpr int HTTP_TIMEOUT_MS = 60000;
@@ -40,48 +43,34 @@ struct ResponseAccumulator {
   bool overflow = false;
 };
 
+const char* methodName(const RequestMethod method) {
+  switch (method) {
+    case RequestMethod::POST:
+      return "POST";
+    case RequestMethod::PUT:
+      return "PUT";
+    case RequestMethod::GET:
+    default:
+      return "GET";
+  }
+}
+
 // True when free heap is too low to risk a TLS handshake.
 bool insufficientHeap() {
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
-  if (freeHeap < MIN_HEAP_FOR_TLS || maxAllocHeap < MIN_HEAP_FOR_TLS) {
-    LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free, %u max alloc (need %u)", freeHeap,
-            maxAllocHeap, MIN_HEAP_FOR_TLS);
+  if (!MemoryBudget::hasHeadroom(freeHeap, maxAllocHeap, MemoryBudget::KOREADER_TLS)) {
+    LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u), %u max alloc (need %u)", freeHeap,
+            MemoryBudget::KOREADER_TLS.freeHeap, maxAllocHeap, MemoryBudget::KOREADER_TLS.maxAllocHeap);
     return true;
   }
   return false;
-}
-
-esp_http_client_method_t espMethod(const RequestMethod method) {
-  switch (method) {
-    case RequestMethod::POST:
-      return HTTP_METHOD_POST;
-    case RequestMethod::PUT:
-      return HTTP_METHOD_PUT;
-    case RequestMethod::GET:
-    default:
-      return HTTP_METHOD_GET;
-  }
 }
 
 bool validHeader(const RequestHeader& header) {
   if (!header.name || !*header.name || !header.value) return false;
   return std::string_view(header.name).find_first_of("\r\n:") == std::string_view::npos &&
          std::string_view(header.value).find_first_of("\r\n") == std::string_view::npos;
-}
-
-esp_err_t collectResponse(esp_http_client_event_t* event) {
-  if (!event || event->event_id != HTTP_EVENT_ON_DATA || !event->user_data || !event->data || event->data_len <= 0) {
-    return ESP_OK;
-  }
-  auto& accumulator = *static_cast<ResponseAccumulator*>(event->user_data);
-  const size_t length = static_cast<size_t>(event->data_len);
-  if (!accumulator.response || length > MAX_RESPONSE_BYTES - accumulator.response->size()) {
-    accumulator.overflow = true;
-    return ESP_FAIL;
-  }
-  accumulator.response->append(static_cast<const char*>(event->data), length);
-  return ESP_OK;
 }
 
 bool verifiedRequest(const RequestMethod method, const std::string& url, const std::string_view body,
@@ -100,41 +89,63 @@ bool verifiedRequest(const RequestMethod method, const std::string& url, const s
     }
   }
 
-  esp_http_client_config_t config = {};
-  config.url = url.c_str();
-  config.method = espMethod(method);
-  config.timeout_ms = HTTP_TIMEOUT_MS;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
-  config.disable_auto_redirect = true;
-  config.keep_alive_enable = false;
-  ResponseAccumulator accumulator{&response};
-  config.event_handler = collectResponse;
-  config.user_data = &accumulator;
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) return false;
-  for (size_t i = 0; i < headerCount; ++i) {
-    if (esp_http_client_set_header(client, headers[i].name, headers[i].value) != ESP_OK) {
-      esp_http_client_cleanup(client);
-      return false;
-    }
-  }
+#if defined(ENABLE_SERIAL_LOG)
+  LOG_DBG("KOSync", "HTTP start: %s %s, wifi=%d, rssi=%d, epoch=%lld, heap=%u, max_alloc=%u, body=%u",
+          methodName(method), url.c_str(), static_cast<int>(WiFi.status()), WiFi.RSSI(),
+          static_cast<long long>(time(nullptr)), static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(body.size()));
+#endif
 
-  if (!body.empty() && esp_http_client_set_post_field(client, body.data(), static_cast<int>(body.size())) != ESP_OK) {
-    esp_http_client_cleanup(client);
+  freeink::SecureHttpClient client;
+  client.setTimeout(HTTP_TIMEOUT_MS);
+  client.setReuse(false);
+  // SecureNet currently has no CA bundle. This is the same wolfSSL transport
+  // used by upstream CrossPoint for KOSync: it avoids mbedTLS's certificate
+  // verification OOM/signature failure on ESP32-C3 while keeping traffic
+  // encrypted. HttpTransportPolicy still rejects credential-bearing remote
+  // requests unless the URL uses HTTPS.
+  client.setInsecure();
+  if (!client.begin(url)) {
+    LOG_ERR("KOSync", "SecureHttpClient begin failed: %s", url.c_str());
     return false;
   }
 
-  const esp_err_t error = esp_http_client_perform(client);
-  httpStatus = esp_http_client_get_status_code(client);
-  const int contentLength = esp_http_client_get_content_length(client);
-  const bool valid = error == ESP_OK && !accumulator.overflow && httpStatus > 0 &&
-                     !(httpStatus >= 300 && httpStatus < 400) &&
-                     contentLength <= static_cast<int>(MAX_RESPONSE_BYTES) &&
-                     (contentLength < 0 || response.size() == static_cast<size_t>(contentLength));
-  if (!valid) {
-    LOG_ERR("KOSync", "Request rejected: %s, status=%d, size=%d", esp_err_to_name(error), httpStatus, contentLength);
+  ResponseAccumulator accumulator{&response};
+  for (size_t i = 0; i < headerCount; ++i) {
+    client.addHeader(headers[i].name, headers[i].value);
   }
-  esp_http_client_cleanup(client);
+
+  const int status = client.sendRequest(
+      methodName(method), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+      [&accumulator](const uint8_t* data, const size_t length) {
+        if (!accumulator.response || length > MAX_RESPONSE_BYTES - accumulator.response->size()) {
+          accumulator.overflow = true;
+          return false;
+        }
+        accumulator.response->append(reinterpret_cast<const char*>(data), length);
+        return true;
+      });
+  httpStatus = status;
+  const size_t declaredLength = client.hasContentLength() ? client.getContentLength() : 0;
+  const int contentLength =
+      declaredLength <= static_cast<size_t>(std::numeric_limits<int>::max()) ? static_cast<int>(declaredLength) : -1;
+  const bool valid = status > 0 && !accumulator.overflow && client.responseComplete() &&
+                     !(status >= 300 && status < 400) &&
+                     (!client.hasContentLength() || declaredLength <= MAX_RESPONSE_BYTES) &&
+                     (!client.hasContentLength() || response.size() == declaredLength);
+#if defined(ENABLE_SERIAL_LOG)
+  LOG_DBG("KOSync",
+          "HTTP done: status=%d, complete=%d, declared=%d, received=%u, overflow=%d, heap=%u, max_alloc=%u",
+          httpStatus, client.responseComplete() ? 1 : 0, contentLength, static_cast<unsigned>(response.size()),
+          accumulator.overflow ? 1 : 0, static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+#endif
+  if (!valid) {
+    LOG_ERR("KOSync", "Request rejected: status=%d, complete=%d, declared=%d, received=%u, overflow=%d", httpStatus,
+            client.responseComplete() ? 1 : 0, contentLength, static_cast<unsigned>(response.size()),
+            accumulator.overflow ? 1 : 0);
+  }
+  client.end();
   return valid;
 }
 

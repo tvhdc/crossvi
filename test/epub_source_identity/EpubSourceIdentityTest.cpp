@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <HalStorage.h>
 #include <ZipFile.h>
 #include <gtest/gtest.h>
@@ -16,6 +17,7 @@
 #include "Epub/BookMetadataCache.h"
 #include "Epub/SourceIdentityCodec.h"
 #include "Epub/SourceIdentityStore.h"
+#include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
 #include "ThumbnailConverterStub.h"
 
@@ -375,6 +377,7 @@ std::vector<uint8_t> makeSpineOnlyBookCache(const ZipFile::SourceIdentity& ident
 class EpubSourceIdentityTest : public testing::Test {
  protected:
   void SetUp() override {
+    ESP.setHeap(1024U * 1024U, 1024U * 1024U);
     Storage.reset();
     ThumbnailConverterStub::reset();
     Storage.mkdir("/.crosspoint");
@@ -415,6 +418,29 @@ TEST_F(EpubSourceIdentityTest, CreatorEntitiesDoNotInventAuthorSeparators) {
   ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), xml.size());
   ASSERT_TRUE(parser.succeeded());
   EXPECT_EQ(parser.author, "John & Smith, Jane Doe");
+}
+
+TEST_F(EpubSourceIdentityTest, ContainerUsesTheFirstSupportedRootfile) {
+  const std::string xml =
+      R"(<container><rootfiles><rootfile full-path="OPS/default.opf" media-type="application/oebps-package+xml"/><rootfile full-path="OPS/alternate.opf" media-type="application/oebps-package+xml"/></rootfiles></container>)";
+  ContainerParser parser(xml.size());
+  ASSERT_TRUE(parser.setup());
+  ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), xml.size());
+  EXPECT_EQ(parser.fullPath, "OPS/default.opf");
+}
+
+TEST_F(EpubSourceIdentityTest, ContentOpfKeepsTrimmedPrimaryLanguageAcrossChunkedInput) {
+  const std::string xml =
+      R"(<package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:language>  en-US  </dc:language><dc:language>fr</dc:language></metadata></package>)";
+  const std::string cachePath;
+  const std::string basePath;
+  ContentOpfParser parser(cachePath, basePath, xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  for (const char c : xml) {
+    ASSERT_EQ(parser.write(static_cast<uint8_t>(c)), 1U);
+  }
+  ASSERT_TRUE(parser.succeeded());
+  EXPECT_EQ(parser.language, "en-US");
 }
 
 TEST_F(EpubSourceIdentityTest, NcxTargetsResolveRelativeToTheNcxDirectory) {
@@ -515,6 +541,38 @@ TEST_F(EpubSourceIdentityTest, NonStoredEntryUsesFallback) {
   uint64_t offset = 0;
   uint32_t length = 0;
   EXPECT_EQ(compressed.openStoredEntry(entryName, archive, offset, length), ZipFile::StoredEntryOpenStatus::NotStored);
+}
+
+TEST_F(EpubSourceIdentityTest, StreamRejectsOversizedInflatedEntryBeforeWriting) {
+  constexpr char entryName[] = "chapter.xhtml";
+  constexpr char payload[] = "0123456789abcdef";
+  Storage.setFile(EPUB_PATH, makeStoredZip({{entryName, payload, true}}));
+
+  HalFile output;
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", "/out.bin", output));
+  const std::string path = EPUB_PATH;
+  ZipFile zip(path);
+  bool limitExceeded = false;
+  EXPECT_FALSE(zip.readFileToStream(entryName, output, 4, false, strlen(payload) - 1U, &limitExceeded));
+  EXPECT_TRUE(limitExceeded);
+  EXPECT_EQ(output.fileSize64(), 0U);
+  EXPECT_TRUE(output.close());
+}
+
+TEST_F(EpubSourceIdentityTest, StreamAcceptsInflatedEntryAtExactLimit) {
+  constexpr char entryName[] = "chapter.xhtml";
+  constexpr char payload[] = "0123456789abcdef";
+  Storage.setFile(EPUB_PATH, makeStoredZip({{entryName, payload, true}}));
+
+  HalFile output;
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", "/out.bin", output));
+  const std::string path = EPUB_PATH;
+  ZipFile zip(path);
+  bool limitExceeded = true;
+  EXPECT_TRUE(zip.readFileToStream(entryName, output, 4, false, strlen(payload), &limitExceeded));
+  EXPECT_FALSE(limitExceeded);
+  EXPECT_EQ(output.fileSize64(), strlen(payload));
+  EXPECT_TRUE(output.close());
 }
 
 TEST_F(EpubSourceIdentityTest, CooperativeStreamJobProducesOneBoundedChunkPerStep) {
@@ -655,6 +713,13 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheRejectsCorruptLutAndEntryLengths
 
 TEST_F(EpubSourceIdentityTest, BookMetadataCacheRejectsInvalidEntryReferencesAndOrdering) {
   const auto identity = identify(makeZip());
+  auto zeroLevel = makeBookCache(identity);
+  const size_t tocLevelOffset = zeroLevel.size() - sizeof(uint32_t) - sizeof(int16_t) - sizeof(uint8_t);
+  overwritePod(zeroLevel, tocLevelOffset, uint8_t{0});
+  Storage.setFile(BOOK_CACHE_PATH, std::move(zeroLevel));
+  BookMetadataCache zeroLevelCache(CACHE_PATH);
+  EXPECT_EQ(zeroLevelCache.load(identity), BookMetadataCache::LoadStatus::Invalid);
+
   auto badReference = makeBookCache(identity);
   uint32_t lutOffset = 0;
   memcpy(&lutOffset, badReference.data() + 1, sizeof(lutOffset));
@@ -749,6 +814,46 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheValidatesAcrossBoundedLutChunks)
   EXPECT_EQ(cache.getSpineEntry(0).href, "chapter-0");
   EXPECT_EQ(cache.getSpineEntry(64).href, "chapter-64");
   EXPECT_LE(Storage.maxRead(), 65U * sizeof(uint32_t));
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheRejectsCorruptSpineScratchBeforeTocPass) {
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_TRUE(cache.beginWrite());
+  ASSERT_TRUE(cache.beginContentOpfPass());
+  cache.createSpineEntry("a.xht");
+  ASSERT_TRUE(cache.endContentOpfPass());
+
+  auto& scratch = Storage.mutableFile(std::string(CACHE_PATH) + "/spine.bin.tmp");
+  ASSERT_GE(scratch.size(), sizeof(uint32_t));
+  overwritePod(scratch, 0, UINT32_MAX);
+
+  EXPECT_FALSE(cache.beginTocPass());
+  EXPECT_LE(Storage.maxRead(), sizeof(uint32_t));
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheValidatesScratchBeforeReplacingExistingCache) {
+  const auto identity = identify(makeZip());
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_TRUE(cache.beginWrite());
+  ASSERT_TRUE(cache.beginContentOpfPass());
+  cache.createSpineEntry("a.xht");
+  ASSERT_TRUE(cache.endContentOpfPass());
+  ASSERT_TRUE(cache.beginTocPass());
+  cache.createTocEntry("Chapter", "a.xht", "", 1);
+  ASSERT_TRUE(cache.endTocPass());
+  ASSERT_TRUE(cache.endWrite());
+
+  auto& scratch = Storage.mutableFile(std::string(CACHE_PATH) + "/toc.bin.tmp");
+  ASSERT_GE(scratch.size(), sizeof(uint32_t));
+  overwritePod(scratch, 0, UINT32_MAX);
+  const std::vector<uint8_t> existingCache = {0xCAU, 0xFEU, 0xBAU, 0xBEU};
+  Storage.setFile(BOOK_CACHE_PATH, existingCache);
+
+  BookMetadataCache::BookMetadata metadata;
+  EXPECT_FALSE(cache.buildBookBin(EPUB_PATH, metadata, identity));
+  EXPECT_EQ(Storage.file(BOOK_CACHE_PATH), existingCache);
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
 }
 
 TEST_F(EpubSourceIdentityTest, CssCacheBuildIsVerifiedAndIdempotent) {
@@ -1418,6 +1523,65 @@ TEST_F(EpubSourceIdentityTest, FullModeDescendantRulesAreBoundedAndSurviveTheCss
   EXPECT_TRUE(cached.defined.textAlign);
   EXPECT_EQ(cached.textAlign, CssTextAlign::Right);
   EXPECT_TRUE(cached.defined.textIndent);
+}
+
+TEST_F(EpubSourceIdentityTest, CssRuleGrowthStopsSafelyWhenHeapIsLow) {
+  const std::string css = "p.first { text-align: right; } p.second { margin-left: 2em; }";
+  Storage.setFile("/low-memory.css", std::vector<uint8_t>(css.begin(), css.end()));
+  HalFile source;
+  ASSERT_TRUE(Storage.openFileForRead("TEST", "/low-memory.css", source));
+
+  ESP.setHeap(63U * 1024U, 32U * 1024U);
+  CssParser parser(CACHE_PATH);
+  EXPECT_TRUE(parser.loadFromStream(source));
+  EXPECT_TRUE(parser.empty());
+  EXPECT_TRUE(source.close());
+}
+
+TEST_F(EpubSourceIdentityTest, LowHeapStillMergesAnExistingCssRule) {
+  const std::string initialCss = "p.note { text-align: left; }";
+  Storage.setFile("/initial.css", std::vector<uint8_t>(initialCss.begin(), initialCss.end()));
+  HalFile initial;
+  ASSERT_TRUE(Storage.openFileForRead("TEST", "/initial.css", initial));
+
+  CssParser parser(CACHE_PATH);
+  ASSERT_TRUE(parser.loadFromStream(initial));
+  ASSERT_TRUE(initial.close());
+  ASSERT_EQ(parser.ruleCount(), 1U);
+
+  const std::string updateCss = "p.note { text-align: right; } p.new { margin-left: 2em; }";
+  Storage.setFile("/update.css", std::vector<uint8_t>(updateCss.begin(), updateCss.end()));
+  HalFile update;
+  ASSERT_TRUE(Storage.openFileForRead("TEST", "/update.css", update));
+  ESP.setHeap(63U * 1024U, 32U * 1024U);
+  EXPECT_TRUE(parser.loadFromStream(update));
+  EXPECT_TRUE(update.close());
+
+  EXPECT_EQ(parser.ruleCount(), 1U);
+  EXPECT_EQ(parser.resolveStyle("p", "note").textAlign, CssTextAlign::Right);
+}
+
+TEST_F(EpubSourceIdentityTest, LowHeapRejectsCssCacheWithoutDeletingIt) {
+  const std::string css = "p.note { text-align: right; margin-left: 2em; }";
+  Storage.setFile("/cached.css", std::vector<uint8_t>(css.begin(), css.end()));
+  HalFile source;
+  ASSERT_TRUE(Storage.openFileForRead("TEST", "/cached.css", source));
+
+  CssParser writer(CACHE_PATH);
+  ASSERT_TRUE(writer.loadFromStream(source));
+  ASSERT_TRUE(source.close());
+  ASSERT_TRUE(writer.saveToCache());
+  ASSERT_TRUE(writer.hasCache());
+
+  ESP.setHeap(63U * 1024U, 32U * 1024U);
+  CssParser constrained(CACHE_PATH);
+  EXPECT_FALSE(constrained.loadFromCache());
+  EXPECT_TRUE(constrained.empty());
+  EXPECT_TRUE(constrained.hasCache());
+
+  ESP.setHeap(1024U * 1024U, 1024U * 1024U);
+  EXPECT_TRUE(constrained.loadFromCache());
+  EXPECT_EQ(constrained.resolveStyle("p", "note").textAlign, CssTextAlign::Right);
 }
 
 TEST_F(EpubSourceIdentityTest, SmallCapsCssSurvivesParsingAndCacheRoundTrip) {

@@ -13,7 +13,6 @@
 
 #include "FontCacheManager.h"
 #include "SmallCaps.h"
-#include "TextDarkness.h"
 
 namespace {
 
@@ -504,13 +503,12 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
               renderer.drawPixel(screenX, screenY, pixelState);
             }
           } else {
-            const uint8_t adjustedBmpVal = GlyphDarkness::mapLevel(bmpVal, renderer.getTextDarkness());
-            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (adjustedBmpVal == 1 || adjustedBmpVal == 2)) {
+            if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
               // Light gray (also mark the MSB if it's going to be a dark gray too)
               // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
               // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
               renderer.drawPixel(screenX, screenY, false);
-            } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && adjustedBmpVal == 1) {
+            } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
               // Dark gray
               renderer.drawPixel(screenX, screenY, false);
             }
@@ -812,10 +810,10 @@ void GfxRenderer::drawRect(const int x, const int y, const int width, const int 
 void GfxRenderer::drawRect(const int x, const int y, const int width, const int height, const int lineWidth,
                            const bool state) const {
   for (int i = 0; i < lineWidth; i++) {
-    drawLine(x + i, y + i, x + width - i, y + i, state);
-    drawLine(x + width - i, y + i, x + width - i, y + height - i, state);
-    drawLine(x + width - i, y + height - i, x + i, y + height - i, state);
-    drawLine(x + i, y + height - i, x + i, y + i, state);
+    drawLine(x + i, y + i, x + width - 1 - i, y + i, state);
+    drawLine(x + width - 1 - i, y + i, x + width - 1 - i, y + height - 1 - i, state);
+    drawLine(x + width - 1 - i, y + height - 1 - i, x + i, y + height - 1 - i, state);
+    drawLine(x + i, y + height - 1 - i, x + i, y + i, state);
   }
 }
 

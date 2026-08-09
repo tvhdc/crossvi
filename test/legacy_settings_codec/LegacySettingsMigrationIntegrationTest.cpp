@@ -112,21 +112,24 @@ TEST(LegacyStatusBarJsonIntegration, MigratesAllModesAndCanonicalFieldsWin) {
   expectStatus(LegacySettingsV2::statusBarValues(CrossPointSettings::FULL));
 }
 
-TEST(SettingsJsonIntegration, PersistsReaderDarkModeAndOutsideClockPlacement) {
+TEST(SettingsJsonIntegration, PersistsReaderDarkModeAndMigratesOutsideClockToToggle) {
   bool needsResave = false;
-  SETTINGS.outsideReaderClock = CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
+  SETTINGS.outsideReaderClock = 0;
   SETTINGS.readerDarkMode = 0;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(
       SETTINGS, R"({"statusBarChapterPageCount":1,"outsideReaderClock":2,"readerDarkMode":1})", &needsResave));
-  EXPECT_EQ(SETTINGS.outsideReaderClock, CrossPointSettings::STATUS_BAR_CLOCK_LEFT);
+  EXPECT_EQ(SETTINGS.outsideReaderClock, 1);
   EXPECT_EQ(SETTINGS.readerDarkMode, 1);
+  EXPECT_TRUE(needsResave);
 
-  SETTINGS.outsideReaderClock = CrossPointSettings::STATUS_BAR_CLOCK_HIDE;
+  SETTINGS.outsideReaderClock = 0;
   SETTINGS.readerDarkMode = 0;
+  needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(
       SETTINGS, R"({"statusBarChapterPageCount":1,"outsideReaderClock":99,"readerDarkMode":99})", &needsResave));
-  EXPECT_EQ(SETTINGS.outsideReaderClock, CrossPointSettings::STATUS_BAR_CLOCK_HIDE);
+  EXPECT_EQ(SETTINGS.outsideReaderClock, 0);
   EXPECT_EQ(SETTINGS.readerDarkMode, 0);
+  EXPECT_TRUE(needsResave);
 }
 
 TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
@@ -138,6 +141,37 @@ TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
   EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+}
+
+TEST(SettingsJsonIntegration, PersistsHomeBackModeAndOrderedShortcuts) {
+  resetFakes();
+  SETTINGS.homeBackAction = CrossPointSettings::HOME_BACK_CONTINUE_READING;
+  SETTINGS.homeShortcuts.clear();
+  ASSERT_TRUE(SETTINGS.homeShortcuts.add(HomeShortcutId::StatusBar));
+  ASSERT_TRUE(SETTINGS.homeShortcuts.add(HomeShortcutId::TextSettings));
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.homeBackAction = CrossPointSettings::HOME_BACK_NONE;
+  SETTINGS.homeShortcuts.clear();
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.homeBackAction, CrossPointSettings::HOME_BACK_CONTINUE_READING);
+  ASSERT_EQ(SETTINGS.homeShortcuts.count, 2);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(0), HomeShortcutId::StatusBar);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(1), HomeShortcutId::TextSettings);
+}
+
+TEST(SettingsJsonIntegration, RepairsInvalidDuplicateAndOversizedShortcutLists) {
+  SETTINGS.homeShortcuts.clear();
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(
+      SETTINGS, R"({"statusBarChapterPageCount":1,"homeShortcuts":[0,0,1,99,"bad",2,3,4,5,6,7,8,9]})", &needsResave));
+  EXPECT_TRUE(needsResave);
+  ASSERT_EQ(SETTINGS.homeShortcuts.count, HomeShortcutList::CAPACITY);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(0), HomeShortcutId::Appearance);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(1), HomeShortcutId::TextSettings);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(2), HomeShortcutId::QuickResume);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(7), HomeShortcutId::ShowDeviceName);
 }
 
 TEST(SettingsJsonIntegration, StableLanguageCodeWinsOverAmbiguousLegacyIndex) {
@@ -215,8 +249,17 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
             CrossPointSettings::SLEEP_SCREEN_DEFAULT);
   EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::COVER_CUSTOM),
             CrossPointSettings::SLEEP_SCREEN_COVER);
+  EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::READING_CALENDAR),
+            CrossPointSettings::SLEEP_SCREEN_READING_CALENDAR);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_DEFAULT), CrossPointSettings::LIGHT);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_BLANK), CrossPointSettings::BLANK);
+  EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_READING_CALENDAR),
+            CrossPointSettings::READING_CALENDAR);
+
+  needsResave = false;
+  ASSERT_TRUE(
+      JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":7})", &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::READING_CALENDAR);
 }
 
 TEST(LegacySettingsMigrationIntegration, InvalidBinaryDoesNotPublishArchiveOrMutateSettings) {

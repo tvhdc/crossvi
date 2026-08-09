@@ -39,7 +39,11 @@ class HalDisplay {
                             bool fromProgmem = false) const;
 
   void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
+  // Start a refresh and return while the panel waveform is running. The
+  // framebuffer must remain unchanged until deepSleep() drains the refresh.
+  void triggerDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
+  void requestResync(uint8_t settlePasses = 0);
 
   // Power management
   void deepSleep();

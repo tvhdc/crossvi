@@ -9,14 +9,15 @@
 #include "Epub/Epub/SectionCacheValidator.h"
 
 namespace {
-constexpr uint8_t FINAL_VERSION = 36;
-constexpr uint8_t PARTIAL_VERSION = 0xF6;
-constexpr uint64_t HEADER_SIZE = 40;
+constexpr uint8_t FINAL_VERSION = 37;
+constexpr uint8_t PARTIAL_VERSION = 0xF5;
+constexpr uint64_t HEADER_SIZE = 44;
 constexpr size_t PAGE_COUNT_OFFSET = 22;
 constexpr size_t PAGE_LUT_OFFSET = 24;
 constexpr size_t ANCHOR_MAP_OFFSET = 28;
 constexpr size_t PARAGRAPH_LUT_OFFSET = 32;
 constexpr size_t LIST_ITEM_LUT_OFFSET = 36;
+constexpr size_t VISIBLE_TEXT_LUT_OFFSET = 40;
 
 template <typename T>
 void append(std::vector<uint8_t>& bytes, const T& value) {
@@ -145,6 +146,7 @@ struct CacheBytes {
   uint32_t anchorMap = 0;
   uint32_t paragraphLut = 0;
   uint32_t listItemLut = 0;
+  uint32_t visibleTextLut = 0;
 };
 
 CacheBytes cacheWithPageVersion(const std::vector<uint8_t>& page, const bool partial, const bool withAnchor,
@@ -166,7 +168,7 @@ CacheBytes cacheWithPageVersion(const std::vector<uint8_t>& page, const bool par
   append<uint8_t>(bytes, 0);
   append<uint8_t>(bytes, 0);
   append<uint16_t>(bytes, 1);
-  for (uint8_t field = 0; field < 4; ++field) append<uint32_t>(bytes, 0);
+  for (uint8_t field = 0; field < 5; ++field) append<uint32_t>(bytes, 0);
   EXPECT_EQ(bytes.size(), HEADER_SIZE);
 
   bytes.insert(bytes.end(), page.begin(), page.end());
@@ -184,6 +186,8 @@ CacheBytes cacheWithPageVersion(const std::vector<uint8_t>& page, const bool par
   append<uint16_t>(bytes, 1);
   cache.listItemLut = bytes.size();
   append<uint16_t>(bytes, 1);
+  cache.visibleTextLut = bytes.size();
+  append<uint32_t>(bytes, 0);
   if (partial) {
     append<uint32_t>(bytes, 100);
     append<uint32_t>(bytes, 200);
@@ -193,6 +197,7 @@ CacheBytes cacheWithPageVersion(const std::vector<uint8_t>& page, const bool par
   writeAt<uint32_t>(bytes, ANCHOR_MAP_OFFSET, cache.anchorMap);
   writeAt<uint32_t>(bytes, PARAGRAPH_LUT_OFFSET, cache.paragraphLut);
   writeAt<uint32_t>(bytes, LIST_ITEM_LUT_OFFSET, cache.listItemLut);
+  writeAt<uint32_t>(bytes, VISIBLE_TEXT_LUT_OFFSET, cache.visibleTextLut);
   return cache;
 }
 
@@ -213,7 +218,7 @@ CacheBytes cacheWithTwoEmptyPages() {
   append<uint8_t>(bytes, 1);
   for (uint8_t field = 0; field < 6; ++field) append<uint8_t>(bytes, 0);
   append<uint16_t>(bytes, 2);
-  for (uint8_t field = 0; field < 4; ++field) append<uint32_t>(bytes, 0);
+  for (uint8_t field = 0; field < 5; ++field) append<uint32_t>(bytes, 0);
   EXPECT_EQ(bytes.size(), HEADER_SIZE);
 
   const auto page = emptyPage();
@@ -233,11 +238,15 @@ CacheBytes cacheWithTwoEmptyPages() {
   cache.listItemLut = bytes.size();
   append<uint16_t>(bytes, 0);
   append<uint16_t>(bytes, 0);
+  cache.visibleTextLut = bytes.size();
+  append<uint32_t>(bytes, 0);
+  append<uint32_t>(bytes, 80);
 
   writeAt<uint32_t>(bytes, PAGE_LUT_OFFSET, cache.pageLut);
   writeAt<uint32_t>(bytes, ANCHOR_MAP_OFFSET, cache.anchorMap);
   writeAt<uint32_t>(bytes, PARAGRAPH_LUT_OFFSET, cache.paragraphLut);
   writeAt<uint32_t>(bytes, LIST_ITEM_LUT_OFFSET, cache.listItemLut);
+  writeAt<uint32_t>(bytes, VISIBLE_TEXT_LUT_OFFSET, cache.visibleTextLut);
   return cache;
 }
 
@@ -310,6 +319,17 @@ TEST(SectionCacheValidator, RejectsDecreasingParagraphLookupEntries) {
 
   writeAt<uint16_t>(cache.bytes, cache.paragraphLut + sizeof(uint16_t), 8);
   writeAt<uint16_t>(cache.bytes, cache.paragraphLut + 2U * sizeof(uint16_t), 7);
+  EXPECT_FALSE(validates(cache.bytes));
+  EXPECT_FALSE(validatesStructure(cache.bytes));
+}
+
+TEST(SectionCacheValidator, RejectsDecreasingVisibleTextOffsets) {
+  auto cache = cacheWithTwoEmptyPages();
+  ASSERT_TRUE(validates(cache.bytes));
+  ASSERT_TRUE(validatesStructure(cache.bytes));
+
+  writeAt<uint32_t>(cache.bytes, cache.visibleTextLut, 81);
+  writeAt<uint32_t>(cache.bytes, cache.visibleTextLut + sizeof(uint32_t), 80);
   EXPECT_FALSE(validates(cache.bytes));
   EXPECT_FALSE(validatesStructure(cache.bytes));
 }

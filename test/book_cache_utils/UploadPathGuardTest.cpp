@@ -59,6 +59,16 @@ TEST(UploadPathGuard, ValidatesEveryFolderSegment) {
   EXPECT_FALSE(UploadPathGuard::isSafeAbsolutePath("/", false));
 }
 
+TEST(UploadPathGuard, RejectsProtectedFileApiPathsInEverySegment) {
+  for (const char* path : {"/.crosspoint/settings.json", "/.CROSSPOINT/wifi.json", "/XTCache/foo",
+                           "/xtcache/foo", "/System Volume Information/foo", "/Books/book.epub.davtmp",
+                           "/Books//Nested", "/Books/./Nested", "/Books/../.crosspoint/wifi.json"}) {
+    EXPECT_FALSE(UploadPathGuard::isSafeAbsolutePath(path, false)) << path;
+  }
+  EXPECT_TRUE(UploadPathGuard::isSafeAbsolutePath("/Books/Novel.epub", false));
+  EXPECT_TRUE(UploadPathGuard::isSafeAbsolutePath("/Books/Tiếng Việt/Novel.epub", false));
+}
+
 TEST(UploadPathGuard, ParsesRepresentableDecimalSizesWithoutWrapping) {
   size_t parsed = 99;
   EXPECT_TRUE(UploadPathGuard::parseSize("0", parsed));
@@ -72,4 +82,18 @@ TEST(UploadPathGuard, ParsesRepresentableDecimalSizesWithoutWrapping) {
   EXPECT_FALSE(UploadPathGuard::parseSize("-1", parsed));
   EXPECT_FALSE(UploadPathGuard::parseSize("12x", parsed));
   EXPECT_FALSE(UploadPathGuard::parseSize(("1" + maximum).c_str(), parsed));
+}
+
+TEST(UploadPathGuard, ValidatesBoundedCooperativeUploadChunksWithoutOverflow) {
+  constexpr size_t maximumChunk = 64U * 1024U;
+
+  EXPECT_TRUE(UploadPathGuard::isValidChunkRange(0, 100000, maximumChunk, maximumChunk));
+  EXPECT_TRUE(UploadPathGuard::isValidChunkRange(maximumChunk, 100000, 100000 - maximumChunk, maximumChunk));
+
+  EXPECT_FALSE(UploadPathGuard::isValidChunkRange(0, 0, 1, maximumChunk));
+  EXPECT_FALSE(UploadPathGuard::isValidChunkRange(0, 100, 0, maximumChunk));
+  EXPECT_FALSE(UploadPathGuard::isValidChunkRange(0, maximumChunk + 1, maximumChunk + 1, maximumChunk));
+  EXPECT_FALSE(UploadPathGuard::isValidChunkRange(101, 100, 1, maximumChunk));
+  EXPECT_FALSE(UploadPathGuard::isValidChunkRange(99, 100, 2, maximumChunk));
+  EXPECT_FALSE(UploadPathGuard::isValidChunkRange(SIZE_MAX, SIZE_MAX, 1, maximumChunk));
 }

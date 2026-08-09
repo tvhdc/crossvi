@@ -78,7 +78,7 @@ bool inspectTocEntry(HalFile& file, const size_t endPosition, const uint16_t spi
   }
   uint8_t level = 0;
   int16_t spineIndex = -1;
-  return readPodExact(file, level) && readPodExact(file, spineIndex) && file.position() == endPosition &&
+  return readPodExact(file, level) && readPodExact(file, spineIndex) && file.position() == endPosition && level > 0 &&
          spineIndex >= -1 && spineIndex < static_cast<int32_t>(spineCount);
 }
 
@@ -100,12 +100,51 @@ bool readTocEntryChecked(HalFile& file, const size_t endPosition, const uint16_t
   if (!consumeBoundedString(file, endPosition, &parsed.title) ||
       !consumeBoundedString(file, endPosition, &parsed.href) ||
       !consumeBoundedString(file, endPosition, &parsed.anchor) || !readPodExact(file, parsed.level) ||
-      !readPodExact(file, parsed.spineIndex) || file.position() != endPosition || parsed.spineIndex < -1 ||
-      parsed.spineIndex >= static_cast<int32_t>(spineCount)) {
+      !readPodExact(file, parsed.spineIndex) || file.position() != endPosition || parsed.level == 0 ||
+      parsed.spineIndex < -1 || parsed.spineIndex >= static_cast<int32_t>(spineCount)) {
     return false;
   }
   entry = std::move(parsed);
   return true;
+}
+
+bool consumeScratchString(HalFile& file, const size_t fileSize) {
+  uint32_t length = 0;
+  if (!readPodExact(file, length) || length > BOOK_CACHE_MAX_ENTRY_SIZE) return false;
+
+  const size_t position = file.position();
+  return position <= fileSize && length <= fileSize - position && file.seek(position + length);
+}
+
+bool validateSpineScratchFile(HalFile& file, const uint16_t expectedCount) {
+  const size_t fileSize = file.size();
+  if (!file.seek(0)) return false;
+
+  for (uint16_t i = 0; i < expectedCount; ++i) {
+    uint32_t cumulativeSize = 0;
+    int16_t tocIndex = -1;
+    if (!consumeScratchString(file, fileSize) || !readPodExact(file, cumulativeSize) || !readPodExact(file, tocIndex) ||
+        cumulativeSize != 0 || tocIndex != -1) {
+      return false;
+    }
+  }
+  return file.position() == fileSize && file.seek(0);
+}
+
+bool validateTocScratchFile(HalFile& file, const uint16_t expectedCount, const uint16_t spineCount) {
+  const size_t fileSize = file.size();
+  if (!file.seek(0)) return false;
+
+  for (uint16_t i = 0; i < expectedCount; ++i) {
+    uint8_t level = 0;
+    int16_t spineIndex = -1;
+    if (!consumeScratchString(file, fileSize) || !consumeScratchString(file, fileSize) ||
+        !consumeScratchString(file, fileSize) || !readPodExact(file, level) || !readPodExact(file, spineIndex) ||
+        level == 0 || spineIndex < -1 || spineIndex >= static_cast<int32_t>(spineCount)) {
+      return false;
+    }
+  }
+  return file.position() == fileSize && file.seek(0);
 }
 
 bool validEntryBounds(const uint32_t lutOffset, const uint32_t entryCount, const size_t dataEndOffset,
@@ -220,6 +259,11 @@ bool BookMetadataCache::beginTocPass() {
   if (!Storage.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile)) {
     return false;
   }
+  if (!validateSpineScratchFile(spineFile, spineCount)) {
+    LOG_ERR("BMC", "Spine tmp file is truncated or corrupt");
+    spineFile.close();
+    return false;
+  }
   if (!Storage.openFileForWrite("BMC", cachePath + tmpTocBinFile, tocFile)) {
     // Explicit close() required: member variable persists beyond function scope
     spineFile.close();
@@ -303,6 +347,25 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   ZipFile::SourceIdentity currentIdentity;
   if (!identityZip.getSourceIdentity(currentIdentity) || currentIdentity != sourceIdentity) {
     LOG_ERR("BMC", "EPUB changed while metadata was being indexed");
+    return false;
+  }
+
+  // Validate both scratch streams before truncating a previously usable
+  // book.bin. The normal readers below assume the lengths written by the two
+  // parser passes are well formed; a removed/failing SD card must turn a torn
+  // scratch file into a clean indexing failure, never a large allocation.
+  if (!Storage.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile)) return false;
+  const bool spineScratchValid = validateSpineScratchFile(spineFile, spineCount);
+  spineFile.close();
+  if (!spineScratchValid) {
+    LOG_ERR("BMC", "Spine tmp file is truncated or corrupt");
+    return false;
+  }
+  if (!Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) return false;
+  const bool tocScratchValid = validateTocScratchFile(tocFile, tocCount, spineCount);
+  tocFile.close();
+  if (!tocScratchValid) {
+    LOG_ERR("BMC", "TOC tmp file is truncated or corrupt");
     return false;
   }
 
@@ -593,7 +656,7 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
 
   // Compose the title to NFC at index time so the cache stores precomposed glyphs;
   // device fonts have no combining-mark positioning, so NFD titles render broken.
-  const TocEntry entry(utf8ComposeNfc(title), href, anchor, level, spineIndex);
+  const TocEntry entry(utf8ComposeNfc(title), href, anchor, level == 0 ? 1 : level, spineIndex);
   if (passOut) {
     writeTocEntryTo(*passOut, entry);
   } else {

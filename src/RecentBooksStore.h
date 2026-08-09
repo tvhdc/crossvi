@@ -1,5 +1,6 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <LazyStoreState.h>
 #include <PersistableStore.h>
 
 #include <cstddef>
@@ -20,6 +21,7 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
  private:
   std::vector<RecentBook> recentBooks;
   std::vector<std::string> pinnedPaths;
+  LazyStoreState loadState;
 
   static constexpr int MAX_RECENT_BOOKS = 10;
   static constexpr size_t MAX_PINNED_BOOKS = 12;
@@ -36,6 +38,10 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
   static const char* getFilePath() { return "/.crosspoint/recent.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);
+  bool loadFromFile();
+  bool ensureLoaded();
+  bool saveToFile() const;
+  void markReadOnlyForRecovery();
 
   // Add a book to the recent list (moves to front if already exists)
   void addBook(const std::string& path, const std::string& title, const std::string& author,
@@ -57,7 +63,10 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
 
   PinResult togglePin(const std::string& path);
   bool isPinned(const std::string& path) const;
-  const std::vector<std::string>& getPinnedPaths() const { return pinnedPaths; }
+  const std::vector<std::string>& getPinnedPaths() const {
+    const_cast<RecentBooksStore*>(this)->ensureLoaded();
+    return pinnedPaths;
+  }
   static constexpr size_t getMaxPinnedBooks() { return MAX_PINNED_BOOKS; }
 
   // True if the book's backing file is no longer present on the SD card.
@@ -68,10 +77,16 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
   bool pruneMissing();
 
   // Get the list of recent books (most recent first)
-  const std::vector<RecentBook>& getBooks() const { return recentBooks; }
+  const std::vector<RecentBook>& getBooks() const {
+    const_cast<RecentBooksStore*>(this)->ensureLoaded();
+    return recentBooks;
+  }
 
   // Get the count of recent books
-  int getCount() const { return static_cast<int>(recentBooks.size()); }
+  int getCount() const {
+    const_cast<RecentBooksStore*>(this)->ensureLoaded();
+    return static_cast<int>(recentBooks.size());
+  }
 
   RecentBook getDataFromBook(std::string path) const;
 };

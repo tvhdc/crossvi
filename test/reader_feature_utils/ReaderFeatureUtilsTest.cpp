@@ -1,20 +1,24 @@
+#include <ClockDateFormat.h>
 #include <FsHelpers.h>
+#include <ReaderWordSpacing.h>
+#include <SmallCaps.h>
 #include <gtest/gtest.h>
 
 #include <string>
 
 #include "BookSearchUtils.h"
-#include <ClockDateFormat.h>
 #include "DictionaryQuery.h"
 #include "EpubSearchTraversal.h"
+#include "HomeShortcuts.h"
+#include "LazyStoreState.h"
+#include "MemoryBudget.h"
 #include "PowerButtonGesture.h"
 #include "QrCapacity.h"
-#include <ReaderWordSpacing.h>
-#include <SmallCaps.h>
 #include "UrlUtils.h"
 #include "Utf8.h"
 #include "VietnameseTelex.h"
 #include "components/LibraryGridModel.h"
+#include "util/WifiNetworkSelection.h"
 
 namespace {
 std::string typeTelex(const std::string& keys, const size_t maxBytes = 0) {
@@ -26,6 +30,117 @@ std::string typeTelex(const std::string& keys, const size_t maxBytes = 0) {
   return text;
 }
 }  // namespace
+
+TEST(HomeShortcuts, DefaultsAreBoundedUniqueAndStable) {
+  const HomeShortcutList shortcuts;
+  EXPECT_EQ(shortcuts.count, 6);
+  EXPECT_EQ(shortcuts.at(0), HomeShortcutId::Appearance);
+  EXPECT_EQ(shortcuts.at(1), HomeShortcutId::TextSettings);
+  for (uint8_t index = 0; index < shortcuts.count; ++index) {
+    EXPECT_TRUE(isValidHomeShortcutId(shortcuts.items[index]));
+    for (uint8_t other = index + 1; other < shortcuts.count; ++other) {
+      EXPECT_NE(shortcuts.items[index], shortcuts.items[other]);
+    }
+  }
+}
+
+TEST(HomeShortcuts, AddReplaceRemoveAndMoveKeepACompactUniqueList) {
+  HomeShortcutList shortcuts;
+  shortcuts.clear();
+  EXPECT_TRUE(shortcuts.add(HomeShortcutId::Appearance));
+  EXPECT_TRUE(shortcuts.add(HomeShortcutId::TextSettings));
+  EXPECT_TRUE(shortcuts.add(HomeShortcutId::StatusBar));
+  EXPECT_FALSE(shortcuts.add(HomeShortcutId::TextSettings));
+
+  EXPECT_TRUE(shortcuts.move(2, 0));
+  EXPECT_EQ(shortcuts.at(0), HomeShortcutId::StatusBar);
+  EXPECT_TRUE(shortcuts.replace(1, HomeShortcutId::QuickResume));
+  EXPECT_FALSE(shortcuts.replace(1, HomeShortcutId::StatusBar));
+  EXPECT_TRUE(shortcuts.remove(0));
+  ASSERT_EQ(shortcuts.count, 2);
+  EXPECT_EQ(shortcuts.at(0), HomeShortcutId::QuickResume);
+  EXPECT_EQ(shortcuts.at(1), HomeShortcutId::TextSettings);
+}
+
+TEST(HomeShortcuts, RejectsEntriesBeyondTheFixedCapacity) {
+  HomeShortcutList shortcuts;
+  shortcuts.clear();
+  for (uint8_t raw = 0; raw < HomeShortcutList::CAPACITY; ++raw) {
+    EXPECT_TRUE(shortcuts.add(static_cast<HomeShortcutId>(raw)));
+  }
+  EXPECT_FALSE(shortcuts.add(HomeShortcutId::OutsideReaderClock));
+  EXPECT_EQ(shortcuts.count, HomeShortcutList::CAPACITY);
+}
+
+TEST(MemoryBudget, RequiresBothTotalAndContiguousHeadroom) {
+  EXPECT_EQ(MemoryBudget::SD_FONT_LOAD.maxAllocHeap, 32U * 1024U);
+  EXPECT_TRUE(MemoryBudget::hasHeadroom(72U * 1024U, 32U * 1024U, MemoryBudget::SD_FONT_LOAD));
+  EXPECT_FALSE(MemoryBudget::hasHeadroom(71U * 1024U, 80U * 1024U, MemoryBudget::SD_FONT_LOAD));
+  EXPECT_FALSE(MemoryBudget::hasHeadroom(96U * 1024U, 32U * 1024U - 1U, MemoryBudget::SD_FONT_LOAD));
+  EXPECT_TRUE(MemoryBudget::hasHeadroom(60U * 1024U, 48U * 1024U, MemoryBudget::PNG_DECODE));
+}
+
+TEST(MemoryBudget, UsesMeasuredKoReaderTlsThresholds) {
+  EXPECT_TRUE(MemoryBudget::hasHeadroom(50000U, 20000U, MemoryBudget::KOREADER_TLS));
+  EXPECT_TRUE(MemoryBudget::hasHeadroom(51900U, 42000U, MemoryBudget::KOREADER_TLS));
+  EXPECT_FALSE(MemoryBudget::hasHeadroom(49999U, 42000U, MemoryBudget::KOREADER_TLS));
+  EXPECT_FALSE(MemoryBudget::hasHeadroom(50000U, 19999U, MemoryBudget::KOREADER_TLS));
+}
+
+TEST(MemoryBudget, ProtectsCssGrowthAndDynamicContiguousReservations) {
+  EXPECT_TRUE(MemoryBudget::hasHeadroom(64U * 1024U, 8U * 1024U, MemoryBudget::CSS_RULE_GROWTH));
+  EXPECT_FALSE(MemoryBudget::hasHeadroom(63U * 1024U, 32U * 1024U, MemoryBudget::CSS_RULE_GROWTH));
+  EXPECT_FALSE(MemoryBudget::hasHeadroom(96U * 1024U, 7U * 1024U, MemoryBudget::CSS_RULE_GROWTH));
+
+  EXPECT_TRUE(MemoryBudget::hasContiguousHeadroom(32U * 1024U, 16U * 1024U, 16U * 1024U));
+  EXPECT_FALSE(MemoryBudget::hasContiguousHeadroom(32U * 1024U - 1U, 16U * 1024U, 16U * 1024U));
+  EXPECT_FALSE(MemoryBudget::hasContiguousHeadroom(UINT32_MAX, UINT32_MAX, 1U));
+}
+
+TEST(WifiNetworkSelection, KeepsStrongestResultForDuplicateSsid) {
+  std::vector<WifiNetworkInfo> networks;
+  WifiNetworkInfo weak{.ssid = "mesh", .rssi = -70, .isEncrypted = true, .hasSavedPassword = true};
+  WifiNetworkInfo strong{.ssid = "mesh", .rssi = -42, .isEncrypted = true, .hasSavedPassword = true};
+  mergeWifiScanResult(networks, std::move(weak));
+  mergeWifiScanResult(networks, std::move(strong));
+  ASSERT_EQ(networks.size(), 1U);
+  EXPECT_EQ(networks[0].rssi, -42);
+}
+
+TEST(WifiNetworkSelection, SortsSavedNetworksBeforeUnsavedThenBySignal) {
+  std::vector<WifiNetworkInfo> networks = {
+      {.ssid = "strong-unsaved", .rssi = -30},
+      {.ssid = "weak-saved", .rssi = -75, .hasSavedPassword = true},
+      {.ssid = "strong-saved", .rssi = -40, .hasSavedPassword = true},
+  };
+  sortWifiNetworks(networks);
+  EXPECT_EQ(networks[0].ssid, "strong-saved");
+  EXPECT_EQ(networks[1].ssid, "weak-saved");
+  EXPECT_EQ(networks[2].ssid, "strong-unsaved");
+}
+
+TEST(LazyStoreState, LoadsOnceAndDoesNotRetryFailedInputImplicitly) {
+  LazyStoreState state;
+  EXPECT_TRUE(state.beginLoad());
+  EXPECT_TRUE(state.usable());
+  EXPECT_FALSE(state.beginLoad());
+  state.finish(false);
+  EXPECT_TRUE(state.failed());
+  EXPECT_FALSE(state.usable());
+  EXPECT_FALSE(state.beginLoad());
+}
+
+TEST(LazyStoreState, BecomesUsableAfterSuccessfulOrRecoveryLoad) {
+  LazyStoreState state;
+  ASSERT_TRUE(state.beginLoad());
+  state.finish(true);
+  EXPECT_TRUE(state.loaded());
+  EXPECT_TRUE(state.usable());
+
+  LazyStoreState recovery;
+  recovery.markLoaded();
+  EXPECT_TRUE(recovery.loaded());
+}
 
 TEST(QrCapacity, UsesSafeByteModeBoundaries) {
   EXPECT_EQ(QrCapacity::select(0).version, 4);
@@ -51,6 +166,15 @@ TEST(UrlUtils, ResolvesRelativeOpdsLinksAgainstTheFeedDirectory) {
   EXPECT_EQ(UrlUtils::buildUrl("http://host/opds/root.xml?page=2", "book.epub"), "http://host/opds/book.epub");
   EXPECT_EQ(UrlUtils::buildUrl("http://host/opds/", "sub.xml"), "http://host/opds/sub.xml");
   EXPECT_EQ(UrlUtils::buildUrl("http://host", "sub.xml"), "http://host/sub.xml");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog?page=1", "?page=2"),
+            "https://host/opds/catalog?page=2");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog?page=1", "#entry"),
+            "https://host/opds/catalog?page=1#entry");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/catalog", "//cdn.example/book.epub"),
+            "https://cdn.example/book.epub");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host?token=x", "/opds"), "https://host/opds");
+  EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/a/root.xml", "../book.epub"),
+            "https://host/opds/book.epub");
 }
 
 TEST(EpubSearchTraversal, ExtendsPartialCachesAndClampsInvalidStartPages) {
@@ -113,6 +237,24 @@ TEST(ClockDateFormat, RejectsInvalidInputAndTruncatedOutput) {
   EXPECT_EQ(ClockDateFormat::separatorChar(ClockDateFormat::Hyphen), '-');
   EXPECT_EQ(ClockDateFormat::separatorChar(ClockDateFormat::Slash), '/');
   EXPECT_EQ(ClockDateFormat::separatorChar(99), '/');
+}
+
+TEST(ClockDateFormat, LocalizesVietnameseMonthNamesWithoutChangingNumericFormats) {
+  char value[24]{};
+  EXPECT_TRUE(ClockDateFormat::format(2026, 8, 1, ClockDateFormat::MonthDayYearLong, '/', value, sizeof(value), true));
+  EXPECT_STREQ(value, "Thg 8 01, 2026");
+  EXPECT_TRUE(ClockDateFormat::format(2026, 8, 1, ClockDateFormat::DayMonthLong, '/', value, sizeof(value), true));
+  EXPECT_STREQ(value, "01 Tháng 8");
+  EXPECT_TRUE(
+      ClockDateFormat::format(2026, 8, 1, ClockDateFormat::DayMonthYearNumeric, '-', value, sizeof(value), true));
+  EXPECT_STREQ(value, "01-08-2026");
+}
+
+TEST(ClockDateFormat, ExposesUnambiguousFormatPatterns) {
+  EXPECT_STREQ(ClockDateFormat::formatPattern(ClockDateFormat::MonthDayYearLong), "MMM dd, yyyy");
+  EXPECT_STREQ(ClockDateFormat::formatPattern(ClockDateFormat::DayMonthYearNumeric), "dd/MM/yyyy");
+  EXPECT_STREQ(ClockDateFormat::formatPattern(ClockDateFormat::YearMonthDayNumeric), "yyyy/MM/dd");
+  EXPECT_STREQ(ClockDateFormat::formatPattern(255), "MMM dd, yyyy");
 }
 
 TEST(Utf8Safety, DropsAnIncompleteSequenceStartingAtTheFirstByte) {

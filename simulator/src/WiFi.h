@@ -65,6 +65,8 @@ class WiFiClass {
     String ssid;
     int32_t rssi;
     wifi_auth_mode_t auth;
+    uint8_t channel = 1;
+    std::array<uint8_t, 6> bssid{0x02, 0, 0, 0, 0, 1};
   };
 
   wifi_mode_t currentMode = WIFI_OFF;
@@ -186,6 +188,13 @@ public:
     currentStatus = WL_CONNECTED;
     return currentStatus;
   }
+  wl_status_t begin(const char *ssid, const char *pass, int32_t channel,
+                    const uint8_t *bssid, bool connect = true) {
+    (void)channel;
+    (void)bssid;
+    (void)connect;
+    return begin(ssid, pass);
+  }
   wl_status_t status() { return currentStatus; }
   IPAddress localIP() {
     return currentStatus == WL_CONNECTED ? IPAddress(127, 0, 0, 1)
@@ -265,6 +274,14 @@ public:
     const auto &networks = configuredNetworks();
     return i >= 0 && i < static_cast<int>(networks.size()) ? networks[i].auth
                                                            : WIFI_AUTH_OPEN;
+  }
+  int32_t channel(int i) {
+    const auto &networks = configuredNetworks();
+    return i >= 0 && i < static_cast<int>(networks.size()) ? networks[i].channel : 0;
+  }
+  uint8_t *BSSID(int i) {
+    auto &networks = const_cast<std::vector<Network> &>(configuredNetworks());
+    return i >= 0 && i < static_cast<int>(networks.size()) ? networks[i].bssid.data() : nullptr;
   }
   void setHostname(const char *) {}
   void setScanMethod(wifi_scan_method_t) {}

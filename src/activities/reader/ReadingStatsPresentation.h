@@ -78,6 +78,9 @@ ReadingStatsPresentation buildReadingStatsPresentation(const BookReadingStats& b
                                                        const ReadingStatsDateTime* now, ReadingStatsMetric progress,
                                                        bool hasFreshTimeEstimate);
 
+ReadingCalendarSnapshot buildReadingCalendarSnapshot(const GlobalReadingStats& stats, bool trusted,
+                                                     const ReadingStatsDate* today);
+
 // Plain text reflows when typography changes, so page pace and its derived
 // finish estimates have no stable meaning. A recorded completion date remains
 // meaningful and is preserved.

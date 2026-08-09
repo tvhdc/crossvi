@@ -13,36 +13,75 @@ namespace {
 
 bool removeIfPresent(const char* path) { return !Storage.exists(path) || Storage.remove(path); }
 
-struct Digest {
-  uint64_t size = 0;
-  uint32_t hash = 2166136261U;
-};
+bool fileSizeMatches(const char* path, const uint64_t expectedSize) {
+  HalFile file;
+  if (!Storage.openFileForRead("STAGED", path, file)) return false;
+  const bool matches = file.fileSize64() == expectedSize;
+  return file.close() && matches;
+}
+
+Status rotateAndPublish(const char* finalPath, const char* stagingPath, const char* backupPath,
+                        const uint64_t expectedSize, const bool keepBackup) {
+  bool rotated = false;
+  if (Storage.exists(finalPath)) {
+    if (!removeIfPresent(backupPath) || !Storage.rename(finalPath, backupPath)) return Status::IoError;
+    rotated = true;
+  }
+
+  if (!Storage.rename(stagingPath, finalPath)) {
+    if (rotated && !Storage.exists(finalPath)) Storage.rename(backupPath, finalPath);
+    return Status::IoError;
+  }
+  if (!fileSizeMatches(finalPath, expectedSize)) {
+    removeIfPresent(finalPath);
+    if (rotated) Storage.rename(backupPath, finalPath);
+    return Status::IoError;
+  }
+
+  if (rotated && !keepBackup) removeIfPresent(backupPath);
+  return Status::Published;
+}
+
+}  // namespace
+
+void updateDigest(Digest& digest, const uint8_t* data, const size_t size) {
+  if (!data || size == 0) return;
+  for (size_t i = 0; i < size; ++i) {
+    digest.hash ^= data[i];
+    digest.hash *= 16777619U;
+  }
+  digest.size += size;
+}
 
 bool digestFile(const char* path, Digest& digest) {
   HalFile file;
   if (!Storage.openFileForRead("STAGED", path, file)) return false;
-  digest = {file.fileSize64(), 2166136261U};
+  digest = {0, 2166136261U};
+  const uint64_t fileSize = file.fileSize64();
   std::array<uint8_t, 512> buffer{};
-  uint64_t remaining = digest.size;
+  uint64_t remaining = fileSize;
+#if defined(ARDUINO_ARCH_ESP32)
+  size_t bytesSinceYield = 0;
+#endif
   while (remaining > 0) {
     const size_t chunk = remaining < buffer.size() ? static_cast<size_t>(remaining) : buffer.size();
     if (file.read(buffer.data(), chunk) != static_cast<int>(chunk)) {
       file.close();
       return false;
     }
-    for (size_t i = 0; i < chunk; ++i) {
-      digest.hash ^= buffer[i];
-      digest.hash *= 16777619U;
-    }
+    updateDigest(digest, buffer.data(), chunk);
     remaining -= chunk;
 #if defined(ARDUINO_ARCH_ESP32)
     esp_task_wdt_reset();
+    bytesSinceYield += chunk;
+    if (bytesSinceYield >= 64U * 1024U) {
+      yield();
+      bytesSinceYield = 0;
+    }
 #endif
   }
-  return file.fileSize64() == digest.size && file.close();
+  return digest.size == fileSize && file.close();
 }
-
-}  // namespace
 
 Status recover(const char* finalPath, const char* backupPath, const Validator validator, void* context) {
   if (!finalPath || !backupPath || !validator) return Status::IoError;
@@ -76,25 +115,42 @@ Status publish(const char* finalPath, const char* stagingPath, const char* backu
   const Status recovered = recover(finalPath, backupPath, validator, context);
   if (recovered == Status::IoError) return Status::IoError;
 
-  bool rotated = false;
-  if (Storage.exists(finalPath)) {
-    if (!removeIfPresent(backupPath) || !Storage.rename(finalPath, backupPath)) return Status::IoError;
-    rotated = true;
-  }
-
-  if (!Storage.rename(stagingPath, finalPath)) {
-    if (rotated && !Storage.exists(finalPath)) Storage.rename(backupPath, finalPath);
-    return Status::IoError;
-  }
+  const Status publishedStatus = rotateAndPublish(finalPath, stagingPath, backupPath, expected.size, true);
+  if (publishedStatus != Status::Published) return publishedStatus;
   Digest published;
-  if (!validator(finalPath, context) || !digestFile(finalPath, published) || published.size != expected.size ||
-      published.hash != expected.hash) {
+  if (!validator(finalPath, context) || !digestFile(finalPath, published) || !(published == expected)) {
     removeIfPresent(finalPath);
-    if (rotated) Storage.rename(backupPath, finalPath);
+    if (Storage.exists(backupPath)) Storage.rename(backupPath, finalPath);
     return Status::IoError;
   }
+  removeIfPresent(backupPath);
+  return Status::Published;
+}
 
-  if (rotated) removeIfPresent(backupPath);
+Status publishAndVerify(const char* finalPath, const char* stagingPath, const char* backupPath,
+                        const Digest& expectedDigest, const Validator validator, void* context) {
+  if (!finalPath || !stagingPath || !backupPath || !validator || !Storage.exists(stagingPath) ||
+      !fileSizeMatches(stagingPath, expectedDigest.size)) {
+    return Status::InvalidStaging;
+  }
+  const Status recovered = recover(finalPath, backupPath, validator, context);
+  if (recovered == Status::IoError) return Status::IoError;
+
+  const Status publishedStatus = rotateAndPublish(finalPath, stagingPath, backupPath, expectedDigest.size, true);
+  if (publishedStatus != Status::Published) return publishedStatus;
+
+  Digest publishedDigest;
+  if (!validator(finalPath, context)) {
+    removeIfPresent(finalPath);
+    if (Storage.exists(backupPath)) Storage.rename(backupPath, finalPath);
+    return Status::InvalidStaging;
+  }
+  if (!digestFile(finalPath, publishedDigest) || !(publishedDigest == expectedDigest)) {
+    removeIfPresent(finalPath);
+    if (Storage.exists(backupPath)) Storage.rename(backupPath, finalPath);
+    return Status::IoError;
+  }
+  removeIfPresent(backupPath);
   return Status::Published;
 }
 

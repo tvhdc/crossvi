@@ -45,8 +45,6 @@ void OpdsSettingsActivity::onEnter() {
   requestUpdate();
 }
 
-void OpdsSettingsActivity::onExit() { Activity::onExit(); }
-
 void OpdsSettingsActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();

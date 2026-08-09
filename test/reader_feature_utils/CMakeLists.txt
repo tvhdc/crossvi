@@ -15,6 +15,8 @@ target_include_directories(ReaderFeatureUtilsTest PRIVATE
   ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/hal
+  ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/simulator/src
 )
