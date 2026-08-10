@@ -26,7 +26,13 @@ namespace serialization {
 class BufferedFileWriter {
  public:
   BufferedFileWriter(HalFile& file, const size_t capacity)
-      : file(file), buf(makeUniqueNoThrow<uint8_t[]>(capacity)), cap(buf ? capacity : 0), pos(file.position()) {}
+      : file(file),
+        buf(makeUniqueNoThrow<uint8_t[]>(capacity)),
+        data(buf.get()),
+        cap(data ? capacity : 0),
+        pos(file.position()) {}
+  BufferedFileWriter(HalFile& file, uint8_t* externalBuffer, const size_t capacity)
+      : file(file), data(externalBuffer), cap(data ? capacity : 0), pos(file.position()) {}
   ~BufferedFileWriter() { flush(); }
   BufferedFileWriter(const BufferedFileWriter&) = delete;
   BufferedFileWriter& operator=(const BufferedFileWriter&) = delete;
@@ -42,7 +48,6 @@ class BufferedFileWriter {
       return;
     }
     // Typed local: cppcheck misreads unique_ptr<uint8_t[]>::get() arithmetic as void*.
-    uint8_t* const data = buf.get();
     memcpy(data + fill, p, len);
     fill += len;
   }
@@ -59,12 +64,13 @@ class BufferedFileWriter {
  private:
   void flushBuffer() {
     if (fill == 0) return;
-    okFlag &= file.write(buf.get(), fill) == fill;
+    okFlag &= file.write(data, fill) == fill;
     fill = 0;
   }
 
   HalFile& file;
   std::unique_ptr<uint8_t[]> buf;
+  uint8_t* const data;
   const size_t cap;
   size_t fill = 0;
   size_t pos;
@@ -74,7 +80,13 @@ class BufferedFileWriter {
 class BufferedFileReader {
  public:
   BufferedFileReader(HalFile& file, const size_t capacity)
-      : file(file), buf(makeUniqueNoThrow<uint8_t[]>(capacity)), cap(buf ? capacity : 0), bufStart(file.position()) {}
+      : file(file),
+        buf(makeUniqueNoThrow<uint8_t[]>(capacity)),
+        data(buf.get()),
+        cap(data ? capacity : 0),
+        bufStart(file.position()) {}
+  BufferedFileReader(HalFile& file, uint8_t* externalBuffer, const size_t capacity)
+      : file(file), data(externalBuffer), cap(data ? capacity : 0), bufStart(file.position()) {}
   BufferedFileReader(const BufferedFileReader&) = delete;
   BufferedFileReader& operator=(const BufferedFileReader&) = delete;
 
@@ -91,13 +103,12 @@ class BufferedFileReader {
       if (off == fill) {
         bufStart += fill;
         off = 0;
-        const int n = file.read(buf.get(), cap);
+        const int n = file.read(data, cap);
         fill = n < 0 ? 0 : static_cast<size_t>(n);
         if (fill == 0) break;  // EOF or error
       }
       const size_t chunk = std::min(len, fill - off);
       // Typed local: cppcheck misreads unique_ptr<uint8_t[]>::get() arithmetic as void*.
-      const uint8_t* const data = buf.get();
       memcpy(p, data + off, chunk);
       p += chunk;
       off += chunk;
@@ -126,6 +137,7 @@ class BufferedFileReader {
  private:
   HalFile& file;
   std::unique_ptr<uint8_t[]> buf;
+  uint8_t* const data;
   const size_t cap;
   size_t fill = 0;
   size_t off = 0;

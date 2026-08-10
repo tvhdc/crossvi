@@ -496,9 +496,6 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     LOG_DBG("BMC", "Batch lookup matched %d/%d spine items", matched, spineCount);
     (void)matched;
 
-    targets.clear();
-    targets.shrink_to_fit();
-
     useBatchSizes = true;
   }
 
@@ -679,9 +676,8 @@ BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdent
   loadedFileSize = 0;
   lastLoadStatus = LoadStatus::Missing;
   const std::string path = cachePath + bookBinFile;
-  if (!Storage.exists(path.c_str())) return lastLoadStatus;
-  if (!Storage.openFileForRead("BMC", cachePath + bookBinFile, bookFile)) {
-    lastLoadStatus = LoadStatus::IoError;
+  if (!Storage.openFileForRead("BMC", path, bookFile)) {
+    if (Storage.exists(path.c_str())) lastLoadStatus = LoadStatus::IoError;
     return lastLoadStatus;
   }
 
@@ -791,7 +787,7 @@ BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdent
     // of alternating LUT/data seeks for large anthologies while keeping RAM
     // bounded to 260 bytes.
     constexpr size_t LUT_CHUNK_SIZE = 64;
-    std::array<uint32_t, LUT_CHUNK_SIZE + 1> offsets{};
+    std::array<uint32_t, LUT_CHUNK_SIZE + 1> offsets;
     uint32_t previousCumulativeSize = 0;
     for (uint32_t base = 0; base < entryCount; base += LUT_CHUNK_SIZE) {
       const size_t chunkCount = std::min<size_t>(LUT_CHUNK_SIZE, entryCount - base);

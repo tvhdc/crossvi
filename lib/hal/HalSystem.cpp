@@ -72,7 +72,12 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
 
 namespace HalSystem {
 
+namespace {
+bool panicReportSavedThisBoot = false;
+}
+
 void begin() {
+  panicReportSavedThisBoot = false;
   // This is mostly for the first boot, we need to initialize the panic info and logs to empty state
   // If we reboot from a panic state, we want to keep the panic info until we successfully dump it to the SD card, use
   // `clearPanic()` to clear it after dumping
@@ -94,14 +99,23 @@ void checkPanic() {
     auto panicInfo = getPanicInfo(true);
     auto file = Storage.open("/crash_report.txt", O_WRITE | O_CREAT | O_TRUNC);
     if (file) {
-      file.write(panicInfo.c_str(), panicInfo.size());
-      file.close();
-      LOG_INF("SYS", "Dumped panic info to SD card");
+      const size_t written = file.write(panicInfo.c_str(), panicInfo.size());
+      const bool synced = written == panicInfo.size() && file.sync();
+      const bool closed = file.close();
+      panicReportSavedThisBoot = written == panicInfo.size() && synced && closed;
+      if (panicReportSavedThisBoot) {
+        LOG_INF("SYS", "Dumped panic info to SD card");
+      } else {
+        LOG_ERR("SYS", "Failed to persist crash_report.txt (%u/%u bytes, sync=%d, close=%d)",
+                static_cast<unsigned>(written), static_cast<unsigned>(panicInfo.size()), synced, closed);
+      }
     } else {
       LOG_ERR("SYS", "Failed to open crash_report.txt for writing");
     }
   }
 }
+
+bool panicReportPersisted() { return panicReportSavedThisBoot; }
 
 void clearPanic() {
   panicMessage[0] = '\0';

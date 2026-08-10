@@ -1,5 +1,6 @@
 #include "Page.h"
 
+#include <BufferedFile.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
@@ -19,10 +20,17 @@ static_assert(Page::MAX_FOOTNOTES_PER_PAGE == SectionCacheValidation::MAX_FOOTNO
 
 template <typename Predicate>
 void renderFilteredPageElements(const std::vector<std::shared_ptr<PageElement>>& elements, GfxRenderer& renderer,
-                                const int fontId, const int xOffset, const int yOffset, Predicate&& predicate) {
+                                const int fontId, const int xOffset, const int yOffset,
+                                std::unique_ptr<uint8_t[]>& imageReadBuffer, size_t& imageReadBufferCapacity,
+                                Predicate&& predicate) {
   for (const auto& element : elements) {
     if (predicate(*element)) {
-      element->render(renderer, fontId, xOffset, yOffset);
+      if (element->getTag() == TAG_PageImage) {
+        static_cast<PageImage&>(*element).renderWithScratch(renderer, xOffset, yOffset, imageReadBuffer,
+                                                            imageReadBufferCapacity);
+      } else {
+        element->render(renderer, fontId, xOffset, yOffset);
+      }
     }
   }
 }
@@ -33,7 +41,7 @@ void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset
   block->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
 }
 
-bool PageLine::serialize(HalFile& file) {
+bool PageLine::serialize(serialization::BufferedFileWriter& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
 
@@ -65,11 +73,16 @@ void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffse
   imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
 }
 
+void PageImage::renderWithScratch(GfxRenderer& renderer, const int xOffset, const int yOffset,
+                                  std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity) {
+  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, readBuffer, readBufferCapacity);
+}
+
 void PageImage::renderPlaceholder(GfxRenderer& renderer, const int xOffset, const int yOffset) const {
   imageBlock->renderPlaceholder(renderer, xPos + xOffset, yPos + yOffset);
 }
 
-bool PageImage::serialize(HalFile& file) {
+bool PageImage::serialize(serialization::BufferedFileWriter& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
 
@@ -97,7 +110,7 @@ void PageHorizontalRule::render(GfxRenderer& renderer, const int fontId, const i
   renderer.drawLine(xPos + xOffset, yPos + yOffset, xPos + xOffset + width - 1, yPos + yOffset, thickness, true);
 }
 
-bool PageHorizontalRule::serialize(HalFile& file) {
+bool PageHorizontalRule::serialize(serialization::BufferedFileWriter& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
   serialization::writePod(file, width);
@@ -129,11 +142,12 @@ std::unique_ptr<PageHorizontalRule> PageHorizontalRule::deserialize(BoundedFileR
 }
 
 void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
-  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, [](const PageElement&) { return true; });
+  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, imageReadBuffer, imageReadBufferCapacity,
+                             [](const PageElement&) { return true; });
 }
 
 void Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
-  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset,
+  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, imageReadBuffer, imageReadBufferCapacity,
                              [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
 }
 
@@ -148,35 +162,37 @@ void Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, 
   }
 }
 
-bool Page::serialize(HalFile& file) const {
+bool Page::serialize(HalFile& file, uint8_t* const scratchBuffer, const size_t scratchCapacity) const {
   if (elements.size() > SectionCacheValidation::MAX_PAGE_ELEMENTS) {
     LOG_ERR("PGE", "Serialization failed: too many elements (%u)", static_cast<unsigned>(elements.size()));
     return false;
   }
+  serialization::BufferedFileWriter buffered(file, scratchBuffer, scratchCapacity);
   const uint16_t count = elements.size();
-  serialization::writePod(file, count);
+  serialization::writePod(buffered, count);
 
   for (const auto& el : elements) {
     // Use getTag() method to determine type
-    serialization::writePod(file, static_cast<uint8_t>(el->getTag()));
+    serialization::writePod(buffered, static_cast<uint8_t>(el->getTag()));
 
-    if (!el->serialize(file)) {
+    if (!el->serialize(buffered)) {
       return false;
     }
   }
 
   // Serialize footnotes (clamp to MAX_FOOTNOTES_PER_PAGE to match addFootnote/deserialize limits)
   const uint16_t fnCount = std::min<uint16_t>(footnotes.size(), MAX_FOOTNOTES_PER_PAGE);
-  serialization::writePod(file, fnCount);
+  serialization::writePod(buffered, fnCount);
   for (uint16_t i = 0; i < fnCount; i++) {
     const auto& fn = footnotes[i];
-    if (file.write(fn.number, sizeof(fn.number)) != sizeof(fn.number) ||
-        file.write(fn.href, sizeof(fn.href)) != sizeof(fn.href)) {
-      LOG_ERR("PGE", "Failed to write footnote");
-      return false;
-    }
+    buffered.write(fn.number, sizeof(fn.number));
+    buffered.write(fn.href, sizeof(fn.href));
   }
 
+  if (!buffered.flush()) {
+    LOG_ERR("PGE", "Failed to flush serialized page");
+    return false;
+  }
   return true;
 }
 

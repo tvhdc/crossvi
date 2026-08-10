@@ -11,6 +11,7 @@
 #include <base64.h>
 
 #include <array>
+#include <cmath>
 #include <ctime>
 #include <limits>
 #include <string>
@@ -151,23 +152,29 @@ bool verifiedRequest(const RequestMethod method, const std::string& url, const s
 bool performRequest(const RequestMethod method, const std::string& url, const std::string_view body,
                     const bool authenticated, std::string& response, int& httpStatus) {
   const std::string accept = "application/vnd.koreader.v1+json";
+  if (!authenticated) {
+    const std::array<RequestHeader, 2> publicHeaders = {
+        RequestHeader{"Accept", accept.c_str()},
+        RequestHeader{"Content-Type", "application/json"},
+    };
+    const size_t headerCount = body.empty() ? 1 : publicHeaders.size();
+    return verifiedRequest(method, url, body, publicHeaders.data(), headerCount, response, httpStatus);
+  }
+
   const std::string user = KOREADER_STORE.getUsername();
   const std::string authKey = KOREADER_STORE.getMd5Password();
   const std::string credentials = user + ":" + KOREADER_STORE.getPassword();
-  const std::string authorization = "Basic " + std::string(base64::encode(credentials.c_str()).c_str());
+  const String encodedCredentials = base64::encode(credentials.c_str());
+  std::string authorization;
+  authorization.reserve(6 + encodedCredentials.length());
+  authorization = "Basic ";
+  authorization.append(encodedCredentials.c_str(), encodedCredentials.length());
   const std::array<RequestHeader, 5> allHeaders = {
       RequestHeader{"Accept", accept.c_str()},           RequestHeader{"x-auth-user", user.c_str()},
       RequestHeader{"x-auth-key", authKey.c_str()},      RequestHeader{"Authorization", authorization.c_str()},
       RequestHeader{"Content-Type", "application/json"},
   };
-  const size_t headerCount = authenticated ? (body.empty() ? 4 : 5) : (body.empty() ? 1 : 2);
-  if (!authenticated && !body.empty()) {
-    const std::array<RequestHeader, 2> publicHeaders = {
-        RequestHeader{"Accept", accept.c_str()},
-        RequestHeader{"Content-Type", "application/json"},
-    };
-    return verifiedRequest(method, url, body, publicHeaders.data(), publicHeaders.size(), response, httpStatus);
-  }
+  const size_t headerCount = body.empty() ? 4 : allHeaders.size();
   return verifiedRequest(method, url, body, allHeaders.data(), headerCount, response, httpStatus);
 }
 }  // namespace
@@ -264,14 +271,29 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
       return JSON_ERROR;
     }
 
-    outProgress.document = documentHash;
-    outProgress.progress = doc["progress"].as<std::string>();
-    outProgress.percentage = doc["percentage"].as<float>();
-    outProgress.device = doc["device"].as<std::string>();
-    outProgress.deviceId = doc["device_id"].as<std::string>();
-    outProgress.timestamp = doc["timestamp"].as<int64_t>();
+    const JsonVariantConst progressValue = doc["progress"];
+    const JsonVariantConst percentageValue = doc["percentage"];
+    if (progressValue.isNull() && percentageValue.isNull()) return NOT_FOUND;
+    if (!progressValue.is<const char*>() || !percentageValue.is<float>()) {
+      LOG_ERR("KOSync", "Progress response has invalid required fields");
+      return JSON_ERROR;
+    }
 
-    outProgress.position.reset();
+    KOReaderProgress parsed;
+    parsed.document = documentHash;
+    parsed.progress = progressValue.as<std::string>();
+    parsed.percentage = percentageValue.as<float>();
+    if (parsed.progress.empty() || !std::isfinite(parsed.percentage) || parsed.percentage < 0.0f ||
+        parsed.percentage > 1.0f) {
+      LOG_ERR("KOSync", "Progress response has invalid values");
+      return JSON_ERROR;
+    }
+    const char* device = doc["device"].as<const char*>();
+    const char* deviceId = doc["device_id"].as<const char*>();
+    parsed.device = device ? device : "";
+    parsed.deviceId = deviceId ? deviceId : "";
+    parsed.timestamp = doc["timestamp"].as<int64_t>();
+
     if (KOREADER_STORE.usesCrossPointSyncServer()) {
       const JsonObjectConst pos = doc["position"].as<JsonObjectConst>();
       if (!pos.isNull()) {
@@ -286,11 +308,12 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
         rich.xpath = pos["xpath"].as<const char*>() ? pos["xpath"].as<const char*>() : "";
         LOG_DBG("KOSync", "Got rich position: spine=%u page=%u/%u para=%u", rich.spineIndex, rich.pageNumber,
                 rich.totalPages, para);
-        outProgress.position = std::move(rich);
+        parsed.position = std::move(rich);
       }
     }
 
-    LOG_DBG("KOSync", "Got progress: %.2f%% at %s", outProgress.percentage * 100, outProgress.progress.c_str());
+    LOG_DBG("KOSync", "Got progress: %.2f%% at %s", parsed.percentage * 100, parsed.progress.c_str());
+    outProgress = std::move(parsed);
     return OK;
   }
 

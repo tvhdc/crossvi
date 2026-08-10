@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 struct LibraryGridShape {
   uint8_t columns;
@@ -35,6 +36,33 @@ class LibraryGridModel final {
 
   static constexpr bool coverWorkIdle(const uint32_t now, const uint32_t lastInputAt, const uint32_t idleMs) {
     return static_cast<uint32_t>(now - lastInputAt) >= idleMs;
+  }
+
+  static bool collectVisiblePageSources(const std::span<const size_t> sortedSources,
+                                        const std::span<const size_t> pinnedSources, const size_t sourceCount,
+                                        const size_t visibleStart, const std::span<size_t> output) {
+    size_t written = 0;
+    size_t pinnedIndex = std::min(visibleStart, pinnedSources.size());
+    while (written < output.size() && pinnedIndex < pinnedSources.size()) {
+      const size_t source = pinnedSources[pinnedIndex++];
+      if (source >= sourceCount) return false;
+      output[written++] = source;
+    }
+
+    size_t nonPinnedToSkip = visibleStart > pinnedSources.size() ? visibleStart - pinnedSources.size() : 0;
+    for (const size_t source : sortedSources) {
+      if (written == output.size()) break;
+      if (source >= sourceCount ||
+          std::find(pinnedSources.begin(), pinnedSources.end(), source) != pinnedSources.end()) {
+        continue;
+      }
+      if (nonPinnedToSkip > 0) {
+        --nonPinnedToSkip;
+        continue;
+      }
+      output[written++] = source;
+    }
+    return written == output.size();
   }
 
   static constexpr int productionThumbnailWidth(const int height) { return height > 0 ? height * 3 / 5 : 0; }

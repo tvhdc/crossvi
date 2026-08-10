@@ -130,6 +130,10 @@ BookSearchQuery makeBookSearchQuery(const std::string_view text) {
   return {normalize(text, false, BOOK_SEARCH_QUERY_BYTES), normalize(text, true, BOOK_SEARCH_QUERY_BYTES)};
 }
 
+std::string makeFoldedBookSearchKey(const std::string_view text) {
+  return normalize(text, true, BOOK_SEARCH_QUERY_BYTES);
+}
+
 BookSearchMatch matchBookSearch(const BookSearchQuery& query, const std::string_view candidate) {
   if (query.empty()) return BookSearchMatch::None;
   const std::string exact = normalize(candidate, false, BOOK_SEARCH_CANDIDATE_BYTES);

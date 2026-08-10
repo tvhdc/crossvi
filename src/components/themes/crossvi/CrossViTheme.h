@@ -88,8 +88,7 @@ class CrossViTheme final : public BaseTheme {
   void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const override;
   void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                      const char* rightLabel = nullptr) const override;
-  void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
-                  bool selected) const override;
+  void drawTabBar(const GfxRenderer& renderer, Rect rect, std::span<const TabInfo> tabs, bool selected) const override;
   int getListPageItems(int contentHeight, bool hasSubtitle) const override;
   void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                 const std::function<std::string(int index)>& rowTitle,
@@ -107,7 +106,7 @@ class CrossViTheme final : public BaseTheme {
                        bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                        std::function<bool()> storeCoverBuffer, const HomeBookSummary& summary) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                      const std::function<std::string(int index)>& buttonLabel,
+                      const std::function<const char*(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const override;
   void drawHomeRecentList(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                           int selectedBookIndex) const;

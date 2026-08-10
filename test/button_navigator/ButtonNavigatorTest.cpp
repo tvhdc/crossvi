@@ -63,9 +63,34 @@ TEST_F(ButtonNavigatorTest, ContinuousNavigationUsesTheSpecificButtonDuration) {
   EXPECT_EQ(calls, 0);
 
   input_.clearEdges();
-  input_.heldTime[NEXT_INDEX] = 501;
+  input_.heldTime[NEXT_INDEX] = 500;
   navigator.onNextContinuous([&] { ++calls; });
   EXPECT_EQ(calls, 1);
+}
+
+TEST_F(ButtonNavigatorTest, ContinuousNavigationRepeatsAtTheConfiguredInterval) {
+  ButtonNavigator navigator(500, 500);
+  input_.pressed[NEXT_INDEX] = true;
+  input_.held[NEXT_INDEX] = true;
+  int calls = 0;
+
+  navigator.onNextContinuous([&] { ++calls; });
+  input_.clearEdges();
+
+  input_.heldTime[NEXT_INDEX] = 500;
+  testMillis = 500;
+  navigator.onNextContinuous([&] { ++calls; });
+  EXPECT_EQ(calls, 1);
+
+  input_.heldTime[NEXT_INDEX] = 999;
+  testMillis = 999;
+  navigator.onNextContinuous([&] { ++calls; });
+  EXPECT_EQ(calls, 1);
+
+  input_.heldTime[NEXT_INDEX] = 1000;
+  testMillis = 1000;
+  navigator.onNextContinuous([&] { ++calls; });
+  EXPECT_EQ(calls, 2);
 }
 
 TEST_F(ButtonNavigatorTest, CoalescesBouncedPressCyclesIntoOneMove) {

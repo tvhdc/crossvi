@@ -16,6 +16,7 @@ struct BookSearchQuery {
 };
 
 BookSearchQuery makeBookSearchQuery(std::string_view text);
+std::string makeFoldedBookSearchKey(std::string_view text);
 BookSearchMatch matchBookSearch(const BookSearchQuery& query, std::string_view candidate);
 void addRankedBookSearchResult(std::vector<size_t>& results, size_t& exactCount, bool& truncated, size_t sourceIndex,
                                BookSearchMatch match, size_t maxResults);

@@ -120,8 +120,12 @@ void KOReaderSyncActivity::completeAlreadySynced() {
 
 void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
-    LOG_DBG("KOSync", "WiFi connection failed, exiting");
-    returnToReader();
+    LOG_DBG("KOSync", "WiFi selection cancelled, draining Back release");
+    // WifiSelectionActivity cancels on the Back press edge. Keep this activity
+    // alive until the matching release has been consumed, otherwise the newly
+    // reopened reader receives that release as a second Back action and exits.
+    returnAfterWifiCancel = true;
+    suppressWifiCancelBackRelease = true;
     return;
   }
 
@@ -528,6 +532,17 @@ void KOReaderSyncActivity::render(RenderLock&&) {
 }
 
 void KOReaderSyncActivity::loop() {
+  if (returnAfterWifiCancel) {
+    if (ReaderUtils::consumeInitialRelease(suppressWifiCancelBackRelease,
+                                           mappedInput.wasReleased(MappedInputManager::Button::Back),
+                                           mappedInput.isPressed(MappedInputManager::Button::Back))) {
+      return;
+    }
+    returnAfterWifiCancel = false;
+    returnToReader();
+    return;
+  }
+
   if (ReaderUtils::consumeInitialRelease(suppressInitialConfirmRelease,
                                          mappedInput.wasReleased(MappedInputManager::Button::Confirm),
                                          mappedInput.isPressed(MappedInputManager::Button::Confirm))) {

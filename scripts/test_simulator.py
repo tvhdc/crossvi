@@ -371,11 +371,11 @@ def smoke_vietnamese_typography(device: str) -> None:
     if normal != decomposed:
         raise AssertionError(f"{device.upper()} EPUB NFC/NFD typography differs after normalization")
 
-    sans_txt, _ = run_typography_case(device, "txt", "NFC", font_family=1)
-    sans_epub, _ = run_typography_case(device, "epub", "NFD", font_family=1)
-    if not any(pixel < 255 for pixel in sans_txt) or not any(pixel < 255 for pixel in sans_epub):
-        raise AssertionError(f"{device.upper()} Noto Sans typography fixture rendered no ink")
-    print(f"{device.upper()}: Noto Serif/Sans Vietnamese typography smoke passed")
+    legacy_sans_txt, _ = run_typography_case(device, "txt", "NFC", font_family=1)
+    legacy_sans_epub, _ = run_typography_case(device, "epub", "NFD", font_family=1)
+    if legacy_sans_txt != txt_nfc or legacy_sans_epub != decomposed:
+        raise AssertionError(f"{device.upper()} legacy Noto Sans setting did not fall back to Noto Serif")
+    print(f"{device.upper()}: Noto Serif typography and legacy Noto Sans fallback smoke passed")
 
 
 def xtg_source(path: Path) -> tuple[int, int, bytes]:
@@ -1918,8 +1918,8 @@ def smoke_settings_directional_navigation(device: str) -> None:
         "5500:DOWN,5900:CONFIRM,6400:BACK,7000:SCREENSHOT,7400:BACK,"
         "7800:CONFIRM,8300:SCREENSHOT,8700:DOWN,9100:CONFIRM,9600:SCREENSHOT,"
         "10000:DOWN,10400:DOWN,10800:CONFIRM,11300:SCREENSHOT,11700:BACK,"
-        "12100:CONFIRM,12600:SCREENSHOT,13000:DOWN,13400:DOWN,13800:DOWN,"
-        "14200:CONFIRM,14700:SCREENSHOT"
+        "12100:CONFIRM,12600:SCREENSHOT,13000:CONFIRM,13400:DOWN,13800:DOWN,"
+        "14200:DOWN,14600:CONFIRM,15100:SCREENSHOT"
     )
     environment = os.environ.copy()
     environment.update(
@@ -1928,7 +1928,7 @@ def smoke_settings_directional_navigation(device: str) -> None:
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "15400",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "15800",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"

@@ -305,24 +305,25 @@ void FileBrowserActivity::showBookActions(const std::string& fullPath, const std
   if (pinnable) options.push_back(RECENT_BOOKS.isPinned(fullPath) ? tr(STR_UNPIN_BOOK) : tr(STR_PIN_BOOK));
   options.push_back(tr(STR_DELETE));
 
-  optionPopup.show(StrId::STR_BOOK_ACTIONS, options, 0, [this, fullPath, entry, pinnable](const int selected) {
-    if (pinnable && selected == 0) {
-      const auto result = RECENT_BOOKS.togglePin(fullPath);
-      if (result == RecentBooksStore::PinResult::Pinned) {
-        popupMessage = StrId::STR_BOOK_PINNED;
-      } else if (result == RecentBooksStore::PinResult::Unpinned) {
-        popupMessage = StrId::STR_BOOK_UNPINNED;
-      } else if (result == RecentBooksStore::PinResult::LimitReached) {
-        popupMessage = StrId::STR_PIN_LIMIT_REACHED;
-      } else {
-        popupMessage = StrId::STR_ERROR_GENERAL_FAILURE;
-      }
-      popupTime = millis();
-      requestUpdate();
-      return;
-    }
-    promptDelete(fullPath, entry);
-  });
+  optionPopup.show(StrId::STR_BOOK_ACTIONS, std::move(options), 0,
+                   [this, fullPath, entry, pinnable](const int selected) {
+                     if (pinnable && selected == 0) {
+                       const auto result = RECENT_BOOKS.togglePin(fullPath);
+                       if (result == RecentBooksStore::PinResult::Pinned) {
+                         popupMessage = StrId::STR_BOOK_PINNED;
+                       } else if (result == RecentBooksStore::PinResult::Unpinned) {
+                         popupMessage = StrId::STR_BOOK_UNPINNED;
+                       } else if (result == RecentBooksStore::PinResult::LimitReached) {
+                         popupMessage = StrId::STR_PIN_LIMIT_REACHED;
+                       } else {
+                         popupMessage = StrId::STR_ERROR_GENERAL_FAILURE;
+                       }
+                       popupTime = millis();
+                       requestUpdate();
+                       return;
+                     }
+                     promptDelete(fullPath, entry);
+                   });
   requestUpdate();
 }
 

@@ -96,11 +96,14 @@ bool isExactPayload(const LoadOutcome& outcome, const BookReadingStats& stats,
   return outcome.result == ReadingStatsDecodeResult::Ok && ReadingStatsCodec::encode(stats) == expected;
 }
 
-bool storageAllowsPublish(const std::string& cachePath) {
+bool storageAllowsPublish(const std::string& cachePath, bool* rotatePrimary = nullptr) {
+  if (rotatePrimary) *rotatePrimary = false;
   if (scanForNewerCanonicalFile(cachePath) != ReadingStatsVersionGuard::Result::NoNewerFile) return false;
   const std::string path = cachePath + "/" + CURRENT_FILE_NAME;
   BookReadingStats ignored;
-  return !isProtected(loadEnvelopePath(path, ignored)) && !isProtected(loadEnvelopePath(path + ".bak", ignored)) &&
+  const LoadOutcome primary = loadEnvelopePath(path, ignored);
+  if (rotatePrimary) *rotatePrimary = primary.result == ReadingStatsDecodeResult::Ok;
+  return !isProtected(primary) && !isProtected(loadEnvelopePath(path + ".bak", ignored)) &&
          !isProtected(loadEnvelopePath(path + ".tmp", ignored));
 }
 }  // namespace
@@ -201,24 +204,18 @@ bool BookReadingStats::save(const std::string& cachePath) const {
     LOG_ERR(LOG_TAG, "Refusing to overwrite a pending completion transaction: %s", cachePath.c_str());
     return false;
   }
-  if (!storageAllowsPublish(cachePath)) {
+  bool rotatePrimary = false;
+  if (!storageAllowsPublish(cachePath, &rotatePrimary)) {
     LOG_ERR(LOG_TAG, "Refusing to shadow protected per-book stats storage: %s", cachePath.c_str());
     return false;
   }
   const std::string path = cachePath + "/" + CURRENT_FILE_NAME;
-  BookReadingStats existing;
-  const LoadOutcome primary = loadEnvelopePath(path, existing);
-  if (isProtected(primary)) {
-    LOG_ERR(LOG_TAG, "Refusing to overwrite unreadable or newer per-book stats: %s", path.c_str());
-    return false;
-  }
 
   // writeAtomic() may either remove an old backup during rotation or make it
   // unreachable behind a newly published primary. Protect it independently.
   const ReadingStatsCodec::BookBytes data = ReadingStatsCodec::encode(*this);
   const std::string backupPath = path + ".bak";
-  return ReadingStatsEnvelope::writeAtomic(path.c_str(), backupPath.c_str(),
-                                           primary.result == ReadingStatsDecodeResult::Ok,
+  return ReadingStatsEnvelope::writeAtomic(path.c_str(), backupPath.c_str(), rotatePrimary,
                                            ReadingStatsEnvelope::Kind::Book, data.data(), data.size());
 }
 

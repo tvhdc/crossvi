@@ -79,19 +79,23 @@ struct LayoutIdentity {
 uint32_t layoutFingerprint(const LayoutIdentity& identity);
 
 struct HighlightLine {
-  int16_t left = 0;
-  int16_t right = 0;
-  int16_t top = 0;
-  int16_t bottom = 0;
-  int16_t y = 0;
-  bool backgroundSafe = true;
+  int16_t left;
+  int16_t right;
+  int16_t top;
+  int16_t bottom;
+  int16_t y;
+  bool backgroundSafe;
 };
 
 struct HighlightPlan {
   static constexpr size_t MAX_LINES = 192;
-  std::array<HighlightLine, MAX_LINES> lines{};
+  // Only entries below count are initialized and read. Avoid clearing the
+  // complete fixed-capacity backing store on every rendered page.
+  std::array<HighlightLine, MAX_LINES> lines;
   size_t count = 0;
   bool truncated = false;
+
+  HighlightPlan() noexcept {}
 
   // Invert after page text is rendered: light pages become black with white
   // text, while the reader's final dark-mode inversion produces the opposite.

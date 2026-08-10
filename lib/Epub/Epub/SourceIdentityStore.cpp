@@ -24,9 +24,10 @@ std::string pathFor(const std::string& cachePath, const char* suffix) {
 }
 
 Candidate inspect(const std::string& path) {
-  if (!Storage.exists(path.c_str())) return {};
   HalFile file;
-  if (!Storage.openFileForRead("SID", path, file)) return {CandidateStatus::IoError, {}};
+  if (!Storage.openFileForRead("SID", path, file)) {
+    return Storage.exists(path.c_str()) ? Candidate{CandidateStatus::IoError, {}} : Candidate{};
+  }
 
   const size_t size = file.fileSize();
   if (size > SourceIdentityCodec::ENCODED_SIZE) {

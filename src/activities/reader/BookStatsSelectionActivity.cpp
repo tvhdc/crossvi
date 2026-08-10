@@ -106,8 +106,6 @@ bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentatio
 void BookStatsSelectionActivity::onEnter() {
   Activity::onEnter();
   suppressInitialConfirmRelease_ = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-  holdLeft_.reset();
-  holdRight_.reset();
   pageSize_ = pageCapacity();
   loadRecentBooks();
   requestUpdate();
@@ -115,8 +113,6 @@ void BookStatsSelectionActivity::onEnter() {
 
 void BookStatsSelectionActivity::onExit() {
   recentBooks_.clear();
-  holdLeft_.reset();
-  holdRight_.reset();
   Activity::onExit();
 }
 
@@ -251,26 +247,12 @@ void BookStatsSelectionActivity::loop() {
     requestUpdate();
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) holdLeft_.onPress();
-  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) holdRight_.onPress();
-  if (mappedInput.isPressed(MappedInputManager::Button::Left) &&
-      holdLeft_.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Left), LONG_PRESS_MS)) {
-    movePage(-1);
-  }
-  if (mappedInput.isPressed(MappedInputManager::Button::Right) &&
-      holdRight_.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Right), LONG_PRESS_MS)) {
-    movePage(1);
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) moveSelection(-1);
-  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) moveSelection(1);
-  if (mappedInput.wasReleased(MappedInputManager::Button::Left) &&
-      holdLeft_.onRelease() == ReaderUtils::HoldRelease::Short) {
-    moveSelection(-1);
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Right) &&
-      holdRight_.onRelease() == ReaderUtils::HoldRelease::Short) {
-    moveSelection(1);
-  }
+  navigator_.onNextRelease([this] { moveSelection(1); });
+  navigator_.onPreviousRelease([this] { moveSelection(-1); });
+  navigator_.onContinuous({MappedInputManager::Button::Right}, [this] { movePage(1); });
+  navigator_.onContinuous({MappedInputManager::Button::Left}, [this] { movePage(-1); });
+  navigator_.onContinuous({MappedInputManager::Button::Down}, [this] { moveSelection(1); });
+  navigator_.onContinuous({MappedInputManager::Button::Up}, [this] { moveSelection(-1); });
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) openSelectedBook();
 }

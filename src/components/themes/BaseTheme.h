@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -220,10 +221,10 @@ class BaseTheme {
 
   // Component drawing methods
   void drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total) const;
-  void drawBatteryLeft(const GfxRenderer& renderer, Rect rect,
+  void drawBatteryLeft(const GfxRenderer& renderer, Rect rect, uint16_t percentage,
                        bool showPercentage = true) const;  // Left aligned (reader mode)
-  void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
-                        bool showPercentage = true) const;  // Right aligned (UI headers)
+  int drawBatteryRight(const GfxRenderer& renderer, Rect rect, uint16_t percentage,
+                       bool showPercentage = true) const;  // Right aligned (UI headers); returns cluster left edge
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                const char* btn4) const;
@@ -246,21 +247,20 @@ class BaseTheme {
   }
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                              const char* rightLabel = nullptr) const;
-  virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
-                          bool selected) const;
+  virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, std::span<const TabInfo> tabs, bool selected) const;
   virtual Rect getHomeCoverCacheRect(Rect tileRect) const { return tileRect; }
   virtual void drawHomeContent(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                                std::function<bool()> storeCoverBuffer, const HomeBookSummary& summary) const = 0;
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                              const std::function<std::string(int index)>& buttonLabel,
+                              const std::function<const char*(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
-                     std::string title, const int paddingBottom = 0, const int textYOffset = 0,
+                     const std::string& title, const int paddingBottom = 0, const int textYOffset = 0,
                      const bool fillMargin = true, const bool isPageBookmarked = false,
                      const bool pageCountEstimated = false) const;
   void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;

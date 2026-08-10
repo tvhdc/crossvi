@@ -227,8 +227,9 @@ bool finalLineIsEllipsized(const std::vector<std::string>& lines) {
 }
 
 void drawCenteredText(const GfxRenderer& renderer, const int fontId, const Rect rect, const char* text,
-                      const bool black = true, const EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
-  const int textWidth = renderer.getTextWidth(fontId, text, style);
+                      const bool black = true, const EpdFontFamily::Style style = EpdFontFamily::REGULAR,
+                      const int measuredWidth = -1) {
+  const int textWidth = measuredWidth >= 0 ? measuredWidth : renderer.getTextWidth(fontId, text, style);
   const int lineHeight = renderer.getLineHeight(fontId);
   renderer.drawText(fontId, rect.x + std::max(0, (rect.width - textWidth) / 2),
                     rect.y + std::max(0, (rect.height - lineHeight) / 2), text, black, style);
@@ -275,16 +276,9 @@ bool outsideDateTimeText(char (&value)[40]) {
   return true;
 }
 
-int batteryClusterLeft(const GfxRenderer& renderer, const Rect battery, const bool showPercentage) {
-  if (!showPercentage) return battery.x;
-  const std::string percentage = std::to_string(powerManager.getBatteryPercentage()) + "%";
-  return battery.x - BaseTheme::batteryPercentSpacing - renderer.getTextWidth(SMALL_FONT_ID, percentage.c_str());
-}
-
-void drawOutsideClockRight(const GfxRenderer& renderer, const Rect rect, const Rect battery,
-                           const bool showBatteryPercentage, const char* value) {
+void drawOutsideClockRight(const GfxRenderer& renderer, const Rect rect, const int batteryLeft, const char* value) {
   const int width = renderer.getTextWidth(SMALL_FONT_ID, value);
-  const int x = batteryClusterLeft(renderer, battery, showBatteryPercentage) - 10 - width;
+  const int x = batteryLeft - 10 - width;
   renderer.drawText(SMALL_FONT_ID, std::max(rect.x + CrossViMetrics::values.contentSidePadding, x), rect.y + 8, value);
 }
 
@@ -302,16 +296,16 @@ void drawPinStatusIcon(const GfxRenderer& renderer, const int x, const int y) {
 
 // Prefer the thumbnail made for this UI, then the shared and legacy sizes.
 // Rendering never regenerates a cover while holding the render lock.
-std::string findExistingCoverPath(const std::string& pattern, const int requestedHeight) {
+bool openExistingCover(const std::string& pattern, const int requestedHeight, const char* module, HalFile& file) {
   const int candidates[] = {requestedHeight, 240, 168};
   int previous = -1;
   for (const int height : candidates) {
     if (height <= 0 || height == previous) continue;
     previous = height;
     const std::string path = UITheme::getCoverThumbPath(pattern, height);
-    if (Storage.exists(path.c_str())) return path;
+    if (Storage.openFileForRead(module, path, file)) return true;
   }
-  return {};
+  return false;
 }
 
 bool drawCarouselBitmap(const GfxRenderer& renderer, Bitmap& bitmap, const Rect frame, const bool centerCrop,
@@ -405,9 +399,8 @@ bool drawCarouselBookCover(const GfxRenderer& renderer, const RecentBook& book, 
   Rect visibleFrame = frame;
   bool drewCover = false;
   if (!book.coverBmpPath.empty()) {
-    const std::string path = findExistingCoverPath(book.coverBmpPath, thumbnailHeight);
     HalFile file;
-    if (!path.empty() && Storage.openFileForRead("HOME", path, file)) {
+    if (openExistingCover(book.coverBmpPath, thumbnailHeight, "HOME", file)) {
       Bitmap bitmap(file);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
         drewCover = drawCarouselBitmap(renderer, bitmap, frame, centerCrop, perspectiveDirection, &visibleFrame);
@@ -495,11 +488,12 @@ void CrossViTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
   renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+  const uint16_t batteryPercentage = powerManager.getBatteryPercentage();
   const Rect battery = topRightBatteryRect(rect);
-  drawBatteryRight(renderer, battery, showBatteryPercentage);
+  const int batteryLeft = drawBatteryRight(renderer, battery, batteryPercentage, showBatteryPercentage);
   char timeValue[40]{};
   if (outsideDateTimeText(timeValue)) {
-    drawOutsideClockRight(renderer, rect, battery, showBatteryPercentage, timeValue);
+    drawOutsideClockRight(renderer, rect, batteryLeft, timeValue);
   }
 
   int titleWidth = title ? renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD) : 0;
@@ -545,7 +539,7 @@ void CrossViTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const c
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);
 }
 
-void CrossViTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
+void CrossViTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::span<const TabInfo> tabs,
                               bool selected) const {
   int currentX = rect.x + CrossViMetrics::values.contentSidePadding;
   for (const auto& tab : tabs) {
@@ -617,22 +611,26 @@ void CrossViTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCoun
     std::string value;
     int valueWidth = 0;
     if (rowValue) {
-      value = renderer.truncatedText(UI_10_FONT_ID, rowValue(i).c_str(), MAX_LIST_VALUE_WIDTH);
-      valueWidth = renderer.getTextWidth(UI_10_FONT_ID, value.c_str()) + H_PADDING_IN_SELECTION;
+      int measuredValueWidth = 0;
+      value = renderer.truncatedText(UI_10_FONT_ID, rowValue(i).c_str(), MAX_LIST_VALUE_WIDTH, EpdFontFamily::REGULAR,
+                                     &measuredValueWidth);
+      valueWidth = measuredValueWidth + H_PADDING_IN_SELECTION;
     }
     if (rowValueReservedWidth) valueWidth = std::max(valueWidth, rowValueReservedWidth(i));
     rowTextWidth = std::max(0, rowTextWidth - valueWidth);
-    if (rowBadge && rowBadge(i)) {
+    const bool hasBadge = rowBadge && rowBadge(i);
+    if (hasBadge) {
       rowTextWidth = std::max(0, rowTextWidth - LIST_ICON_SIZE - H_PADDING_IN_SELECTION);
     }
 
-    const auto title = renderer.truncatedText(UI_10_FONT_ID, rowTitle(i).c_str(), rowTextWidth);
+    int titleWidth = 0;
+    const auto title =
+        renderer.truncatedText(UI_10_FONT_ID, rowTitle(i).c_str(), rowTextWidth, EpdFontFamily::REGULAR, &titleWidth);
     renderer.drawText(UI_10_FONT_ID, textX, itemY + 7, title.c_str());
     if (rowDimmed && rowDimmed(i) && i != selectedIndex) {
-      const int width = renderer.getTextWidth(UI_10_FONT_ID, title.c_str());
       const int height = renderer.getLineHeight(UI_10_FONT_ID);
       for (int y = itemY + 7; y < itemY + 7 + height; ++y)
-        for (int x = textX; x < textX + width; ++x)
+        for (int x = textX; x < textX + titleWidth; ++x)
           if ((x + y) % 2 == 0) renderer.drawPixel(x, y, false);
     }
     if (rowIcon) {
@@ -662,7 +660,7 @@ void CrossViTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCoun
       renderer.drawText(UI_10_FONT_ID, rect.x + contentWidth - CrossViMetrics::values.contentSidePadding - valueWidth,
                         valueY, value.c_str(), !(i == selectedIndex && highlightValue));
     }
-    if (rowBadge && rowBadge(i)) {
+    if (hasBadge) {
       drawPinStatusIcon(renderer, rect.x + contentWidth - CrossViMetrics::values.contentSidePadding - LIST_ICON_SIZE,
                         itemY + 4);
     }
@@ -729,15 +727,14 @@ void CrossViTheme::drawHomeHeader(const GfxRenderer& renderer, const Rect rect, 
 
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+  const uint16_t batteryPercentage = powerManager.getBatteryPercentage();
   const Rect battery = topRightBatteryRect(rect);
-  drawBatteryRight(renderer, battery, showBatteryPercentage);
+  const int batteryLeft = drawBatteryRight(renderer, battery, batteryPercentage, showBatteryPercentage);
 
   char timeValue[40]{};
   const bool showDateTime = outsideDateTimeText(timeValue);
   const int dateTimeWidth = showDateTime ? renderer.getTextWidth(SMALL_FONT_ID, timeValue) : 0;
-  const int rightLimit = showDateTime
-                             ? batteryClusterLeft(renderer, battery, showBatteryPercentage) - dateTimeWidth - 18
-                             : batteryClusterLeft(renderer, battery, showBatteryPercentage) - 10;
+  const int rightLimit = showDateTime ? batteryLeft - dateTimeWidth - 18 : batteryLeft - 10;
 
   if (SETTINGS.showDeviceNameOnHome) {
     const char* displayName = SETTINGS.deviceDisplayName[0] != '\0' ? SETTINGS.deviceDisplayName
@@ -749,7 +746,7 @@ void CrossViTheme::drawHomeHeader(const GfxRenderer& renderer, const Rect rect, 
     renderer.drawText(UI_10_FONT_ID, left, rect.y + 9, safeName.c_str());
   }
   if (showDateTime) {
-    drawOutsideClockRight(renderer, rect, battery, showBatteryPercentage, timeValue);
+    drawOutsideClockRight(renderer, rect, batteryLeft, timeValue);
   }
 }
 
@@ -785,9 +782,8 @@ void CrossViTheme::drawHomeContent(GfxRenderer& renderer, const Rect rect, const
   if (!bufferRestored || !coverRendered) {
     bool drewCover = false;
     if (!book.coverBmpPath.empty()) {
-      const std::string path = findExistingCoverPath(book.coverBmpPath, 240);
       HalFile file;
-      if (!path.empty() && Storage.openFileForRead("CROSSVI", path, file)) {
+      if (openExistingCover(book.coverBmpPath, 240, "CROSSVI", file)) {
         Bitmap bitmap(file);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
           renderer.drawBitmap(bitmap, layout.cover.x, layout.cover.y, layout.cover.width, layout.cover.height);
@@ -878,9 +874,11 @@ void CrossViTheme::drawHomeContent(GfxRenderer& renderer, const Rect rect, const
       renderer.drawRoundedRect(continueButton.x, continueButton.y, continueButton.width, continueButton.height, 1,
                                CORNER_RADIUS, true, true, true, true, true);
     }
-    const std::string action =
-        renderer.truncatedText(UI_10_FONT_ID, actionText, std::max(0, continueButton.width - 24), EpdFontFamily::BOLD);
-    drawCenteredText(renderer, UI_10_FONT_ID, continueButton, action.c_str(), !selected, EpdFontFamily::BOLD);
+    int renderedActionWidth = 0;
+    const std::string action = renderer.truncatedText(UI_10_FONT_ID, actionText, std::max(0, continueButton.width - 24),
+                                                      EpdFontFamily::BOLD, &renderedActionWidth);
+    drawCenteredText(renderer, UI_10_FONT_ID, continueButton, action.c_str(), !selected, EpdFontFamily::BOLD,
+                     renderedActionWidth);
   }
 }
 
@@ -951,7 +949,7 @@ void CrossViTheme::drawHomeRecentList(GfxRenderer& renderer, const Rect rect,
 }
 
 void CrossViTheme::drawButtonMenu(GfxRenderer& renderer, const Rect rect, const int buttonCount,
-                                  const int selectedIndex, const std::function<std::string(int index)>& buttonLabel,
+                                  const int selectedIndex, const std::function<const char*(int index)>& buttonLabel,
                                   const std::function<UIIcon(int index)>& rowIcon) const {
   const int tileWidth = (rect.width - MENU_SIDE_PADDING * 2 - MENU_GAP) / MENU_COLUMNS;
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
@@ -987,10 +985,10 @@ void CrossViTheme::drawButtonMenu(GfxRenderer& renderer, const Rect rect, const 
       }
     }
 
-    const std::string rawLabel = buttonLabel(i);
+    const char* rawLabel = buttonLabel(i);
     const EpdFontFamily::Style style = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-    const std::string label = renderer.truncatedText(UI_10_FONT_ID, rawLabel.c_str(),
-                                                     std::max(0, tile.x + tile.width - contentX - 10), style);
+    const std::string label =
+        renderer.truncatedText(UI_10_FONT_ID, rawLabel, std::max(0, tile.x + tile.width - contentX - 10), style);
     renderer.drawText(UI_10_FONT_ID, contentX, tile.y + (tile.height - lineHeight) / 2, label.c_str(), !selected,
                       style);
   }
@@ -1074,26 +1072,30 @@ void CrossViTheme::drawHomeCarousel(GfxRenderer& renderer, const Rect rect, cons
       dotX += CAROUSEL_DOT_SIZE + DOT_GAP;
     }
 
-    const std::string author =
-        currentBook.author.empty()
-            ? std::string{}
-            : renderer.truncatedText(UI_10_FONT_ID, currentBook.author.c_str(), layout.author.width);
+    int authorWidth = 0;
+    const std::string author = currentBook.author.empty()
+                                   ? std::string{}
+                                   : renderer.truncatedText(UI_10_FONT_ID, currentBook.author.c_str(),
+                                                            layout.author.width, EpdFontFamily::REGULAR, &authorWidth);
     const std::string title = displayTitleForBook(currentBook);
+    int safeTitleWidth = 0;
     const std::string safeTitle =
-        renderer.truncatedText(UI_12_FONT_ID, title.c_str(), layout.title.width, EpdFontFamily::BOLD);
+        renderer.truncatedText(UI_12_FONT_ID, title.c_str(), layout.title.width, EpdFontFamily::BOLD, &safeTitleWidth);
     if (bookSelected) {
       constexpr int FOCUS_HORIZONTAL_PADDING = 12;
       constexpr int FOCUS_VERTICAL_PADDING = 4;
-      const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, safeTitle.c_str(), EpdFontFamily::BOLD);
-      const int bandWidth = std::min(layout.title.width, titleWidth + FOCUS_HORIZONTAL_PADDING * 2);
+      const int bandWidth = std::min(layout.title.width, safeTitleWidth + FOCUS_HORIZONTAL_PADDING * 2);
       const int bandHeight =
           std::min(layout.title.height, renderer.getLineHeight(UI_12_FONT_ID) + FOCUS_VERTICAL_PADDING * 2);
       renderer.fillRoundedRect(layout.title.x + (layout.title.width - bandWidth) / 2,
                                layout.title.y + (layout.title.height - bandHeight) / 2, bandWidth, bandHeight,
                                CORNER_RADIUS, Color::Black);
     }
-    if (!author.empty()) drawCenteredText(renderer, UI_10_FONT_ID, layout.author, author.c_str());
-    drawCenteredText(renderer, UI_12_FONT_ID, layout.title, safeTitle.c_str(), !bookSelected, EpdFontFamily::BOLD);
+    if (!author.empty())
+      drawCenteredText(renderer, UI_10_FONT_ID, layout.author, author.c_str(), true, EpdFontFamily::REGULAR,
+                       authorWidth);
+    drawCenteredText(renderer, UI_12_FONT_ID, layout.title, safeTitle.c_str(), !bookSelected, EpdFontFamily::BOLD,
+                     safeTitleWidth);
   } else if (drawBookArea) {
     renderer.fillRoundedRect(layout.currentCover.x, layout.currentCover.y, layout.currentCover.width,
                              layout.currentCover.height, CORNER_RADIUS, Color::LightGray);

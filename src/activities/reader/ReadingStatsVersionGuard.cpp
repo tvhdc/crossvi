@@ -33,12 +33,12 @@ bool isNewerVersionedName(const char* name, const char* prefix, const uint16_t c
 namespace ReadingStatsVersionGuard {
 
 Result scan(const char* directoryPath, const char* fileNamePrefix, const uint16_t currentVersion) {
-  if (!directoryPath || !fileNamePrefix || !Storage.exists(directoryPath)) return Result::NoNewerFile;
+  if (!directoryPath || !fileNamePrefix) return Result::NoNewerFile;
 
   HalFile directory = Storage.open(directoryPath);
   if (!directory || !directory.isDirectory()) {
     if (directory) directory.close();
-    return Result::IoError;
+    return Storage.exists(directoryPath) ? Result::IoError : Result::NoNewerFile;
   }
 
   char name[128]{};

@@ -136,10 +136,10 @@ inline bool acceptsSize(const size_t size, const size_t* acceptedSizes, const si
 inline CandidateResult readCandidate(const std::string& path, uint8_t* data, const size_t capacity,
                                      const size_t* acceptedSizes, const size_t acceptedSizeCount,
                                      const CandidateValidator validator = {}, const CandidateProtector protector = {}) {
-  if (!Storage.exists(path.c_str())) return {};
-
   HalFile file;
-  if (!Storage.openFileForRead("PRG", path, file)) return {CandidateStatus::IoError, 0};
+  if (!Storage.openFileForRead("PRG", path, file)) {
+    return Storage.exists(path.c_str()) ? CandidateResult{CandidateStatus::IoError, 0} : CandidateResult{};
+  }
 
   const size_t size = file.fileSize();
   const bool acceptedSize = acceptsSize(size, acceptedSizes, acceptedSizeCount);
@@ -225,10 +225,10 @@ inline bool protectsFutureTxtRecord(const uint8_t* data, const size_t size, cons
 enum class TxtVersionStatus : uint8_t { Compatible, NewerVersion, IoError };
 
 inline TxtVersionStatus inspectTxtVersion(const std::string& path) {
-  if (!Storage.exists(path.c_str())) return TxtVersionStatus::Compatible;
-
   HalFile file;
-  if (!Storage.openFileForRead("PRG", path, file)) return TxtVersionStatus::IoError;
+  if (!Storage.openFileForRead("PRG", path, file)) {
+    return Storage.exists(path.c_str()) ? TxtVersionStatus::IoError : TxtVersionStatus::Compatible;
+  }
   const size_t size = file.fileSize();
   uint8_t prefix[2]{};
   // Four bytes are unconditionally the legacy uint32 page layout. Values such

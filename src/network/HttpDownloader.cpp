@@ -94,7 +94,7 @@ esp_err_t captureRedirectHeader(esp_http_client_event_t* event) {
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password, Sink& sink) {
-  const bool hasCredentials = !username.empty() && !password.empty();
+  const bool hasCredentials = !username.empty() || !password.empty();
   if (!HttpTransportPolicy::isSupportedUrl(url) || (hasCredentials && !HttpTransportPolicy::credentialsAllowed(url))) {
     LOG_ERR("HTTP", "Rejected URL or credential transport policy");
     return HttpDownloader::HTTP_ERROR;
@@ -104,7 +104,10 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   std::string authorization;
   if (hasCredentials) {
     const std::string credentials = username + ":" + password;
-    authorization = "Basic " + std::string(base64::encode(credentials.c_str()).c_str());
+    const String encodedCredentials = base64::encode(credentials.c_str());
+    authorization.reserve(6 + encodedCredentials.length());
+    authorization = "Basic ";
+    authorization.append(encodedCredentials.c_str(), encodedCredentials.length());
   }
 
   std::string currentUrl = url;

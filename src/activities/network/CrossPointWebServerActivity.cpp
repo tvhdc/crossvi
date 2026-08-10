@@ -439,8 +439,8 @@ void CrossPointWebServerActivity::loop() {
       const auto uploadStatus = webServer->getUploadStatus();
       if (uploadStatus.lastCompleteAt != 0 && uploadStatus.lastCompleteAt != lastReceivedAt) {
         lastReceivedAt = uploadStatus.lastCompleteAt;
-        lastReceivedName = uploadStatus.lastCompleteName;
-        lastReceivedPath = uploadStatus.lastCompletePath;
+        lastReceivedName.assign(uploadStatus.lastCompleteName.data(), uploadStatus.lastCompleteName.size());
+        lastReceivedPath.assign(uploadStatus.lastCompletePath.data(), uploadStatus.lastCompletePath.size());
         requestUpdate();
       }
       std::string openPath;

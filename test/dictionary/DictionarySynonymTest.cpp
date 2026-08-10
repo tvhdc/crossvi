@@ -147,3 +147,16 @@ TEST_F(DictionarySynonymTest, AtomicWriteFailurePreservesPreviousHistory) {
   EXPECT_FALSE(DICTIONARY_HISTORY.flush());
   EXPECT_EQ(Storage.file("/.crosspoint/dictionary_history.txt"), original);
 }
+
+TEST_F(DictionarySynonymTest, FailedClearRestoresHistoryInMemoryAndOnDisk) {
+  DICTIONARY_HISTORY.record("old");
+  ASSERT_TRUE(DICTIONARY_HISTORY.flush());
+  const auto original = Storage.file("/.crosspoint/dictionary_history.txt");
+
+  Storage.shortWriteFor("/.crosspoint/dictionary_history.txt.tmp");
+  EXPECT_FALSE(DICTIONARY_HISTORY.clear());
+
+  ASSERT_EQ(DICTIONARY_HISTORY.entries().size(), 1U);
+  EXPECT_EQ(DICTIONARY_HISTORY.entries().front(), "old");
+  EXPECT_EQ(Storage.file("/.crosspoint/dictionary_history.txt"), original);
+}

@@ -498,32 +498,27 @@ void HomeActivity::render(RenderLock&&) {
       renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
       metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
 
-  // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_SAVED_ITEMS),
-                                        tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Bookmark, Transfer, Settings};
-
-  if (hasReadingStatsShortcut()) {
-    menuItems.insert(menuItems.begin() + 2, tr(STR_READING_STATS));
-    menuIcons.insert(menuIcons.begin() + 2, Book);
-  }
-
-  if (hasOpdsServers) {
-    const size_t opdsIndex = 3 + (hasReadingStatsShortcut() ? 1u : 0u);
-    menuItems.insert(menuItems.begin() + static_cast<std::ptrdiff_t>(opdsIndex), tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + static_cast<std::ptrdiff_t>(opdsIndex), Library);
-  }
-
-  if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
-    // Insert Continue Reading at the top if enabled in theme
-    menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
-    menuIcons.insert(menuIcons.begin(), Book);
-  }
+  constexpr size_t MAX_HOME_MENU_ITEMS = static_cast<size_t>(HomeMenuMapping::itemCount(true, true) + 1);
+  std::array<const char*, MAX_HOME_MENU_ITEMS> menuItems{};
+  std::array<UIIcon, MAX_HOME_MENU_ITEMS> menuIcons{};
+  size_t menuCount = 0;
+  const auto addMenuItem = [&](const char* label, const UIIcon icon) {
+    menuItems[menuCount] = label;
+    menuIcons[menuCount++] = icon;
+  };
+  if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) addMenuItem(tr(STR_CONTINUE_READING), Book);
+  addMenuItem(tr(STR_BROWSE_FILES), Folder);
+  addMenuItem(tr(STR_MENU_RECENT_BOOKS), Recent);
+  if (hasReadingStatsShortcut()) addMenuItem(tr(STR_READING_STATS), Book);
+  addMenuItem(tr(STR_SAVED_ITEMS), Bookmark);
+  if (hasOpdsServers) addMenuItem(tr(STR_OPDS_BROWSER), Library);
+  addMenuItem(tr(STR_FILE_TRANSFER), Transfer);
+  addMenuItem(tr(STR_SETTINGS_TITLE), Settings);
 
   if (carouselLayout) {
     static_cast<const CrossViTheme&>(GUI).drawHomeCarousel(
         renderer, carouselContent, recentBooks, carouselBookIndex,
-        selectorIndex >= 0 && selectorIndex < static_cast<int>(recentBooks.size()), static_cast<int>(menuItems.size()),
+        selectorIndex >= 0 && selectorIndex < static_cast<int>(recentBooks.size()), static_cast<int>(menuCount),
         selectorIndex - static_cast<int>(recentBooks.size()), [&menuIcons](int index) { return menuIcons[index]; },
         !bufferRestored);
     if (restoreMultiBookArea && !bufferRestored) coverBufferStored = storeCoverBuffer();
@@ -559,10 +554,9 @@ void HomeActivity::render(RenderLock&&) {
     const int menuTop = metrics.homeTopPadding + homeTileHeight + metrics.homeMenuTopOffset;
     const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
     GUI.drawButtonMenu(
-        renderer, Rect{0, menuTop, pageWidth, std::max(0, contentBottom - menuTop)}, static_cast<int>(menuItems.size()),
+        renderer, Rect{0, menuTop, pageWidth, std::max(0, contentBottom - menuTop)}, static_cast<int>(menuCount),
         metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
-        [&menuItems](int index) { return std::string(menuItems[index]); },
-        [&menuIcons](int index) { return menuIcons[index]; });
+        [&menuItems](int index) { return menuItems[index]; }, [&menuIcons](int index) { return menuIcons[index]; });
   }
 
   const char* backLabel = "";

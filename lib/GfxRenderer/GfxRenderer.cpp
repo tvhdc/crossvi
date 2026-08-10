@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <string_view>
 
 #include "FontCacheManager.h"
 #include "SmallCaps.h"
@@ -1770,23 +1771,34 @@ void GfxRenderer::writeFramebufferRegion(int x, int y, int w, int h, const uint8
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,
-                                       const EpdFontFamily::Style style) const {
-  if (!text || maxWidth <= 0) return "";
+                                       const EpdFontFamily::Style style, int* const finalWidth) const {
+  if (!text || maxWidth <= 0) {
+    if (finalWidth) *finalWidth = 0;
+    return "";
+  }
 
   std::string item = text;
   // U+2026 HORIZONTAL ELLIPSIS (UTF-8: 0xE2 0x80 0xA6)
   const char* ellipsis = "\xe2\x80\xa6";
   int textWidth = getTextWidth(fontId, item.c_str(), style);
   if (textWidth <= maxWidth) {
+    if (finalWidth) *finalWidth = textWidth;
     // Text fits, return as is
     return item;
   }
 
-  while (!item.empty() && getTextWidth(fontId, (item + ellipsis).c_str(), style) >= maxWidth) {
+  item.reserve(item.size() + 3);
+  item += ellipsis;
+  while (true) {
+    textWidth = getTextWidth(fontId, item.c_str(), style);
+    if (textWidth < maxWidth || item.size() <= 3) break;
+    item.resize(item.size() - 3);
     utf8RemoveLastChar(item);
+    item += ellipsis;
   }
 
-  return item.empty() ? ellipsis : item + ellipsis;
+  if (finalWidth) *finalWidth = textWidth;
+  return item;
 }
 
 std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* text, const int maxWidth,
@@ -1795,14 +1807,20 @@ std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* 
 
   if (!text || maxWidth <= 0 || maxLines <= 0) return lines;
 
-  std::string remaining = text;
+  std::string_view remaining = text;
   std::string currentLine;
 
   while (!remaining.empty()) {
     if (static_cast<int>(lines.size()) == maxLines - 1) {
       // Last available line: combine any word already started on this line with
       // the rest of the text, then let truncatedText fit it with an ellipsis.
-      std::string lastContent = currentLine.empty() ? remaining : currentLine + " " + remaining;
+      std::string lastContent;
+      lastContent.reserve(currentLine.size() + (currentLine.empty() ? 0 : 1) + remaining.size());
+      if (!currentLine.empty()) {
+        lastContent = currentLine;
+        lastContent.push_back(' ');
+      }
+      lastContent.append(remaining);
       lines.push_back(truncatedText(fontId, lastContent.c_str(), maxWidth, style));
       return lines;
     }
@@ -1812,11 +1830,11 @@ std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* 
     std::string word;
 
     if (spacePos == std::string::npos) {
-      word = remaining;
-      remaining.clear();
+      word.assign(remaining);
+      remaining = {};
     } else {
-      word = remaining.substr(0, spacePos);
-      remaining.erase(0, spacePos + 1);
+      word.assign(remaining.substr(0, spacePos));
+      remaining.remove_prefix(spacePos + 1);
     }
 
     std::string testLine = currentLine.empty() ? word : currentLine + " " + word;

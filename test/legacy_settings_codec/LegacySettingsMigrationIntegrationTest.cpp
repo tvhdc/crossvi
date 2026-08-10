@@ -72,6 +72,18 @@ TEST(LegacySettingsMigrationIntegration, ValidBinaryPublishesJsonBeforeArchiving
   EXPECT_TRUE(Storage.exists(SETTINGS_BIN_BAK));
 }
 
+TEST(LegacySettingsMigrationIntegration, RemovedBinaryNotoSansFallsBackToNotoSerif) {
+  resetFakes();
+  std::vector<uint8_t> bytes = makeLegacy(LegacySettingsV2::FontFamily + 1);
+  bytes[2 + LegacySettingsV2::FontFamily] = CrossPointSettings::LEGACY_NOTOSANS;
+  Storage.setFile(SETTINGS_BIN, bytes);
+
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+  EXPECT_EQ(SETTINGS.fontFamily, CrossPointSettings::NOTOSERIF);
+  EXPECT_EQ(LegacySettingsTestSupport::jsonSaveCalls(), 1);
+  EXPECT_TRUE(Storage.exists(SETTINGS_JSON));
+}
+
 TEST(LegacySettingsMigrationIntegration, PublicationFailurePreservesLegacySource) {
   resetFakes();
   Storage.setFile(SETTINGS_BIN, makeLegacy(1));
@@ -141,6 +153,23 @@ TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
   EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+}
+
+TEST(SettingsJsonIntegration, RemovedNotoSansChoicesFallBackToNotoSerif) {
+  resetFakes();
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(
+      SETTINGS, R"({"fontFamily":1,"dictionaryFontFamily":2,"sdFontFamilyName":""})", &needsResave));
+  EXPECT_EQ(SETTINGS.fontFamily, CrossPointSettings::NOTOSERIF);
+  EXPECT_EQ(SETTINGS.dictionaryFontFamily, CrossPointSettings::DICTIONARY_FONT_NOTO_SERIF);
+  EXPECT_TRUE(needsResave);
+
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"fontFamily":1,"sdFontFamilyName":"NotoSansVietnamese"})",
+                                           &needsResave));
+  EXPECT_EQ(SETTINGS.fontFamily, CrossPointSettings::NOTOSERIF);
+  EXPECT_STREQ(SETTINGS.sdFontFamilyName, "NotoSansVietnamese");
+  EXPECT_TRUE(needsResave);
 }
 
 TEST(SettingsJsonIntegration, PersistsHomeBackModeAndOrderedShortcuts) {

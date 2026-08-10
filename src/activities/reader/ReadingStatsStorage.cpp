@@ -15,7 +15,7 @@ bool verifyFile(const char* path, const uint8_t* expected, const size_t expected
   HalFile file;
   if (!Storage.openFileForRead(LOG_TAG, path, file) || file.fileSize() != expectedSize) return false;
 
-  std::array<uint8_t, 32> buffer{};
+  std::array<uint8_t, 32> buffer;
   size_t offset = 0;
   while (offset < expectedSize) {
     const size_t chunk = std::min(buffer.size(), expectedSize - offset);
@@ -34,11 +34,9 @@ namespace ReadingStatsStorage {
 
 ReadOutcome read(const char* path, uint8_t* data, const size_t capacity) {
   ReadOutcome outcome;
-  if (!Storage.exists(path)) return outcome;
-
   HalFile file;
   if (!Storage.openFileForRead(LOG_TAG, path, file)) {
-    outcome.result = ReadResult::IoError;
+    if (Storage.exists(path)) outcome.result = ReadResult::IoError;
     return outcome;
   }
   outcome.size = file.fileSize();

@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -40,13 +41,17 @@ class LibraryCatalogStore final {
 
   bool open();
   bool startRefresh();
+  // Re-check persisted source paths after the SD card has been unavailable or
+  // externally modified. The check runs cooperatively through step().
+  void invalidateSourceValidation() { sourcePathsValidated_ = false; }
   void step();
   void cancel();
   bool loadPage(size_t start, size_t count, std::vector<LibraryBookRecord>& records) const;
-  bool loadRecords(const std::vector<size_t>& indices, std::vector<LibraryBookRecord>& records) const;
+  bool loadRecords(std::span<const size_t> indices, std::vector<LibraryBookRecord>& records) const;
   bool loadRecord(size_t index, LibraryBookRecord& record) const;
   // Return sorted source indices whose format is not the excluded one.
-  bool loadOrderedIndices(uint8_t sortMode, LibraryBookFormat excluded, std::vector<size_t>& indices);
+  bool loadOrderedIndices(uint8_t sortMode, LibraryBookFormat excluded, std::vector<size_t>& indices,
+                          std::span<const std::string> paths = {}, std::vector<size_t>* pathIndices = nullptr);
   bool findPathIndices(const std::vector<std::string>& paths, std::vector<size_t>& indices) const;
   FindPathResult findPath(const std::string& path, size_t preferredIndex, size_t& foundIndex) const;
   bool consumeLastBuildFailed() {
@@ -129,6 +134,9 @@ class LibraryCatalogStore final {
   LibraryCatalogStore() = default;
 
   bool beginBuild();
+  bool beginSourceValidation();
+  void validateOneSource();
+  void resetSourceValidation();
   bool applyDirtyPath(const std::string& path);
   bool applyDeletedPath(const std::string& path);
   void discoverOne();
@@ -138,7 +146,6 @@ class LibraryCatalogStore final {
   bool loadHeader(const char* path, bool requireReady);
   bool restorePreviousCatalog();
   bool writeWorkHeader(Phase phase);
-  bool ensureOrder(uint8_t sortMode);
   bool startOrderBuild(uint8_t sortMode);
   bool stepOrderBuild();
   void resetOrderBuild(bool removeTemporary);
@@ -155,6 +162,10 @@ class LibraryCatalogStore final {
   uint32_t generation_ = 0;
   bool truncated_ = false;
   bool lastBuildFailed_ = false;
+
+  HalFile sourceValidationFile_;
+  uint32_t sourceValidationIndex_ = 0;
+  bool sourcePathsValidated_ = false;
 
   OrderPhase orderPhase_ = OrderPhase::Idle;
   HalFile orderInput_;

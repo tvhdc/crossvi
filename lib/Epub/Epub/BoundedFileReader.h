@@ -1,18 +1,28 @@
 #pragma once
 
+#include <BufferedFile.h>
 #include <HalStorage.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 class BoundedFileReader {
  public:
-  BoundedFileReader(HalFile& file, const uint64_t begin, const uint64_t end)
+  BoundedFileReader(HalFile& file, const uint64_t begin, const uint64_t end, uint8_t* const scratchBuffer = nullptr,
+                    const size_t scratchCapacity = 0)
       : file_(file),
         position_(begin),
         end_(end),
-        valid_(begin <= end && end <= file.fileSize64() && file.seek64(begin)) {}
+        valid_(begin <= end && end <= file.fileSize64() && file.seek64(begin)) {
+    if (valid_) {
+      // Keep the legacy no-scratch path as a direct reader. Section page
+      // loads opt into buffering by passing their reusable scratch block;
+      // small LUT reads should not acquire a new heap buffer per lookup.
+      buffered_.emplace(file_, scratchBuffer, scratchCapacity);
+    }
+  }
 
   template <typename T>
   bool readPod(T& value) {
@@ -31,8 +41,8 @@ class BoundedFileReader {
   }
 
   bool readBytes(void* destination, const size_t length) {
-    if (!valid_ || (!destination && length != 0) || length > remaining() ||
-        (length != 0 && file_.read(destination, length) != static_cast<int>(length))) {
+    if (!valid_ || !buffered_.has_value() || (!destination && length != 0) || length > remaining() ||
+        (length != 0 && buffered_->read(destination, length) != length)) {
       valid_ = false;
       return false;
     }
@@ -52,7 +62,8 @@ class BoundedFileReader {
   }
 
   bool skip(const uint64_t length) {
-    if (!valid_ || length > remaining() || !file_.seek64(position_ + length)) {
+    if (!valid_ || !buffered_.has_value() || length > remaining() ||
+        !buffered_->seek(static_cast<size_t>(position_ + length))) {
       valid_ = false;
       return false;
     }
@@ -70,4 +81,5 @@ class BoundedFileReader {
   uint64_t position_ = 0;
   uint64_t end_ = 0;
   bool valid_ = false;
+  std::optional<serialization::BufferedFileReader> buffered_;
 };

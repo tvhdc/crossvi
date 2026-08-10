@@ -114,7 +114,10 @@ bool DictionaryHistoryStore::flush() {
 bool DictionaryHistoryStore::clear() {
   load();
   if (!writable_) return false;
+  auto previous = std::move(entries_);
   entries_.clear();
   dirty_ = true;
-  return flush();
+  if (flush()) return true;
+  entries_ = std::move(previous);
+  return false;
 }

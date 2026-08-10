@@ -83,6 +83,8 @@ class KOReaderSyncActivity final : public Activity {
   unsigned long autoReturnAt = 0;
   static constexpr unsigned long AUTO_RETURN_DELAY_MS = 1200;
   bool suppressInitialConfirmRelease = false;
+  bool returnAfterWifiCancel = false;
+  bool suppressWifiCancelBackRelease = false;
 
   // Tracks whether this session used WiFi so onExit can release the radio.
   bool wifiActivated = false;

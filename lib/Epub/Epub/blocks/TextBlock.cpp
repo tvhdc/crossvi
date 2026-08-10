@@ -1,6 +1,7 @@
 #include "TextBlock.h"
 
 #include <BidiUtils.h>
+#include <BufferedFile.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -51,8 +52,10 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !focusBoundary.empty();
-  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() != sourceStarts.size() ||
-      words.size() != sourceLengths.size() || words.size() > SectionCacheValidation::MAX_TEXT_BLOCK_WORDS ||
+  const bool hasSourceAnchors = !sourceStarts.empty() || !sourceLengths.empty();
+  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
+      (hasSourceAnchors && (words.size() != sourceStarts.size() || words.size() != sourceLengths.size())) ||
+      words.size() > SectionCacheValidation::MAX_TEXT_BLOCK_WORDS ||
       (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size()))) {
     LOG_ERR("TXB", "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, anchors=%u/%u)",
             static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
@@ -102,13 +105,15 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   auto* text = const_cast<char*>(textArr);
   uint16_t off = 0;
   for (uint16_t i = 0; i < numWords; i++) {
-    if (sourceLengths[i] != 0 && sourceStarts[i] > UINT32_MAX - sourceLengths[i]) {
+    const uint32_t wordSourceStart = hasSourceAnchors ? sourceStarts[i] : UINT32_MAX;
+    const uint16_t wordSourceLength = hasSourceAnchors ? sourceLengths[i] : 0;
+    if (wordSourceLength != 0 && wordSourceStart > UINT32_MAX - wordSourceLength) {
       LOG_ERR("TXB", "Construction failed: source anchor overflow");
       isValid = false;
       return;
     }
-    sourceStart[i] = sourceStarts[i];
-    sourceLength[i] = sourceLengths[i];
+    sourceStart[i] = wordSourceStart;
+    sourceLength[i] = wordSourceLength;
     textOff[i] = off;
     xpos[i] = wordXpos[i];
     styles[i] = static_cast<uint8_t>(wordStyles[i]);
@@ -129,8 +134,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
                      const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle)
-    : TextBlock(words, wordXpos, wordStyles, focusBoundary, focusSuffixX,
-                std::vector<uint32_t>(words.size(), UINT32_MAX), std::vector<uint16_t>(words.size(), 0), blockStyle) {}
+    : TextBlock(words, wordXpos, wordStyles, focusBoundary, focusSuffixX, {}, {}, blockStyle) {}
 
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   if (!isValid) {
@@ -259,7 +263,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   flushDecorations();
 }
 
-bool TextBlock::serialize(HalFile& file) const {
+bool TextBlock::serialize(serialization::BufferedFileWriter& file) const {
   if (!isValid) {
     LOG_ERR("TXB", "Serialization failed: invalid block");
     return false;
@@ -273,10 +277,7 @@ bool TextBlock::serialize(HalFile& file) const {
   serialization::writePod(file, textBytes);
   if (numWords > 0) {
     const size_t size = arenaSize(numWords, focusPresent, textBytes);
-    if (file.write(arena.get(), size) != size) {
-      LOG_ERR("TXB", "Serialization failed: arena write (%u bytes)", static_cast<uint32_t>(size));
-      return false;
-    }
+    file.write(arena.get(), size);
   }
 
   // Style (alignment + margins/padding/indent)

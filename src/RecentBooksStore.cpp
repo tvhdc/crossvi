@@ -30,8 +30,10 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
   recentBooks.reserve(std::min(arr.size(), static_cast<size_t>(MAX_RECENT_BOOKS)));
   for (JsonObjectConst obj : arr) {
     if (getCount() >= MAX_RECENT_BOOKS) break;
+    const char* storedPath = obj["path"] | "";
+    if (storedPath[0] == '\0') continue;
     RecentBook book;
-    book.path = obj["path"] | "";
+    book.path = storedPath;
     book.title = obj["title"] | "";
     book.author = obj["author"] | "";
     book.coverBmpPath = obj["coverBmpPath"] | "";
@@ -114,11 +116,15 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
+    RecentBook previous = *it;
     RecentBook& book = *it;
     book.title = title;
     book.author = author;
     book.coverBmpPath = coverBmpPath;
-    saveToFile();
+    if (!saveToFile()) {
+      *it = std::move(previous);
+      LOG_ERR("RBS", "Failed to persist metadata update for recent book: %s", path.c_str());
+    }
   }
 }
 
@@ -129,9 +135,13 @@ bool RecentBooksStore::removeByPath(const std::string& path) {
   if (it == recentBooks.end()) {
     return false;
   }
+  const size_t index = static_cast<size_t>(std::distance(recentBooks.begin(), it));
+  RecentBook removed = std::move(*it);
   recentBooks.erase(it);
   if (!saveToFile()) {
+    recentBooks.insert(recentBooks.begin() + index, std::move(removed));
     LOG_ERR("RBS", "Failed to persist removal of recent book: %s", path.c_str());
+    return false;
   }
   return true;
 }

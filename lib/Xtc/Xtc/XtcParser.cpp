@@ -42,6 +42,14 @@ void updateRawIdentity(const uint8_t* data, const size_t length, uint32_t& crc, 
 
 bool hasTerminator(const uint8_t* bytes, const size_t length) { return std::memchr(bytes, 0, length) != nullptr; }
 
+bool readValidChapterRange(const std::array<uint8_t, XTC_CHAPTER_SIZE>& bytes, const uint16_t pageCount,
+                           uint16_t& startPage, uint16_t& endPage) {
+  if (!hasTerminator(bytes.data(), 80)) return false;
+  std::memcpy(&startPage, bytes.data() + 0x50, sizeof(startPage));
+  std::memcpy(&endPage, bytes.data() + 0x52, sizeof(endPage));
+  return startPage != 0 && endPage != 0 && startPage <= endPage && endPage <= pageCount;
+}
+
 }  // namespace
 
 XtcParser::XtcParser()
@@ -88,15 +96,7 @@ XtcError XtcParser::open(const char* filepath) {
   XtcError error = readHeader();
   if (error == XtcError::OK) error = readMetadata();
   if (error == XtcError::OK) error = validatePageTable();
-  if (error == XtcError::OK && m_hasChapters) {
-    error = readChapters();
-    if (error == XtcError::OK) {
-      // Validation must not retain chapter strings during normal rendering.
-      m_chapters.clear();
-      m_chapters.shrink_to_fit();
-      m_chaptersLoaded = false;
-    }
-  }
+  if (error == XtcError::OK && m_hasChapters) error = validateChapters();
   if (error != XtcError::OK) {
     LOG_DBG("XTC", "Rejected %s: %s", filepath, errorToString(error));
     return failOpen(error);
@@ -275,6 +275,25 @@ bool XtcParser::readPageTableEntry(const uint32_t pageIndex, PageInfo& info) {
   return error == XtcError::OK;
 }
 
+XtcError XtcParser::validateChapters() {
+  if (!m_hasChapters) return XtcError::OK;
+  if (!ensureFileOpen() || !m_file.seek64(m_header.chapterOffset)) return XtcError::READ_ERROR;
+
+  std::array<uint8_t, XTC_CHAPTER_SIZE> bytes{};
+  for (uint16_t index = 0; index < m_chapterCount; ++index) {
+    const int chapterRead = m_file.read(bytes.data(), bytes.size());
+    if (chapterRead < 0 || static_cast<size_t>(chapterRead) != bytes.size()) return XtcError::READ_ERROR;
+
+    uint16_t startPage = 0;
+    uint16_t endPage = 0;
+    // The supported converter writes chapter page numbers as 1-based values.
+    if (!readValidChapterRange(bytes, m_header.pageCount, startPage, endPage)) {
+      return XtcError::INVALID_CHAPTERS;
+    }
+  }
+  return XtcError::OK;
+}
+
 XtcError XtcParser::readChapters() {
   m_chapters.clear();
   if (!m_hasChapters) return XtcError::OK;
@@ -285,14 +304,10 @@ XtcError XtcParser::readChapters() {
   for (uint16_t index = 0; index < m_chapterCount; ++index) {
     const int chapterRead = m_file.read(bytes.data(), bytes.size());
     if (chapterRead < 0 || static_cast<size_t>(chapterRead) != bytes.size()) return XtcError::READ_ERROR;
-    if (!hasTerminator(bytes.data(), 80)) return XtcError::INVALID_CHAPTERS;
 
     uint16_t startPage = 0;
     uint16_t endPage = 0;
-    std::memcpy(&startPage, bytes.data() + 0x50, sizeof(startPage));
-    std::memcpy(&endPage, bytes.data() + 0x52, sizeof(endPage));
-    // The supported converter writes chapter page numbers as 1-based values.
-    if (startPage == 0 || endPage == 0 || startPage > endPage || endPage > m_header.pageCount) {
+    if (!readValidChapterRange(bytes, m_header.pageCount, startPage, endPage)) {
       return XtcError::INVALID_CHAPTERS;
     }
     std::string name(reinterpret_cast<const char*>(bytes.data()),
@@ -374,7 +389,7 @@ XtcError XtcParser::loadPageStreaming(const uint32_t pageIndex,
     return XtcError::SIZE_MISMATCH;
   }
 
-  std::array<uint8_t, 1024> chunk{};
+  std::array<uint8_t, 1024> chunk;
   const size_t boundedChunkSize = std::min(chunkSize, chunk.size());
   size_t totalRead = 0;
   while (totalRead < layout.payloadBytes) {
@@ -394,7 +409,7 @@ XtcError XtcParser::loadPageStreaming(const uint32_t pageIndex,
 
 XtcError XtcParser::fingerprintSource() {
   if (!ensureFileOpen() || !m_file.seek64(0)) return XtcError::READ_ERROR;
-  std::array<uint8_t, IDENTITY_CHUNK_SIZE> buffer{};
+  std::array<uint8_t, IDENTITY_CHUNK_SIZE> buffer;
   uint64_t totalRead = 0;
   size_t bytesSinceYield = 0;
   uint32_t crc = UINT32_MAX;

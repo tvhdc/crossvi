@@ -21,6 +21,7 @@ class HalFile {
   HalFile& operator=(const HalFile&) = delete;
 
   bool isDirectory() const { return open_ && directory_; }
+  void rewindDirectory() { nextEntry_ = 0; }
   size_t getName(char* destination, size_t capacity) const;
   HalFile openNextFile();
   uint64_t fileSize64() const;

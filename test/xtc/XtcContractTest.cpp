@@ -150,6 +150,18 @@ TEST_F(XtcContractTest, OpensSupportedXtcAndXtch) {
   EXPECT_EQ(openBook(makeBook(2)), xtc::XtcError::OK);
 }
 
+TEST_F(XtcContractTest, ValidatesChapterRecordsWithoutChangingLazyLoadBehavior) {
+  xtc::XtcParser parser;
+  ASSERT_EQ(openBook(makeBook(1, 480, 800, true), &parser), xtc::XtcError::OK);
+  ASSERT_TRUE(parser.hasChapters());
+
+  const auto& chapters = parser.getChapters();
+  ASSERT_EQ(chapters.size(), 1U);
+  EXPECT_EQ(chapters[0].name, "Chapter 1");
+  EXPECT_EQ(chapters[0].startPage, 0U);
+  EXPECT_EQ(chapters[0].endPage, 0U);
+}
+
 TEST_F(XtcContractTest, ThumbnailCopyOpenFailureDoesNotTouchInvalidHandlesOrPublishPartialOutput) {
   Storage.setFile(BOOK_PATH, makeBook());
   Xtc book(BOOK_PATH, "/.crosspoint");

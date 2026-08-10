@@ -50,6 +50,9 @@ public:
   }
 
   bool isAvailable() const { return _available; }
+  void update(const uint8_t mode, const uint8_t orientation, const bool inReader) {
+    update(mode, orientation, inReader, true, 0);
+  }
   // Support both firmware HAL shapes while the repos are out of sync.
   void update(const uint8_t mode, const uint8_t /*orientation*/, const bool inReader, const bool /*pageReady*/,
               const uint32_t /*completedRenderGeneration*/) {

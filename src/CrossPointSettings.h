@@ -169,14 +169,16 @@ class CrossPointSettings {
     SIDE_BUTTON_LAYOUT_COUNT
   };
 
-  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
-  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
+  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName).
+  // Value 1 used to select the removed built-in Noto Sans reader family.
+  enum FONT_FAMILY { NOTOSERIF = 0, FONT_FAMILY_COUNT };
   enum DICTIONARY_FONT_FAMILY {
     DICTIONARY_FONT_READER = 0,
     DICTIONARY_FONT_NOTO_SERIF = 1,
-    DICTIONARY_FONT_NOTO_SANS = 2,
     DICTIONARY_FONT_FAMILY_COUNT,
   };
+  static constexpr uint8_t LEGACY_NOTOSANS = 1;
+  static constexpr uint8_t LEGACY_DICTIONARY_FONT_NOTO_SANS = 2;
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
@@ -327,10 +329,16 @@ class CrossPointSettings {
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
-  // The UI is now a simple off/on switch. Value 2 remains reserved for
-  // settings files written by older firmware and keeps their inverted
-  // direction working at runtime.
-  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_ON = 1, TILT_LEGACY_LEFT_NEXT = 2, TILT_PAGE_TURN_COUNT };
+  // The UI exposes a simple off/on switch. Value 2 is retained for settings
+  // written by older firmware and is interpreted as CrossPoint's inverted
+  // gyro direction.
+  enum TILT_PAGE_TURN {
+    TILT_OFF = 0,
+    TILT_ON = 1,
+    TILT_INVERTED = 2,
+    TILT_LEGACY_LEFT_NEXT = TILT_INVERTED,
+    TILT_PAGE_TURN_COUNT
+  };
 
   enum QUICK_RESUME_SLEEP_SCREEN {
     QUICK_RESUME_NEVER = 0,
@@ -371,6 +379,7 @@ class CrossPointSettings {
   // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
   // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
   uint8_t clockUtcOffsetQ = 48;
+  static constexpr uint8_t VIETNAM_UTC_OFFSET_Q = 76;  // UTC+07:00
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
   uint8_t dateFormat = DATE_FORMAT_MONTH_DAY_YEAR_LONG;

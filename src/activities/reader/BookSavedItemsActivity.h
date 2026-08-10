@@ -48,7 +48,6 @@ class BookSavedItemsActivity final : public Activity {
   std::string rowTitle(int index) const;
   std::string rowSubtitle(int index) const;
   UIIcon rowIcon(int index) const;
-  std::vector<TabInfo> tabs() const;
 
   std::shared_ptr<Epub> epub_;
   std::string bookPath_;

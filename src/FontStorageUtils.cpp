@@ -83,7 +83,7 @@ bool computeFileCrc32(const char* path, uint32_t& crc, uint64_t& size) {
   const uint64_t initialSize = file.fileSize64();
   uint64_t remaining = initialSize;
   uint32_t state = UINT32_MAX;
-  std::array<uint8_t, 512> buffer{};
+  std::array<uint8_t, 512> buffer;
   while (remaining > 0) {
     const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, buffer.size()));
     if (file.read(buffer.data(), chunk) != static_cast<int>(chunk)) {

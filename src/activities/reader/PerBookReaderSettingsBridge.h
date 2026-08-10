@@ -13,7 +13,7 @@ inline PerBookReaderSettings captureReaderSettings(const bool hasOverrides = fal
   out.hasReaderOverrides = hasOverrides;
   out.hasAutoPageTurnInterval = hasAutoPageTurnInterval;
   out.autoPageTurnStartsOnOpen = hasAutoPageTurnInterval && autoPageTurnStartsOnOpen;
-  out.fontFamily = SETTINGS.fontFamily;
+  out.fontFamily = canonicalPerBookFontFamily(SETTINGS.fontFamily);
   out.fontSize = SETTINGS.fontSize;
   out.lineSpacing = SETTINGS.lineSpacing;
   out.wordSpacing = SETTINGS.wordSpacing;
@@ -38,7 +38,7 @@ inline PerBookReaderSettings captureReaderSettings(const bool hasOverrides = fal
 }
 
 inline void applyReaderSettings(const PerBookReaderSettings& settings) {
-  SETTINGS.fontFamily = settings.fontFamily;
+  SETTINGS.fontFamily = canonicalPerBookFontFamily(settings.fontFamily);
   SETTINGS.fontSize = settings.fontSize;
   SETTINGS.lineSpacing = settings.lineSpacing;
   SETTINGS.wordSpacing = settings.wordSpacing;

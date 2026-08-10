@@ -74,9 +74,14 @@ void LanguageSelectActivity::handleSelection() {
   }
 
   const uint8_t previousLanguage = SETTINGS.language;
+  const uint8_t previousUtcOffsetQ = SETTINGS.clockUtcOffsetQ;
   SETTINGS.language = langIndex;
+  if (selectedLanguage == Language::VI) {
+    SETTINGS.clockUtcOffsetQ = CrossPointSettings::VIETNAM_UTC_OFFSET_Q;
+  }
   if (!SETTINGS.saveToFile()) {
     SETTINGS.language = previousLanguage;
+    SETTINGS.clockUtcOffsetQ = previousUtcOffsetQ;
     saveFailed = true;
     LOG_ERR("LANG", "Could not persist selected language");
     requestUpdate();

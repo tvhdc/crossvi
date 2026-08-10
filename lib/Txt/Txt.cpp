@@ -41,14 +41,9 @@ bool Txt::load() {
     return true;
   }
 
-  if (!Storage.exists(filepath.c_str())) {
-    LOG_ERR("TXT", "File does not exist: %s", filepath.c_str());
-    return false;
-  }
-
   HalFile file;
   if (!Storage.openFileForRead("TXT", filepath, file)) {
-    LOG_ERR("TXT", "Failed to open file: %s", filepath.c_str());
+    LOG_ERR("TXT", "File does not exist or cannot be opened: %s", filepath.c_str());
     return false;
   }
 
@@ -59,7 +54,7 @@ bool Txt::load() {
     return false;
   }
 
-  std::array<uint8_t, IDENTITY_CHUNK_SIZE> buffer{};
+  std::array<uint8_t, IDENTITY_CHUNK_SIZE> buffer;
   uint64_t totalRead = 0;
   size_t bytesSinceYield = 0;
   uint32_t crc = UINT32_MAX;
@@ -134,7 +129,7 @@ std::string Txt::findCoverImage() const {
   std::string baseName = getTitle();
 
   // Image extensions to try
-  const char* extensions[] = {".bmp", ".jpg", ".jpeg", ".png", ".BMP", ".JPG", ".JPEG", ".PNG"};
+  const char* extensions[] = {".bmp", ".jpg", ".jpeg", ".BMP", ".JPG", ".JPEG"};
 
   // First priority: look for image with same name as txt file (e.g., mybook.jpg)
   for (const auto& ext : extensions) {
@@ -257,6 +252,12 @@ bool Txt::readContent(uint8_t* buffer, size_t offset, size_t length) const {
   if (!Storage.openFileForRead("TXT", filepath, file)) {
     return false;
   }
+
+  return readContent(file, buffer, offset, length);
+}
+
+bool Txt::readContent(HalFile& file, uint8_t* buffer, size_t offset, size_t length) const {
+  if (!loaded || !file || (!buffer && length != 0)) return false;
 
   if (!file.seek(offset)) {
     return false;

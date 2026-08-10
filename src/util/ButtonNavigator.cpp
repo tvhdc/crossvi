@@ -77,8 +77,8 @@ void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callb
 bool ButtonNavigator::shouldNavigateContinuously(const MappedInputManager::Button button) const {
   if (!mappedInput) return false;
 
-  const bool buttonHeldLongEnough = mappedInput->getHeldTime(button) > continuousStartMs;
-  const bool navigationIntervalElapsed = (millis() - lastContinuousNavTime) > continuousIntervalMs;
+  const bool buttonHeldLongEnough = mappedInput->getHeldTime(button) >= continuousStartMs;
+  const bool navigationIntervalElapsed = (millis() - lastContinuousNavTime) >= continuousIntervalMs;
 
   return buttonHeldLongEnough && navigationIntervalElapsed;
 }

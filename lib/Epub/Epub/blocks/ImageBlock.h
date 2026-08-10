@@ -7,6 +7,9 @@
 #include "Block.h"
 
 class BoundedFileReader;
+namespace serialization {
+class BufferedFileWriter;
+}
 
 class ImageBlock final : public Block {
  public:
@@ -32,14 +35,18 @@ class ImageBlock final : public Block {
   bool isEmpty() override { return false; }
 
   void render(GfxRenderer& renderer, const int x, const int y);
-  bool serialize(HalFile& file);
+  void render(GfxRenderer& renderer, int x, int y, std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity);
+  bool serialize(serialization::BufferedFileWriter& file);
   static std::unique_ptr<ImageBlock> deserialize(BoundedFileReader& reader);
 
  private:
   std::string imagePath;
   std::string sourcePath;
+  mutable std::string pixelCachePath;
   int16_t width;
   int16_t height;
+
+  const std::string& getPixelCachePath() const;
 
   static void* extractContext;
   static ExtractFn extractFn;

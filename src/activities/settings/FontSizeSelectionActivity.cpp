@@ -99,6 +99,11 @@ void FontSizeSelectionActivity::loop() {
   buttonNavigator_.onPreviousRelease([this] {
     previewSelection(ButtonNavigator::previousIndex(selectedIndex_, static_cast<int>(sizeOptions_.size())));
   });
+  buttonNavigator_.onNextContinuous(
+      [this] { previewSelection(ButtonNavigator::nextIndex(selectedIndex_, static_cast<int>(sizeOptions_.size()))); });
+  buttonNavigator_.onPreviousContinuous([this] {
+    previewSelection(ButtonNavigator::previousIndex(selectedIndex_, static_cast<int>(sizeOptions_.size())));
+  });
 }
 
 std::string FontSizeSelectionActivity::sizeLabel(const int index) const {

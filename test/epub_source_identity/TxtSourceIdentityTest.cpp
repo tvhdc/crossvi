@@ -83,6 +83,21 @@ TEST_F(TxtSourceIdentityTest, StreamsCompleteFileIntoRawCrcAndFnvIdentity) {
   EXPECT_LE(Storage.maxRead(), 2048u);
 }
 
+TEST_F(TxtSourceIdentityTest, ReusesAnOpenHandleForIndexedContentReads) {
+  Storage.setFile(BOOK_PATH, bytes("0123456789"));
+  Txt txt(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(txt.load());
+  HalFile file;
+  ASSERT_TRUE(Storage.openFileForRead("TST", BOOK_PATH, file));
+  std::array<uint8_t, 4> middle{};
+  std::array<uint8_t, 2> start{};
+  EXPECT_TRUE(txt.readContent(file, middle.data(), 3, middle.size()));
+  EXPECT_EQ(std::string(middle.begin(), middle.end()), "3456");
+  EXPECT_TRUE(txt.readContent(file, start.data(), 0, start.size()));
+  EXPECT_EQ(std::string(start.begin(), start.end()), "01");
+  EXPECT_TRUE(file.close());
+}
+
 TEST_F(TxtSourceIdentityTest, EmptyFileHasAValidDistinctRawIdentity) {
   Storage.setFile(BOOK_PATH, {});
   Txt txt(BOOK_PATH, "/.crosspoint");
@@ -123,6 +138,15 @@ TEST_F(TxtSourceIdentityTest, FailedCoverStagingWriteNeverPublishesPartialCache)
   EXPECT_FALSE(txt.generateCoverBmp());
   EXPECT_FALSE(Storage.exists(finalPath.c_str()));
   EXPECT_FALSE(Storage.exists((finalPath + ".tmp").c_str()));
+}
+
+TEST_F(TxtSourceIdentityTest, UnsupportedPngDoesNotHideSupportedBmpCover) {
+  Txt txt("/books/novel.txt", "/.crosspoint");
+  Storage.setFile("/books/novel.png", {0x89U, 0x50U, 0x4EU, 0x47U});
+  Storage.setFile("/books/cover.bmp", validBmp());
+
+  EXPECT_TRUE(txt.generateCoverBmp());
+  EXPECT_TRUE(Storage.exists(txt.getCoverBmpPath().c_str()));
 }
 
 TEST_F(TxtSourceIdentityTest, SameSizeReplacementChangesIdentity) {

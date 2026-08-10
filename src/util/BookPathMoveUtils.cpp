@@ -215,8 +215,8 @@ FileComparison compareFiles(const std::string& firstPath, const std::string& sec
     return closeBoth() ? FileComparison::Different : FileComparison::IoError;
   }
 
-  std::array<uint8_t, 512> firstBytes{};
-  std::array<uint8_t, 512> secondBytes{};
+  std::array<uint8_t, 512> firstBytes;
+  std::array<uint8_t, 512> secondBytes;
   while (first.available() > 0) {
     const size_t wanted = std::min(firstBytes.size(), static_cast<size_t>(first.available()));
     const int firstRead = first.read(firstBytes.data(), wanted);

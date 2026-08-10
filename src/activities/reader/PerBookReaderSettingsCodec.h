@@ -122,7 +122,7 @@ inline bool encode(const PerBookReaderSettings& settings, Encoded& encoded) {
       static_cast<uint8_t>((settings.hasReaderOverrides ? 1U : 0U) | (settings.hasAutoPageTurnInterval ? 2U : 0U) |
                            (settings.autoPageTurnStartsOnOpen ? 4U : 0U) | (settings.hasRenderModeOverride ? 8U : 0U) |
                            (settings.safeModeEnabled ? 16U : 0U));
-  payload[1] = settings.fontFamily;
+  payload[1] = canonicalPerBookFontFamily(settings.fontFamily);
   payload[2] = settings.fontSize;
   payload[3] = settings.lineSpacing;
   payload[4] = settings.paragraphAlignment;
@@ -170,7 +170,8 @@ inline DecodeStatus decode(const uint8_t* data, const size_t length, PerBookRead
   PerBookReaderSettings decoded;
   decoded.hasReaderOverrides = (payload[0] & 0x01U) != 0;
   decoded.hasAutoPageTurnInterval = (payload[0] & 0x02U) != 0;
-  decoded.fontFamily = payload[1];
+  if (payload[1] >= 2) return DecodeStatus::INVALID_VALUE;
+  decoded.fontFamily = canonicalPerBookFontFamily(payload[1]);
   decoded.fontSize = payload[2];
   decoded.lineSpacing = payload[3];
   decoded.paragraphAlignment = payload[4];

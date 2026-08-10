@@ -416,7 +416,7 @@ bool ZipFile::getSourceIdentity(SourceIdentity& identity) {
     return false;
   }
 
-  std::array<uint8_t, 512> buffer{};
+  std::array<uint8_t, 512> buffer;
   uint64_t hash = FNV64_OFFSET_BASIS;
   uint32_t remaining = zipDetails.centralDirSize;
   while (remaining > 0) {
@@ -506,7 +506,7 @@ ZipFile::StoredEntryOpenStatus ZipFile::openValidatedEntry(const char* filename,
     return StoredEntryOpenStatus::Invalid;
   }
 
-  std::array<uint8_t, localHeaderSize> localHeader{};
+  std::array<uint8_t, localHeaderSize> localHeader;
   if (!file.seek64(localHeaderOffset) ||
       file.read(localHeader.data(), localHeader.size()) != static_cast<int>(localHeader.size())) {
     return file.getError() == 0 ? StoredEntryOpenStatus::Invalid : StoredEntryOpenStatus::IoError;
@@ -530,7 +530,7 @@ ZipFile::StoredEntryOpenStatus ZipFile::openValidatedEntry(const char* filename,
     return StoredEntryOpenStatus::Invalid;
   }
 
-  std::array<char, 256> localName{};
+  std::array<char, 256> localName;
   if (file.read(localName.data(), localNameLength) != localNameLength ||
       memcmp(localName.data(), filename, requestedNameLength) != 0) {
     return file.getError() == 0 ? StoredEntryOpenStatus::Invalid : StoredEntryOpenStatus::IoError;

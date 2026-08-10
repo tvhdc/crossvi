@@ -76,7 +76,6 @@ bool publishHeader(HalFile& output, uint32_t sampleCount, uint32_t sourceSize) {
 
 bool needsIndex(const std::string& basePath) {
   const std::string sourcePath = basePath + ".syn";
-  if (!Storage.exists(sourcePath.c_str())) return false;
   HalFile source;
   if (!Storage.openFileForRead("SYN", sourcePath, source)) return false;
   const uint64_t sourceSize = source.fileSize64();
@@ -90,10 +89,8 @@ bool needsIndex(const std::string& basePath) {
 
 bool buildIndex(const std::string& basePath, void (*yieldFn)(void*), void* ctx) {
   const std::string sourcePath = basePath + ".syn";
-  if (!Storage.exists(sourcePath.c_str())) return true;
-
   HalFile source;
-  if (!Storage.openFileForRead("SYN", sourcePath, source)) return false;
+  if (!Storage.openFileForRead("SYN", sourcePath, source)) return !Storage.exists(sourcePath.c_str());
   const uint64_t sourceSize64 = source.fileSize64();
   if (sourceSize64 > UINT32_MAX) return false;
   const uint32_t sourceSize = static_cast<uint32_t>(sourceSize64);

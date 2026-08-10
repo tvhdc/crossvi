@@ -25,6 +25,8 @@ class Section {
   // Reuse the committed section handle across page turns. Builds keep using
   // `file` for the staging .part file, so the two cursors never interfere.
   mutable HalFile committedReadFile_;
+  static constexpr size_t PAGE_READ_BUFFER_BYTES = 512;
+  mutable std::unique_ptr<uint8_t[]> pageReadBuffer_;
 
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
@@ -44,7 +46,9 @@ class Section {
   // live parser plus the strings it references (the parser stores them by reference)
   // and the in-RAM page-offset table.
   struct BuildContext {
+    static constexpr size_t PAGE_WRITE_BUFFER_BYTES = 1024;
     std::unique_ptr<ChapterHtmlSlimParser> parser;
+    std::unique_ptr<uint8_t[]> pageWriteBuffer;
     std::vector<PageLutEntry> lut;
     std::string parsePath;
     std::string contentBase;

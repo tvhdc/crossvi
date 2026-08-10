@@ -11,10 +11,12 @@
 #include <Xtc.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <new>
+#include <span>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -109,23 +111,15 @@ void RecentBooksActivity::rebuildPinnedProjection() {
   if (!allTab() || !storageAvailable || searchActive[tabIndex()] || !LIBRARY_CATALOG.isReady()) return;
 
   const auto excluded = SETTINGS.hideTxtBooks ? LibraryBookFormat::Text : static_cast<LibraryBookFormat>(0xFF);
-  if (!LIBRARY_CATALOG.loadOrderedIndices(SETTINGS.librarySort, excluded, allSourceIndices)) {
+  const auto& paths = RECENT_BOOKS.getPinnedPaths();
+  std::vector<size_t> resolved;
+  if (!LIBRARY_CATALOG.loadOrderedIndices(SETTINGS.librarySort, excluded, allSourceIndices, paths, &resolved)) {
     pinnedProjectionValid = false;
     return;
   }
   allSourceIndicesValid = true;
 
-  const auto& paths = RECENT_BOOKS.getPinnedPaths();
   if (paths.empty()) return;
-
-  std::vector<size_t> resolved;
-  if (!LIBRARY_CATALOG.findPathIndices(paths, resolved)) {
-    // Keep the catalog usable if an SD read fails. The pin badges still work
-    // for records that are actually rendered, while the next generation
-    // invalidates this projection and retries once the catalog is healthy.
-    pinnedProjectionValid = false;
-    return;
-  }
   for (const size_t index : resolved) {
     if (index == static_cast<size_t>(-1)) continue;
     if (SETTINGS.hideTxtBooks &&
@@ -245,17 +239,13 @@ void RecentBooksActivity::loadRenderPage(const size_t pageStart, const size_t co
       loaded = false;
       renderPage.assign(count, {});
     } else {
-      std::vector<size_t> sourceIndices;
-      sourceIndices.reserve(count);
-      for (size_t i = 0; i < count; ++i) {
-        const size_t source = allVisibleToSource(pageStart + i);
-        if (source == static_cast<size_t>(-1)) {
-          loaded = false;
-          break;
-        }
-        sourceIndices.push_back(source);
+      std::array<size_t, LibraryGridModel::LIST_PAGE_SIZE> sourceIndices{};
+      loaded = count <= sourceIndices.size() && LibraryGridModel::collectVisiblePageSources(
+                                                    allSourceIndices, pinnedSourceIndices, LIBRARY_CATALOG.count(),
+                                                    pageStart, std::span<size_t>(sourceIndices).first(count));
+      if (loaded) {
+        loaded = LIBRARY_CATALOG.loadRecords(std::span<const size_t>(sourceIndices).first(count), renderPage);
       }
-      if (loaded) loaded = LIBRARY_CATALOG.loadRecords(sourceIndices, renderPage);
     }
   } else {
     renderPage.resize(count);
@@ -360,6 +350,7 @@ bool RecentBooksActivity::refreshStorageAvailability() {
   storageAvailable = Storage.probeMedia();
   if (!storageAvailable) {
     resetCoverQueue();
+    LIBRARY_CATALOG.invalidateSourceValidation();
     LIBRARY_CATALOG.cancel();
   }
   return storageAvailable;
@@ -375,16 +366,14 @@ void RecentBooksActivity::queueNavigationInput() {
     holdLeft.reset();
     holdRight.reset();
     holdBack.reset();
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    buttonNavigator_.onPrevious([this] {
       --pendingPopupNavigation;
       requestUpdate();
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    });
+    buttonNavigator_.onNext([this] {
       ++pendingPopupNavigation;
       requestUpdate();
-    }
+    });
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (suppressPopupConfirmRelease) {
         suppressPopupConfirmRelease = false;
@@ -420,26 +409,35 @@ void RecentBooksActivity::queueNavigationInput() {
   // On X3, logical Up/Down are the physical left/right side buttons. Flip
   // only that device's tab direction; X4 retains its vertical convention.
   const int upTabDelta = gpio.deviceIsX3() ? -1 : 1;
-  if (mappedInput.isPressed(MappedInputManager::Button::Up) &&
-      holdUp.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Up), LONG_PRESS_MS)) {
+  if (mappedInput.isPressed(MappedInputManager::Button::Up)) {
+    (void)holdUp.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Up), LONG_PRESS_MS);
+  }
+  if (mappedInput.isPressed(MappedInputManager::Button::Down)) {
+    (void)holdDown.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Down), LONG_PRESS_MS);
+  }
+  if (mappedInput.isPressed(MappedInputManager::Button::Left)) {
+    (void)holdLeft.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Left), LONG_PRESS_MS);
+  }
+  if (mappedInput.isPressed(MappedInputManager::Button::Right)) {
+    (void)holdRight.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Right), LONG_PRESS_MS);
+  }
+
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Up}, [this, upTabDelta] {
     pendingTabSwitch += upTabDelta;
     requestUpdate();
-  }
-  if (mappedInput.isPressed(MappedInputManager::Button::Down) &&
-      holdDown.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Down), LONG_PRESS_MS)) {
+  });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Down}, [this, upTabDelta] {
     pendingTabSwitch -= upTabDelta;
     requestUpdate();
-  }
-  if (mappedInput.isPressed(MappedInputManager::Button::Right) &&
-      holdRight.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Right), LONG_PRESS_MS)) {
+  });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Right}, [this] {
     ++pendingPageSwitch;
     requestUpdate();
-  }
-  if (mappedInput.isPressed(MappedInputManager::Button::Left) &&
-      holdLeft.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Left), LONG_PRESS_MS)) {
+  });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Left}, [this] {
     --pendingPageSwitch;
     requestUpdate();
-  }
+  });
   if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
       holdBack.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Back), LONG_PRESS_MS)) {
     pendingSearch = true;
@@ -1008,9 +1006,9 @@ void RecentBooksActivity::processAllSearchStep() {
     return;
   }
 
-  std::vector<size_t> sourceIndices;
-  sourceIndices.reserve(SEARCH_RECORDS_PER_STEP);
-  while (sourceIndices.size() < SEARCH_RECORDS_PER_STEP) {
+  std::array<size_t, SEARCH_RECORDS_PER_STEP> sourceIndices{};
+  size_t sourceCount = 0;
+  while (sourceCount < sourceIndices.size()) {
     size_t source = static_cast<size_t>(-1);
     if (allSearchJob.pinnedCursor < pinnedSourceIndices.size()) {
       source = pinnedSourceIndices[allSearchJob.pinnedCursor++];
@@ -1024,12 +1022,13 @@ void RecentBooksActivity::processAllSearchStep() {
       }
     }
     if (source == static_cast<size_t>(-1)) break;
-    sourceIndices.push_back(source);
+    sourceIndices[sourceCount++] = source;
   }
-  if (sourceIndices.empty()) {
+  if (sourceCount == 0) {
     allSearchJob.running = false;
   }
-  if (allSearchJob.running && !LIBRARY_CATALOG.loadRecords(sourceIndices, allSearchJob.batch)) {
+  if (allSearchJob.running &&
+      !LIBRARY_CATALOG.loadRecords(std::span<const size_t>(sourceIndices).first(sourceCount), allSearchJob.batch)) {
     cancelAllSearch();
     if (refreshStorageAvailability()) {
       popupMessage = StrId::STR_ERROR_GENERAL_FAILURE;
@@ -1485,41 +1484,42 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
   std::vector<std::string> options = {RECENT_BOOKS.isPinned(selected.path) ? tr(STR_UNPIN_BOOK) : tr(STR_PIN_BOOK)};
   if (!allTab() && inRecent) options.push_back(tr(STR_REMOVE_FROM_RECENTS));
   options.push_back(tr(STR_DELETE));
-  optionPopup.show(StrId::STR_BOOK_ACTIONS, options, 0, [this, visibleIndex, selected, inRecent](const int option) {
-    if (option == 0) {
-      rememberedBookIndex[tabIndex()] = visibleIndex;
-      rememberedBookPath[tabIndex()] = selected.path;
-      const auto result = RECENT_BOOKS.togglePin(selected.path);
-      popupMessage = result == RecentBooksStore::PinResult::Pinned         ? StrId::STR_BOOK_PINNED
-                     : result == RecentBooksStore::PinResult::Unpinned     ? StrId::STR_BOOK_UNPINNED
-                     : result == RecentBooksStore::PinResult::LimitReached ? StrId::STR_PIN_LIMIT_REACHED
-                                                                           : StrId::STR_ERROR_GENERAL_FAILURE;
-      popupTime = millis();
-      if (!allTab()) {
-        rememberedBookIndex[tabIndex()] = visibleIndex;
-        rememberedBookPath[tabIndex()] = selected.path;
-      }
-      const bool rebuildSearch = !allTab() && searchActive[tabIndex()];
-      const std::string activeQuery = rebuildSearch ? searchQuery[tabIndex()] : std::string{};
-      loadRecentBooks();
-      if (rebuildSearch) applySearch(activeQuery);
-      if (allTab()) {
-        rebuildPinnedProjection();
-        // Pinning changes the visible order without changing the catalog
-        // generation. Drop the cached page and cover queue so the next frame
-        // cannot open/render the previous order.
-        invalidateRenderPage();
-        resetCoverQueue();
-      }
-      rememberedBookPath[tabIndex()] = selected.path;
-      restoreRememberedBook(true);
-      requestUpdate();
-    } else if (!allTab() && inRecent && option == 1) {
-      promptRemoveBook(selected.path, selected.title);
-    } else {
-      promptDeleteBook(visibleIndex, selected.path, selected.title);
-    }
-  });
+  optionPopup.show(
+      StrId::STR_BOOK_ACTIONS, std::move(options), 0, [this, visibleIndex, selected, inRecent](const int option) {
+        if (option == 0) {
+          rememberedBookIndex[tabIndex()] = visibleIndex;
+          rememberedBookPath[tabIndex()] = selected.path;
+          const auto result = RECENT_BOOKS.togglePin(selected.path);
+          popupMessage = result == RecentBooksStore::PinResult::Pinned         ? StrId::STR_BOOK_PINNED
+                         : result == RecentBooksStore::PinResult::Unpinned     ? StrId::STR_BOOK_UNPINNED
+                         : result == RecentBooksStore::PinResult::LimitReached ? StrId::STR_PIN_LIMIT_REACHED
+                                                                               : StrId::STR_ERROR_GENERAL_FAILURE;
+          popupTime = millis();
+          if (!allTab()) {
+            rememberedBookIndex[tabIndex()] = visibleIndex;
+            rememberedBookPath[tabIndex()] = selected.path;
+          }
+          const bool rebuildSearch = !allTab() && searchActive[tabIndex()];
+          const std::string activeQuery = rebuildSearch ? searchQuery[tabIndex()] : std::string{};
+          loadRecentBooks();
+          if (rebuildSearch) applySearch(activeQuery);
+          if (allTab()) {
+            rebuildPinnedProjection();
+            // Pinning changes the visible order without changing the catalog
+            // generation. Drop the cached page and cover queue so the next frame
+            // cannot open/render the previous order.
+            invalidateRenderPage();
+            resetCoverQueue();
+          }
+          rememberedBookPath[tabIndex()] = selected.path;
+          restoreRememberedBook(true);
+          requestUpdate();
+        } else if (!allTab() && inRecent && option == 1) {
+          promptRemoveBook(selected.path, selected.title);
+        } else {
+          promptDeleteBook(visibleIndex, selected.path, selected.title);
+        }
+      });
   requestUpdate();
 }
 
@@ -1615,8 +1615,8 @@ void RecentBooksActivity::render(RenderLock&&) {
                  pageLabel[0] == '\0' ? nullptr : pageLabel);
 
   const int tabY = metrics.topPadding + metrics.headerHeight;
-  const std::vector<TabInfo> tabs = {{tr(STR_LIBRARY_RECENT_TAB), tab == Tab::Recent},
-                                     {tr(STR_LIBRARY_ALL_TAB), tab == Tab::All}};
+  const std::array<TabInfo, 2> tabs = {
+      {{tr(STR_LIBRARY_RECENT_TAB), tab == Tab::Recent}, {tr(STR_LIBRARY_ALL_TAB), tab == Tab::All}}};
   GUI.drawTabBar(renderer, Rect{0, tabY, pageWidth, metrics.tabBarHeight}, tabs, tabSelected());
 
   const Rect content = contentRect();

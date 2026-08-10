@@ -63,7 +63,7 @@ std::vector<uint8_t> crossInkV2(const uint8_t flags = 0x07, const uint16_t secon
 
 PerBookReaderSettings globalDefaults() {
   PerBookReaderSettings settings;
-  settings.fontFamily = 1;
+  settings.fontFamily = 0;
   settings.fontSize = 3;
   settings.lineSpacing = 0;
   settings.orientation = 1;

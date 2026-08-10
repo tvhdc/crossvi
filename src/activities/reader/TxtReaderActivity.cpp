@@ -455,8 +455,16 @@ bool TxtReaderActivity::buildPageIndex() {
     return true;
   }
 
+  HalFile contentFile;
+  if (!Storage.openFileForRead("TRS", txt->getPath(), contentFile)) return false;
+  auto pageBuffer = makeUniqueNoThrow<uint8_t[]>(CHUNK_SIZE + 1);
+  if (!pageBuffer) {
+    LOG_ERR("TRS", "Failed to allocate %zu-byte TXT indexing buffer", CHUNK_SIZE + 1);
+    return false;
+  }
+
   uint8_t prefix[3] = {};
-  if (fileSize == sizeof(prefix) && txt->readContent(prefix, 0, sizeof(prefix)) &&
+  if (fileSize == sizeof(prefix) && txt->readContent(contentFile, prefix, 0, sizeof(prefix)) &&
       TxtLineWrap::leadingUtf8BomBytes(prefix, sizeof(prefix)) != 0) {
     totalPages = 0;
     return true;
@@ -477,7 +485,8 @@ bool TxtReaderActivity::buildPageIndex() {
   while (offset < fileSize) {
     size_t nextOffset = offset;
 
-    if (!loadPageAtOffset(offset, tempLines, nextOffset)) {
+    if (!loadPageAtOffsetWithScratch(offset, tempLines, nextOffset, nullptr, contentFile, pageBuffer.get(),
+                                     CHUNK_SIZE + 1)) {
       break;
     }
 
@@ -523,6 +532,21 @@ bool TxtReaderActivity::appendPageOffset(const uint32_t offset) {
 
 bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
                                          std::vector<uint32_t>* outLineOffsets) {
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(CHUNK_SIZE + 1);
+  if (!buffer) {
+    LOG_ERR("TRS", "Failed to allocate %zu bytes", CHUNK_SIZE + 1);
+    return false;
+  }
+  HalFile contentFile;
+  if (!Storage.openFileForRead("TRS", txt->getPath(), contentFile)) return false;
+  return loadPageAtOffsetWithScratch(offset, outLines, nextOffset, outLineOffsets, contentFile, buffer.get(),
+                                     CHUNK_SIZE + 1);
+}
+
+bool TxtReaderActivity::loadPageAtOffsetWithScratch(size_t offset, std::vector<std::string>& outLines,
+                                                    size_t& nextOffset, std::vector<uint32_t>* outLineOffsets,
+                                                    HalFile& contentFile, uint8_t* buffer,
+                                                    const size_t bufferCapacity) {
   outLines.clear();
   if (outLineOffsets) outLineOffsets->clear();
   const size_t fileSize = txt->getFileSize();
@@ -531,18 +555,10 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
     return false;
   }
 
-  // Read a chunk from file
-  size_t chunkSize = std::min(CHUNK_SIZE, fileSize - offset);
-  auto* buffer = static_cast<uint8_t*>(malloc(chunkSize + 1));
-  if (!buffer) {
-    LOG_ERR("TRS", "Failed to allocate %zu bytes", chunkSize);
-    return false;
-  }
+  const size_t chunkSize = std::min(CHUNK_SIZE, fileSize - offset);
+  if (!buffer || bufferCapacity < chunkSize + 1) return false;
 
-  if (!txt->readContent(buffer, offset, chunkSize)) {
-    free(buffer);
-    return false;
-  }
+  if (!txt->readContent(contentFile, buffer, offset, chunkSize)) return false;
   buffer[chunkSize] = '\0';
 
   // Prime the SD card font's advance table with this chunk's codepoints.
@@ -587,6 +603,11 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
                                     renderer.hasSdCardAdvanceTable(cachedFontId) &&
                                     TxtLineWrap::isMonotonicLtrText(line);
 
+    // Reuse one prefix string while probing wrap points. Constructing a new
+    // line.substr() for every candidate creates avoidable heap churn while
+    // indexing long TXT/Markdown files.
+    std::string measuredPrefix;
+
     // Track position within this source line (in bytes from pos)
     size_t lineBytePos = 0;
 
@@ -628,8 +649,12 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
       // defensive case where even the first codepoint does not fit.
       if (breakPos == 0) {
         breakPos = line.length();
-        while (breakPos > 0 && renderer.getTextAdvanceX(cachedFontId, line.substr(0, breakPos).c_str(),
-                                                        EpdFontFamily::REGULAR) > viewportWidth) {
+        measuredPrefix.assign(line);
+        while (breakPos > 0) {
+          measuredPrefix.resize(breakPos);
+          if (renderer.getTextAdvanceX(cachedFontId, measuredPrefix.c_str(), EpdFontFamily::REGULAR) <= viewportWidth) {
+            break;
+          }
           // Try to break at space
           size_t spacePos = line.rfind(' ', breakPos - 1);
           if (spacePos != std::string::npos && spacePos > 0) {
@@ -688,14 +713,16 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
     nextOffset = fileSize;
   }
 
-  free(buffer);
-
   return !outLines.empty();
 }
 
 std::unique_ptr<Page> TxtReaderActivity::buildInteractivePage(const uint16_t pageIndex,
                                                               std::vector<TextWordAnchor>* anchors) {
   if (!txt || static_cast<size_t>(pageIndex) >= pageOffsetCount) return {};
+  if (currentPage >= 0 && pageIndex == static_cast<uint16_t>(currentPage) &&
+      lastSuccessfullyRenderedPage == currentPage && currentPageLines.size() == currentPageLineOffsets.size()) {
+    return buildInteractivePageFromLines(currentPageLines, currentPageLineOffsets, anchors);
+  }
   std::vector<std::string> lines;
   std::vector<uint32_t> lineOffsets;
   size_t nextOffset = 0;
@@ -734,12 +761,11 @@ std::unique_ptr<Page> TxtReaderActivity::buildInteractivePageFromLines(const std
         (effectiveAlignment == CrossPointSettings::LEFT_ALIGN || effectiveAlignment == CrossPointSettings::JUSTIFIED)) {
       effectiveAlignment = CrossPointSettings::RIGHT_ALIGN;
     }
-    const int textWidth = renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
     int lineX = cachedOrientedMarginLeft;
     if (effectiveAlignment == CrossPointSettings::CENTER_ALIGN) {
-      lineX += (viewportWidth - textWidth) / 2;
+      lineX += (viewportWidth - renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR)) / 2;
     } else if (effectiveAlignment == CrossPointSettings::RIGHT_ALIGN) {
-      lineX += viewportWidth - textWidth;
+      lineX += viewportWidth - renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
     }
 
     std::vector<int16_t> positions(words.size());
@@ -754,9 +780,14 @@ std::unique_ptr<Page> TxtReaderActivity::buildInteractivePageFromLines(const std
             renderer.getTextAdvanceX(cachedFontId, words[wordIndex].c_str(), EpdFontFamily::REGULAR) + spaceWidth;
       }
     } else {
+      std::string prefix = line;
       for (size_t index = 0; index < words.size(); ++index) {
-        positions[index] = static_cast<int16_t>(renderer.getTextAdvanceX(
-            cachedFontId, line.substr(0, ranges[index].first).c_str(), EpdFontFamily::REGULAR));
+        const size_t prefixLength = ranges[index].first;
+        const char next = prefix[prefixLength];
+        prefix[prefixLength] = '\0';
+        positions[index] = static_cast<int16_t>(
+            renderer.getTextAdvanceX(cachedFontId, prefix.c_str(), EpdFontFamily::REGULAR));
+        prefix[prefixLength] = next;
       }
     }
 
@@ -915,7 +946,13 @@ void TxtReaderActivity::renderCurrentPage() {
   renderPage();
 }
 
-void TxtReaderActivity::prewarmCurrentPageFont() { renderCurrentPageLines(); }
+void TxtReaderActivity::prewarmCurrentPageFont() {
+  // Scan mode ignores coordinates and only records text. Avoid repeating the
+  // RTL and alignment measurements performed by the real render pass.
+  for (const auto& line : currentPageLines) {
+    if (!line.empty()) renderer.drawText(cachedFontId, 0, 0, line.c_str());
+  }
+}
 
 void TxtReaderActivity::renderCurrentPageLines() const {
   const int contentWidth = viewportWidth;
@@ -929,17 +966,17 @@ void TxtReaderActivity::renderCurrentPageLines() const {
                         effectiveAlignment == CrossPointSettings::JUSTIFIED)) {
         effectiveAlignment = CrossPointSettings::RIGHT_ALIGN;
       }
-      const int textWidth = renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
-
       switch (effectiveAlignment) {
         case CrossPointSettings::LEFT_ALIGN:
         default:
           break;
         case CrossPointSettings::CENTER_ALIGN:
-          x = cachedOrientedMarginLeft + (contentWidth - textWidth) / 2;
+          x = cachedOrientedMarginLeft +
+              (contentWidth - renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR)) / 2;
           break;
         case CrossPointSettings::RIGHT_ALIGN:
-          x = cachedOrientedMarginLeft + contentWidth - textWidth;
+          x = cachedOrientedMarginLeft + contentWidth -
+              renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
           break;
         case CrossPointSettings::JUSTIFIED:
           break;
@@ -953,7 +990,20 @@ void TxtReaderActivity::renderCurrentPageLines() const {
 
 void TxtReaderActivity::renderPage() {
   ClippingPageTools::HighlightPlan clippingHighlights;
-  if (clippingStore.isLoaded() && clippingStore.size() > 0) {
+  const uint32_t pageStart =
+      currentPage >= 0 && static_cast<size_t>(currentPage) < pageOffsetCount ? pageOffsets[currentPage] : 0;
+  const uint32_t pageEnd = currentPage >= 0 && static_cast<size_t>(currentPage + 1) < pageOffsetCount
+                               ? pageOffsets[currentPage + 1]
+                               : static_cast<uint32_t>(txt->getFileSize());
+  const bool pageHasHighlight = clippingStore.isLoaded() && pageStart < pageEnd &&
+                                std::any_of(
+                                    clippingStore.entries().begin(), clippingStore.entries().end(),
+                                    [&](const auto& clipping) {
+                                      return clipping.hasTextAnchor &&
+                                             clipping.textSourceStart < clipping.textSourceEnd &&
+                                             clipping.textSourceStart < pageEnd && pageStart < clipping.textSourceEnd;
+                                    });
+  if (pageHasHighlight) {
     std::vector<TextWordAnchor> anchors;
     const auto interactivePage = buildInteractivePageFromLines(currentPageLines, currentPageLineOffsets, &anchors);
     if (interactivePage) {

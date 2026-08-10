@@ -107,6 +107,7 @@ class XtcParser {
   // Internal helper functions
   XtcError readHeader();
   XtcError readMetadata();
+  XtcError validateChapters();
   XtcError readChapters();
   XtcError validatePageTable();
   XtcError validatePageEntry(uint32_t pageIndex, PageInfo* info = nullptr);

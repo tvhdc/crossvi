@@ -317,10 +317,13 @@ bool isExactPayload(const LoadOutcome& outcome, const GlobalReadingStats& stats,
   return outcome.result == ReadingStatsDecodeResult::Ok && ReadingStatsCodec::encode(stats) == expected;
 }
 
-bool storageAllowsPublish() {
+bool storageAllowsPublish(bool* rotatePrimary = nullptr) {
+  if (rotatePrimary) *rotatePrimary = false;
   if (scanForNewerGlobalCanonicalFile() != ReadingStatsVersionGuard::Result::NoNewerFile) return false;
   GlobalReadingStats ignored;
-  return !isProtected(loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, ignored)) &&
+  const LoadOutcome primary = loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, ignored);
+  if (rotatePrimary) *rotatePrimary = primary.result == ReadingStatsDecodeResult::Ok;
+  return !isProtected(primary) &&
          !isProtected(loadEnvelopePath(GLOBAL_STATS_BACKUP_PATH, ReadingStatsEnvelope::Kind::Global, ignored)) &&
          !isProtected(loadEnvelopePath(GLOBAL_STATS_TEMP_PATH, ReadingStatsEnvelope::Kind::Global, ignored));
 }
@@ -533,20 +536,14 @@ bool GlobalReadingStats::save() const {
     LOG_ERR(LOG_TAG, "Refusing to overwrite a pending completion transaction");
     return false;
   }
-  if (!storageAllowsPublish()) {
+  bool rotatePrimary = false;
+  if (!storageAllowsPublish(&rotatePrimary)) {
     LOG_ERR(LOG_TAG, "Refusing to shadow protected global stats storage");
-    return false;
-  }
-  GlobalReadingStats existing;
-  const LoadOutcome primary = loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, existing);
-  if (isProtected(primary)) {
-    LOG_ERR(LOG_TAG, "Refusing to overwrite unreadable or newer global stats");
     return false;
   }
 
   const ReadingStatsCodec::GlobalBytes data = ReadingStatsCodec::encode(*this);
-  if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_PATH, GLOBAL_STATS_BACKUP_PATH,
-                                         primary.result == ReadingStatsDecodeResult::Ok,
+  if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_PATH, GLOBAL_STATS_BACKUP_PATH, rotatePrimary,
                                          ReadingStatsEnvelope::Kind::Global, data.data(), data.size())) {
     return false;
   }

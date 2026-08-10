@@ -6,8 +6,10 @@
 #include <JsonSettingsIO.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <memory>
+#include <span>
 #include <utility>
 
 #include "BookSavedItemsNavigation.h"
@@ -332,12 +334,22 @@ void BookSavedItemsActivity::loop() {
     }
     return;
   }
-  navigator_.onNext([this] {
+  navigator_.onNextPress([this] {
     if (moveSelectionNext()) requestUpdate();
   });
-  navigator_.onPrevious([this] {
+  navigator_.onPreviousPress([this] {
     if (moveSelectionPrevious()) requestUpdate();
   });
+  navigator_.onContinuous({MappedInputManager::Button::Right}, [this] {
+    if (moveSelectionNext()) requestUpdate();
+  });
+  navigator_.onContinuous({MappedInputManager::Button::Left}, [this] {
+    if (moveSelectionPrevious()) requestUpdate();
+  });
+  if (tabCount() > 1) {
+    navigator_.onContinuous({MappedInputManager::Button::Down}, [this] { changeTab(1); });
+    navigator_.onContinuous({MappedInputManager::Button::Up}, [this] { changeTab(-1); });
+  }
 }
 
 std::string BookSavedItemsActivity::rowTitle(const int index) const {
@@ -390,14 +402,6 @@ UIIcon BookSavedItemsActivity::rowIcon(const int index) const {
                                                                                         : UIIcon::Text;
 }
 
-std::vector<TabInfo> BookSavedItemsActivity::tabs() const {
-  if (readerKind_ == ReaderKind::FixedLayout) return {{tr(STR_BOOKMARKS), true}};
-  std::vector<TabInfo> result{{tr(STR_ALL), tab_ == BookSavedItemsModel::Tab::All},
-                              {tr(STR_BOOKMARKS), tab_ == BookSavedItemsModel::Tab::Bookmarks}};
-  result.push_back({tr(STR_HIGHLIGHTS), tab_ == BookSavedItemsModel::Tab::Highlights});
-  return result;
-}
-
 void BookSavedItemsActivity::render(RenderLock&&) {
   renderer.clearScreen();
   const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
@@ -405,9 +409,15 @@ void BookSavedItemsActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
                  bookTitle_.empty() ? tr(STR_BOOKMARKS_AND_HIGHLIGHTS) : bookTitle_.c_str());
 
-  const std::vector<TabInfo> tabItems = tabs();
+  const std::array<TabInfo, 3> tabItems = {
+      {{tr(STR_ALL), tab_ == BookSavedItemsModel::Tab::All},
+       {tr(STR_BOOKMARKS), readerKind_ == ReaderKind::FixedLayout || tab_ == BookSavedItemsModel::Tab::Bookmarks},
+       {tr(STR_HIGHLIGHTS), tab_ == BookSavedItemsModel::Tab::Highlights}}};
+  const std::span<const TabInfo> visibleTabs = readerKind_ == ReaderKind::FixedLayout
+                                                   ? std::span<const TabInfo>(&tabItems[1], 1)
+                                                   : std::span<const TabInfo>(tabItems);
   const int tabY = screen.y + metrics.topPadding + metrics.headerHeight;
-  GUI.drawTabBar(renderer, Rect{screen.x, tabY, screen.width, metrics.tabBarHeight}, tabItems, tabFocused_);
+  GUI.drawTabBar(renderer, Rect{screen.x, tabY, screen.width, metrics.tabBarHeight}, visibleTabs, tabFocused_);
   const int contentTop = tabY + metrics.tabBarHeight + metrics.verticalSpacing;
   const int helpHeight = metrics.listRowHeight;
   const int contentBottom = screen.y + screen.height - helpHeight - metrics.verticalSpacing;

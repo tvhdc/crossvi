@@ -6,8 +6,8 @@
 
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
-#include "activities/reader/ReaderUtils.h"
 #include "components/LibraryGridModel.h"
+#include "util/ButtonNavigator.h"
 
 class BookStatsSelectionActivity final : public Activity {
  public:
@@ -21,8 +21,6 @@ class BookStatsSelectionActivity final : public Activity {
   bool handleGlobalShortcut(GlobalShortcut shortcut) override { return handleSafeGlobalShortcut(shortcut); }
 
  private:
-  static constexpr unsigned long LONG_PRESS_MS = 500;
-
   struct RenderState {
     size_t visibleCount = 0;
     size_t selectedIndex = 0;
@@ -45,7 +43,6 @@ class BookStatsSelectionActivity final : public Activity {
   std::string selectedPath_;
   size_t selectedIndex_ = 0;
   size_t pageSize_ = 1;
-  ReaderUtils::HoldGestureState holdLeft_;
-  ReaderUtils::HoldGestureState holdRight_;
+  ButtonNavigator navigator_;
   bool suppressInitialConfirmRelease_ = false;
 };

@@ -58,7 +58,7 @@ bool digestFile(const char* path, Digest& digest) {
   if (!Storage.openFileForRead("STAGED", path, file)) return false;
   digest = {0, 2166136261U};
   const uint64_t fileSize = file.fileSize64();
-  std::array<uint8_t, 512> buffer{};
+  std::array<uint8_t, 512> buffer;
   uint64_t remaining = fileSize;
 #if defined(ARDUINO_ARCH_ESP32)
   size_t bytesSinceYield = 0;

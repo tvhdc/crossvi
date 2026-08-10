@@ -22,7 +22,7 @@ PerBookReaderSettings populatedSettings() {
   settings.autoPageTurnStartsOnOpen = true;
   settings.hasRenderModeOverride = true;
   settings.safeModeEnabled = true;
-  settings.fontFamily = 1;
+  settings.fontFamily = 0;
   settings.fontSize = 3;
   settings.lineSpacing = 2;
   settings.wordSpacing = 4;
@@ -78,6 +78,22 @@ TEST(PerBookReaderSettingsCodec, RoundTripsAllFields) {
   EXPECT_EQ(decoded, expected);
 }
 
+TEST(PerBookReaderSettingsCodec, CanonicalizesRemovedNotoSansWithoutRejectingLegacyFiles) {
+  auto legacy = populatedSettings();
+  Encoded encoded;
+  ASSERT_TRUE(encode(legacy, encoded));
+  encoded[PAYLOAD_OFFSET + 1] = 1;
+  refreshCrc(encoded);
+
+  PerBookReaderSettings decoded;
+  ASSERT_EQ(decode(encoded.data(), encoded.size(), decoded), DecodeStatus::OK);
+  EXPECT_EQ(decoded.fontFamily, 0);
+
+  legacy.fontFamily = 1;
+  ASSERT_TRUE(encode(legacy, encoded));
+  EXPECT_EQ(encoded[PAYLOAD_OFFSET + 1], 0);
+}
+
 TEST(PerBookReaderSettings, StoppingAutoTurnKeepsIntervalButDisablesRestart) {
   auto settings = populatedSettings();
 
@@ -100,7 +116,7 @@ TEST(PerBookReaderSettingsCodec, UsesStableExactByteLayout) {
   Encoded encoded;
   ASSERT_TRUE(encode(populatedSettings(), encoded));
 
-  const Encoded expected = {0x43, 0x56, 0x52, 0x53, 0x06, 0x31, 0x00, 0xAF, 0x2D, 0xB1, 0xF4, 0x1F, 0x01, 0x03, 0x02,
+  const Encoded expected = {0x43, 0x56, 0x52, 0x53, 0x06, 0x31, 0x00, 0x73, 0xC1, 0x00, 0xC9, 0x1F, 0x00, 0x03, 0x02,
                             0x04, 0x03, 0x28, 0x00, 0x01, 0x01, 0x00, 0x00, 0x02, 0x78, 0x4E, 0x6F, 0x74, 0x6F, 0x20,
                             0x53, 0x61, 0x6E, 0x73, 0x20, 0x56, 0x4E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04};

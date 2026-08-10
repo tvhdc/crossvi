@@ -14,7 +14,11 @@ void CrashActivity::onEnter() {
   if (panicMessage.empty()) {
     panicMessage = tr(STR_CRASH_NO_REASON);
   }
-  HalSystem::clearPanic();
+  // Keep the RTC copy when SD persistence failed so a second panic/reboot can
+  // retry instead of destroying the only complete report.
+  if (HalSystem::panicReportPersisted()) {
+    HalSystem::clearPanic();
+  }
 
   requestUpdateAndWait();
 }

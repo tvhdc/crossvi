@@ -52,7 +52,7 @@ bool parseReleaseMetadata(const ReleaseJsonParser::AssetVisitor visitor, void* c
 
   ReleaseJsonParser parser;
   parser.setAssetVisitor(visitor, context);
-  std::array<char, RELEASE_READ_CHUNK> buffer{};
+  std::array<char, RELEASE_READ_CHUNK> buffer;
   while (true) {
     const int read = file.read(buffer.data(), buffer.size());
     if (read <= 0) break;

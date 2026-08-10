@@ -13,6 +13,7 @@ void begin();
 
 // Dump panic info to SD card if necessary
 void checkPanic();
+bool panicReportPersisted();
 void clearPanic();
 
 std::string getPanicInfo(bool full = false);

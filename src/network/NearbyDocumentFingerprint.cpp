@@ -19,7 +19,7 @@ std::string calculateNearbyDocumentFingerprint(const std::string& path) {
 
   MD5Builder md5;
   md5.begin();
-  std::array<uint8_t, 2048> buffer{};
+  std::array<uint8_t, 2048> buffer;
   uint64_t totalRead = 0;
   size_t bytesSinceYield = 0;
   while (totalRead < expectedSize) {

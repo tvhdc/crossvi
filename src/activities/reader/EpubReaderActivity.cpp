@@ -3180,10 +3180,14 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !darkReaderPage;
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   const bool supportsGrayscale = renderer.supportsStripGrayscale();
+  const bool spineHasClipping =
+      clippingStore.isLoaded() &&
+      std::any_of(clippingStore.entries().begin(), clippingStore.entries().end(), [&](const auto& clipping) {
+        return clipping.spineIndex == static_cast<uint16_t>(currentSpineIndex);
+      });
   const uint32_t pageFingerprint =
-      clippingStore.isLoaded() && clippingStore.size() > 0
-          ? ClippingPageTools::fingerprint(*page, renderer, fontId, orientedMarginLeft, orientedMarginTop)
-          : 0;
+      spineHasClipping ? ClippingPageTools::fingerprint(*page, renderer, fontId, orientedMarginLeft, orientedMarginTop)
+                       : 0;
   if (pageFingerprintOut) *pageFingerprintOut = pageFingerprint;
   const ClippingPageTools::HighlightPlan clippingHighlights =
       pageFingerprint != 0 && section
@@ -3416,7 +3420,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   if (sameFile) {
     targetSpineIndex = currentSpineIndex;
   } else {
-    targetSpineIndex = epub->resolveHrefToSpineIndex(hrefStr);
+    targetSpineIndex = epub->resolveHrefToSpineIndex(hrefStr, currentSpineIndex);
   }
 
   if (targetSpineIndex < 0) {

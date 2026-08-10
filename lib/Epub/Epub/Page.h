@@ -11,6 +11,9 @@
 #include "blocks/TextBlock.h"
 
 class BoundedFileReader;
+namespace serialization {
+class BufferedFileWriter;
+}
 
 enum PageElementTag : uint8_t {
   TAG_PageLine = 1,
@@ -26,7 +29,7 @@ class PageElement {
   explicit PageElement(const int16_t xPos, const int16_t yPos) : xPos(xPos), yPos(yPos) {}
   virtual ~PageElement() = default;
   virtual void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) = 0;
-  virtual bool serialize(HalFile& file) = 0;
+  virtual bool serialize(serialization::BufferedFileWriter& file) = 0;
   virtual PageElementTag getTag() const = 0;  // Add type identification
 };
 
@@ -39,7 +42,7 @@ class PageLine final : public PageElement {
       : PageElement(xPos, yPos), block(std::move(block)) {}
   const std::shared_ptr<TextBlock>& getBlock() const { return block; }
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
-  bool serialize(HalFile& file) override;
+  bool serialize(serialization::BufferedFileWriter& file) override;
   PageElementTag getTag() const override { return TAG_PageLine; }
   static std::unique_ptr<PageLine> deserialize(BoundedFileReader& reader);
 };
@@ -52,8 +55,10 @@ class PageImage final : public PageElement {
   PageImage(std::shared_ptr<ImageBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
+  void renderWithScratch(GfxRenderer& renderer, int xOffset, int yOffset, std::unique_ptr<uint8_t[]>& readBuffer,
+                         size_t& readBufferCapacity);
   void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset) const;
-  bool serialize(HalFile& file) override;
+  bool serialize(serialization::BufferedFileWriter& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
   static std::unique_ptr<PageImage> deserialize(BoundedFileReader& reader);
   const ImageBlock& getImageBlock() const { return *imageBlock; }
@@ -68,12 +73,15 @@ class PageHorizontalRule final : public PageElement {
       : PageElement(xPos, yPos), width(width), thickness(thickness) {}
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
-  bool serialize(HalFile& file) override;
+  bool serialize(serialization::BufferedFileWriter& file) override;
   PageElementTag getTag() const override { return TAG_PageHorizontalRule; }
   static std::unique_ptr<PageHorizontalRule> deserialize(BoundedFileReader& reader);
 };
 
 class Page {
+  mutable std::unique_ptr<uint8_t[]> imageReadBuffer;
+  mutable size_t imageReadBufferCapacity = 0;
+
  public:
   // the list of block index and line numbers on this page
   std::vector<std::shared_ptr<PageElement>> elements;
@@ -93,7 +101,7 @@ class Page {
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
-  bool serialize(HalFile& file) const;
+  bool serialize(HalFile& file, uint8_t* scratchBuffer = nullptr, size_t scratchCapacity = 0) const;
   static std::unique_ptr<Page> deserialize(BoundedFileReader& reader);
 
   // Check if page contains any images (used to force full refresh)

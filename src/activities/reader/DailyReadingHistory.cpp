@@ -48,9 +48,10 @@ void writeLe32(uint8_t* data, const size_t offset, const uint32_t value) {
 enum class PathStatus : uint8_t { Missing, Valid, Invalid, NewerVersion, IoError };
 
 PathStatus readPath(const char* path, DailyReadingHistory* history = nullptr) {
-  if (!Storage.exists(path)) return PathStatus::Missing;
   HalFile file;
-  if (!Storage.openFileForRead(LOG_TAG, path, file)) return PathStatus::IoError;
+  if (!Storage.openFileForRead(LOG_TAG, path, file)) {
+    return Storage.exists(path) ? PathStatus::IoError : PathStatus::Missing;
+  }
 
   const size_t fileSize = file.fileSize();
   std::array<uint8_t, HEADER_SIZE> header{};

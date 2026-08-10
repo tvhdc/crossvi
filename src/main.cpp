@@ -78,31 +78,6 @@ EpdFont notoserif18BoldItalicFont(&notoserif_18_bolditalic);
 EpdFontFamily notoserif18FontFamily(&notoserif18RegularFont, &notoserif18BoldFont, &notoserif18ItalicFont,
                                     &notoserif18BoldItalicFont);
 
-EpdFont notosans12RegularFont(&notosans_12_regular);
-EpdFont notosans12BoldFont(&notosans_12_bold);
-EpdFont notosans12ItalicFont(&notosans_12_italic);
-EpdFont notosans12BoldItalicFont(&notosans_12_bolditalic);
-EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
-                                   &notosans12BoldItalicFont);
-EpdFont notosans14RegularFont(&notosans_14_regular);
-EpdFont notosans14BoldFont(&notosans_14_bold);
-EpdFont notosans14ItalicFont(&notosans_14_italic);
-EpdFont notosans14BoldItalicFont(&notosans_14_bolditalic);
-EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
-                                   &notosans14BoldItalicFont);
-EpdFont notosans16RegularFont(&notosans_16_regular);
-EpdFont notosans16BoldFont(&notosans_16_bold);
-EpdFont notosans16ItalicFont(&notosans_16_italic);
-EpdFont notosans16BoldItalicFont(&notosans_16_bolditalic);
-EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
-                                   &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&notosans_18_regular);
-EpdFont notosans18BoldFont(&notosans_18_bold);
-EpdFont notosans18ItalicFont(&notosans_18_italic);
-EpdFont notosans18BoldItalicFont(&notosans_18_bolditalic);
-EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
-                                   &notosans18BoldItalicFont);
-
 #endif  // OMIT_FONTS
 
 EpdFont smallFont(&notosans_8_regular);
@@ -133,7 +108,7 @@ constexpr unsigned long BOOT_CHORD_SETTLE_MS = 40;
 // A normal power-button wake deliberately pays for the strongest X3 cleanup.
 // Other controllers ignore the extra conditioning count but still honor the
 // explicit full refresh used by the boot/resume frame.
-constexpr uint8_t WAKE_CONDITION_PASSES = 2;
+constexpr uint8_t WAKE_CONDITION_PASSES = 1;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and retain a matching saved panel frame; a plain
@@ -331,10 +306,6 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(NOTOSERIF_16_FONT_ID, notoserif16FontFamily);
   renderer.insertFont(NOTOSERIF_18_FONT_ID, notoserif18FontFamily);
 
-  renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
-  renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
-  renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
-  renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
 #endif  // OMIT_FONTS
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
@@ -626,15 +597,26 @@ extern "C" bool verifyRollbackLater() { return true; }
 namespace {
 void markOtaValidOnceHealthy() {
   static bool done = false;
-  if (done || millis() < 10000) return;
-  done = true;
+  static unsigned long lastAttempt = 0;
+  const unsigned long now = millis();
+  if (done || now < 10000 || (lastAttempt != 0 && now - lastAttempt < 1000)) return;
+  lastAttempt = now;
 
   const esp_partition_t* running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
-  if (esp_ota_get_state_partition(running, &state) != ESP_OK || state != ESP_OTA_IMG_PENDING_VERIFY) return;
+  const esp_err_t stateResult = running ? esp_ota_get_state_partition(running, &state) : ESP_ERR_NOT_FOUND;
+  if (stateResult != ESP_OK) {
+    LOG_ERR("OTA", "Could not read running image state: %s", esp_err_to_name(stateResult));
+    return;
+  }
+  if (state != ESP_OTA_IMG_PENDING_VERIFY) {
+    done = true;
+    return;
+  }
 
   const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
   if (result == ESP_OK) {
+    done = true;
     LOG_INF("OTA", "Image marked valid after healthy boot");
   } else {
     LOG_ERR("OTA", "Could not mark image valid: %s", esp_err_to_name(result));
@@ -653,8 +635,7 @@ void loop() {
 
   gpio.update();
   const bool readerVisible = activityManager.isReaderActivity();
-  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, readerVisible, readerVisible && !RenderLock::peek(),
-                       activityManager.getCompletedRenderGeneration());
+  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, readerVisible);
 
   renderer.setFadingFix(SETTINGS.fadingFix);
 

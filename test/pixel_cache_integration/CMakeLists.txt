@@ -7,6 +7,7 @@ target_include_directories(PixelCacheIntegrationTest BEFORE PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${CMAKE_CURRENT_SOURCE_DIR}/../epub_source_identity/stubs
   ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/Serialization
 )
 

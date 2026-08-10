@@ -190,6 +190,7 @@ class SettingsActivity final : public Activity {
   int pendingNavigation = 0;
   ReaderUtils::HoldGestureState holdUp;
   ReaderUtils::HoldGestureState holdDown;
+  ButtonNavigator buttonNavigator;
 
   // Per-category settings derived from shared list + device-only actions
   std::vector<SettingInfo> displaySettings;

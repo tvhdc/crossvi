@@ -246,12 +246,16 @@ bool WifiCredentialStore::hasSavedCredential(const std::string& ssid) const {
 void WifiCredentialStore::setLastConnectedSsid(const std::string& ssid) {
   if (ssid.size() > MAX_SSID_LENGTH) return;
   std::lock_guard<std::mutex> persistenceLock(persistenceMutex);
+  std::string previousLastConnectedSsid;
   {
     std::lock_guard<std::mutex> lock(credentialMutex);
     if (lastConnectedSsid == ssid) return;
+    previousLastConnectedSsid = std::move(lastConnectedSsid);
     lastConnectedSsid = ssid;
   }
   if (!PersistableStore<WifiCredentialStore>::saveToFile()) {
+    std::lock_guard<std::mutex> lock(credentialMutex);
+    lastConnectedSsid = std::move(previousLastConnectedSsid);
     LOG_ERR("WCS", "Failed to persist last connected SSID");
   }
 }
@@ -263,24 +267,35 @@ std::string WifiCredentialStore::getLastConnectedSsid() const {
 
 void WifiCredentialStore::clearLastConnectedSsid() {
   std::lock_guard<std::mutex> persistenceLock(persistenceMutex);
+  std::string previousLastConnectedSsid;
   {
     std::lock_guard<std::mutex> lock(credentialMutex);
     if (lastConnectedSsid.empty()) return;
+    previousLastConnectedSsid = std::move(lastConnectedSsid);
     lastConnectedSsid.clear();
   }
   if (!PersistableStore<WifiCredentialStore>::saveToFile()) {
+    std::lock_guard<std::mutex> lock(credentialMutex);
+    lastConnectedSsid = std::move(previousLastConnectedSsid);
     LOG_ERR("WCS", "Failed to clear last connected SSID");
   }
 }
 
 void WifiCredentialStore::clearAll() {
   std::lock_guard<std::mutex> persistenceLock(persistenceMutex);
+  std::vector<WifiCredential> previousCredentials;
+  std::string previousLastConnectedSsid;
   {
     std::lock_guard<std::mutex> lock(credentialMutex);
+    previousCredentials = std::move(credentials);
+    previousLastConnectedSsid = std::move(lastConnectedSsid);
     credentials.clear();
     lastConnectedSsid.clear();
   }
   if (!PersistableStore<WifiCredentialStore>::saveToFile()) {
+    std::lock_guard<std::mutex> lock(credentialMutex);
+    credentials = std::move(previousCredentials);
+    lastConnectedSsid = std::move(previousLastConnectedSsid);
     LOG_ERR("WCS", "Failed to clear WiFi credentials");
     return;
   }

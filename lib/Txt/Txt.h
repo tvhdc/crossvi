@@ -38,4 +38,5 @@ class Txt {
 
   // Read content from file
   [[nodiscard]] bool readContent(uint8_t* buffer, size_t offset, size_t length) const;
+  [[nodiscard]] bool readContent(HalFile& file, uint8_t* buffer, size_t offset, size_t length) const;
 };

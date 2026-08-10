@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 #include "CrossPointSettings.h"
 #include "RecentBooksStore.h"
@@ -93,6 +94,8 @@ struct OrderWorkEntry {
 
 #pragma pack(pop)
 
+using OrderSeenSet = std::array<uint8_t, (LibraryCatalogStore::MAX_BOOKS + 7) / 8>;
+
 uint32_t crc32(const void* data, const size_t size) {
   uint32_t crc = 0xFFFFFFFFU;
   const auto* bytes = static_cast<const uint8_t*>(data);
@@ -110,6 +113,16 @@ uint32_t crc32Update(uint32_t crc, const void* data, const size_t size) {
     for (uint8_t bit = 0; bit < 8; ++bit) crc = (crc >> 1U) ^ (0xEDB88320U & (0U - (crc & 1U)));
   }
   return crc;
+}
+
+bool validateOrderEntry(const OrderEntry& entry, const uint32_t count, OrderSeenSet& seen, uint32_t& crc) {
+  if (entry.index >= count || entry.format > static_cast<uint8_t>(LibraryBookFormat::Xtch)) return false;
+  const uint8_t mask = static_cast<uint8_t>(1U << (entry.index & 7U));
+  uint8_t& byte = seen[entry.index >> 3U];
+  if ((byte & mask) != 0) return false;
+  byte |= mask;
+  crc = crc32Update(crc, &entry, sizeof(entry));
+  return true;
 }
 
 uint32_t readTimestamp(HalFile& file) {
@@ -145,22 +158,13 @@ bool validateOrder(const char* path, void*) {
     file.close();
     return false;
   }
-  std::array<uint8_t, (LibraryCatalogStore::MAX_BOOKS + 7) / 8> seen{};
+  OrderSeenSet seen{};
   uint32_t crc = 0xFFFFFFFFU;
   bool valid = true;
   for (uint32_t position = 0; position < header.count; ++position) {
     OrderEntry entry{};
-    valid = exactRead(file, &entry, sizeof(entry)) && entry.index < header.count &&
-            entry.format <= static_cast<uint8_t>(LibraryBookFormat::Xtch);
+    valid = exactRead(file, &entry, sizeof(entry)) && validateOrderEntry(entry, header.count, seen, crc);
     if (!valid) break;
-    const uint8_t mask = static_cast<uint8_t>(1U << (entry.index & 7U));
-    uint8_t& byte = seen[entry.index >> 3U];
-    if ((byte & mask) != 0) {
-      valid = false;
-      break;
-    }
-    byte |= mask;
-    crc = crc32Update(crc, &entry, sizeof(entry));
   }
   const bool closed = file.close();
   return valid && closed && header.entriesCrc == ~crc;
@@ -170,10 +174,10 @@ enum class DirtyMarkerKind : uint8_t { None, Generic, Path, DeletedPath, Invalid
 
 DirtyMarkerKind readDirtyMarker(std::string& path) {
   path.clear();
-  if (!Storage.exists(DIRTY_PATH)) return DirtyMarkerKind::None;
-
   HalFile file;
-  if (!Storage.openFileForRead("LIB", DIRTY_PATH, file)) return DirtyMarkerKind::Invalid;
+  if (!Storage.openFileForRead("LIB", DIRTY_PATH, file)) {
+    return Storage.exists(DIRTY_PATH) ? DirtyMarkerKind::Invalid : DirtyMarkerKind::None;
+  }
   constexpr size_t MAX_MARKER_BYTES = LibraryCatalogStore::MAX_PATH_BYTES + sizeof("CVLIBPATH1:") - 1;
   const uint64_t fileSize = file.fileSize64();
   if (fileSize == 0 || fileSize > MAX_MARKER_BYTES || fileSize > static_cast<uint64_t>(INT_MAX)) {
@@ -276,7 +280,7 @@ bool fromDisk(const DiskRecord& disk, LibraryBookRecord& record) {
 bool readRecordAt(HalFile& file, const size_t index, LibraryBookRecord& record) {
   const uint64_t offset = sizeof(DiskHeader) + static_cast<uint64_t>(index) * sizeof(DiskRecord);
   if (!file.seek64(offset)) return false;
-  DiskRecord disk{};
+  DiskRecord disk;
   return exactRead(file, &disk, sizeof(disk)) && fromDisk(disk, record);
 }
 
@@ -305,7 +309,6 @@ bool makeOrderWorkEntry(const LibraryBookRecord& record, const size_t index, con
 }
 
 bool readOrderWorkEntryAt(HalFile& file, const size_t position, const uint8_t sortMode, OrderWorkEntry& entry) {
-  entry = {};
   const size_t entrySize = orderWorkEntrySize(sortMode);
   return file.seek64(static_cast<uint64_t>(position) * entrySize) && exactRead(file, &entry, entrySize);
 }
@@ -354,10 +357,10 @@ bool orderWorkEntryLess(const OrderWorkEntry& first, const OrderWorkEntry& secon
       less = !firstEmpty;
       return true;
     }
-    const BookSearchQuery firstKey = makeBookSearchQuery(first.value);
-    const BookSearchQuery secondKey = makeBookSearchQuery(second.value);
-    if (firstKey.folded != secondKey.folded) {
-      less = firstKey.folded < secondKey.folded;
+    const std::string firstKey = makeFoldedBookSearchKey(first.value);
+    const std::string secondKey = makeFoldedBookSearchKey(second.value);
+    if (firstKey != secondKey) {
+      less = firstKey < secondKey;
       return true;
     }
     const int originalOrder = std::strcmp(first.value, second.value);
@@ -391,7 +394,7 @@ bool validateCatalog(const char* path, void*) {
                header.crc == structureCrc(header) &&
                file.fileSize64() == sizeof(DiskHeader) + static_cast<uint64_t>(header.count) * sizeof(DiskRecord);
   for (uint32_t index = 0; valid && index < header.count; ++index) {
-    DiskRecord disk{};
+    DiskRecord disk;
     LibraryBookRecord record;
     valid = exactRead(file, &disk, sizeof(disk)) && fromDisk(disk, record);
   }
@@ -415,7 +418,8 @@ void enrichRecord(LibraryBookRecord& record) {
   if (record.format != LibraryBookFormat::Xtc && record.format != LibraryBookFormat::Xtch) return;
   Xtc xtc(record.path, "/.crosspoint");
   if (!xtc.load()) return;
-  if (!xtc.getTitle().empty()) record.title = xtc.getTitle();
+  std::string title = xtc.getTitle();
+  if (!title.empty()) record.title = std::move(title);
   record.author = xtc.getAuthor();
   record.coverBmpPath = xtc.getThumbBmpPath();
 }
@@ -426,7 +430,9 @@ LibraryCatalogStore& LibraryCatalogStore::getInstance() {
   return instance;
 }
 
-const char* LibraryCatalogStore::activePath() const { return isBuilding() ? WORK_PATH : CATALOG_PATH; }
+const char* LibraryCatalogStore::activePath() const {
+  return phase_ == Phase::Discovering || phase_ == Phase::Sorting ? WORK_PATH : CATALOG_PATH;
+}
 
 bool LibraryCatalogStore::loadHeader(const char* path, const bool requireReady) {
   HalFile file;
@@ -459,7 +465,10 @@ bool LibraryCatalogStore::open() {
     // An empty catalog cannot prove that the card is still empty: books copied
     // directly to the SD card do not create our dirty marker. Re-run the
     // cooperative discovery so an externally added first book is found.
-    if (marker == DirtyMarkerKind::None) return count_ == 0 ? beginBuild() : true;
+    if (marker == DirtyMarkerKind::None) {
+      if (count_ == 0) return beginBuild();
+      return sourcePathsValidated_ || beginSourceValidation();
+    }
     if (marker == DirtyMarkerKind::Path && applyDirtyPath(changedPath)) return true;
     if (marker == DirtyMarkerKind::DeletedPath && applyDeletedPath(changedPath)) return true;
   }
@@ -468,7 +477,51 @@ bool LibraryCatalogStore::open() {
 
 bool LibraryCatalogStore::startRefresh() { return beginBuild(); }
 
+bool LibraryCatalogStore::beginSourceValidation() {
+  resetSourceValidation();
+  if (!Storage.openFileForRead("LIB", CATALOG_PATH, sourceValidationFile_)) return false;
+  sourceValidationIndex_ = 0;
+  phase_ = Phase::Enriching;
+  return true;
+}
+
+void LibraryCatalogStore::validateOneSource() {
+  if (!sourceValidationFile_ || sourceValidationIndex_ >= count_) {
+    resetSourceValidation();
+    sourcePathsValidated_ = true;
+    phase_ = Phase::Ready;
+    return;
+  }
+
+  LibraryBookRecord record;
+  if (!readRecordAt(sourceValidationFile_, sourceValidationIndex_, record)) {
+    resetSourceValidation();
+    phase_ = Phase::Error;
+    return;
+  }
+  ++sourceValidationIndex_;
+  if (!Storage.exists(record.path.c_str())) {
+    // A source disappeared outside CrossVi, so no dirty marker exists. Reuse
+    // the normal cooperative rebuild; it removes every stale entry and also
+    // discovers any other external changes without blocking the input loop.
+    if (!beginBuild()) phase_ = Phase::Error;
+    return;
+  }
+
+  if (sourceValidationIndex_ == count_) {
+    resetSourceValidation();
+    sourcePathsValidated_ = true;
+    phase_ = Phase::Ready;
+  }
+}
+
+void LibraryCatalogStore::resetSourceValidation() {
+  if (sourceValidationFile_) sourceValidationFile_.close();
+  sourceValidationIndex_ = 0;
+}
+
 bool LibraryCatalogStore::restorePreviousCatalog() {
+  resetSourceValidation();
   resetFinalize(true);
   for (auto& frame : directories_) frame.directory.close();
   directories_.clear();
@@ -482,6 +535,7 @@ bool LibraryCatalogStore::restorePreviousCatalog() {
 
 bool LibraryCatalogStore::beginBuild() {
   cancel();
+  sourcePathsValidated_ = false;
   lastBuildFailed_ = false;
   Storage.ensureDirectoryExists("/.crosspoint");
   Storage.remove(TEMP_PATH);
@@ -661,6 +715,7 @@ bool LibraryCatalogStore::applyDeletedPath(const std::string& path) {
 
 void LibraryCatalogStore::cancel() {
   const bool wasBuilding = isBuilding();
+  resetSourceValidation();
   resetOrderBuild(true);
   resetFinalize(true);
   for (auto& frame : directories_) frame.directory.close();
@@ -676,6 +731,8 @@ void LibraryCatalogStore::cancel() {
 void LibraryCatalogStore::step() {
   if (phase_ == Phase::Discovering) {
     discoverOne();
+  } else if (phase_ == Phase::Enriching) {
+    validateOneSource();
   } else if (phase_ == Phase::Sorting) {
     if (!finalizeBuild()) phase_ = Phase::Error;
   }
@@ -820,6 +877,7 @@ bool LibraryCatalogStore::finalizeBuild() {
   Storage.remove(WORK_PATH);
   Storage.remove(ORDER_PATH);
   Storage.remove(DIRTY_PATH);
+  sourcePathsValidated_ = true;
   return loadHeader(CATALOG_PATH, true);
 }
 
@@ -854,11 +912,27 @@ bool LibraryCatalogStore::appendRecord(const LibraryBookRecord& record) {
   const uint64_t offset = sizeof(DiskHeader) + static_cast<uint64_t>(count_) * sizeof(DiskRecord);
   if (!file || !file.seek64(offset)) return false;
   DiskRecord disk{};
-  const bool written = toDisk(record, disk) && exactWrite(file, &disk, sizeof(disk));
+  bool written = toDisk(record, disk) && exactWrite(file, &disk, sizeof(disk));
+
+  // Publish the new count through the same handle. Reopening library.work for
+  // every header update doubled the FAT open/close work for every discovered
+  // book. A failed header write leaves count_ unchanged, so the uncommitted
+  // record is safely overwritten by the next attempt.
+  DiskHeader header{};
+  std::memcpy(header.magic, MAGIC.data(), MAGIC.size());
+  header.version = VERSION;
+  header.recordSize = sizeof(DiskRecord);
+  header.count = count_ + 1;
+  header.generation = generation_;
+  header.phase = static_cast<uint8_t>(phase_);
+  header.truncated = truncated_;
+  header.crc = structureCrc(header);
+  written = written && file.seekSet(0) && exactWrite(file, &header, sizeof(header));
+  file.flush();
   const bool closed = file.close();
   if (!written || !closed) return false;
   ++count_;
-  return writeWorkHeader(phase_);
+  return true;
 }
 
 bool LibraryCatalogStore::readRecord(const char* path, const size_t index, LibraryBookRecord& record) const {
@@ -871,25 +945,6 @@ bool LibraryCatalogStore::readRecord(const char* path, const size_t index, Libra
 
 bool LibraryCatalogStore::loadRecord(const size_t index, LibraryBookRecord& record) const {
   return readRecord(activePath(), index, record);
-}
-
-bool LibraryCatalogStore::ensureOrder(const uint8_t sortMode) {
-  if (!isReady() || sortMode >= CrossPointSettings::LIBRARY_SORT_COUNT) return false;
-
-  HalFile existing;
-  OrderHeader existingHeader{};
-  if (Storage.openFileForRead("LIB", ORDER_PATH, existing)) {
-    const bool readable = exactRead(existing, &existingHeader, sizeof(existingHeader));
-    const bool closed = existing.close();
-    if (readable && closed && validOrderHeader(existingHeader) && existingHeader.generation == generation_ &&
-        existingHeader.count == count_ && existingHeader.sortMode == sortMode && validateOrder(ORDER_PATH, nullptr)) {
-      return true;
-    }
-  }
-
-  if (isOrderBuilding() && orderSortMode_ != sortMode) resetOrderBuild(true);
-  if (!isOrderBuilding()) startOrderBuild(sortMode);
-  return false;
 }
 
 bool LibraryCatalogStore::startOrderBuild(const uint8_t sortMode) {
@@ -934,7 +989,7 @@ bool LibraryCatalogStore::stepOrderBuild() {
   if (orderPhase_ == OrderPhase::Initializing) {
     if (orderSeedIndex_ < count_) {
       LibraryBookRecord record;
-      OrderWorkEntry entry{};
+      OrderWorkEntry entry;
       const size_t index = orderSeedIndex_++;
       if (!readRecordAt(orderCatalog_, index, record) || !makeOrderWorkEntry(record, index, orderSortMode_, entry) ||
           !exactWrite(orderOutput_, &entry, orderWorkEntrySize(orderSortMode_))) {
@@ -1075,34 +1130,71 @@ bool LibraryCatalogStore::stepOrderBuild() {
 }
 
 bool LibraryCatalogStore::loadOrderedIndices(const uint8_t sortMode, const LibraryBookFormat excluded,
-                                             std::vector<size_t>& indices) {
+                                             std::vector<size_t>& indices, const std::span<const std::string> paths,
+                                             std::vector<size_t>* pathIndices) {
   indices.clear();
-  if (!ensureOrder(sortMode)) return false;
+  if (pathIndices) pathIndices->assign(paths.size(), static_cast<size_t>(-1));
+  if (!isReady() || sortMode >= CrossPointSettings::LIBRARY_SORT_COUNT) return false;
+
   HalFile order;
   OrderHeader header{};
-  if (!Storage.openFileForRead("LIB", ORDER_PATH, order) || !exactRead(order, &header, sizeof(header)) ||
-      !validOrderHeader(header) || header.generation != generation_ || header.count != count_ ||
-      header.sortMode != sortMode) {
-    if (order) order.close();
-    return false;
-  }
-  indices.reserve(header.count);
-  for (uint32_t position = 0; position < header.count; ++position) {
-    OrderEntry entry{};
-    if (!exactRead(order, &entry, sizeof(entry))) {
+  bool valid = Storage.openFileForRead("LIB", ORDER_PATH, order) && exactRead(order, &header, sizeof(header)) &&
+               validOrderHeader(header) && header.generation == generation_ && header.count == count_ &&
+               header.sortMode == sortMode &&
+               order.fileSize64() == sizeof(header) + static_cast<uint64_t>(header.count) * sizeof(OrderEntry);
+  OrderSeenSet seen{};
+  uint32_t crc = 0xFFFFFFFFU;
+  HalFile catalog;
+  std::vector<uint32_t> pathHashes;
+  size_t remainingPaths = paths.size();
+  const bool resolvePaths = pathIndices && !paths.empty();
+  if (valid && resolvePaths) {
+    if (!Storage.openFileForRead("LIB", activePath(), catalog)) {
       order.close();
-      indices.clear();
       return false;
     }
-    if (entry.format != static_cast<uint8_t>(excluded)) indices.push_back(entry.index);
+    pathHashes.reserve(paths.size());
+    for (const auto& path : paths) pathHashes.push_back(crc32(path.data(), path.size()));
   }
-
-  const bool orderClosed = order.close();
-  if (!orderClosed) {
+  bool catalogReadFailed = false;
+  if (valid) {
+    indices.reserve(header.count);
+    for (uint32_t position = 0; position < header.count; ++position) {
+      OrderEntry entry{};
+      valid = exactRead(order, &entry, sizeof(entry)) && validateOrderEntry(entry, header.count, seen, crc);
+      if (!valid) break;
+      if (entry.format != static_cast<uint8_t>(excluded)) indices.push_back(entry.index);
+      if (!resolvePaths || remainingPaths == 0) continue;
+      for (size_t pathIndex = 0; pathIndex < paths.size(); ++pathIndex) {
+        if ((*pathIndices)[pathIndex] != static_cast<size_t>(-1) || pathHashes[pathIndex] != entry.pathHash) continue;
+        LibraryBookRecord candidate;
+        if (!readRecordAt(catalog, entry.index, candidate)) {
+          catalogReadFailed = true;
+          break;
+        }
+        if (candidate.path == paths[pathIndex]) {
+          (*pathIndices)[pathIndex] = entry.index;
+          --remainingPaths;
+          break;
+        }
+      }
+      if (catalogReadFailed) break;
+    }
+  }
+  const bool orderClosed = !order || order.close();
+  const bool catalogClosed = !catalog || catalog.close();
+  if (catalogReadFailed || !catalogClosed) {
     indices.clear();
     return false;
   }
-  return true;
+  valid = valid && orderClosed && header.entriesCrc == ~crc;
+  if (valid) return true;
+
+  indices.clear();
+  if (pathIndices) pathIndices->assign(paths.size(), static_cast<size_t>(-1));
+  if (isOrderBuilding() && orderSortMode_ != sortMode) resetOrderBuild(true);
+  if (!isOrderBuilding()) startOrderBuild(sortMode);
+  return false;
 }
 
 LibraryCatalogStore::FindPathResult LibraryCatalogStore::findPath(const std::string& path, const size_t preferredIndex,
@@ -1171,7 +1263,7 @@ bool LibraryCatalogStore::loadPage(const size_t start, const size_t requested,
   return true;
 }
 
-bool LibraryCatalogStore::loadRecords(const std::vector<size_t>& indices,
+bool LibraryCatalogStore::loadRecords(const std::span<const size_t> indices,
                                       std::vector<LibraryBookRecord>& records) const {
   records.clear();
   if (indices.empty()) return true;
@@ -1203,40 +1295,36 @@ bool LibraryCatalogStore::findPathIndices(const std::vector<std::string>& paths,
   // path hashes and touch the large catalog only for matching candidates. This
   // avoids streaming every catalog record whenever the All tab is opened.
   OrderHeader orderHeader{};
-  HalFile orderHeaderFile;
-  const bool orderHeaderReadable = Storage.openFileForRead("LIB", ORDER_PATH, orderHeaderFile) &&
-                                   exactRead(orderHeaderFile, &orderHeader, sizeof(orderHeader));
-  const bool orderHeaderClosed = !orderHeaderFile || orderHeaderFile.close();
-  if (orderHeaderReadable && orderHeaderClosed && validOrderHeader(orderHeader) &&
-      orderHeader.generation == generation_ && orderHeader.count == count_ && validateOrder(ORDER_PATH, nullptr)) {
-    HalFile order;
+  HalFile order;
+  const bool orderCandidate =
+      Storage.openFileForRead("LIB", ORDER_PATH, order) && exactRead(order, &orderHeader, sizeof(orderHeader)) &&
+      validOrderHeader(orderHeader) && orderHeader.generation == generation_ && orderHeader.count == count_ &&
+      order.fileSize64() == sizeof(orderHeader) + static_cast<uint64_t>(orderHeader.count) * sizeof(OrderEntry);
+  if (orderCandidate) {
     HalFile catalog;
-    if (!Storage.openFileForRead("LIB", ORDER_PATH, order) || !order.seek64(sizeof(OrderHeader)) ||
-        !Storage.openFileForRead("LIB", activePath(), catalog)) {
-      if (order) order.close();
-      if (catalog) catalog.close();
+    if (!Storage.openFileForRead("LIB", activePath(), catalog)) {
+      order.close();
       return false;
     }
     std::vector<uint32_t> hashes;
     hashes.reserve(paths.size());
     for (const auto& path : paths) hashes.push_back(crc32(path.data(), path.size()));
     size_t remaining = paths.size();
-    for (uint32_t position = 0; position < orderHeader.count && remaining > 0; ++position) {
+    OrderSeenSet seen{};
+    uint32_t crc = 0xFFFFFFFFU;
+    bool valid = true;
+    bool catalogReadFailed = false;
+    for (uint32_t position = 0; position < orderHeader.count; ++position) {
       OrderEntry entry{};
-      if (!exactRead(order, &entry, sizeof(entry))) {
-        order.close();
-        catalog.close();
-        indices.clear();
-        return false;
-      }
+      valid = exactRead(order, &entry, sizeof(entry)) && validateOrderEntry(entry, orderHeader.count, seen, crc);
+      if (!valid) break;
+      if (remaining == 0) continue;
       for (size_t pathIndex = 0; pathIndex < paths.size(); ++pathIndex) {
         if (indices[pathIndex] != static_cast<size_t>(-1) || hashes[pathIndex] != entry.pathHash) continue;
         LibraryBookRecord candidate;
         if (!readRecordAt(catalog, entry.index, candidate)) {
-          order.close();
-          catalog.close();
-          indices.clear();
-          return false;
+          catalogReadFailed = true;
+          break;
         }
         if (candidate.path == paths[pathIndex]) {
           indices[pathIndex] = entry.index;
@@ -1244,21 +1332,25 @@ bool LibraryCatalogStore::findPathIndices(const std::vector<std::string>& paths,
           break;
         }
       }
+      if (catalogReadFailed) break;
     }
     const bool orderClosed = order.close();
     const bool catalogClosed = catalog.close();
-    if (!orderClosed || !catalogClosed) {
+    if (catalogReadFailed || !catalogClosed || (valid && !orderClosed)) {
       indices.clear();
       return false;
     }
-    return true;
+    if (valid && orderHeader.entriesCrc == ~crc) return true;
+    indices.assign(paths.size(), static_cast<size_t>(-1));
+  } else if (order) {
+    order.close();
   }
 
   HalFile file;
   if (!Storage.openFileForRead("LIB", activePath(), file)) return false;
   size_t remaining = paths.size();
   for (size_t index = 0; index < count_ && remaining > 0; ++index) {
-    DiskRecord disk{};
+    DiskRecord disk;
     if (!file.seek64(sizeof(DiskHeader) + static_cast<uint64_t>(index) * sizeof(DiskRecord)) ||
         !exactRead(file, &disk, sizeof(disk)) || !validDiskRecord(disk)) {
       file.close();

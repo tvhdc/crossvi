@@ -3,9 +3,10 @@
 CrossVi supports loading additional fonts from the SD card, including fonts
 with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
 
-The built-in reader families are Noto Serif and Noto Sans at 12, 14, 16 and
-18 pt. Every size uses the corresponding source Regular, Bold, Italic and Bold
-Italic face rather than synthesizing styles. The Ubuntu UI fonts use their
+The built-in reader family is Noto Serif at 12, 14, 16 and 18 pt. Every size
+uses the corresponding source Regular, Bold, Italic and Bold Italic face rather
+than synthesizing styles. Noto Sans remains available as an optional SD-card
+font package. The Ubuntu UI fonts use their
 small dedicated Vietnamese fallback; reader fonts are not loaded merely to
 render menus. The bundled Noto files are distributed under the SIL Open Font
 License in `lib/EpdFont/builtinFonts/source/Noto*/OFL.txt`; Ubuntu's terms are

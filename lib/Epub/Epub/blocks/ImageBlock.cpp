@@ -1,11 +1,12 @@
 #include "ImageBlock.h"
 
+#include <BufferedFile.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
 
-#include <cstdlib>
+#include <algorithm>
 #include <new>
 
 #include "Epub/BoundedFileReader.h"
@@ -92,7 +93,7 @@ void rememberImageFailure(const std::string& path) {
 }
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
-                     int expectedHeight) {
+                     int expectedHeight, std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity) {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t cacheRenderStartedMs = static_cast<uint32_t>(millis());
 #endif
@@ -122,16 +123,24 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   int rowsPerRead = 4096 / bytesPerRow;
   if (rowsPerRead < 1) rowsPerRead = 1;
   if (rowsPerRead > cachedHeight) rowsPerRead = cachedHeight;
-  uint8_t* readBuffer = (uint8_t*)malloc((size_t)rowsPerRead * bytesPerRow);
-  if (!readBuffer) {
-    // Fall back to a single-row buffer under memory pressure.
-    rowsPerRead = 1;
-    readBuffer = (uint8_t*)malloc(bytesPerRow);
+  const size_t requestedBytes = static_cast<size_t>(rowsPerRead) * bytesPerRow;
+  if (readBufferCapacity < requestedBytes) {
+    // Release a smaller buffer before growing it so page-scoped reuse never
+    // raises the peak allocation above the old one-buffer render path.
+    readBuffer.reset();
+    readBufferCapacity = 0;
+    readBuffer.reset(new (std::nothrow) uint8_t[requestedBytes]);
+    if (readBuffer) readBufferCapacity = requestedBytes;
+  }
+  if (readBufferCapacity < static_cast<size_t>(bytesPerRow)) {
+    readBuffer.reset(new (std::nothrow) uint8_t[bytesPerRow]);
+    readBufferCapacity = readBuffer ? static_cast<size_t>(bytesPerRow) : 0;
   }
   if (!readBuffer) {
     LOG_ERR("IMG", "Failed to allocate row buffer");
     return false;
   }
+  rowsPerRead = std::min(static_cast<int>(cachedHeight), static_cast<int>(readBufferCapacity / bytesPerRow));
 
   DirectPixelWriter pw;
   pw.init(renderer);
@@ -142,16 +151,15 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     if (bufferRow >= rowsInBuffer) {
       const int toRead = (cachedHeight - row < rowsPerRead) ? (cachedHeight - row) : rowsPerRead;
       const size_t bytes = (size_t)toRead * bytesPerRow;
-      if (cacheFile.read(readBuffer, bytes) != static_cast<int>(bytes)) {
+      if (cacheFile.read(readBuffer.get(), bytes) != static_cast<int>(bytes)) {
         LOG_ERR("IMG", "Cache read error at row %d", row);
-        free(readBuffer);
         return false;
       }
       rowsInBuffer = toRead;
       bufferRow = 0;
     }
 
-    const uint8_t* rowBuffer = readBuffer + (size_t)bufferRow * bytesPerRow;
+    const uint8_t* rowBuffer = readBuffer.get() + (size_t)bufferRow * bytesPerRow;
     bufferRow++;
 
     const int destY = y + row;
@@ -169,7 +177,6 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     }
   }
 
-  free(readBuffer);
   LOG_DBG("IMG", "Cache render complete: %s elapsed_ms=%u rows_per_read=%d", cachePath.c_str(),
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
           static_cast<unsigned>(static_cast<uint32_t>(millis()) - cacheRenderStartedMs),
@@ -183,7 +190,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 }  // namespace
 
 bool ImageBlock::hasValidCache() const {
-  const auto cachePath = getCachePath(imagePath);
+  const auto& cachePath = getPixelCachePath();
   HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
     return false;
@@ -197,6 +204,11 @@ bool ImageBlock::needsDecode() const { return !imageFailedThisSession(imagePath)
 
 void ImageBlock::clearSessionRenderFailures() { failedImageCount = 0; }
 
+const std::string& ImageBlock::getPixelCachePath() const {
+  if (pixelCachePath.empty()) pixelCachePath = getCachePath(imagePath);
+  return pixelCachePath;
+}
+
 void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int y) const {
   renderer.fillRect(x, y, width, height, true);
   if (width > 2 && height > 2) {
@@ -205,6 +217,13 @@ void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int
 }
 
 void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
+  std::unique_ptr<uint8_t[]> readBuffer;
+  size_t readBufferCapacity = 0;
+  render(renderer, x, y, readBuffer, readBufferCapacity);
+}
+
+void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::unique_ptr<uint8_t[]>& readBuffer,
+                        size_t& readBufferCapacity) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
   // suppression, so it would otherwise do a full (discarded) cache render every
@@ -241,8 +260,8 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   LOG_DBG("IMG", "Rendering image at %d,%d: %s (%dx%d)", x, y, imagePath.c_str(), width, height);
 
   // Try to render from cache first
-  std::string cachePath = getCachePath(imagePath);
-  if (renderFromCache(renderer, cachePath, x, y, width, height)) {
+  const std::string& cachePath = getPixelCachePath();
+  if (renderFromCache(renderer, cachePath, x, y, width, height, readBuffer, readBufferCapacity)) {
     return;  // Successfully rendered from cache
   }
 
@@ -252,7 +271,8 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t materializeStartedMs = static_cast<uint32_t>(millis());
 #endif
-  if (!Storage.exists(imagePath.c_str()) && !sourcePath.empty() && extractFn) {
+  bool imageOpened = Storage.openFileForRead("IMG", imagePath, file);
+  if (!imageOpened && !Storage.exists(imagePath.c_str()) && !sourcePath.empty() && extractFn) {
     if (!extractFn(extractContext, sourcePath.c_str(), imagePath.c_str())) {
       LOG_ERR("IMG", "Failed to extract lazy image: %s", sourcePath.c_str());
       rememberImageFailure(imagePath);
@@ -263,8 +283,9 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     LOG_DBG("IMGT", "lazy_extract source=%s elapsed_ms=%u", sourcePath.c_str(),
             static_cast<unsigned>(static_cast<uint32_t>(millis()) - materializeStartedMs));
 #endif
+    imageOpened = Storage.openFileForRead("IMG", imagePath, file);
   }
-  if (!Storage.openFileForRead("IMG", imagePath, file)) {
+  if (!imageOpened) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
@@ -321,7 +342,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   LOG_DBG("IMG", "Decode successful");
 }
 
-bool ImageBlock::serialize(HalFile& file) {
+bool ImageBlock::serialize(serialization::BufferedFileWriter& file) {
   if (imagePath.empty() || imagePath.size() > SectionCacheValidation::MAX_IMAGE_PATH_BYTES ||
       sourcePath.size() > SectionCacheValidation::MAX_IMAGE_PATH_BYTES || width <= 0 || height <= 0) {
     LOG_ERR("IMG", "Serialization failed: invalid image block");

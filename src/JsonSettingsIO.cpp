@@ -366,6 +366,15 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     if (needsResave) *needsResave = true;
   }
 
+  // The removed built-in dictionary Noto Sans option must fall back to the
+  // remaining built-in family, not to "follow reader" (which may be an SD font).
+  const uint8_t storedDictionaryFontFamily =
+      doc["dictionaryFontFamily"] | (uint8_t)CrossPointSettings::DICTIONARY_FONT_READER;
+  if (storedDictionaryFontFamily == CrossPointSettings::LEGACY_DICTIONARY_FONT_NOTO_SANS) {
+    s.dictionaryFontFamily = CrossPointSettings::DICTIONARY_FONT_NOTO_SERIF;
+    if (needsResave) *needsResave = true;
+  }
+
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   const char* dictName = doc["dictionaryName"] | "";
   strncpy(s.dictionaryName, dictName, sizeof(s.dictionaryName) - 1);

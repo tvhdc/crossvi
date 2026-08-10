@@ -272,6 +272,19 @@ std::vector<uint8_t> makeNestedNcxEpub() {
   });
 }
 
+std::vector<uint8_t> makeDuplicateBasenameEpub() {
+  return makeStoredZip({
+      {"META-INF/container.xml",
+       R"(<?xml version="1.0"?><container><rootfiles><rootfile full-path="OPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>)"},
+      {"OPS/content.opf",
+       R"(<?xml version="1.0"?><package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>Relative links</dc:title></metadata><manifest><item id="one" href="part1/ch1.xhtml" media-type="application/xhtml+xml"/><item id="current" href="text/current.xhtml" media-type="application/xhtml+xml"/><item id="other" href="other/ch1.xhtml" media-type="application/xhtml+xml"/><item id="two" href="part2/ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="current"/><itemref idref="other"/><itemref idref="two"/></spine></package>)"},
+      {"OPS/part1/ch1.xhtml", "<html><body><p>One</p></body></html>"},
+      {"OPS/text/current.xhtml", "<html><body><p>Current</p></body></html>"},
+      {"OPS/other/ch1.xhtml", "<html><body><p>Other</p></body></html>"},
+      {"OPS/part2/ch1.xhtml", "<html><body><p>Two</p></body></html>"},
+  });
+}
+
 std::vector<uint8_t> makeGuideCoverEpub(std::string coverPage, const bool deflateCover = false,
                                         std::string coverContents = "not-decoded-by-this-test") {
   return makeStoredZip({
@@ -443,6 +456,19 @@ TEST_F(EpubSourceIdentityTest, ContentOpfKeepsTrimmedPrimaryLanguageAcrossChunke
   EXPECT_EQ(parser.language, "en-US");
 }
 
+TEST_F(EpubSourceIdentityTest, ContentOpfPropertiesRequireExactTokens) {
+  const std::string xml =
+      R"(<package><manifest><item id="decoy" href="wrong.xhtml" properties="scripted navigation cover-image-extra"/><item id="nav" href="nav.xhtml" properties="scripted nav"/><item id="cover" href="cover.jpg" properties="cover-image remote-resources"/></manifest></package>)";
+  const std::string cachePath;
+  const std::string basePath = "OPS/";
+  ContentOpfParser parser(cachePath, basePath, xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), xml.size());
+  ASSERT_TRUE(parser.succeeded());
+  EXPECT_EQ(parser.tocNavPath, "OPS/nav.xhtml");
+  EXPECT_EQ(parser.coverItemHref, "OPS/cover.jpg");
+}
+
 TEST_F(EpubSourceIdentityTest, NcxTargetsResolveRelativeToTheNcxDirectory) {
   identify(makeNestedNcxEpub());
   Epub epub(EPUB_PATH, "/.crosspoint");
@@ -454,6 +480,22 @@ TEST_F(EpubSourceIdentityTest, NcxTargetsResolveRelativeToTheNcxDirectory) {
   ASSERT_EQ(epub.getTocItemsCount(), 1);
   EXPECT_EQ(epub.getTocItem(0).href, "OPS/toc/ch1.xhtml");
   EXPECT_EQ(epub.getSpineIndexForTocIndex(0), 0);
+}
+
+TEST_F(EpubSourceIdentityTest, ReaderLinksResolveRelativeToTheCurrentSpineDirectory) {
+  identify(makeDuplicateBasenameEpub());
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  ASSERT_TRUE(Storage.mkdir(epub.getCachePath().c_str()));
+  ASSERT_TRUE(epub.bindCurrentSource());
+  ASSERT_TRUE(epub.load(true, true));
+
+  ASSERT_EQ(epub.getSpineItemsCount(), 4);
+  ASSERT_EQ(epub.getSpineItem(0).href, "OPS/part1/ch1.xhtml");
+  ASSERT_EQ(epub.getSpineItem(1).href, "OPS/text/current.xhtml");
+  ASSERT_EQ(epub.getSpineItem(2).href, "OPS/other/ch1.xhtml");
+  ASSERT_EQ(epub.getSpineItem(3).href, "OPS/part2/ch1.xhtml");
+  EXPECT_EQ(epub.resolveHrefToSpineIndex("../part2/ch1.xhtml#note", 1), 3);
+  EXPECT_EQ(epub.resolveHrefToSpineIndex("ch1.xhtml#note", -1), -1);
 }
 
 TEST_F(EpubSourceIdentityTest, RejectsMalformedBoundsAndConcurrentGrowth) {
@@ -1420,6 +1462,15 @@ TEST_F(EpubSourceIdentityTest, FastMetadataResolvesGuideOnlyCoverWithinBound) {
   ASSERT_TRUE(epub.readCoreMetadata(metadata));
   EXPECT_EQ(metadata.coverItemHref, "OPS/images/cover.jpg");
   EXPECT_LE(Storage.maxRead(), 1024U);
+}
+
+TEST_F(EpubSourceIdentityTest, FastMetadataResolvesSingleQuotedGuideCover) {
+  identify(makeGuideCoverEpub(R"(<html><body><img src='images/cover.jpg'/></body></html>)"));
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  BookMetadataCache::BookMetadata metadata;
+
+  ASSERT_TRUE(epub.readCoreMetadata(metadata));
+  EXPECT_EQ(metadata.coverItemHref, "OPS/images/cover.jpg");
 }
 
 TEST_F(EpubSourceIdentityTest, OversizedGuideCoverDoesNotCreatePermanentNoCoverMarker) {

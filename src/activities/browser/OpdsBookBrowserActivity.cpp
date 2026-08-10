@@ -411,9 +411,11 @@ void OpdsBookBrowserActivity::performSearch(const std::string& query) {
   const std::string placeholder = "{searchTerms}";
   const size_t pos = url.find(placeholder);
   if (pos != std::string::npos) url.replace(pos, placeholder.length(), urlEncode(query));
+  const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
+  url = UrlUtils::buildUrl(feedUrl, url);
 
-  navigationHistory.push_back(currentPath);  // <-- add this
-  currentPath = url;                         // <-- add this
+  navigationHistory.push_back(currentPath);
+  currentPath = url;
 
   state = BrowserState::LOADING;
   statusMessage = tr(STR_LOADING);

@@ -18,10 +18,10 @@ struct Candidate {
 std::string siblingPath(const char* path, const char* suffix) { return std::string(path) + suffix; }
 
 Candidate inspect(const std::string& path, const size_t maxSize, const Validator validator, void* context) {
-  if (!Storage.exists(path.c_str())) return {};
-
   HalFile file;
-  if (!Storage.openFileForRead("ATOMIC", path, file)) return {CandidateStatus::IoError, {}};
+  if (!Storage.openFileForRead("ATOMIC", path, file)) {
+    return Storage.exists(path.c_str()) ? Candidate{CandidateStatus::IoError, {}} : Candidate{};
+  }
   const uint64_t fileSize = file.fileSize64();
   if (fileSize > maxSize || fileSize > static_cast<uint64_t>(SIZE_MAX)) {
     if (!file.close()) return {CandidateStatus::IoError, {}};

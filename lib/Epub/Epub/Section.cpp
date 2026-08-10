@@ -120,7 +120,7 @@ bool validateSectionCacheStructure(HalFile& file, SectionCacheValidation::Layout
 
 bool readStringEquals(BoundedFileReader& reader, const uint32_t length, const std::string& expected, bool& matches) {
   matches = length == expected.size();
-  std::array<uint8_t, 64> buffer{};
+  std::array<uint8_t, 64> buffer;
   uint64_t consumed = 0;
   while (consumed < length) {
     const size_t chunk = static_cast<size_t>(std::min<uint64_t>(buffer.size(), length - consumed));
@@ -158,7 +158,7 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   const bool containsSourceTarget =
       sourceOffsetTarget_.has_value() && PageSourceAnchor::contains(*page, *sourceOffsetTarget_);
   const uint32_t position = file.position();
-  if (!page->serialize(file)) {
+  if (!page->serialize(file, build_->pageWriteBuffer.get(), BuildContext::PAGE_WRITE_BUFFER_BYTES)) {
     LOG_ERR("SCT", "Failed to serialize page %d", builtPageCount_);
     return 0;
   }
@@ -504,6 +504,9 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
     return false;
   }
+  // Allocate once per chapter build rather than once per page. Allocation
+  // failure is harmless: Page::serialize falls back to direct writes.
+  ctx->pageWriteBuffer = makeUniqueNoThrow<uint8_t[]>(BuildContext::PAGE_WRITE_BUFFER_BYTES);
   // htmlCached == "htmlPath is the live cache" (reused, or just promoted). finalizeBuild/abandonBuild
   // then leave the cached HTML alone; only an un-promoted temp (rename failed) is theirs to clean up.
   ctx->reusedHtml = htmlCached;
@@ -911,7 +914,8 @@ std::unique_ptr<Page> Section::loadPageDuringBuild(const int page) {
   const uint32_t pageEnd =
       page + 1 < static_cast<int>(build_->lut.size()) ? build_->lut[page + 1].fileOffset : writePos;
   if (pageEnd <= pos) return nullptr;
-  BoundedFileReader reader(file, pos, pageEnd);
+  if (!pageReadBuffer_) pageReadBuffer_ = makeUniqueNoThrow<uint8_t[]>(PAGE_READ_BUFFER_BYTES);
+  BoundedFileReader reader(file, pos, pageEnd, pageReadBuffer_.get(), PAGE_READ_BUFFER_BYTES);
   auto p = Page::deserialize(reader);
   file.seek(writePos);
   return p;
@@ -934,7 +938,8 @@ std::unique_ptr<Page> Section::loadPageAt(const int page) const {
     committedReadFile_.close();
     return nullptr;
   }
-  BoundedFileReader reader(committedReadFile_, pageBegin, pageEnd);
+  if (!pageReadBuffer_) pageReadBuffer_ = makeUniqueNoThrow<uint8_t[]>(PAGE_READ_BUFFER_BYTES);
+  BoundedFileReader reader(committedReadFile_, pageBegin, pageEnd, pageReadBuffer_.get(), PAGE_READ_BUFFER_BYTES);
   auto result = Page::deserialize(reader);
   if (!result) committedReadFile_.close();
   return result;
@@ -1134,18 +1139,22 @@ std::optional<uint16_t> Section::getPageForListItemIndex(const uint16_t liIndex)
 std::optional<uint32_t> Section::getVisibleTextOffsetForPage(const uint16_t page) const {
   if (build_ && page < build_->lut.size()) return build_->lut[page].visibleTextOffset;
 
-  HalFile f;
-  if (!Storage.openFileForRead("SCT", filePath, f)) return std::nullopt;
+  if (!committedReadFile_ && !Storage.openFileForRead("SCT", filePath, committedReadFile_)) return std::nullopt;
   SectionCacheValidation::Layout layout = cacheLayout_;
-  if ((!cacheLayoutValid_ && !validateSectionCacheStructure(f, layout)) || f.fileSize64() != layout.fileSize ||
-      page >= layout.pageCount) {
+  if ((!cacheLayoutValid_ && !validateSectionCacheStructure(committedReadFile_, layout)) ||
+      committedReadFile_.fileSize64() != layout.fileSize || page >= layout.pageCount) {
+    committedReadFile_.close();
     return std::nullopt;
   }
   const uint64_t begin =
       static_cast<uint64_t>(layout.visibleTextLutOffset) + static_cast<uint64_t>(page) * sizeof(uint32_t);
-  BoundedFileReader reader(f, begin, begin + sizeof(uint32_t));
+  BoundedFileReader reader(committedReadFile_, begin, begin + sizeof(uint32_t));
   uint32_t result = 0;
-  return reader.readPod(result) && reader.atEnd() ? std::optional<uint32_t>{result} : std::nullopt;
+  if (!reader.readPod(result) || !reader.atEnd()) {
+    committedReadFile_.close();
+    return std::nullopt;
+  }
+  return result;
 }
 
 std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offset,

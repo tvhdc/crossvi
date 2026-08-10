@@ -183,7 +183,7 @@ class Epub {
   bool calculateProgressChecked(int currentSpineIndex, float currentSpineRead, float& progress) const;
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
   CssParser* getCssParser() const { return cssParser.get(); }
-  int resolveHrefToSpineIndex(const std::string& href) const;
+  int resolveHrefToSpineIndex(const std::string& href, int sourceSpineIndex = -1) const;
 
  private:
   static constexpr ThumbnailRequest allThumbnailVariants(ThumbnailRequest request) {

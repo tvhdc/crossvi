@@ -48,7 +48,7 @@ struct ThumbIdentityContext {
 };
 
 bool readThumbIdentity(const char* path, ZipFile::SourceIdentity& identity) {
-  if (!path || !Storage.exists(path)) return false;
+  if (!path) return false;
   HalFile file;
   if (!Storage.openFileForRead("EBP", path, file)) return false;
   SourceIdentityCodec::Encoded encoded{};
@@ -92,7 +92,7 @@ bool publishThumbIdentity(const std::string& path, const ZipFile::SourceIdentity
 
 bool validateThumbnailBitmap(const char* path, void* rawContext, const bool exactDimensions) {
   const auto* context = static_cast<const ThumbnailValidationContext*>(rawContext);
-  if (!path || !context || context->width <= 0 || context->height <= 0 || !Storage.exists(path)) return false;
+  if (!path || !context || context->width <= 0 || context->height <= 0) return false;
   HalFile file;
   if (!Storage.openFileForRead("EBP", path, file)) return false;
   if (exactDimensions && file.fileSize64() != context->fileSize) {
@@ -180,22 +180,21 @@ bool publishBitmap(const std::string& finalPath, const std::string& stagingPath)
 }
 
 bool validateRasterFile(const char* path, void*) {
-  if (!path || !Storage.exists(path)) return false;
+  if (!path) return false;
   HalFile file;
   if (!Storage.openFileForRead("EBP", path, file)) return false;
-  std::string imagePath(path);
-  if ((imagePath.size() >= 4 && (imagePath.compare(imagePath.size() - 4, 4, ".tmp") == 0 ||
-                                 imagePath.compare(imagePath.size() - 4, 4, ".bak") == 0))) {
-    imagePath.resize(imagePath.size() - 4);
+  std::string_view imagePath(path);
+  if (imagePath.size() >= 4 &&
+      (imagePath.substr(imagePath.size() - 4) == ".tmp" || imagePath.substr(imagePath.size() - 4) == ".bak")) {
+    imagePath.remove_suffix(4);
   }
-  const std::string_view imagePathView(imagePath);
-  if (!FsHelpers::hasJpgExtension(imagePathView) && !FsHelpers::hasPngExtension(imagePathView)) {
+  if (!FsHelpers::hasJpgExtension(imagePath) && !FsHelpers::hasPngExtension(imagePath)) {
     file.close();
     return false;
   }
 
   ImageDimsProbe probe;
-  std::array<uint8_t, 1024> buffer{};
+  std::array<uint8_t, 1024> buffer;
   bool readOk = true;
   while (file.available()) {
     const size_t bytesRead = file.read(buffer.data(), buffer.size());
@@ -351,13 +350,15 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
         coverPageBase = opfParser.guideCoverPageHref.substr(0, lastSlash + 1);
       }
 
-      // Search for image references: xlink:href="..." (SVG) and src="..." (img)
+      // Search for image references in both XML attribute quote forms.
       std::string imageRef;
-      for (const char* pattern : {"xlink:href=\"", "src=\""}) {
+      for (const char* pattern : {"xlink:href=\"", "xlink:href='", "src=\"", "src='"}) {
         auto pos = coverPageHtml.find(pattern);
         while (pos != std::string::npos) {
-          pos += strlen(pattern);
-          const auto endPos = coverPageHtml.find('"', pos);
+          const size_t patternLength = strlen(pattern);
+          const char quote = pattern[patternLength - 1];
+          pos += patternLength;
+          const auto endPos = coverPageHtml.find(quote, pos);
           if (endPos != std::string::npos) {
             const auto ref = std::string_view{coverPageHtml}.substr(pos, endPos - pos);
             // Cover BMP generation supports JPG/PNG only; skip GIF so an unsupported wrapper image
@@ -1887,13 +1888,20 @@ float Epub::calculateProgress(const int currentSpineIndex, const float currentSp
   return std::isfinite(calculated) ? std::clamp(calculated, 0.0F, 1.0F) : 0.0F;
 }
 
-int Epub::resolveHrefToSpineIndex(const std::string& href) const {
+int Epub::resolveHrefToSpineIndex(const std::string& href, const int sourceSpineIndex) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) return -1;
 
   // Split before decoding so escaped '#' characters in filenames stay part of the path.
   const size_t hashPos = href.find('#');
   const std::string rawTarget = hashPos != std::string::npos ? href.substr(0, hashPos) : href;
-  const std::string target = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(rawTarget));
+  std::string decodedTarget = FsHelpers::decodeUriEscapes(rawTarget);
+  if (!decodedTarget.empty() && decodedTarget.front() != '/' && sourceSpineIndex >= 0 &&
+      sourceSpineIndex < getSpineItemsCount()) {
+    const std::string sourceHref = getSpineItem(sourceSpineIndex).href;
+    const size_t sourceSlash = sourceHref.find_last_of('/');
+    if (sourceSlash != std::string::npos) decodedTarget.insert(0, sourceHref.substr(0, sourceSlash + 1));
+  }
+  const std::string target = FsHelpers::normalisePath(decodedTarget);
 
   // Same-file reference (anchor-only)
   if (target.empty()) return -1;
@@ -1902,14 +1910,23 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
   size_t targetSlash = target.find_last_of('/');
   std::string targetFilename = (targetSlash != std::string::npos) ? target.substr(targetSlash + 1) : target;
 
+  // Prefer an exact path match across the complete spine. A matching basename
+  // earlier in the spine must not hide an exact path that appears later.
   for (int i = 0; i < getSpineItemsCount(); i++) {
     const auto& spineHref = getSpineItem(i).href;
-    // Try exact match first
     if (spineHref == target) return i;
-    // Then filename-only match
+  }
+
+  int filenameMatch = -1;
+  for (int i = 0; i < getSpineItemsCount(); i++) {
+    const auto& spineHref = getSpineItem(i).href;
+    // Retain the legacy filename fallback only when it is unambiguous.
     size_t spineSlash = spineHref.find_last_of('/');
     std::string spineFilename = (spineSlash != std::string::npos) ? spineHref.substr(spineSlash + 1) : spineHref;
-    if (spineFilename == targetFilename) return i;
+    if (spineFilename == targetFilename) {
+      if (filenameMatch >= 0) return -1;
+      filenameMatch = i;
+    }
   }
-  return -1;
+  return filenameMatch;
 }

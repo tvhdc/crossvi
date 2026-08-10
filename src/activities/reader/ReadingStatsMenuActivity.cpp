@@ -147,7 +147,7 @@ void ReadingStatsMenuActivity::loop() {
     finish();
     return;
   }
-  navigator_.onNextPress([this] {
+  navigator_.onNext([this] {
     bool changed = false;
     {
       RenderLock lock(*this);
@@ -160,7 +160,7 @@ void ReadingStatsMenuActivity::loop() {
     }
     if (changed) requestUpdate();
   });
-  navigator_.onPreviousPress([this] {
+  navigator_.onPrevious([this] {
     bool changed = false;
     {
       RenderLock lock(*this);

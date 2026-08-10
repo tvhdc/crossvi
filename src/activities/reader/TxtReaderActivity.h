@@ -128,6 +128,9 @@ class TxtReaderActivity final : public Activity {
   void initializeReader();
   bool loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
                         std::vector<uint32_t>* outLineOffsets = nullptr);
+  bool loadPageAtOffsetWithScratch(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
+                                   std::vector<uint32_t>* outLineOffsets, HalFile& contentFile, uint8_t* buffer,
+                                   size_t bufferCapacity);
   std::unique_ptr<Page> buildInteractivePage(uint16_t page, std::vector<TextWordAnchor>* anchors = nullptr);
   std::unique_ptr<Page> buildInteractivePageFromLines(const std::vector<std::string>& lines,
                                                       const std::vector<uint32_t>& lineOffsets,

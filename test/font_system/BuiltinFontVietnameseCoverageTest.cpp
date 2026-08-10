@@ -27,19 +27,12 @@ const FontCase kReaderFonts[] = {
     FONT_CASE(notoserif_14_italic),     FONT_CASE(notoserif_14_bolditalic), FONT_CASE(notoserif_16_regular),
     FONT_CASE(notoserif_16_bold),       FONT_CASE(notoserif_16_italic),     FONT_CASE(notoserif_16_bolditalic),
     FONT_CASE(notoserif_18_regular),    FONT_CASE(notoserif_18_bold),       FONT_CASE(notoserif_18_italic),
-    FONT_CASE(notoserif_18_bolditalic), FONT_CASE(notosans_12_regular),     FONT_CASE(notosans_12_bold),
-    FONT_CASE(notosans_12_italic),      FONT_CASE(notosans_12_bolditalic),  FONT_CASE(notosans_14_regular),
-    FONT_CASE(notosans_14_bold),        FONT_CASE(notosans_14_italic),      FONT_CASE(notosans_14_bolditalic),
-    FONT_CASE(notosans_16_regular),     FONT_CASE(notosans_16_bold),        FONT_CASE(notosans_16_italic),
-    FONT_CASE(notosans_16_bolditalic),  FONT_CASE(notosans_18_regular),     FONT_CASE(notosans_18_bold),
-    FONT_CASE(notosans_18_italic),      FONT_CASE(notosans_18_bolditalic),
+    FONT_CASE(notoserif_18_bolditalic),
 };
 
 const FontCase kUiFonts[] = {
-    FONT_CASE(ubuntu_10_regular),
-    FONT_CASE(ubuntu_10_bold),
-    FONT_CASE(ubuntu_12_regular),
-    FONT_CASE(ubuntu_12_bold),
+    FONT_CASE(notosans_8_regular), FONT_CASE(ubuntu_10_regular), FONT_CASE(ubuntu_10_bold),
+    FONT_CASE(ubuntu_12_regular),  FONT_CASE(ubuntu_12_bold),
 };
 
 void expectVietnameseCoverage(const FontCase& fontCase) {
@@ -66,7 +59,7 @@ TEST(BuiltinFontVietnameseCoverage, EveryReaderSizeAndStyle) {
   for (const auto& fontCase : kReaderFonts) expectVietnameseCoverage(fontCase);
 }
 
-TEST(BuiltinFontVietnameseCoverage, UbuntuUiRegularAndBold) {
+TEST(BuiltinFontVietnameseCoverage, SmallAndUbuntuUiFonts) {
   for (const auto& fontCase : kUiFonts) expectVietnameseCoverage(fontCase);
 }
 

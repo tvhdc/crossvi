@@ -115,7 +115,7 @@ inline SettingInfo buildAvailableFontSizeSetting(const SdCardFontRegistry& regis
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   // Built-in font labels (StrId)
-  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
+  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF};
   // Runtime string labels for SD card fonts
   std::vector<std::string> enumStringValues;
 
@@ -137,7 +137,6 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   std::vector<std::string> allStringValues;
   if (sdFontCount > 0) {
     allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF));
-    allStringValues.push_back(I18N.get(StrId::STR_NOTO_SANS));
     allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
   }
 
@@ -297,12 +296,12 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         // --- Reader ---
         // Built-in font-family entry. Replaced per-call with a registry-aware
         // version when SD fonts are installed.
-        SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
-                          {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS}, "fontFamily", StrId::STR_CAT_READER),
+        SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily, {StrId::STR_NOTO_SERIF},
+                          "fontFamily", StrId::STR_CAT_READER),
         buildPersistedFontSizeSetting(),
         SettingInfo::Enum(StrId::STR_DICTIONARY_FONT, &CrossPointSettings::dictionaryFontFamily,
-                          {StrId::STR_USE_READER_FONT, StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS},
-                          "dictionaryFontFamily", StrId::STR_CAT_READER),
+                          {StrId::STR_USE_READER_FONT, StrId::STR_NOTO_SERIF}, "dictionaryFontFamily",
+                          StrId::STR_CAT_READER),
         buildDictionaryFontSizeSetting(),
         SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                             StrId::STR_CAT_READER),

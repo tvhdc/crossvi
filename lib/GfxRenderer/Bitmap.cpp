@@ -27,9 +27,10 @@ Bitmap::~Bitmap() {
 
 BitmapFileStatus Bitmap::inspectFile(const char* path) {
   if (!path) return BitmapFileStatus::Invalid;
-  if (!Storage.exists(path)) return BitmapFileStatus::Missing;
   HalFile candidate;
-  if (!Storage.openFileForRead("BMP", path, candidate)) return BitmapFileStatus::IoError;
+  if (!Storage.openFileForRead("BMP", path, candidate)) {
+    return Storage.exists(path) ? BitmapFileStatus::IoError : BitmapFileStatus::Missing;
+  }
   Bitmap bitmap(candidate);
   const BmpReaderError result = bitmap.parseHeaders();
   const bool ioError = candidate.getError() != 0;

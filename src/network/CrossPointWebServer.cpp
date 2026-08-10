@@ -1366,10 +1366,6 @@ void CrossPointWebServer::handleInboxOpen() {
   }
 
   const std::string path = std::string("/Inbox/") + name;
-  if (!Storage.exists(path.c_str())) {
-    server->send(404, "text/plain", "Book not found");
-    return;
-  }
   HalFile file = Storage.open(path.c_str());
   if (!file || file.isDirectory()) {
     if (file) file.close();

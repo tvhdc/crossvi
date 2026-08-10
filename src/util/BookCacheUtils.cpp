@@ -348,8 +348,8 @@ bool filesEqual(const std::string& leftPath, const std::string& rightPath) {
     return false;
   }
 
-  std::array<uint8_t, 512> leftBuffer{};
-  std::array<uint8_t, 512> rightBuffer{};
+  std::array<uint8_t, 512> leftBuffer;
+  std::array<uint8_t, 512> rightBuffer;
   uint64_t remaining = left.fileSize64();
   while (remaining > 0) {
     const size_t chunk = static_cast<size_t>(std::min<uint64_t>(leftBuffer.size(), remaining));
@@ -372,7 +372,7 @@ bool copyFileExact(const std::string& sourcePath, const std::string& destination
     return false;
   }
 
-  std::array<uint8_t, 512> buffer{};
+  std::array<uint8_t, 512> buffer;
   uint64_t remaining = source.fileSize64();
   bool copied = true;
   while (remaining > 0) {

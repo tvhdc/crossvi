@@ -10,6 +10,9 @@
 #include "BlockStyle.h"
 
 class BoundedFileReader;
+namespace serialization {
+class BufferedFileWriter;
+}
 
 // Represents a line of text on a page.
 //
@@ -105,6 +108,6 @@ class TextBlock final : public Block {
 
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   BlockType getType() override { return TEXT_BLOCK; }
-  bool serialize(HalFile& file) const;
+  bool serialize(serialization::BufferedFileWriter& file) const;
   static std::unique_ptr<TextBlock> deserialize(BoundedFileReader& reader);
 };

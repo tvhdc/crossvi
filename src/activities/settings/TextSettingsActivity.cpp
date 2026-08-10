@@ -5,6 +5,7 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -92,7 +93,6 @@ void TextSettingsActivity::rebuildFontOptions() {
   fonts_.clear();
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + sdFontSystem.registry().getFamilyCount());
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, static_cast<uint8_t>(CrossPointSettings::NOTOSERIF)});
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SANS), true, static_cast<uint8_t>(CrossPointSettings::NOTOSANS)});
   const auto& families = sdFontSystem.registry().getFamilies();
   for (int index = 0; index < static_cast<int>(families.size()); ++index) {
     fonts_.push_back(
@@ -223,6 +223,13 @@ void TextSettingsActivity::moveSelection(const int direction) {
   requestUpdate();
 }
 
+void TextSettingsActivity::moveTab(const int direction) {
+  selectedTab_ = direction < 0 ? ButtonNavigator::previousIndex(selectedTab_, TabCount)
+                               : ButtonNavigator::nextIndex(selectedTab_, TabCount);
+  rebuildSettings();
+  requestUpdate();
+}
+
 void TextSettingsActivity::loop() {
   if (optionPopup_.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
@@ -260,8 +267,10 @@ void TextSettingsActivity::loop() {
 
   buttonNavigator_.onNextRelease([this] { moveSelection(1); });
   buttonNavigator_.onPreviousRelease([this] { moveSelection(-1); });
-  buttonNavigator_.onNextContinuous([this] { moveSelection(1); });
-  buttonNavigator_.onPreviousContinuous([this] { moveSelection(-1); });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Right}, [this] { moveSelection(1); });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Left}, [this] { moveSelection(-1); });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Down}, [this] { moveTab(1); });
+  buttonNavigator_.onContinuous({MappedInputManager::Button::Up}, [this] { moveTab(-1); });
 }
 
 void TextSettingsActivity::invalidatePreviewLocked() {
@@ -431,7 +440,7 @@ std::string TextSettingsActivity::sizeLabel(const int index) const {
 
 std::string TextSettingsActivity::selectedFontName() const {
   if (SETTINGS.sdFontFamilyName[0] != '\0') return SETTINGS.sdFontFamilyName;
-  return I18N.get(SETTINGS.fontFamily == CrossPointSettings::NOTOSANS ? StrId::STR_NOTO_SANS : StrId::STR_NOTO_SERIF);
+  return I18N.get(StrId::STR_NOTO_SERIF);
 }
 
 uint8_t TextSettingsActivity::selectedPointSize() const {
@@ -564,10 +573,9 @@ void TextSettingsActivity::render(RenderLock&&) {
   }
 
   const int tabTop = previewTop + previewHeight + PREVIEW_TO_TABS_GAP;
-  std::vector<TabInfo> tabs;
-  tabs.reserve(TabCount);
+  std::array<TabInfo, TabCount> tabs{};
   for (int tab = 0; tab < TabCount; ++tab) {
-    tabs.push_back({I18N.get(TAB_LABELS[tab]), tab == selectedTab_});
+    tabs[static_cast<size_t>(tab)] = {I18N.get(TAB_LABELS[tab]), tab == selectedTab_};
   }
   GUI.drawTabBar(renderer, Rect{0, tabTop, width, metrics.tabBarHeight}, tabs, selectedRow_ < 0);
 

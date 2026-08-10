@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -28,6 +29,7 @@ class LibraryCatalogTest : public testing::Test {
     ASSERT_EQ(setenv("CROSSVI_SIM_SD", root_.c_str(), 1), 0);
     ASSERT_TRUE(Storage.begin());
     LIBRARY_CATALOG.cancel();
+    LIBRARY_CATALOG.invalidateSourceValidation();
     Epub::resetMetadata();
   }
 
@@ -374,10 +376,12 @@ TEST_F(LibraryCatalogTest, OrderSidecarFiltersFormatsAndResolvesPinnedPaths) {
   ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
   advanceToReady();
 
+  const std::array<std::string, 3> pinnedPaths = {"/Middle.txt", "/missing.epub", "/alpha.md"};
   std::vector<size_t> visible;
+  std::vector<size_t> resolved;
   for (size_t steps = 0; steps < 20000; ++steps) {
-    if (LIBRARY_CATALOG.loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_TITLE_ASC, LibraryBookFormat::Text,
-                                           visible)) {
+    if (LIBRARY_CATALOG.loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_TITLE_ASC, LibraryBookFormat::Text, visible,
+                                           pinnedPaths, &resolved)) {
       break;
     }
     ASSERT_TRUE(LIBRARY_CATALOG.isOrderBuilding());
@@ -388,8 +392,6 @@ TEST_F(LibraryCatalogTest, OrderSidecarFiltersFormatsAndResolvesPinnedPaths) {
   ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(visible.front(), markdown));
   EXPECT_EQ(markdown.path, "/alpha.md");
 
-  std::vector<size_t> resolved;
-  ASSERT_TRUE(LIBRARY_CATALOG.findPathIndices({"/Middle.txt", "/missing.epub", "/alpha.md"}, resolved));
   ASSERT_EQ(resolved.size(), 3U);
   EXPECT_NE(resolved[0], static_cast<size_t>(-1));
   EXPECT_EQ(resolved[1], static_cast<size_t>(-1));
@@ -420,6 +422,35 @@ TEST_F(LibraryCatalogTest, CorruptOrderSidecarIsRegeneratedFromCommittedCatalog)
   std::vector<size_t> rebuilt;
   ASSERT_TRUE(loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_TITLE_ASC, rebuilt));
   EXPECT_EQ(rebuilt, first);
+}
+
+TEST_F(LibraryCatalogTest, CorruptOrderSidecarFallsBackWhenResolvingPinnedPaths) {
+  addBook("Zulu.txt");
+  addBook("alpha.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+
+  std::vector<size_t> ordered;
+  ASSERT_TRUE(loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_TITLE_ASC, ordered));
+  const fs::path order = root_ / ".crosspoint/library.order";
+  std::fstream file(order, std::ios::binary | std::ios::in | std::ios::out);
+  ASSERT_TRUE(file.good());
+  file.seekg(-1, std::ios::end);
+  char last = 0;
+  file.read(&last, 1);
+  ASSERT_TRUE(file.good());
+  last ^= 0x40;
+  file.seekp(-1, std::ios::end);
+  file.write(&last, 1);
+  file.close();
+
+  std::vector<size_t> resolved;
+  ASSERT_TRUE(LIBRARY_CATALOG.findPathIndices({"/alpha.txt"}, resolved));
+  ASSERT_EQ(resolved.size(), 1U);
+  ASSERT_NE(resolved.front(), static_cast<size_t>(-1));
+  LibraryBookRecord record;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(resolved.front(), record));
+  EXPECT_EQ(record.path, "/alpha.txt");
 }
 
 TEST_F(LibraryCatalogTest, SinglePublishedPathUpdatesReadyCatalogWithoutFullRebuild) {
@@ -524,6 +555,49 @@ TEST_F(LibraryCatalogTest, SingleDeletedPathRemovesOnlyThatRecordWithoutRediscov
   EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.dirty"));
 }
 
+TEST_F(LibraryCatalogTest, ExternalDeletionIsDetectedCooperativelyWithoutDirtyMarker) {
+  addBook("one.txt");
+  addBook("two.txt");
+  addBook("three.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+  const uint32_t originalGeneration = LIBRARY_CATALOG.generation();
+
+  ASSERT_TRUE(fs::remove(root_ / "two.txt"));
+  LIBRARY_CATALOG.invalidateSourceValidation();
+  ASSERT_TRUE(LIBRARY_CATALOG.open());
+  ASSERT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Enriching);
+  advanceToReady();
+
+  EXPECT_EQ(LIBRARY_CATALOG.count(), 2U);
+  EXPECT_GT(LIBRARY_CATALOG.generation(), originalGeneration);
+  std::vector<LibraryBookRecord> records;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadPage(0, 2, records));
+  ASSERT_EQ(records.size(), 2U);
+  EXPECT_EQ(records[0].path, "/one.txt");
+  EXPECT_EQ(records[1].path, "/three.txt");
+}
+
+TEST_F(LibraryCatalogTest, SourceValidationKeepsAnUnchangedCatalogAndGeneration) {
+  addBook("one.txt");
+  addBook("two.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+  const uint32_t originalGeneration = LIBRARY_CATALOG.generation();
+
+  LIBRARY_CATALOG.invalidateSourceValidation();
+  ASSERT_TRUE(LIBRARY_CATALOG.open());
+  ASSERT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Enriching);
+  LIBRARY_CATALOG.step();
+  EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Enriching);
+  LIBRARY_CATALOG.step();
+
+  EXPECT_TRUE(LIBRARY_CATALOG.isReady());
+  EXPECT_EQ(LIBRARY_CATALOG.count(), 2U);
+  EXPECT_EQ(LIBRARY_CATALOG.generation(), originalGeneration);
+  EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.work"));
+}
+
 TEST_F(LibraryCatalogTest, ResolvePinnedPathsAndLoadNonContiguousRecordsWithOneCatalog) {
   addBook("one.txt");
   addBook("two.txt");
@@ -541,7 +615,8 @@ TEST_F(LibraryCatalogTest, ResolvePinnedPathsAndLoadNonContiguousRecordsWithOneC
   EXPECT_NE(indices[0], indices[2]);
 
   std::vector<LibraryBookRecord> records;
-  ASSERT_TRUE(LIBRARY_CATALOG.loadRecords({indices[0], indices[2]}, records));
+  const std::array<size_t, 2> selectedIndices = {indices[0], indices[2]};
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecords(selectedIndices, records));
   ASSERT_EQ(records.size(), 2U);
   EXPECT_EQ(records[0].path, "/three.txt");
   EXPECT_EQ(records[1].path, "/one.txt");

@@ -242,8 +242,8 @@ bool filesEqual(const std::string& leftPath, const std::string& rightPath) {
     return false;
   }
 
-  std::array<uint8_t, 128> leftBuffer{};
-  std::array<uint8_t, 128> rightBuffer{};
+  std::array<uint8_t, 128> leftBuffer;
+  std::array<uint8_t, 128> rightBuffer;
   uint64_t remaining = left.fileSize64();
   while (remaining > 0) {
     const size_t chunk = static_cast<size_t>(std::min<uint64_t>(leftBuffer.size(), remaining));
@@ -285,7 +285,7 @@ bool createExactLegacyBackup(const std::string& canonicalPath, const ClippingCod
       return false;
     }
 
-    std::array<uint8_t, 128> buffer{};
+    std::array<uint8_t, 128> buffer;
     uint64_t remaining = source.fileSize64();
     bool copied = true;
     while (remaining > 0) {
@@ -320,8 +320,8 @@ bool sameRekeyedIndex(const ClippingCodec::Index& actual, const ClippingCodec::B
 bool sameTextPayloads(HalFile& source, const ClippingCodec::Index& sourceIndex, HalFile& destination,
                       const ClippingCodec::Index& destinationIndex) {
   if (sourceIndex.clippings.size() != destinationIndex.clippings.size()) return false;
-  std::array<uint8_t, 128> sourceBuffer{};
-  std::array<uint8_t, 128> destinationBuffer{};
+  std::array<uint8_t, 128> sourceBuffer;
+  std::array<uint8_t, 128> destinationBuffer;
   for (size_t i = 0; i < sourceIndex.clippings.size(); ++i) {
     const auto& sourceClipping = sourceIndex.clippings[i];
     const auto& destinationClipping = destinationIndex.clippings[i];
@@ -505,7 +505,7 @@ bool checksumFile(const std::string& path, const uint64_t expectedLength, const 
     file.close();
     return false;
   }
-  std::array<uint8_t, 128> buffer{};
+  std::array<uint8_t, 128> buffer;
   uint64_t remaining = expectedLength;
   uint32_t checksum = 0;
   while (remaining > 0) {
@@ -1245,7 +1245,7 @@ ClippingStore::RekeyResult ClippingStore::prepareRekeyForBook(const std::string&
               writePayload(encodedRecord.data(), encodedRecord.size());
   }
 
-  std::array<uint8_t, 128> copyBuffer{};
+  std::array<uint8_t, 128> copyBuffer;
   for (size_t i = 0; writeOk && i < target.size(); ++i) {
     uint32_t sourceOffset = sourceIndex.clippings[i].textOffset;
     uint16_t remaining = sourceIndex.clippings[i].textLength;
@@ -1493,7 +1493,7 @@ bool ClippingStore::rewrite(std::vector<ClippingCodec::ClippingMetadata> target,
               writePayload(encodedRecord.data(), encodedRecord.size());
   }
 
-  std::array<uint8_t, 128> copyBuffer{};
+  std::array<uint8_t, 128> copyBuffer;
   for (size_t i = 0; writeOk && i < target.size(); ++i) {
     if (replacementText && i == replacementIndex) {
       writeOk = writePayload(reinterpret_cast<const uint8_t*>(replacementText->data()), replacementText->size());

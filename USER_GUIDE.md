@@ -245,7 +245,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **Reader Font Family**: Choose the font used for reading:
   
   - "Noto Serif" (default) - Google's serif font
-  - "Noto Sans" - Google's sans-serif font
+  - Additional font families installed from the SD card
 
 - **Reader Font Size**: Adjust the text size for reading; options are "Small", "Medium" (default), "Large", or "X Large".
 
@@ -544,7 +544,7 @@ To use custom sleep images, set the sleep screen mode to **Custom** or **Cover +
 
 ### 3.8 Custom Fonts (SD Card)
 
-CrossVi supports loading additional fonts from the SD card, extending beyond the two built-in families (Noto Serif, Noto Sans). Custom fonts can include extended Unicode coverage, enabling CJK (Chinese, Japanese, Korean) and other scripts.
+CrossVi includes Noto Serif for reading and supports loading additional fonts from the SD card. Custom fonts can include Noto Sans and extended Unicode coverage for CJK (Chinese, Japanese, Korean) and other scripts.
 
 There are three ways to install fonts:
 

@@ -49,6 +49,7 @@ bool KOReaderCredentialStore::fromJson(JsonVariantConst doc) {
   } else {
     LOG_DBG("KRS", "Invalid matchMethod %u in JSON, resetting to FILENAME", method);
     setMatchMethod(DocumentMatchMethod::FILENAME);
+    needsResave = true;
   }
   setSendMetadata(doc["sendMetadata"] | false);
 
@@ -133,9 +134,16 @@ bool KOReaderCredentialStore::hasCredentials() const {
 
 void KOReaderCredentialStore::clearCredentials() {
   if (!ensureLoaded()) return;
+  std::string previousUsername = std::move(username);
+  std::string previousPassword = std::move(password);
   username.clear();
   password.clear();
-  saveToFile();
+  if (!saveToFile()) {
+    username = std::move(previousUsername);
+    password = std::move(previousPassword);
+    LOG_ERR("KRS", "Failed to clear KOReader credentials");
+    return;
+  }
   LOG_DBG("KRS", "Cleared KOReader credentials");
 }
 

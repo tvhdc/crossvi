@@ -75,6 +75,7 @@ class RecentBooksActivity final : public Activity {
   ReaderUtils::HoldGestureState holdLeft;
   ReaderUtils::HoldGestureState holdRight;
   ReaderUtils::HoldGestureState holdBack;
+  ButtonNavigator buttonNavigator_;
   ReleaseDebounceGuard navigationReleaseGuard;
 
   std::vector<RecentBook> recentBooks;

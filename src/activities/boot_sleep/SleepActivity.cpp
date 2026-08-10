@@ -36,16 +36,18 @@ namespace {
 // Power the panel down as part of that refresh so teardown work cannot leave it
 // electrically driven and darken the image after it has settled.
 constexpr bool TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH = true;
-constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 2;
+// Keep one X3 conditioning pass for the strong sleep cleanup, without the
+// previous second pass that could over-drive the parked image.
+constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 1;
 
 void prepareStrongSleepRefresh() { display.requestResync(X3_SLEEP_CONDITION_PASSES); }
 
 void displayStrongSleepFrame() {
   prepareStrongSleepRefresh();
-  // The panel scans its own RAM after triggerDisplay() returns. Let the main
-  // task persist state and shut down peripherals during that waveform;
-  // HalDisplay::deepSleep() waits for completion before cutting panel power.
-  display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  // Wait for the waveform and POWER_OFF to finish here. Persisting state after
+  // an asynchronous trigger could otherwise leave the panel driven while a
+  // slow SD write is still in progress, making the parked image darken.
+  display.displayBuffer(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void drawCenteredInRect(const GfxRenderer& renderer, const int fontId, const Rect& rect, const int y, const char* text,

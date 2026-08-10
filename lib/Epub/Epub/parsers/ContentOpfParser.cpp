@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <limits>
+#include <string_view>
 
 #include "Epub/BookMetadataCache.h"
 
@@ -36,6 +37,18 @@ std::string trimAsciiWhitespace(const std::string& value) {
   if (first == std::string::npos) return {};
   const size_t last = value.find_last_not_of(" \t\r\n");
   return value.substr(first, last - first + 1);
+}
+
+bool hasWhitespaceSeparatedToken(const std::string& value, const std::string_view token) {
+  constexpr std::string_view whitespace = " \t\r\n";
+  size_t start = value.find_first_not_of(whitespace);
+  while (start != std::string::npos) {
+    const size_t end = value.find_first_of(whitespace, start);
+    const size_t length = (end == std::string::npos ? value.size() : end) - start;
+    if (length == token.size() && value.compare(start, length, token) == 0) return true;
+    start = value.find_first_not_of(whitespace, end);
+  }
+  return false;
 }
 }  // namespace
 
@@ -298,8 +311,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
 
     // EPUB 3: Check for nav document (properties contains "nav")
     if (!properties.empty() && self->tocNavPath.empty()) {
-      // Properties is space-separated, check if "nav" is present as a word
-      if (properties == "nav" || properties.find("nav ") == 0 || properties.find(" nav") != std::string::npos) {
+      if (hasWhitespaceSeparatedToken(properties, "nav")) {
         self->tocNavPath = href;
         LOG_DBG("COF", "Found EPUB 3 nav document: %s", href.c_str());
       }
@@ -307,8 +319,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
 
     // EPUB 3: Check for cover image (properties contains "cover-image")
     if (!properties.empty() && self->coverItemHref.empty()) {
-      if (properties == "cover-image" || properties.find("cover-image ") == 0 ||
-          properties.find(" cover-image") != std::string::npos) {
+      if (hasWhitespaceSeparatedToken(properties, "cover-image")) {
         self->coverItemHref = href;
       }
     }

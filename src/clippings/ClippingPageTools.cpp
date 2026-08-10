@@ -344,6 +344,7 @@ HighlightPlan buildHighlightPlan(GfxRenderer& renderer, const Page& page, const 
     range.last = pageIndex == clipping.endPage ? clipping.endWordIndex : std::numeric_limits<uint32_t>::max();
     if (range.first <= range.last) ranges[rangeCount++] = range;
   }
+  if (rangeCount == 0 && sourceRangeCount == 0) return {};
   return buildGeometry(
       renderer, page, fontId, marginLeft, marginTop,
       [&](const TextBlock& block, const uint16_t blockWordIndex, const uint32_t pageWordIndex) {
@@ -394,6 +395,7 @@ HighlightPlan buildTextAnchorHighlightPlan(GfxRenderer& renderer, const Page& pa
       ranges[rangeCount++] = {clipping.textSourceStart, clipping.textSourceEnd};
     }
   }
+  if (rangeCount == 0) return {};
   return buildGeometry(
       renderer, page, fontId, marginLeft, marginTop, [&](const TextBlock&, const uint16_t, const uint32_t wordIndex) {
         if (wordIndex >= anchorCount || anchors[wordIndex].start >= anchors[wordIndex].end) return false;

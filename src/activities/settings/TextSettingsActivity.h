@@ -49,6 +49,7 @@ class TextSettingsActivity final : public Activity {
   size_t customPreviewSnapshotSize_ = 0;
 
   void rebuildSettings();
+  void moveTab(int direction);
   void rebuildFontOptions();
   void rebuildSizeOptions();
   void moveSelection(int direction);

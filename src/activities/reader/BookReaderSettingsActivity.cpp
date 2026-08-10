@@ -114,6 +114,16 @@ void BookReaderSettingsActivity::loop() {
     resetConfirmationPending = false;
     requestUpdate();
   });
+  buttonNavigator.onNextContinuous([this, rowCount] {
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, rowCount);
+    resetConfirmationPending = false;
+    requestUpdate();
+  });
+  buttonNavigator.onPreviousContinuous([this, rowCount] {
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, rowCount);
+    resetConfirmationPending = false;
+    requestUpdate();
+  });
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (resetConfirmationPending) {

@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string_view>
 
+#include "CrossPointSettings.h"
 #include "StringUtils.h"
+#include "Utf8.h"
 
 namespace DictionaryRegistry {
 namespace {
@@ -15,6 +18,14 @@ namespace {
 // lets users keep the folder out of the file browser (hidden by default,
 // see FileBrowserActivity's showHiddenFiles check).
 constexpr const char* DICT_ROOTS[] = {"/dictionaries", "/.dictionaries"};
+
+template <size_t Capacity>
+bool readValidEntryName(HalFile& entry, char (&name)[Capacity]) {
+  name[0] = '\0';
+  const size_t length = entry.getName(name, Capacity);
+  return length > 0 && length < Capacity && name[length] == '\0' && strnlen(name, Capacity) == length &&
+         utf8IsValid(std::string_view(name, length));
+}
 
 // Find the single .idx stem inside one dictionary folder. Returns false when
 // the folder holds no .idx or more than one distinct stem (ambiguous).
@@ -27,7 +38,7 @@ bool findStem(const char* folderPath, std::string& stemOut) {
   char foundStem[128];
   foundStem[0] = '\0';
   for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-    entry.getName(name, sizeof(name));
+    if (!readValidEntryName(entry, name)) continue;
     // Skip macOS metadata files (AppleDouble resource forks)
     if (entry.isDirectory() || strncmp(name, "._", 2) == 0) continue;
 
@@ -71,9 +82,11 @@ void discover(std::vector<DictionaryEntry>& out) {
     }
 
     rootDir.rewindDirectory();
-    char name[128];
+    // The selected folder name is persisted verbatim in SETTINGS.dictionaryName.
+    // A smaller buffer makes SdFat reject names that cannot round-trip through settings.
+    char name[sizeof(SETTINGS.dictionaryName)];
     for (auto entry = rootDir.openNextFile(); entry; entry = rootDir.openNextFile()) {
-      entry.getName(name, sizeof(name));
+      if (!readValidEntryName(entry, name)) continue;
       if (!entry.isDirectory() || name[0] == '.') continue;
 
       std::string folderPath = std::string(dictRoot) + "/" + name;
@@ -96,6 +109,8 @@ void discover(std::vector<DictionaryEntry>& out) {
 
 bool resolveBasePath(const char* folderName, std::string& basePathOut) {
   if (!folderName || folderName[0] == '\0') return false;
+  const size_t length = strnlen(folderName, sizeof(SETTINGS.dictionaryName));
+  if (length == sizeof(SETTINGS.dictionaryName) || !utf8IsValid(std::string_view(folderName, length))) return false;
   // folderName is persisted in the settings JSON: reject separators and dot
   // prefixes so a crafted value cannot escape the dictionary roots.
   if (folderName[0] == '.' || strpbrk(folderName, "/\\") != nullptr) return false;

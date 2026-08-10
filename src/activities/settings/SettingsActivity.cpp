@@ -8,6 +8,7 @@
 #include <Version.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 
@@ -152,28 +153,25 @@ void SettingsActivity::loop() {
   // and the eventual release cannot also move a row.
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) holdUp.onPress();
   if (mappedInput.wasPressed(MappedInputManager::Button::Down)) holdDown.onPress();
-  if (mappedInput.isPressed(MappedInputManager::Button::Up) &&
-      holdUp.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Up), 500)) {
+  if (mappedInput.isPressed(MappedInputManager::Button::Up)) {
+    (void)holdUp.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Up), 500);
+  }
+  if (mappedInput.isPressed(MappedInputManager::Button::Down)) {
+    (void)holdDown.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Down), 500);
+  }
+
+  const auto moveCategory = [this](const int direction) {
     const bool rowWasSelected = selectedSettingIndex > 0;
     const int previousSetting = selectedSettingIndex;
-    selectedCategoryIndex = ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount);
+    selectedCategoryIndex = direction < 0 ? ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount)
+                                          : ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount);
     rebuildSettingsLists();
     selectedSettingIndex = rowWasSelected ? std::min(previousSetting, settingsCount) : 0;
     pendingNavigation = 0;
     requestUpdate();
-    return;
-  }
-  if (mappedInput.isPressed(MappedInputManager::Button::Down) &&
-      holdDown.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Down), 500)) {
-    const bool rowWasSelected = selectedSettingIndex > 0;
-    const int previousSetting = selectedSettingIndex;
-    selectedCategoryIndex = ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount);
-    rebuildSettingsLists();
-    selectedSettingIndex = rowWasSelected ? std::min(previousSetting, settingsCount) : 0;
-    pendingNavigation = 0;
-    requestUpdate();
-    return;
-  }
+  };
+  buttonNavigator.onContinuous({MappedInputManager::Button::Up}, [&moveCategory] { moveCategory(-1); });
+  buttonNavigator.onContinuous({MappedInputManager::Button::Down}, [&moveCategory] { moveCategory(1); });
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
     if (holdUp.onRelease() == ReaderUtils::HoldRelease::Short) --pendingNavigation;
@@ -181,10 +179,12 @@ void SettingsActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     if (holdDown.onRelease() == ReaderUtils::HoldRelease::Short) ++pendingNavigation;
   }
-  // Front buttons have no long-press action in Settings; keep them useful for
-  // ordinary row navigation without allowing them to wrap into the tab bar.
+  // Front buttons navigate rows immediately and repeat after the shared
+  // 500 ms hold threshold, without wrapping into the tab bar.
   if (mappedInput.wasPressed(MappedInputManager::Button::Left)) --pendingNavigation;
   if (mappedInput.wasPressed(MappedInputManager::Button::Right)) ++pendingNavigation;
+  buttonNavigator.onContinuous({MappedInputManager::Button::Left}, [this] { --pendingNavigation; });
+  buttonNavigator.onContinuous({MappedInputManager::Button::Right}, [this] { ++pendingNavigation; });
 
   if (pendingNavigation != 0) {
     while (pendingNavigation < 0) {
@@ -419,10 +419,9 @@ void SettingsActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
                  CROSSPOINT_VERSION);
 
-  std::vector<TabInfo> tabs;
-  tabs.reserve(categoryCount);
+  std::array<TabInfo, categoryCount> tabs{};
   for (int i = 0; i < categoryCount; i++) {
-    tabs.push_back({I18N.get(categoryNames[i]), selectedCategoryIndex == i});
+    tabs[static_cast<size_t>(i)] = {I18N.get(categoryNames[i]), selectedCategoryIndex == i};
   }
   GUI.drawTabBar(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight}, tabs,
                  selectedSettingIndex == 0);

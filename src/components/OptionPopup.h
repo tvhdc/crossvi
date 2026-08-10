@@ -3,11 +3,13 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "util/ButtonNavigator.h"
 
 class OptionPopup {
  public:
@@ -44,14 +46,20 @@ class OptionPopup {
     active = true;
   }
 
+  void show(StrId titleId, std::vector<std::string>&& options, int currentIndex, std::function<void(int)> onSelect) {
+    title = I18N.get(titleId);
+    ownedStrings = std::move(options);
+    selectedIndex = currentIndex;
+    onSelectCallback = std::move(onSelect);
+    active = true;
+  }
+
   bool handleInput(const MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
 
-    if (input.wasPressed(MappedInputManager::Button::NavPrevious)) {
-      return moveSelection(-1, requestUpdate);
-    } else if (input.wasPressed(MappedInputManager::Button::NavNext)) {
-      return moveSelection(1, requestUpdate);
-    } else if (input.wasReleased(MappedInputManager::Button::Confirm)) {
+    navigator.onPrevious([this, &requestUpdate] { moveSelection(-1, requestUpdate); });
+    navigator.onNext([this, &requestUpdate] { moveSelection(1, requestUpdate); });
+    if (input.wasReleased(MappedInputManager::Button::Confirm)) {
       return selectCurrent(requestUpdate);
     } else if (input.wasReleased(MappedInputManager::Button::Back)) {
       return dismiss(requestUpdate);
@@ -104,4 +112,5 @@ class OptionPopup {
   std::vector<std::string> ownedStrings;
   int selectedIndex = 0;
   std::function<void(int)> onSelectCallback;
+  ButtonNavigator navigator;
 };

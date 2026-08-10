@@ -183,6 +183,14 @@ void EpubReaderBookmarksActivity::loop() {
     selectorIndex = ButtonNavigator::previousIndex(selectorIndex, bookmarks.size());
     requestUpdate();
   });
+  buttonNavigator.onNextContinuous([this] {
+    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, bookmarks.size());
+    requestUpdate();
+  });
+  buttonNavigator.onPreviousContinuous([this] {
+    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, bookmarks.size());
+    requestUpdate();
+  });
 }
 
 void EpubReaderBookmarksActivity::render(RenderLock&&) {

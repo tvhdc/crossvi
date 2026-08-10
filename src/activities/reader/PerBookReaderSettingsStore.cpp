@@ -73,9 +73,10 @@ bool validLegacyV2(const uint8_t* bytes) {
 }
 
 LegacyReadStatus readLegacy(const std::string& path, const PerBookReaderSettings& defaults, LegacySettings& legacy) {
-  if (!Storage.exists(path.c_str())) return LegacyReadStatus::MISSING;
   HalFile file;
-  if (!Storage.openFileForRead("PBRS", path, file)) return LegacyReadStatus::IO_ERROR;
+  if (!Storage.openFileForRead("PBRS", path, file)) {
+    return Storage.exists(path.c_str()) ? LegacyReadStatus::IO_ERROR : LegacyReadStatus::MISSING;
+  }
   const uint64_t size = file.fileSize64();
   if (size == 0) {
     file.close();
@@ -203,10 +204,10 @@ BackupStatus createLegacyBackup(const std::string& legacyPath, const LegacySetti
 }
 
 ReadStatus readStored(const std::string& path, PerBookReaderSettings& settings) {
-  if (!Storage.exists(path.c_str())) return ReadStatus::MISSING;
-
   HalFile file;
-  if (!Storage.openFileForRead("PBRS", path, file)) return ReadStatus::IO_ERROR;
+  if (!Storage.openFileForRead("PBRS", path, file)) {
+    return Storage.exists(path.c_str()) ? ReadStatus::IO_ERROR : ReadStatus::MISSING;
+  }
 
   const size_t fileSize = file.fileSize();
   if (fileSize > PerBookReaderSettingsCodec::ENCODED_SIZE) {
@@ -242,7 +243,9 @@ bool writeVerified(const std::string& path, const PerBookReaderSettingsCodec::En
   file.flush();
   if (!file.sync() || !file.close()) return false;
   PerBookReaderSettings verified;
-  return readStored(path, verified) == ReadStatus::OK && verified == settings;
+  PerBookReaderSettings canonical = settings;
+  canonical.fontFamily = canonicalPerBookFontFamily(canonical.fontFamily);
+  return readStored(path, verified) == ReadStatus::OK && verified == canonical;
 }
 
 }  // namespace

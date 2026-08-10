@@ -45,3 +45,23 @@ target_link_libraries(DictionaryLookupTest PRIVATE
 )
 
 gtest_discover_tests(DictionaryLookupTest)
+
+add_executable(DictionaryRegistryTest
+  DictionaryRegistryTest.cpp
+  ${REPO_ROOT}/src/util/DictionaryRegistry.cpp
+)
+
+target_include_directories(DictionaryRegistryTest PRIVATE
+  ${REPO_ROOT}/test/book_cache_utils/stubs
+  ${REPO_ROOT}/src
+  ${REPO_ROOT}/src/util
+  ${REPO_ROOT}/lib/EpdFont
+  ${REPO_ROOT}/lib/Utf8
+)
+target_compile_definitions(DictionaryRegistryTest PRIVATE UNIT_TEST)
+target_link_libraries(DictionaryRegistryTest PRIVATE
+  GTest::gtest_main
+  crosspoint_test_common
+)
+
+gtest_discover_tests(DictionaryRegistryTest)

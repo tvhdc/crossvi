@@ -5,9 +5,6 @@
 #include <limits>
 
 namespace {
-constexpr const char* MONTH_NAMES[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-
 bool isBitSet(const std::array<uint8_t, READING_HISTORY_BYTES>& bits, const size_t bitIndex) {
   return bitIndex < READING_HISTORY_DAYS && (bits[bitIndex / 8] & static_cast<uint8_t>(1u << (bitIndex % 8))) != 0;
 }
@@ -180,20 +177,6 @@ uint16_t readingSpanDaysInclusive(const ReadingStatsDate& start, const ReadingSt
 uint16_t readingSpanDaysElapsed(const ReadingStatsDate& start, const ReadingStatsDate& end) {
   if (!start.isValid() || !end.isValid() || compareReadingStatsDate(end, start) < 0) return 0;
   return static_cast<uint16_t>(readingStatsDayIndex(end) - readingStatsDayIndex(start));
-}
-
-void formatReadingStatsShortDate(const ReadingStatsDate& date, char* buffer, const size_t length) {
-  if (!buffer || length == 0) return;
-  if (!date.isValid()) {
-    snprintf(buffer, length, "-");
-    return;
-  }
-  snprintf(buffer, length, "%s %u", MONTH_NAMES[date.month - 1], static_cast<unsigned>(date.day));
-}
-
-void formatReadingStatsMonthToken(const ReadingStatsDate& date, char* buffer, const size_t length) {
-  if (!buffer || length == 0) return;
-  snprintf(buffer, length, "%s", date.isValid() ? MONTH_NAMES[date.month - 1] : "-");
 }
 
 void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT>& timeOfDaySeconds,

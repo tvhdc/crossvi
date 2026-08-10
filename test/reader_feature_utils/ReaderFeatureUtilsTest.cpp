@@ -172,6 +172,8 @@ TEST(UrlUtils, ResolvesRelativeOpdsLinksAgainstTheFeedDirectory) {
             "https://cdn.example/book.epub");
   EXPECT_EQ(UrlUtils::buildUrl("https://host?token=x", "/opds"), "https://host/opds");
   EXPECT_EQ(UrlUtils::buildUrl("https://host/opds/a/root.xml", "../book.epub"), "https://host/opds/book.epub");
+  EXPECT_EQ(UrlUtils::buildUrl(UrlUtils::buildUrl("https://host/opds/root.xml", "sub/catalog.xml"), "search?q=reader"),
+            "https://host/opds/sub/search?q=reader");
 }
 
 TEST(EpubSearchTraversal, ExtendsPartialCachesAndClampsInvalidStartPages) {
@@ -372,6 +374,7 @@ TEST(BookSearch, HandlesNfdSeparatorsAndBounds) {
       "c");
   EXPECT_EQ(matchBookSearch(makeBookSearchQuery("mat biec"), nfd), BookSearchMatch::Folded);
   EXPECT_TRUE(makeBookSearchQuery(std::string(100, 'a')).exact.size() <= BOOK_SEARCH_QUERY_BYTES);
+  EXPECT_EQ(makeFoldedBookSearchKey(nfd), makeBookSearchQuery(nfd).folded);
   EXPECT_EQ(matchBookSearch(makeBookSearchQuery("missing"),
                             "M\xE1\xBA\xAF"
                             "t bi\xE1\xBA\xBF"
@@ -503,6 +506,26 @@ TEST(LibraryGridModel, UsesNineRowsPerLibraryListPage) {
   EXPECT_EQ(LibraryGridModel::pageNumber(8, 10, pageSize), 1u);
   EXPECT_EQ(LibraryGridModel::pageNumber(9, 10, pageSize), 2u);
   EXPECT_EQ(LibraryGridModel::pageStart(17, 20, pageSize), 9u);
+}
+
+TEST(LibraryGridModel, CollectsPinnedThenSortedPageSourcesInOnePass) {
+  constexpr std::array<size_t, 8> sorted = {7, 6, 5, 4, 3, 2, 1, 0};
+  constexpr std::array<size_t, 2> pinned = {2, 6};
+  std::array<size_t, 4> firstPage{};
+  ASSERT_TRUE(LibraryGridModel::collectVisiblePageSources(sorted, pinned, 8, 0, firstPage));
+  EXPECT_EQ(firstPage, (std::array<size_t, 4>{2, 6, 7, 5}));
+
+  std::array<size_t, 3> secondPage{};
+  ASSERT_TRUE(LibraryGridModel::collectVisiblePageSources(sorted, pinned, 8, 4, secondPage));
+  EXPECT_EQ(secondPage, (std::array<size_t, 3>{4, 3, 1}));
+}
+
+TEST(LibraryGridModel, RejectsInvalidOrIncompleteVisiblePageSources) {
+  constexpr std::array<size_t, 3> sorted = {0, 1, 2};
+  constexpr std::array<size_t, 1> invalidPinned = {4};
+  std::array<size_t, 1> output{};
+  EXPECT_FALSE(LibraryGridModel::collectVisiblePageSources(sorted, invalidPinned, 3, 0, output));
+  EXPECT_FALSE(LibraryGridModel::collectVisiblePageSources(sorted, std::span<const size_t>{}, 3, 3, output));
 }
 
 TEST(LibraryGridModel, EntersTheRememberedPageFromTabFocus) {

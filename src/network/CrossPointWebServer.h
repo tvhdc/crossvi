@@ -8,6 +8,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "network/JsonBodyBuffer.h"
 
@@ -25,9 +26,9 @@ class CrossPointWebServer {
     bool inProgress = false;
     size_t received = 0;
     size_t total = 0;
-    std::string filename;
-    std::string lastCompleteName;
-    std::string lastCompletePath;
+    std::string_view filename;
+    std::string_view lastCompleteName;
+    std::string_view lastCompletePath;
     size_t lastCompleteSize = 0;
     unsigned long lastCompleteAt = 0;
   };

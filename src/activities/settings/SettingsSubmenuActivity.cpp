@@ -113,7 +113,7 @@ void SettingsSubmenuActivity::rebuildSettings() {
       dictionary.nameId = StrId::STR_DICTIONARY_SET;
       settings_.push_back(std::move(dictionary));
       settings_.push_back(SettingInfo::Enum(StrId::STR_TEXT_TAB_FONT, &CrossPointSettings::dictionaryFontFamily,
-                                            {StrId::STR_USE_READER_FONT, StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS}));
+                                            {StrId::STR_USE_READER_FONT, StrId::STR_NOTO_SERIF}));
       SettingInfo size = buildDictionaryFontSizeSetting();
       size.nameId = StrId::STR_TEXT_TAB_SIZE;
       settings_.push_back(std::move(size));

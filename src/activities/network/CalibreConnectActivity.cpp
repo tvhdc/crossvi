@@ -143,10 +143,10 @@ void CalibreConnectActivity::loop() {
     bool changed = false;
     if (status.inProgress) {
       if (status.received != lastProgressReceived || status.total != lastProgressTotal ||
-          status.filename != currentUploadName) {
+          status.filename != std::string_view(currentUploadName)) {
         lastProgressReceived = status.received;
         lastProgressTotal = status.total;
-        currentUploadName = status.filename;
+        currentUploadName.assign(status.filename.data(), status.filename.size());
         changed = true;
       }
     } else if (lastProgressReceived != 0 || lastProgressTotal != 0) {
@@ -159,7 +159,7 @@ void CalibreConnectActivity::loop() {
     // This prevents restoring an old value after the 6s timeout clears it
     if (status.lastCompleteAt != 0 && status.lastCompleteAt != lastProcessedCompleteAt) {
       lastCompleteAt = status.lastCompleteAt;
-      lastCompleteName = status.lastCompleteName;
+      lastCompleteName.assign(status.lastCompleteName.data(), status.lastCompleteName.size());
       lastProcessedCompleteAt = status.lastCompleteAt;  // Mark this value as processed
       changed = true;
     }

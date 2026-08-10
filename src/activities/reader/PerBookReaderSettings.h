@@ -40,6 +40,11 @@ struct PerBookReaderSettings {
   bool operator==(const PerBookReaderSettings&) const = default;
 };
 
+// Per-book files written by older CrossVi builds used value 1 for the removed
+// built-in Noto Sans family. Keep accepting that byte, but canonicalize it to
+// Noto Serif (0) before applying or writing settings.
+inline uint8_t canonicalPerBookFontFamily(const uint8_t family) { return family == 1 ? 0 : family; }
+
 inline bool setPerBookAutoPageTurnState(PerBookReaderSettings& settings, const uint8_t seconds,
                                         const bool startsOnOpen) {
   const bool hasInterval = seconds != 0;

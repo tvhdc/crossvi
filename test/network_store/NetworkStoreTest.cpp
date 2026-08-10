@@ -4,6 +4,7 @@
 
 #include <string>
 
+#include "KOReaderCredentialStore.h"
 #include "OpdsServerStore.h"
 #include "WifiCredentialStore.h"
 #include "lib/Serialization/CredentialIntegrity.h"
@@ -54,8 +55,12 @@ TEST(NetworkStore, WifiRejectsInvalidFieldsAndRollsBackFailedWrites) {
 
   ASSERT_TRUE(store.addCredential("Original", "password"));
   ASSERT_EQ(store.getCredentialCount(), 1U);
+  store.setLastConnectedSsid("Original");
+  ASSERT_EQ(store.getLastConnectedSsid(), "Original");
 
   Storage.makeUnwritable("/.crosspoint/wifi.json.tmp");
+  store.setLastConnectedSsid("Changed");
+  EXPECT_EQ(store.getLastConnectedSsid(), "Original");
   EXPECT_FALSE(store.updateCredential(0, "Changed", "new-password"));
   ASSERT_TRUE(store.getCredentialAt(0));
   EXPECT_EQ(store.getCredentialAt(0)->ssid, "Original");
@@ -90,4 +95,72 @@ TEST(NetworkStore, WifiRejectsInvalidFieldsAndRollsBackFailedWrites) {
   ASSERT_EQ(store.getCredentialCount(), 1U);
   EXPECT_EQ(store.getSsidAt(0), "Valid");
   EXPECT_TRUE(store.getLastConnectedSsid().empty());
+}
+
+TEST(NetworkStore, InvalidKOReaderMatchMethodIsRepairedOnDisk) {
+  Storage.reset();
+  auto& store = KOREADER_STORE;
+  ASSERT_TRUE(store.ensureLoaded());
+
+  JsonDocument malformed;
+  malformed["cfgVersion"] = 3;
+  malformed["username"] = "reader";
+  malformed["password_obf"] = "secret";
+  malformed["serverUrl"] = "";
+  malformed["matchMethod"] = 255;
+  malformed["sendMetadata"] = false;
+  malformed["syncBehavior"] = 0;
+  ASSERT_TRUE(store.fromJson(malformed.as<JsonVariantConst>()));
+  EXPECT_EQ(store.getMatchMethod(), DocumentMatchMethod::FILENAME);
+
+  ASSERT_TRUE(Storage.exists(KOReaderCredentialStore::getFilePath()));
+  const auto& bytes = Storage.file(KOReaderCredentialStore::getFilePath());
+  JsonDocument repaired;
+  ASSERT_FALSE(deserializeJson(repaired, bytes.data(), bytes.size()));
+  EXPECT_EQ(repaired["matchMethod"].as<uint8_t>(), static_cast<uint8_t>(DocumentMatchMethod::FILENAME));
+}
+
+TEST(NetworkStore, FailedCredentialClearsLeaveMemoryUnchanged) {
+  Storage.reset();
+
+  auto& koReaderStore = KOREADER_STORE;
+  ASSERT_TRUE(koReaderStore.ensureLoaded());
+  koReaderStore.setCredentials("reader", "secret");
+  ASSERT_TRUE(koReaderStore.saveToFile());
+
+  Storage.makeUnwritable("/.crosspoint/koreader.json.tmp");
+  koReaderStore.clearCredentials();
+  EXPECT_EQ(koReaderStore.getUsername(), "reader");
+  EXPECT_EQ(koReaderStore.getPassword(), "secret");
+  Storage.makeWritable("/.crosspoint/koreader.json.tmp");
+
+  auto& wifiStore = WIFI_STORE;
+  ASSERT_TRUE(wifiStore.addCredential("Network", "password"));
+  wifiStore.setLastConnectedSsid("Network");
+  ASSERT_EQ(wifiStore.getLastConnectedSsid(), "Network");
+
+  Storage.makeUnwritable("/.crosspoint/wifi.json.tmp");
+  wifiStore.clearLastConnectedSsid();
+  EXPECT_EQ(wifiStore.getLastConnectedSsid(), "Network");
+  wifiStore.clearAll();
+  EXPECT_TRUE(wifiStore.hasSavedCredential("Network"));
+  EXPECT_EQ(wifiStore.getLastConnectedSsid(), "Network");
+  Storage.makeWritable("/.crosspoint/wifi.json.tmp");
+
+  koReaderStore.clearCredentials();
+  EXPECT_TRUE(koReaderStore.getUsername().empty());
+  EXPECT_TRUE(koReaderStore.getPassword().empty());
+  const auto& koReaderBytes = Storage.file(KOReaderCredentialStore::getFilePath());
+  JsonDocument persistedKOReader;
+  ASSERT_FALSE(deserializeJson(persistedKOReader, koReaderBytes.data(), koReaderBytes.size()));
+  EXPECT_STREQ(persistedKOReader["username"].as<const char*>(), "");
+
+  wifiStore.clearAll();
+  EXPECT_EQ(wifiStore.getCredentialCount(), 0U);
+  EXPECT_TRUE(wifiStore.getLastConnectedSsid().empty());
+  const auto& wifiBytes = Storage.file(WifiCredentialStore::getFilePath());
+  JsonDocument persistedWifi;
+  ASSERT_FALSE(deserializeJson(persistedWifi, wifiBytes.data(), wifiBytes.size()));
+  EXPECT_EQ(persistedWifi["credentials"].as<JsonArrayConst>().size(), 0U);
+  EXPECT_STREQ(persistedWifi["lastConnectedSsid"].as<const char*>(), "");
 }
