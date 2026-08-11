@@ -50,8 +50,12 @@ class VocabularyLearningActivity final : public Activity {
   uint8_t countdownSegments_ = 5;
   std::array<uint8_t, 4> answerSlotOrder_{0, 1, 2, 3};
   uint8_t nextAnswerSlot_ = 4;
+  bool reviewOnly_ = false;
+  bool reviewStoreReady_ = false;
+  bool reviewSaveFailed_ = false;
   ReaderUtils::HoldGestureState skipHold_;
   std::array<QuestionRecord, MAX_QUESTIONS> records_{};
+  std::array<uint16_t, MAX_QUESTIONS> reviewEntryIndices_{};
 
   void handleSettingsInput();
   void handleQuestionInput();
@@ -59,6 +63,8 @@ class VocabularyLearningActivity final : public Activity {
   void handleResultsInput();
   void handleReviewInput();
   void beginQuiz(uint8_t count);
+  void beginReviewQuiz();
+  void startQuiz(uint8_t count, bool reviewOnly);
   void prepareQuestion();
   void submitAnswer(int selectedSlot, bool timedOut = false);
   void advanceAfterFeedback();

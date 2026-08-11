@@ -12,6 +12,8 @@
 #include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
+class TextBlock;
+
 class TextSettingsActivity final : public Activity {
  public:
   enum Tab : uint8_t { Font = 0, Size, Layout, Style, TabCount };
@@ -47,6 +49,11 @@ class TextSettingsActivity final : public Activity {
   bool customPreviewPending_ = false;
   std::unique_ptr<uint8_t[]> customPreviewSnapshot_;
   size_t customPreviewSnapshotSize_ = 0;
+  std::vector<std::shared_ptr<TextBlock>> previewLines_;
+  int previewTextX_ = 0;
+  int previewTextY_ = 0;
+  int previewTextBottom_ = 0;
+  int previewLineHeight_ = 0;
 
   void rebuildSettings();
   void moveTab(int direction);
@@ -58,7 +65,10 @@ class TextSettingsActivity final : public Activity {
   void applySizeSelection(int index);
   void invalidatePreviewLocked();
   void refreshPreviewAfterSettingChange(StrId settingId);
-  void renderPreviewPane(int top, int height, int fontId, const char* fontName, bool cachedCustomPreview);
+  void preparePreviewLines(int fontId, const char* text, int width, int maxLines);
+  void drawPreparedPreview(int fontId) const;
+  void renderPreviewPane(int top, int height, int fontId, const char* fontName, bool cachedCustomPreview,
+                         bool prepareForAntiAliasing);
   int currentListSize() const;
   int currentFontIndex() const;
   int currentSizeIndex() const;

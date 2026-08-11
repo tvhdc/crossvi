@@ -13,6 +13,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Preferences.h>
 #include <SPI.h>
 #include <Version.h>
 #include <WiFi.h>
@@ -37,7 +38,9 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "images/DefaultSleepScreens.h"
 #include "images/LoadingIcon.h"
+#include "images/Logo120.h"
 #include "util/ButtonNavigator.h"
 #include "util/PowerButtonGesture.h"
 #include "util/ScreenshotUtil.h"
@@ -171,6 +174,50 @@ void waitForPowerRelease() {
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
 constexpr uint64_t X3_SLEEP_FRAME_BYTES = 792ULL * 528ULL / 8ULL;
 constexpr uint64_t X4_SLEEP_FRAME_BYTES = 800ULL * 480ULL / 8ULL;
+constexpr char WAKE_NVS_NAMESPACE[] = "crosspoint";
+constexpr char WAKE_SHORT_PRESS_KEY[] = "wakeShortPr";
+
+static bool readWakeShortPressFromNvs() {
+#ifdef SIMULATOR
+  return false;
+#else
+  Preferences preferences;
+  if (!preferences.begin(WAKE_NVS_NAMESPACE, true)) return false;
+  const bool shortPressWakes = preferences.getBool(WAKE_SHORT_PRESS_KEY, false);
+  preferences.end();
+  return shortPressWakes;
+#endif
+}
+
+static void mirrorWakeShortPressToNvs() {
+#ifndef SIMULATOR
+  const bool shortPressWakes = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
+  Preferences preferences;
+  if (!preferences.begin(WAKE_NVS_NAMESPACE, false)) return;
+  if (preferences.getBool(WAKE_SHORT_PRESS_KEY, false) != shortPressWakes) {
+    preferences.putBool(WAKE_SHORT_PRESS_KEY, shortPressWakes);
+  }
+  preferences.end();
+#endif
+}
+
+// Grayscale sleep rendering leaves the single framebuffer holding only the
+// final gray plane, not the composite image retained by the panel. Such a
+// frame must never be replayed later as if it were a complete one-bit image.
+static bool sleepScreenMayUseGrayscale() {
+  const bool unfilteredCover =
+      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
+  switch (SETTINGS.sleepScreen) {
+    case CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM:
+      return true;
+    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER:
+      return unfilteredCover;
+    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM:
+      return !APP_STATE.lastSleepFromReader || unfilteredCover;
+    default:
+      return false;
+  }
+}
 
 static bool saveSleepFrameBuffer() {
   const uint8_t* buffer = renderer.getFrameBuffer();
@@ -201,29 +248,56 @@ static bool sleepFrameBufferReady() {
   return valid && closed;
 }
 
-static bool loadSleepFrameBuffer() {
+static bool loadSleepFrameBuffer(const bool consume = true) {
   HalFile file;
   if (!Storage.openFileForRead("SLP", SLEEP_FRAME_FILE, file)) return false;
   const size_t bufferSize = display.getBufferSize();
+  if (file.fileSize64() != bufferSize) {
+    file.close();
+    Storage.remove(SLEEP_FRAME_FILE);
+    return false;
+  }
   const size_t bytesRead = file.read(display.getFrameBuffer(), bufferSize);
   const bool closed = file.close();
   if (bytesRead != bufferSize || !closed) {
     Storage.remove(SLEEP_FRAME_FILE);
     return false;
   }
-  Storage.remove(SLEEP_FRAME_FILE);
+  if (consume) Storage.remove(SLEEP_FRAME_FILE);
   return true;
+}
+
+static void drawBundledDefaultSleepScreen() {
+  renderer.clearScreen();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  if (pageWidth == DEFAULT_SLEEP_X3_WIDTH && pageHeight == DEFAULT_SLEEP_X3_HEIGHT) {
+    drawBundledDefaultScreen(renderer, DEFAULT_SLEEP_X3_WIDTH, DEFAULT_SLEEP_X3_HEIGHT, DefaultSleepX3Rows,
+                             DefaultSleepX3Runs);
+  } else if (pageWidth == DEFAULT_SLEEP_X4_WIDTH && pageHeight == DEFAULT_SLEEP_X4_HEIGHT) {
+    drawBundledDefaultScreen(renderer, DEFAULT_SLEEP_X4_WIDTH, DEFAULT_SLEEP_X4_HEIGHT, DefaultSleepX4Rows,
+                             DefaultSleepX4Runs);
+  } else {
+    renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  }
 }
 
 // Some wake checks intentionally return to deep sleep before the activity and
 // font systems are initialized. Even those early exits must leave the panel in
 // a clean, powered-down state instead of cutting power behind a stale frame.
-void enterStartupDeepSleep() {
+void enterStartupDeepSleep(const bool tryRestoreSleepFrame) {
   constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 2;
   constexpr bool TURN_OFF_SCREEN_AFTER_REFRESH = true;
 
   display.begin(false);
-  display.clearScreen();
+  renderer.begin();
+  const bool quickResumeFrame =
+      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
+  const bool canRestoreFrame = tryRestoreSleepFrame && !APP_STATE.showBootScreen && !quickResumeFrame &&
+                               !sleepScreenMayUseGrayscale() && sleepFrameBufferReady();
+  if (!canRestoreFrame || !loadSleepFrameBuffer(false)) {
+    drawBundledDefaultSleepScreen();
+  }
   display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);
   display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_REFRESH);
   display.deepSleep();
@@ -237,10 +311,7 @@ void enterDeepSleep() {
 
   const bool rendersLastScreen =
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-  const bool rendersCustomBitmap =
-      !rendersLastScreen &&
-      (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
-       (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && !APP_STATE.lastSleepFromReader));
+  const bool mayRenderGrayscale = !rendersLastScreen && sleepScreenMayUseGrayscale();
   bool savedWakeFrame = false;
 
   // Detect a removed card once up front so all subsequent writes fail
@@ -264,7 +335,7 @@ void enterDeepSleep() {
     // panel state cannot be represented by the one-bit sleep-frame file. Keep
     // the conservative splash wake for that mode instead of diffing against a
     // false baseline.
-    if (!rendersLastScreen && !rendersCustomBitmap) savedWakeFrame = saveSleepFrameBuffer();
+    if (!rendersLastScreen && !mayRenderGrayscale) savedWakeFrame = saveSleepFrameBuffer();
     APP_STATE.showBootScreen = !savedWakeFrame;
     if (!APP_STATE.saveToFile()) {
       // Never advertise a frame that was not durably paired with its one-shot
@@ -283,6 +354,7 @@ void enterDeepSleep() {
 
   halTiltSensor.deepSleep();
   display.deepSleep();
+  mirrorWakeShortPressToNvs();
   LOG_DBG("MAIN", "Entering deep sleep");
 
   powerManager.startDeepSleep(gpio);
@@ -372,9 +444,27 @@ void setup() {
   }
   BootRecovery::begin(manualSafeBoot);
 
+  // Verify the wake gesture before SD mount/settings I/O. The only setting
+  // needed here is mirrored into NVS when settings load and again at sleep.
+  // X3 treats the PowerButton wake cause itself as a deliberate one-tap wake.
+  // X4 keeps the configured continuous-hold check so a later second tap cannot
+  // be mistaken for the press that originally powered the device.
+  bool powerWakeRejected = false;
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    const bool shortPressWakes = gpio.deviceIsX3() || readWakeShortPressFromNvs();
+    const uint16_t requiredDuration = shortPressWakes ? CrossPointSettings::POWER_BUTTON_WAKE_SHORT_MS
+                                                      : CrossPointSettings::POWER_BUTTON_WAKE_LONG_MS;
+    LOG_DBG("MAIN", "Verifying power button press duration (%u ms)", requiredDuration);
+    powerWakeRejected = !gpio.verifyPowerButtonWakeup(requiredDuration, shortPressWakes);
+  }
+
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
   if (!Storage.begin()) {
+    if (powerWakeRejected) {
+      enterStartupDeepSleep(true);
+      return;
+    }
     LOG_ERR("MAIN", "SD card initialization failed");
     setupDisplayAndFonts(false);
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
@@ -403,23 +493,21 @@ void setup() {
     BootRecovery::StageGuard stage(BootStage::AppState);
     APP_STATE.loadFromFile();
   }
+  mirrorWakeShortPressToNvs();
+  if (powerWakeRejected) {
+    enterStartupDeepSleep(true);
+    return;
+  }
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   switch (wakeupReason) {
-    case HalGPIO::WakeupReason::PowerButton:
-      LOG_DBG("MAIN", "Verifying power button press duration");
-      if (!gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonDuration(),
-                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP)) {
-        enterStartupDeepSleep();
-        return;
-      }
-      break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // If USB power caused a cold boot, go back to sleep
       LOG_DBG("MAIN", "Wakeup reason: After USB Power");
-      enterStartupDeepSleep();
+      enterStartupDeepSleep(false);
       return;
+    case HalGPIO::WakeupReason::PowerButton:
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
     case HalGPIO::WakeupReason::Other:
@@ -435,7 +523,8 @@ void setup() {
   // clean presentation and must never expose an old sleep frame.
   const bool recoveryBlocksSavedFrame =
       isSilentReboot || recoveryFirmwareMode || BootRecovery::active() || HalSystem::isRebootFromPanic();
-  const bool frameReady = !recoveryBlocksSavedFrame && !APP_STATE.showBootScreen && sleepFrameBufferReady();
+  const bool frameReady = !recoveryBlocksSavedFrame && !APP_STATE.showBootScreen && !sleepScreenMayUseGrayscale() &&
+                          sleepFrameBufferReady();
   const bool canRestoreSavedFrame =
       canRestoreSavedSleepFrame(wakeupReason == HalGPIO::WakeupReason::PowerButton, !APP_STATE.showBootScreen,
                                 frameReady, recoveryBlocksSavedFrame);

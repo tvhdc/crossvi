@@ -1,5 +1,6 @@
 #include "TextSettingsActivity.h"
 
+#include <Epub/ParsedText.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
@@ -14,6 +15,7 @@
 #include "ReaderFontSize.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
+#include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -44,18 +46,6 @@ bool settingAffectsTextPreview(const StrId settingId) {
     default:
       return false;
   }
-}
-
-std::string previewWithWordSpacing(const char* text, const uint8_t spacingLevel) {
-  if (!text || spacingLevel == 0) return text ? text : "";
-  std::string spaced;
-  const size_t length = std::strlen(text);
-  spaced.reserve(length + spacingLevel * 8);
-  for (const char* cursor = text; *cursor; ++cursor) {
-    spaced.push_back(*cursor);
-    if (*cursor == ' ') spaced.append(std::min<uint8_t>(spacingLevel, 4), ' ');
-  }
-  return spaced;
 }
 
 uint8_t effectivePointSize(const SdCardFontRegistry& registry, const char* familyName, const uint8_t logicalSize) {
@@ -279,6 +269,7 @@ void TextSettingsActivity::invalidatePreviewLocked() {
   customPreviewFontSize_ = UINT8_MAX;
   customPreviewSnapshot_.reset();
   customPreviewSnapshotSize_ = 0;
+  previewLines_.clear();
   customPreviewPending_ = SETTINGS.sdFontFamilyName[0] != '\0';
 }
 
@@ -451,8 +442,50 @@ uint8_t TextSettingsActivity::selectedPointSize() const {
   return ReaderFontSize::pointSize(SETTINGS.fontSize);
 }
 
+void TextSettingsActivity::preparePreviewLines(const int fontId, const char* text, const int width,
+                                               const int maxLines) {
+  previewLines_.clear();
+  if (fontId == 0 || !text || *text == '\0' || width <= 0 || maxLines <= 0) return;
+
+  BlockStyle style;
+  style.alignment = SETTINGS.paragraphAlignment == CrossPointSettings::BOOK_STYLE
+                        ? CssTextAlign::Justify
+                        : static_cast<CssTextAlign>(SETTINGS.paragraphAlignment);
+  if (SETTINGS.forceParagraphIndents) {
+    style.textIndentDefined = true;
+    style.textIndent = static_cast<int16_t>(renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR) * 2);
+  }
+
+  ParsedText parsed(SETTINGS.extraParagraphSpacing, SETTINGS.forceParagraphIndents, SETTINGS.hyphenationEnabled,
+                    SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing, style);
+  const char* cursor = text;
+  while (*cursor) {
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') ++cursor;
+    const char* start = cursor;
+    while (*cursor && *cursor != ' ' && *cursor != '\t' && *cursor != '\r' && *cursor != '\n') ++cursor;
+    if (cursor != start) parsed.addWord(std::string(start, cursor - start), EpdFontFamily::REGULAR);
+  }
+  parsed.layoutAndExtractLines(renderer, fontId, static_cast<uint16_t>(std::min(width, static_cast<int>(UINT16_MAX))),
+                               [this, maxLines](std::shared_ptr<TextBlock> line, uint32_t) {
+                                 if (static_cast<int>(previewLines_.size()) < maxLines)
+                                   previewLines_.push_back(std::move(line));
+                               });
+}
+
+void TextSettingsActivity::drawPreparedPreview(const int fontId) const {
+  int y = previewTextY_;
+  for (int lineIndex = 0; lineIndex < static_cast<int>(previewLines_.size()); ++lineIndex) {
+    if (y + previewLineHeight_ > previewTextBottom_) break;
+    previewLines_[lineIndex]->render(renderer, fontId, previewTextX_, y);
+    y += previewLineHeight_;
+    if (SETTINGS.extraParagraphSpacing && lineIndex == 0 && previewLines_.size() > 1) {
+      y += std::max(2, previewLineHeight_ / 3);
+    }
+  }
+}
+
 void TextSettingsActivity::renderPreviewPane(const int top, const int height, const int fontId, const char* fontName,
-                                             const bool cachedCustomPreview) {
+                                             const bool cachedCustomPreview, const bool prepareForAntiAliasing) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int left = metrics.contentSidePadding;
   const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
@@ -464,11 +497,14 @@ void TextSettingsActivity::renderPreviewPane(const int top, const int height, co
   std::snprintf(previewLabel, sizeof(previewLabel), tr(STR_TEXT_PREVIEW_FORMAT), fontName,
                 static_cast<unsigned>(selectedPointSize()));
   renderer.drawText(UI_10_FONT_ID, left, labelY, previewLabel);
-  if (fontId == 0 || cachedCustomPreview) return;
+  if (fontId == 0 || (cachedCustomPreview && !prepareForAntiAliasing)) {
+    previewLines_.clear();
+    return;
+  }
 
   if (preparedPreviewFontId_ != fontId) {
     if (auto* cache = renderer.getFontCacheManager()) {
-      cache->prewarmCache(fontId, tr(STR_FONT_PREVIEW_TEXT), 0x01);
+      cache->prewarmCache(fontId, tr(STR_FONT_PREVIEW_TEXT), SETTINGS.focusReadingEnabled ? 0x03 : 0x01);
     }
     preparedPreviewFontId_ = fontId;
   }
@@ -478,29 +514,19 @@ void TextSettingsActivity::renderPreviewPane(const int top, const int height, co
   const int textLeft = left + horizontalMargin;
   const int textWidth = std::max(1, width - horizontalMargin * 2);
   const bool darkMode = SETTINGS.readerDarkMode != 0;
-  if (darkMode && previewAreaHeight > 0) renderer.fillRect(left, top, width, previewAreaHeight);
 
   const int baseLineHeight = std::max(1, renderer.getLineHeight(fontId));
   const int lineHeight =
       std::max(renderer.getTextHeight(fontId), static_cast<int>(baseLineHeight * SETTINGS.getReaderLineCompression()));
   const int maxLines = std::max(1, previewAreaHeight / std::max(1, lineHeight));
-  std::string previewText = previewWithWordSpacing(tr(STR_FONT_PREVIEW_TEXT), SETTINGS.wordSpacing);
-  if (SETTINGS.forceParagraphIndents) previewText.insert(0, "  ");
-  const auto lines = renderer.wrappedText(fontId, previewText.c_str(), textWidth, maxLines);
-  int y = top;
-  for (int lineIndex = 0; lineIndex < static_cast<int>(lines.size()); ++lineIndex) {
-    const auto& line = lines[lineIndex];
-    if (y + lineHeight > previewBottom) break;
-    const int lineWidth = renderer.getTextWidth(fontId, line.c_str());
-    int lineX = textLeft;
-    if (SETTINGS.paragraphAlignment == CrossPointSettings::CENTER_ALIGN) {
-      lineX += std::max(0, (textWidth - lineWidth) / 2);
-    } else if (SETTINGS.paragraphAlignment == CrossPointSettings::RIGHT_ALIGN) {
-      lineX += std::max(0, textWidth - lineWidth);
-    }
-    renderer.drawText(fontId, lineX, y, line.c_str(), !darkMode);
-    y += lineHeight;
-    if (SETTINGS.extraParagraphSpacing && lineIndex == 0 && lines.size() > 1) y += std::max(2, lineHeight / 3);
+  previewTextX_ = textLeft;
+  previewTextY_ = top;
+  previewTextBottom_ = previewBottom;
+  previewLineHeight_ = lineHeight;
+  preparePreviewLines(fontId, tr(STR_FONT_PREVIEW_TEXT), textWidth, maxLines);
+  if (!cachedCustomPreview) {
+    drawPreparedPreview(fontId);
+    if (darkMode && previewAreaHeight > 0) renderer.invertRect(left, top, width, previewAreaHeight);
   }
 }
 
@@ -524,9 +550,15 @@ void TextSettingsActivity::render(RenderLock&&) {
   const int fontIndex = currentFontIndex();
   const bool cachedCustomPreview = customFont && customPreviewSnapshot_ && customPreviewSnapshotSize_ > 0 &&
                                    customPreviewFontIndex_ == fontIndex && customPreviewFontSize_ == SETTINGS.fontSize;
+  const bool antiAliasingSettingSelected = selectedTab_ == Style && selectedRow_ >= 0 &&
+                                           selectedRow_ < static_cast<int>(settings_.size()) &&
+                                           settings_[selectedRow_].nameId == StrId::STR_TEXT_AA;
+  const bool showAntiAliasingPreview = antiAliasingSettingSelected && SETTINGS.textAntiAliasing &&
+                                       !SETTINGS.readerDarkMode && renderer.supportsStripGrayscale();
 
   int previewFontId = customFont ? 0 : SETTINGS.getReaderFontId();
   bool loadedCustomPreview = false;
+  bool releaseCustomAfterRender = false;
   size_t pendingSnapshotSize = 0;
   std::unique_ptr<uint8_t[]> pendingSnapshot;
   if (customFont && !cachedCustomPreview && customPreviewPending_) {
@@ -543,10 +575,16 @@ void TextSettingsActivity::render(RenderLock&&) {
     // the already resident font so the preview never degrades to a label-only
     // placeholder for the rest of this screen.
     previewFontId = sdFontSystem.resolveFontId(SETTINGS.sdFontFamilyName, SETTINGS.fontSize);
+  } else if (customFont && showAntiAliasingPreview) {
+    sdFontSystem.ensureLoaded(renderer, false);
+    previewFontId = sdFontSystem.resolveFontId(SETTINGS.sdFontFamilyName, SETTINGS.fontSize);
+    loadedCustomPreview = previewFontId != 0;
+    releaseCustomAfterRender = loadedCustomPreview;
   }
 
   const std::string fontName = selectedFontName();
-  renderPreviewPane(previewTop, previewHeight, previewFontId, fontName.c_str(), cachedCustomPreview);
+  renderPreviewPane(previewTop, previewHeight, previewFontId, fontName.c_str(), cachedCustomPreview,
+                    showAntiAliasingPreview);
   if (cachedCustomPreview && !renderer.copyBufferToRegion(previewLeft, previewTop, previewWidth, previewTextHeight,
                                                           customPreviewSnapshot_.get(), customPreviewSnapshotSize_)) {
     customPreviewSnapshot_.reset();
@@ -569,7 +607,7 @@ void TextSettingsActivity::render(RenderLock&&) {
     }
     customPreviewPending_ = false;
     preparedPreviewFontId_ = 0;
-    if (captured || !loadedCustomPreview) sdFontSystem.releaseLoadedFont(renderer);
+    releaseCustomAfterRender = captured || !loadedCustomPreview;
   }
 
   const int tabTop = previewTop + previewHeight + PREVIEW_TO_TABS_GAP;
@@ -610,4 +648,8 @@ void TextSettingsActivity::render(RenderLock&&) {
   const auto labels = mappedInput.mapLabels(back, confirm, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
+  if (showAntiAliasingPreview && previewFontId != 0 && !previewLines_.empty()) {
+    ReaderUtils::renderAntiAliased(renderer, [this, previewFontId] { drawPreparedPreview(previewFontId); });
+  }
+  if (releaseCustomAfterRender) sdFontSystem.releaseLoadedFont(renderer);
 }

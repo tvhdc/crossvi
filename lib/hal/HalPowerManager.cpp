@@ -95,9 +95,9 @@ void HalPowerManager::startDeepSleep(HalGPIO&) const {
   logSerial.end();
 #endif
 
-  // Pre-sleep routines from the original firmware
-  // GPIO13 is connected to battery latch MOSFET, we need to make sure it's low during sleep
-  // Note that this means the MCU will be completely powered off during sleep, including RTC
+  // Pre-sleep routines from the original firmware. GPIO13 controls the X3 SD
+  // rail and the X4 battery latch; both must stay low during deep sleep. The X4
+  // latch cuts main power, while the X3 continues to use GPIO deep-sleep wake.
   constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
   gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
   gpio_set_level(GPIO_SPIWP, 0);

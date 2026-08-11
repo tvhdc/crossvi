@@ -6,6 +6,7 @@
 
 #include "vocabulary/VocabularyData.h"
 #include "vocabulary/VocabularyQuizTiming.h"
+#include "vocabulary/VocabularyReviewStore.h"
 
 namespace {
 
@@ -20,6 +21,7 @@ std::optional<size_t> findWord(const std::string_view word) {
 
 TEST(VocabularyData, ContainsExactlyThreeThousandCommonWords) {
   ASSERT_EQ(crossvi::vocabulary::entryCount(), 3000U);
+  EXPECT_EQ(crossvi::vocabulary::entryCount(), crossvi::vocabulary::VocabularyReviewStore::WORD_COUNT);
   EXPECT_STREQ(crossvi::vocabulary::entryAt(0).word, "the");
   EXPECT_TRUE(findWord("are").has_value());
   EXPECT_TRUE(findWord("airport").has_value());

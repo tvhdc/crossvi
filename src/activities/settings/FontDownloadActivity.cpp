@@ -162,8 +162,8 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   if (result != HttpDownloader::OK) {
     LOG_ERR("FONT", "Failed to fetch release metadata from %s (result %d)", FONT_RELEASE_API_URL,
             static_cast<int>(result));
-    errorMessage_ = result == HttpDownloader::FILE_ERROR ? "Could not save font list to SD card"
-                                                         : "Could not connect to font server";
+    errorMessage_ = I18N.get(result == HttpDownloader::FILE_ERROR ? StrId::STR_FONT_LIST_STORAGE_ERROR
+                                                                  : StrId::STR_FONT_LIST_NETWORK_ERROR);
     Storage.remove(FONT_RELEASE_TMP);
     Storage.remove(FONT_MANIFEST_TMP);
     return false;
@@ -171,7 +171,7 @@ bool FontDownloadActivity::fetchAndParseManifest() {
 
   ManifestDigestCapture manifestDigest;
   if (!parseReleaseMetadata(captureManifestDigest, &manifestDigest) || !manifestDigest.seen) {
-    errorMessage_ = "Invalid font release metadata";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     Storage.remove(FONT_RELEASE_TMP);
     Storage.remove(FONT_MANIFEST_TMP);
     return false;
@@ -193,11 +193,11 @@ bool FontDownloadActivity::fetchAndParseManifest() {
     LOG_ERR("FONT", "Failed to fetch verified manifest from %s (result %d)", FONT_MANIFEST_URL,
             static_cast<int>(result));
     if (result == HttpDownloader::FILE_ERROR)
-      errorMessage_ = "Could not save font list to SD card";
+      errorMessage_ = I18N.get(StrId::STR_FONT_LIST_STORAGE_ERROR);
     else if (result == HttpDownloader::INTEGRITY_ERROR)
-      errorMessage_ = "Font list verification failed";
+      errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     else
-      errorMessage_ = "Could not connect to font server";
+      errorMessage_ = I18N.get(StrId::STR_FONT_LIST_NETWORK_ERROR);
     Storage.remove(FONT_RELEASE_TMP);
     Storage.remove(FONT_MANIFEST_TMP);
     return false;
@@ -213,7 +213,7 @@ bool FontDownloadActivity::parseCachedManifest() {
   HalFile manifestFile;
   if (!Storage.openFileForRead("FONT", FONT_MANIFEST_TMP, manifestFile)) {
     LOG_ERR("FONT", "Failed to open temp manifest");
-    errorMessage_ = "Failed to read font list";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_STORAGE_ERROR);
     return false;
   }
 
@@ -223,20 +223,20 @@ bool FontDownloadActivity::parseCachedManifest() {
 
   if (err) {
     LOG_ERR("FONT", "Manifest parse error: %s", err.c_str());
-    errorMessage_ = "Invalid font manifest";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     return false;
   }
 
   int version = doc["version"] | 0;
   if (version != FONTS_MANIFEST_VERSION) {
     LOG_ERR("FONT", "Unsupported manifest version: %d", version);
-    errorMessage_ = "Unsupported manifest version";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     return false;
   }
 
   baseUrl_ = doc["baseUrl"] | "";
   if (baseUrl_.empty()) {
-    errorMessage_ = "Invalid font manifest";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     return false;
   }
   families_.clear();
@@ -245,7 +245,7 @@ bool FontDownloadActivity::parseCachedManifest() {
   JsonArray familiesArr = doc["families"].as<JsonArray>();
   if (familiesArr.size() > SdCardFontRegistry::MAX_SD_FAMILIES) {
     LOG_ERR("FONT", "Manifest contains too many font families: %zu", familiesArr.size());
-    errorMessage_ = "Invalid font manifest";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     return false;
   }
   families_.reserve(familiesArr.size());
@@ -256,7 +256,7 @@ bool FontDownloadActivity::parseCachedManifest() {
     family.description = fObj["description"] | "";
     if (!FontInstaller::isValidFamilyName(family.name.c_str())) {
       LOG_ERR("FONT", "Malformed manifest family name");
-      errorMessage_ = "Invalid font manifest";
+      errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
       return false;
     }
 
@@ -268,7 +268,7 @@ bool FontDownloadActivity::parseCachedManifest() {
     JsonArray fileEntries = fObj["files"].as<JsonArray>();
     if (fileEntries.size() == 0 || fileEntries.size() > SdCardFontRegistry::MAX_FILES_PER_FAMILY) {
       LOG_ERR("FONT", "Invalid file count for family %s: %zu", family.name.c_str(), fileEntries.size());
-      errorMessage_ = "Invalid font manifest";
+      errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
       return false;
     }
     for (JsonObject fileObj : fileEntries) {
@@ -281,7 +281,7 @@ bool FontDownloadActivity::parseCachedManifest() {
           (!file.sha256.empty() && file.sha256.size() != 64) || !fileObj["crc32"].is<uint32_t>() ||
           family.totalSize > std::numeric_limits<size_t>::max() - file.size) {
         LOG_ERR("FONT", "Malformed manifest file entry: missing or invalid crc32 for %s", file.name.c_str());
-        errorMessage_ = "Invalid font manifest";
+        errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
         return false;
       }
       file.crc32 = fileObj["crc32"].as<uint32_t>();
@@ -291,7 +291,7 @@ bool FontDownloadActivity::parseCachedManifest() {
     }
 
     if (!recoverFamilyTransactions(family)) {
-      errorMessage_ = "Failed to recover font family";
+      errorMessage_ = I18N.get(StrId::STR_FONT_LIST_STORAGE_ERROR);
       return false;
     }
     family.installed = fontInstaller_.isFamilyInstalled(family.name.c_str());
@@ -313,7 +313,7 @@ bool FontDownloadActivity::parseCachedManifest() {
   }
 
   if (!attachReleaseDigests()) {
-    errorMessage_ = "Font release verification failed";
+    errorMessage_ = I18N.get(StrId::STR_FONT_LIST_INVALID);
     return false;
   }
 
@@ -923,7 +923,13 @@ void FontDownloadActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_FONT_INSTALL_FAILED), true,
                               EpdFontFamily::BOLD);
     if (!errorMessage_.empty()) {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY + metrics.verticalSpacing, errorMessage_.c_str());
+      const auto lines =
+          renderer.wrappedText(UI_10_FONT_ID, errorMessage_.c_str(), pageWidth - metrics.contentSidePadding * 2, 3);
+      int errorY = centerY + metrics.verticalSpacing;
+      for (const auto& line : lines) {
+        renderer.drawCenteredText(UI_10_FONT_ID, errorY, line.c_str());
+        errorY += lineHeight;
+      }
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

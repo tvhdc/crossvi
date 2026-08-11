@@ -139,18 +139,44 @@ class CodegenTest(unittest.TestCase):
         self.assertIn(expected, sleep)
         self.assertIn("FsHelpers::hasMarkdownExtension(path)", clear_cache)
 
-    def test_early_startup_sleep_uses_strong_refresh_before_deep_sleep(self):
+    def test_early_startup_sleep_preserves_the_sleep_frame_with_a_strong_refresh(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
-        helper = main[main.index("void enterStartupDeepSleep()") : main.index("// Enter deep sleep mode")]
+        helper = main[main.index("void enterStartupDeepSleep(") : main.index("// Enter deep sleep mode")]
         self.assertIn("display.begin(false);", helper)
-        self.assertIn("display.clearScreen();", helper)
+        self.assertIn("loadSleepFrameBuffer(false)", helper)
+        self.assertIn("drawBundledDefaultSleepScreen();", helper)
         self.assertIn("constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 2;", helper)
         self.assertIn("display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);", helper)
         self.assertIn(
             "display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_REFRESH);", helper
         )
         self.assertLess(helper.index("display.deepSleep();"), helper.index("powerManager.startDeepSleep(gpio);"))
-        self.assertEqual(main.count("enterStartupDeepSleep();"), 2)
+        self.assertIn("enterStartupDeepSleep(true);", main)
+        self.assertIn("enterStartupDeepSleep(false);", main)
+
+        loader = main[main.index("static bool loadSleepFrameBuffer(") : main.index("// Some wake checks")]
+        self.assertIn("const bool consume", loader)
+        self.assertIn("if (consume) Storage.remove(SLEEP_FRAME_FILE);", loader)
+
+    def test_power_wake_is_checked_before_sd_with_a_persisted_short_press_mirror(self):
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        settings = (REPO_ROOT / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+
+        self.assertLess(main.index("gpio.verifyPowerButtonWakeup("), main.index("Storage.begin()"))
+        self.assertIn("readWakeShortPressFromNvs()", main)
+        self.assertIn("const bool shortPressWakes = gpio.deviceIsX3() || readWakeShortPressFromNvs();", main)
+        self.assertGreaterEqual(main.count("mirrorWakeShortPressToNvs();"), 2)
+        self.assertIn("POWER_BUTTON_WAKE_SHORT_MS = 10", settings)
+        self.assertIn("POWER_BUTTON_WAKE_LONG_MS = 200", settings)
+
+    def test_grayscale_sleep_frames_are_never_replayed_as_one_bit_frames(self):
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        guard = main[main.index("static bool sleepScreenMayUseGrayscale") : main.index("static bool saveSleepFrameBuffer")]
+        self.assertIn("SLEEP_SCREEN_MODE::CUSTOM", guard)
+        self.assertIn("SLEEP_SCREEN_MODE::COVER", guard)
+        self.assertIn("SLEEP_SCREEN_MODE::COVER_CUSTOM", guard)
+        self.assertIn("SLEEP_SCREEN_COVER_FILTER::NO_FILTER", guard)
+        self.assertGreaterEqual(main.count("sleepScreenMayUseGrayscale()"), 3)
 
     def test_date_outside_reader_does_not_depend_on_clock_visibility(self):
         theme = (REPO_ROOT / "src/components/themes/crossvi/CrossViTheme.cpp").read_text(encoding="utf-8")
@@ -208,6 +234,10 @@ class CodegenTest(unittest.TestCase):
             self.assertIn(f"StrId::{name}", appearance)
         for tab in ("STR_TEXT_TAB_FONT", "STR_TEXT_TAB_SIZE", "STR_TEXT_TAB_LAYOUT", "STR_TEXT_TAB_STYLE"):
             self.assertIn(tab, text_settings)
+        self.assertIn("ParsedText parsed(", text_settings)
+        self.assertIn("SETTINGS.focusReadingEnabled", text_settings)
+        self.assertIn("settings_[selectedRow_].nameId == StrId::STR_TEXT_AA", text_settings)
+        self.assertIn("ReaderUtils::renderAntiAliased", text_settings)
         self.assertIn(
             "selectedRow_ < 0 ? tr(STR_BACK) : I18N.get(TAB_LABELS[selectedTab_])",
             text_settings,
@@ -217,7 +247,7 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("make_unique<FontSelectionActivity>", text_settings)
         self.assertNotIn("make_unique<FontSizeSelectionActivity>", text_settings)
         self.assertIn("preparedPreviewFontId_ != fontId", text_settings)
-        self.assertIn("cache->prewarmCache(fontId, tr(STR_FONT_PREVIEW_TEXT), 0x01)", text_settings)
+        self.assertIn("SETTINGS.focusReadingEnabled ? 0x03 : 0x01", text_settings)
         self.assertIn("sdFontSystem.ensureLoaded(renderer, false);", text_settings)
         self.assertIn("renderer.copyRegionToBuffer", text_settings)
         self.assertIn("renderer.copyBufferToRegion", text_settings)
@@ -802,10 +832,10 @@ class CodegenTest(unittest.TestCase):
 
     def test_version_mapping_preserves_existing_environment_contract(self):
         module = load_git_branch()
-        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.1")
-        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.1-slim")
-        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.1-simulator")
-        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.1-simulator")
+        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.2")
+        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.2-slim")
+        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.2-simulator")
+        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.2-simulator")
 
     def test_ota_valid_mark_retries_transient_failures(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")

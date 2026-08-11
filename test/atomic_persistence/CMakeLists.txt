@@ -4,6 +4,7 @@ add_executable(AtomicPersistenceTest
   ${REPO_ROOT}/lib/Serialization/StagedFileTransaction.cpp
   ${REPO_ROOT}/src/FontStorageUtils.cpp
   ${REPO_ROOT}/src/LegacyStateCodec.cpp
+  ${REPO_ROOT}/src/vocabulary/VocabularyReviewStore.cpp
   ${REPO_ROOT}/lib/hal/ClockCalendar.cpp
 )
 
@@ -13,7 +14,10 @@ target_include_directories(AtomicPersistenceTest PRIVATE
   ${REPO_ROOT}/src
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/hal
+  ${REPO_ROOT}/src/vocabulary
 )
+
+target_compile_definitions(AtomicPersistenceTest PRIVATE UNIT_TEST)
 
 target_link_libraries(AtomicPersistenceTest PRIVATE
   crosspoint_test_common

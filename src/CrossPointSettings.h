@@ -546,6 +546,10 @@ class CrossPointSettings {
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
   static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;
+  // Wake validation is intentionally shorter than the in-app Power hold.
+  // It only filters accidental power-on taps during the early boot path.
+  static constexpr uint16_t POWER_BUTTON_WAKE_SHORT_MS = 10;
+  static constexpr uint16_t POWER_BUTTON_WAKE_LONG_MS = 200;
   // Callback to resolve SD card font IDs. Set by SdCardFontSystem::begin().
   // Returns font ID or 0 if not found.
   using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t fontSize);
@@ -553,7 +557,8 @@ class CrossPointSettings {
   void* sdFontResolverCtx = nullptr;
 
   uint16_t getPowerButtonDuration() const {
-    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
+    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? POWER_BUTTON_WAKE_SHORT_MS
+                                                                    : POWER_BUTTON_WAKE_LONG_MS;
   }
   int getReaderFontId() const;
   int getDictionaryFontId() const;

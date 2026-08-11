@@ -7,6 +7,7 @@
 #include <TiltLifecyclePolicy.h>
 #include <gtest/gtest.h>
 #include <util/ClockSyncPolicy.h>
+#include <vocabulary/VocabularyReviewStore.h>
 
 #include <cstdint>
 #include <cstring>
@@ -41,8 +42,61 @@ void expectRecoverable(const std::string& oldValue, const std::string& newValue)
 
 class AtomicPersistenceTest : public testing::Test {
  protected:
-  void SetUp() override { Storage.reset(); }
+  void SetUp() override {
+    Storage.reset();
+    VOCABULARY_REVIEW.resetForTests();
+  }
 };
+
+TEST_F(AtomicPersistenceTest, VocabularyReviewPersistsCompactWrongWordSet) {
+  EXPECT_TRUE(VOCABULARY_REVIEW.load());
+  EXPECT_EQ(VOCABULARY_REVIEW.count(), 0U);
+  EXPECT_TRUE(VOCABULARY_REVIEW.markForReview(7));
+  EXPECT_TRUE(VOCABULARY_REVIEW.markForReview(2999));
+  EXPECT_TRUE(VOCABULARY_REVIEW.flush());
+  EXPECT_EQ(Storage.file("/.crosspoint/vocabulary_review_v1.bin").size(), 387U);
+
+  VOCABULARY_REVIEW.resetForTests();
+  EXPECT_TRUE(VOCABULARY_REVIEW.load());
+  EXPECT_TRUE(VOCABULARY_REVIEW.needsReview(7));
+  EXPECT_TRUE(VOCABULARY_REVIEW.needsReview(2999));
+  EXPECT_FALSE(VOCABULARY_REVIEW.needsReview(3000));
+  EXPECT_EQ(VOCABULARY_REVIEW.count(), 2U);
+
+  EXPECT_TRUE(VOCABULARY_REVIEW.markMastered(7));
+  EXPECT_TRUE(VOCABULARY_REVIEW.flush());
+  VOCABULARY_REVIEW.resetForTests();
+  EXPECT_TRUE(VOCABULARY_REVIEW.load());
+  EXPECT_FALSE(VOCABULARY_REVIEW.needsReview(7));
+  EXPECT_TRUE(VOCABULARY_REVIEW.needsReview(2999));
+}
+
+TEST_F(AtomicPersistenceTest, VocabularyReviewRecoversVerifiedBackupAfterCorruption) {
+  ASSERT_TRUE(VOCABULARY_REVIEW.markForReview(11));
+  ASSERT_TRUE(VOCABULARY_REVIEW.flush());
+  ASSERT_TRUE(VOCABULARY_REVIEW.markForReview(22));
+  ASSERT_TRUE(VOCABULARY_REVIEW.flush());
+  Storage.mutableFile("/.crosspoint/vocabulary_review_v1.bin").back() ^= 0x80U;
+
+  VOCABULARY_REVIEW.resetForTests();
+  EXPECT_TRUE(VOCABULARY_REVIEW.load());
+  EXPECT_TRUE(VOCABULARY_REVIEW.needsReview(11));
+  EXPECT_FALSE(VOCABULARY_REVIEW.needsReview(22));
+  EXPECT_TRUE(VOCABULARY_REVIEW.flush());
+}
+
+TEST_F(AtomicPersistenceTest, VocabularyReviewWriteFailureKeepsPreviousPublishedData) {
+  ASSERT_TRUE(VOCABULARY_REVIEW.markForReview(33));
+  ASSERT_TRUE(VOCABULARY_REVIEW.flush());
+  ASSERT_TRUE(VOCABULARY_REVIEW.markForReview(44));
+  Storage.shortWriteFor("/.crosspoint/vocabulary_review_v1.bin.tmp");
+  EXPECT_FALSE(VOCABULARY_REVIEW.flush());
+
+  VOCABULARY_REVIEW.resetForTests();
+  EXPECT_TRUE(VOCABULARY_REVIEW.load());
+  EXPECT_TRUE(VOCABULARY_REVIEW.needsReview(33));
+  EXPECT_FALSE(VOCABULARY_REVIEW.needsReview(44));
+}
 
 TEST_F(AtomicPersistenceTest, PublishesAndRotatesVerifiedJson) {
   ASSERT_EQ(save("{old}"), AtomicFile::SaveStatus::Saved);

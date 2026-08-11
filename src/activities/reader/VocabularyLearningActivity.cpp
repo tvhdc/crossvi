@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,7 @@
 #include "fontIds.h"
 #include "vocabulary/VocabularyData.h"
 #include "vocabulary/VocabularyQuizTiming.h"
+#include "vocabulary/VocabularyReviewStore.h"
 
 namespace {
 
@@ -55,6 +57,7 @@ uint32_t nextRandom(uint32_t& state) {
 void VocabularyLearningActivity::onEnter() {
   Activity::onEnter();
   randomState_ = static_cast<uint32_t>(millis()) ^ 0xC05F17A1U;
+  reviewStoreReady_ = VOCABULARY_REVIEW.load();
   screen_ = Screen::Settings;
   selectedSetting_ = 0;
   skipHold_.reset();
@@ -120,7 +123,7 @@ void VocabularyLearningActivity::loop() {
 }
 
 void VocabularyLearningActivity::handleSettingsInput() {
-  constexpr int ITEM_COUNT = 5;
+  constexpr int ITEM_COUNT = 6;
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finishActivity();
     return;
@@ -140,6 +143,9 @@ void VocabularyLearningActivity::handleSettingsInput() {
       beginQuiz(configuredQuestionCount());
       break;
     case 1:
+      beginReviewQuiz();
+      break;
+    case 2:
       optionPopup_.show(StrId::STR_VOCAB_QUIZ_SIZE, QUIZ_SIZE_LABELS.data(), QUIZ_SIZE_LABELS.size(),
                         SETTINGS.vocabularyQuizSize, [this](const int index) {
                           SETTINGS.vocabularyQuizSize = static_cast<uint8_t>(index);
@@ -147,7 +153,7 @@ void VocabularyLearningActivity::handleSettingsInput() {
                         });
       requestUpdate();
       break;
-    case 2:
+    case 3:
       optionPopup_.show(StrId::STR_VOCAB_QUESTION_TIME, QUESTION_TIME_LABELS.data(), QUESTION_TIME_LABELS.size(),
                         SETTINGS.vocabularyQuestionTime, [this](const int index) {
                           SETTINGS.vocabularyQuestionTime = static_cast<uint8_t>(index);
@@ -155,7 +161,7 @@ void VocabularyLearningActivity::handleSettingsInput() {
                         });
       requestUpdate();
       break;
-    case 3:
+    case 4:
       optionPopup_.show(StrId::STR_VOCAB_ANSWER_COUNT, ANSWER_COUNT_LABELS.data(), ANSWER_COUNT_LABELS.size(),
                         SETTINGS.vocabularyAnswerCount, [this](const int index) {
                           SETTINGS.vocabularyAnswerCount = static_cast<uint8_t>(index);
@@ -163,7 +169,7 @@ void VocabularyLearningActivity::handleSettingsInput() {
                         });
       requestUpdate();
       break;
-    case 4:
+    case 5:
       screen_ = Screen::Source;
       requestUpdate();
       break;
@@ -234,7 +240,16 @@ void VocabularyLearningActivity::handleResultsInput() {
     screen_ = Screen::Review;
     requestUpdate();
   } else {
-    beginQuiz(questionCount_);
+    if (reviewOnly_) {
+      if (VOCABULARY_REVIEW.count() == 0) {
+        screen_ = Screen::Settings;
+        requestUpdate();
+      } else {
+        beginReviewQuiz();
+      }
+    } else {
+      beginQuiz(questionCount_);
+    }
   }
 }
 
@@ -258,8 +273,37 @@ void VocabularyLearningActivity::handleReviewInput() {
   }
 }
 
-void VocabularyLearningActivity::beginQuiz(const uint8_t count) {
+void VocabularyLearningActivity::beginQuiz(const uint8_t count) { startQuiz(count, false); }
+
+void VocabularyLearningActivity::beginReviewQuiz() {
+  if (!reviewStoreReady_) return;
+  const size_t available = VOCABULARY_REVIEW.count();
+  if (available == 0) return;
+
+  const size_t target = std::min<size_t>(configuredQuestionCount(), available);
+  size_t selected = 0;
+  size_t seen = 0;
+  for (size_t entryIndex = 0; entryIndex < crossvi::vocabulary::entryCount(); ++entryIndex) {
+    if (!VOCABULARY_REVIEW.needsReview(entryIndex)) continue;
+    ++seen;
+    if (selected < target) {
+      reviewEntryIndices_[selected++] = static_cast<uint16_t>(entryIndex);
+      continue;
+    }
+    const size_t replacement = nextRandom(randomState_) % seen;
+    if (replacement < target) reviewEntryIndices_[replacement] = static_cast<uint16_t>(entryIndex);
+  }
+  if (selected == 0) return;
+  for (size_t index = selected - 1; index > 0; --index) {
+    std::swap(reviewEntryIndices_[index], reviewEntryIndices_[nextRandom(randomState_) % (index + 1)]);
+  }
+  startQuiz(static_cast<uint8_t>(selected), true);
+}
+
+void VocabularyLearningActivity::startQuiz(const uint8_t count, const bool reviewOnly) {
   questionCount_ = std::clamp<uint8_t>(count, 1, MAX_QUESTIONS);
+  reviewOnly_ = reviewOnly;
+  reviewSaveFailed_ = false;
   answerCount_ = configuredAnswerCount();
   nextAnswerSlot_ = answerCount_;
   currentQuestion_ = 0;
@@ -273,17 +317,19 @@ void VocabularyLearningActivity::beginQuiz(const uint8_t count) {
 }
 
 void VocabularyLearningActivity::prepareQuestion() {
-  size_t entryIndex = 0;
-  for (size_t attempt = 0; attempt < crossvi::vocabulary::entryCount(); ++attempt) {
-    entryIndex = nextRandom(randomState_) % crossvi::vocabulary::entryCount();
-    bool duplicate = false;
-    for (uint8_t previous = 0; previous < currentQuestion_; ++previous) {
-      if (records_[previous].entryIndex == entryIndex) {
-        duplicate = true;
-        break;
+  size_t entryIndex = reviewOnly_ ? reviewEntryIndices_[currentQuestion_] : 0;
+  if (!reviewOnly_) {
+    for (size_t attempt = 0; attempt < crossvi::vocabulary::entryCount(); ++attempt) {
+      entryIndex = nextRandom(randomState_) % crossvi::vocabulary::entryCount();
+      bool duplicate = false;
+      for (uint8_t previous = 0; previous < currentQuestion_; ++previous) {
+        if (records_[previous].entryIndex == entryIndex) {
+          duplicate = true;
+          break;
+        }
       }
+      if (!duplicate) break;
     }
-    if (!duplicate) break;
   }
   QuestionRecord& record = records_[currentQuestion_];
   record.entryIndex = static_cast<uint16_t>(entryIndex);
@@ -314,12 +360,15 @@ void VocabularyLearningActivity::submitAnswer(const int selectedSlot, const bool
   if (selectedSlot < 0) {
     record.state = timedOut ? AnswerState::TimedOut : AnswerState::Skipped;
     ++skippedCount_;
+    if (timedOut && reviewStoreReady_) VOCABULARY_REVIEW.markForReview(record.entryIndex);
   } else if (selectedSlot == record.correctSlot) {
     record.state = AnswerState::Correct;
     ++correctCount_;
+    if (reviewStoreReady_) VOCABULARY_REVIEW.markMastered(record.entryIndex);
   } else {
     record.state = AnswerState::Wrong;
     ++wrongCount_;
+    if (reviewStoreReady_) VOCABULARY_REVIEW.markForReview(record.entryIndex);
   }
   screen_ = Screen::Feedback;
   requestUpdate();
@@ -364,11 +413,13 @@ void VocabularyLearningActivity::advanceAfterFeedback() {
     prepareQuestion();
     return;
   }
+  reviewSaveFailed_ = reviewStoreReady_ && !VOCABULARY_REVIEW.flush();
   screen_ = Screen::Results;
   requestUpdate();
 }
 
 void VocabularyLearningActivity::finishActivity() {
+  if (reviewStoreReady_ && !VOCABULARY_REVIEW.flush()) LOG_ERR("VOCAB", "Failed to save words marked for review");
   ActivityResult result;
   result.isCancelled = false;
   setResult(std::move(result));
@@ -409,26 +460,30 @@ void VocabularyLearningActivity::renderSettings() {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = height - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   GUI.drawList(
-      renderer, Rect{0, contentTop, width, contentHeight}, 5, selectedSetting_,
+      renderer, Rect{0, contentTop, width, contentHeight}, 6, selectedSetting_,
       [](const int index) {
-        constexpr StrId LABELS[] = {StrId::STR_VOCAB_START_QUIZ, StrId::STR_VOCAB_QUIZ_SIZE,
-                                    StrId::STR_VOCAB_QUESTION_TIME, StrId::STR_VOCAB_ANSWER_COUNT,
-                                    StrId::STR_VOCAB_DATA_SOURCE};
+        constexpr StrId LABELS[] = {StrId::STR_VOCAB_START_QUIZ,   StrId::STR_VOCAB_REVIEW_WRONG,
+                                    StrId::STR_VOCAB_QUIZ_SIZE,    StrId::STR_VOCAB_QUESTION_TIME,
+                                    StrId::STR_VOCAB_ANSWER_COUNT, StrId::STR_VOCAB_DATA_SOURCE};
         return std::string(I18N.get(LABELS[index]));
       },
       nullptr, nullptr,
       [this](const int index) -> std::string {
         switch (index) {
           case 1:
-            return quizSizeLabel();
+            if (!reviewStoreReady_) return tr(STR_STATS_UNAVAILABLE);
+            return std::to_string(VOCABULARY_REVIEW.count());
           case 2:
-            return questionTimeLabel();
+            return quizSizeLabel();
           case 3:
+            return questionTimeLabel();
+          case 4:
             return answerCountLabel();
           default:
             return {};
         }
-      });
+      },
+      false, [this](const int index) { return index == 1 && (!reviewStoreReady_ || VOCABULARY_REVIEW.count() == 0); });
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
@@ -582,6 +637,7 @@ void VocabularyLearningActivity::renderResults() {
   GUI.drawList(renderer, Rect{0, listY, width, 110}, 2, selectedResultAction_, [](const int index) {
     return std::string(I18N.get(index == 0 ? StrId::STR_VOCAB_REVIEW : StrId::STR_VOCAB_TRY_AGAIN));
   });
+  if (reviewSaveFailed_) GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
   const auto labelsHint = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labelsHint.btn1, labelsHint.btn2, labelsHint.btn3, labelsHint.btn4);
 }
