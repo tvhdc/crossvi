@@ -135,8 +135,7 @@ std::string formatSleepMetric(const ReadingStatsMetric& metric, const bool durat
     case ReadingStatsMetricState::Known:
     case ReadingStatsMetricState::Estimated:
       if (duration) return formatSleepDuration(metric.value, metric.state == ReadingStatsMetricState::Estimated);
-      return std::string(metric.state == ReadingStatsMetricState::Estimated ? "~" : "") +
-             std::to_string(metric.value);
+      return std::string(metric.state == ReadingStatsMetricState::Estimated ? "~" : "") + std::to_string(metric.value);
   }
   return tr(STR_STATS_UNAVAILABLE);
 }
@@ -148,9 +147,8 @@ SleepBookSummary loadSleepBookSummary() {
 
   RecentBook recent{path, bookTitleFromPath(path), "", ""};
   const auto& books = RECENT_BOOKS.getBooks();
-  const auto found = std::find_if(books.begin(), books.end(), [&path](const RecentBook& book) {
-    return book.path == path;
-  });
+  const auto found =
+      std::find_if(books.begin(), books.end(), [&path](const RecentBook& book) { return book.path == path; });
   if (found != books.end()) recent = *found;
   if (recent.title.empty()) recent.title = bookTitleFromPath(path);
 
@@ -166,16 +164,15 @@ SleepBookSummary loadSleepBookSummary() {
     summary.pagesTurned = tr(STR_STATS_UNAVAILABLE);
     return summary;
   }
-  summary.readingTime = formatSleepMetric(stats.readingTimeUnavailable ? ReadingStatsMetric::noData()
-                                                                       : ReadingStatsMetric::known(
-                                                                             stats.totalReadingSeconds),
-                                                true);
+  summary.readingTime =
+      formatSleepMetric(stats.readingTimeUnavailable ? ReadingStatsMetric::noData()
+                                                     : ReadingStatsMetric::known(stats.totalReadingSeconds),
+                        true);
   summary.sessions = formatSleepMetric(
       stats.sessionsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.sessionCount), false);
-  summary.pagesTurned = formatSleepMetric(stats.pageTurnsUnavailable
-                                              ? ReadingStatsMetric::noData()
-                                              : ReadingStatsMetric::known(stats.totalPagesTurned),
-                                          false);
+  summary.pagesTurned = formatSleepMetric(
+      stats.pageTurnsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.totalPagesTurned),
+      false);
   return summary;
 }
 
@@ -230,10 +227,9 @@ Rect drawSleepBookStatsOverlay(const GfxRenderer& renderer) {
                      StrId::STR_STATS_READING_TIME, UI_12_FONT_ID);
   drawCalendarMetric(renderer, Rect{stats.x + firstWidth, stats.y, secondWidth, stats.height}, summary.sessions,
                      StrId::STR_STATS_SESSIONS);
-  drawCalendarMetric(renderer,
-                     Rect{stats.x + firstWidth + secondWidth, stats.y, stats.width - firstWidth - secondWidth,
-                          stats.height},
-                     summary.pagesTurned, StrId::STR_STATS_PAGES_TURNED);
+  drawCalendarMetric(
+      renderer, Rect{stats.x + firstWidth + secondWidth, stats.y, stats.width - firstWidth - secondWidth, stats.height},
+      summary.pagesTurned, StrId::STR_STATS_PAGES_TURNED);
   return card;
 }
 }  // namespace
