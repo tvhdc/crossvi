@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Ni bilo mogoče najti nobene veljavne datoteke
 STR_VCODEX_IMPORT_NO_DATA: "Brez podatkov"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Koledarski dnevi"
 STR_VCODEX_IMPORT_BOOKS: "Ujemajoče se knjige"
+STR_VOCAB_ANSWER_COUNT: "Število odgovorov na vprašanje"
+STR_VOCAB_ANSWERS_3: "3 odgovori"
+STR_VOCAB_ANSWERS_4: "4 odgovori"

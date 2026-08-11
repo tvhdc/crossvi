@@ -893,3 +893,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Ingen gyldig CPR-vCodex statistikkfil ble funn
 STR_VCODEX_IMPORT_NO_DATA: "Ingen data"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Kalenderdager"
 STR_VCODEX_IMPORT_BOOKS: "Matcher bøker"
+STR_VOCAB_ANSWER_COUNT: "Antall svar per spørsmål"
+STR_VOCAB_ANSWERS_3: "3 svar"
+STR_VOCAB_ANSWERS_4: "4 svar"

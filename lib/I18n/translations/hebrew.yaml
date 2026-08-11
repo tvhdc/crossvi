@@ -899,3 +899,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "לא נמצא קובץ סטטיסטיקות CP
 STR_VCODEX_IMPORT_NO_DATA: "אין נתונים"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "ימי לוח שנה"
 STR_VCODEX_IMPORT_BOOKS: "ספרים תואמים"
+STR_VOCAB_ANSWER_COUNT: "מספר תשובות לכל שאלה"
+STR_VOCAB_ANSWERS_3: "3 תשובות"
+STR_VOCAB_ANSWERS_4: "4 תשובות"

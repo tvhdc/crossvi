@@ -1,5 +1,6 @@
 #include "VocabularyData.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "VocabularyData.generated.h"
@@ -55,17 +56,33 @@ Entry entryAt(const size_t index) {
   return {word, pronunciation, meaning, static_cast<PartOfSpeech>(generated::PARTS_OF_SPEECH[index])};
 }
 
-void buildAnswerIndices(const size_t correctIndex, const uint8_t correctSlot, uint32_t seed, size_t out[3]) {
+void buildAnswerIndices(const size_t correctIndex, const uint8_t correctSlot, const uint8_t requestedAnswerCount,
+                        uint32_t seed, size_t out[MAX_ANSWER_COUNT]) {
   if (!out || correctIndex >= generated::ENTRY_COUNT) return;
-  const size_t slot = correctSlot % 3;
+  const uint8_t answerCount = std::clamp<uint8_t>(requestedAnswerCount, MIN_ANSWER_COUNT, MAX_ANSWER_COUNT);
+  const size_t slot = correctSlot % answerCount;
   out[slot] = correctIndex;
-  size_t selected[3] = {correctIndex, generated::ENTRY_COUNT, generated::ENTRY_COUNT};
+  size_t selected[MAX_ANSWER_COUNT] = {correctIndex, generated::ENTRY_COUNT, generated::ENTRY_COUNT,
+                                       generated::ENTRY_COUNT};
   size_t selectedCount = 1;
-  for (size_t option = 0; option < 3; ++option) {
+  for (size_t option = 0; option < answerCount; ++option) {
     if (option == slot) continue;
     const size_t distractor = findDistractor(correctIndex, selected, selectedCount, seed);
     out[option] = distractor;
     selected[selectedCount++] = distractor;
+  }
+}
+
+void buildAnswerSlotOrder(const uint8_t requestedAnswerCount, uint32_t seed, uint8_t out[MAX_ANSWER_COUNT]) {
+  if (!out) return;
+  const uint8_t answerCount = std::clamp<uint8_t>(requestedAnswerCount, MIN_ANSWER_COUNT, MAX_ANSWER_COUNT);
+  for (uint8_t slot = 0; slot < MAX_ANSWER_COUNT; ++slot) out[slot] = slot;
+  for (uint8_t remaining = answerCount; remaining > 1; --remaining) {
+    const uint8_t swapIndex = static_cast<uint8_t>(nextRandom(seed) % remaining);
+    const uint8_t lastIndex = remaining - 1;
+    const uint8_t previous = out[lastIndex];
+    out[lastIndex] = out[swapIndex];
+    out[swapIndex] = previous;
   }
 }
 

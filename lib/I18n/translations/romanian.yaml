@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Nu a fost găsit niciun fișier valid de stati
 STR_VCODEX_IMPORT_NO_DATA: "Fără date"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Zile calendaristice"
 STR_VCODEX_IMPORT_BOOKS: "Cărți potrivite"
+STR_VOCAB_ANSWER_COUNT: "Număr de răspunsuri per întrebare"
+STR_VOCAB_ANSWERS_3: "3 răspunsuri"
+STR_VOCAB_ANSWERS_4: "4 răspunsuri"

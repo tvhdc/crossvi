@@ -46,17 +46,37 @@ TEST(VocabularyData, EveryEntryHasBoundedDisplayData) {
   }
 }
 
-TEST(VocabularyData, BuildsThreeDistinctAnswersWithRequestedCorrectSlot) {
+TEST(VocabularyData, BuildsThreeOrFourDistinctAnswersWithRequestedCorrectSlot) {
   const size_t correct = findWord("are").value();
-  for (uint8_t slot = 0; slot < 3; ++slot) {
-    size_t answers[3]{};
-    crossvi::vocabulary::buildAnswerIndices(correct, slot, 0x12345678U + slot, answers);
-    EXPECT_EQ(answers[slot], correct);
-    EXPECT_NE(answers[0], answers[1]);
-    EXPECT_NE(answers[0], answers[2]);
-    EXPECT_NE(answers[1], answers[2]);
-    EXPECT_STRNE(crossvi::vocabulary::entryAt(answers[(slot + 1) % 3]).meaning,
-                 crossvi::vocabulary::entryAt(correct).meaning);
+  for (uint8_t answerCount = 3; answerCount <= 4; ++answerCount) {
+    for (uint8_t slot = 0; slot < answerCount; ++slot) {
+      size_t answers[crossvi::vocabulary::MAX_ANSWER_COUNT]{};
+      crossvi::vocabulary::buildAnswerIndices(correct, slot, answerCount, 0x12345678U + slot, answers);
+      EXPECT_EQ(answers[slot], correct);
+      for (uint8_t first = 0; first < answerCount; ++first) {
+        for (uint8_t second = first + 1; second < answerCount; ++second) {
+          EXPECT_NE(answers[first], answers[second]);
+          EXPECT_STRNE(crossvi::vocabulary::entryAt(answers[first]).meaning,
+                       crossvi::vocabulary::entryAt(answers[second]).meaning);
+        }
+      }
+    }
+  }
+}
+
+TEST(VocabularyData, ShufflesEachCorrectAnswerPositionExactlyOncePerCycle) {
+  for (uint8_t answerCount = 3; answerCount <= 4; ++answerCount) {
+    for (uint32_t seed = 1; seed <= 16; ++seed) {
+      uint8_t slots[crossvi::vocabulary::MAX_ANSWER_COUNT]{};
+      crossvi::vocabulary::buildAnswerSlotOrder(answerCount, seed, slots);
+      bool seen[crossvi::vocabulary::MAX_ANSWER_COUNT]{};
+      for (uint8_t index = 0; index < answerCount; ++index) {
+        ASSERT_LT(slots[index], answerCount);
+        EXPECT_FALSE(seen[slots[index]]);
+        seen[slots[index]] = true;
+      }
+      for (uint8_t slot = 0; slot < answerCount; ++slot) EXPECT_TRUE(seen[slot]);
+    }
   }
 }
 

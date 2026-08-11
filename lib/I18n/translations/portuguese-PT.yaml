@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Nenhum arquivo válido de estatísticas CPR-vC
 STR_VCODEX_IMPORT_NO_DATA: "Sem dados"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Dias do calendário"
 STR_VCODEX_IMPORT_BOOKS: "Livros correspondentes"
+STR_VOCAB_ANSWER_COUNT: "Número de respostas por pergunta"
+STR_VOCAB_ANSWERS_3: "3 respostas"
+STR_VOCAB_ANSWERS_4: "4 respostas"

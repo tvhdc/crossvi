@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "activities/Activity.h"
+#include "activities/reader/ReaderUtils.h"
 #include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
@@ -23,7 +24,7 @@ class VocabularyLearningActivity final : public Activity {
 
   struct QuestionRecord {
     uint16_t entryIndex = 0;
-    uint16_t answerIndices[3]{};
+    uint16_t answerIndices[4]{};
     int8_t selectedSlot = -1;
     uint8_t correctSlot = 0;
     AnswerState state = AnswerState::Skipped;
@@ -38,6 +39,7 @@ class VocabularyLearningActivity final : public Activity {
   int selectedAnswer_ = 0;
   int selectedResultAction_ = 0;
   uint8_t questionCount_ = 0;
+  uint8_t answerCount_ = 3;
   uint8_t currentQuestion_ = 0;
   uint8_t reviewIndex_ = 0;
   uint8_t correctCount_ = 0;
@@ -46,6 +48,9 @@ class VocabularyLearningActivity final : public Activity {
   uint32_t randomState_ = 0;
   uint32_t questionStartedAt_ = 0;
   uint8_t countdownSegments_ = 5;
+  std::array<uint8_t, 4> answerSlotOrder_{0, 1, 2, 3};
+  uint8_t nextAnswerSlot_ = 4;
+  ReaderUtils::HoldGestureState skipHold_;
   std::array<QuestionRecord, MAX_QUESTIONS> records_{};
 
   void handleSettingsInput();
@@ -61,8 +66,10 @@ class VocabularyLearningActivity final : public Activity {
 
   uint8_t configuredQuestionCount() const;
   uint8_t configuredQuestionSeconds() const;
+  uint8_t configuredAnswerCount() const;
   const char* quizSizeLabel() const;
   const char* questionTimeLabel() const;
+  const char* answerCountLabel() const;
 
   void renderSettings();
   void renderQuestion(bool showFeedback);

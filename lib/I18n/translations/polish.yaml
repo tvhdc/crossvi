@@ -893,3 +893,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Nie znaleziono prawidłowego pliku statystyk C
 STR_VCODEX_IMPORT_NO_DATA: "Brak danych"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Dni kalendarzowe"
 STR_VCODEX_IMPORT_BOOKS: "Dopasowane książki"
+STR_VOCAB_ANSWER_COUNT: "Liczba odpowiedzi na pytanie"
+STR_VOCAB_ANSWERS_3: "3 odpowiedzi"
+STR_VOCAB_ANSWERS_4: "4 odpowiedzi"

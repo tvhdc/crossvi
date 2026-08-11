@@ -893,3 +893,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Не знойдзены сапраўдны ф�
 STR_VCODEX_IMPORT_NO_DATA: "Даных няма"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Каляндарныя дні"
 STR_VCODEX_IMPORT_BOOKS: "Адпаведныя кнігі"
+STR_VOCAB_ANSWER_COUNT: "Колькасць адказаў на пытанне"
+STR_VOCAB_ANSWERS_3: "3 адказы"
+STR_VOCAB_ANSWERS_4: "4 адказы"

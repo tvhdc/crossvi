@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "No s'ha trobat cap fitxer d'estadístiques CPR
 STR_VCODEX_IMPORT_NO_DATA: "Sense dades"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Dies de calendari"
 STR_VCODEX_IMPORT_BOOKS: "Llibres emparellats"
+STR_VOCAB_ANSWER_COUNT: "Nombre de respostes per pregunta"
+STR_VOCAB_ANSWERS_3: "3 respostes"
+STR_VOCAB_ANSWERS_4: "4 respostes"

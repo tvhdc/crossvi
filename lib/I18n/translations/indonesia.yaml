@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Tidak ada file statistik CPR-vCodex yang valid
 STR_VCODEX_IMPORT_NO_DATA: "Tidak ada data"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Hari kalender"
 STR_VCODEX_IMPORT_BOOKS: "Buku yang cocok"
+STR_VOCAB_ANSWER_COUNT: "Jumlah jawaban per soal"
+STR_VOCAB_ANSWERS_3: "3 jawaban"
+STR_VOCAB_ANSWERS_4: "4 jawaban"

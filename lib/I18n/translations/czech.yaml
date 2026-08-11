@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Nebyl nalezen žádný platný statistický so
 STR_VCODEX_IMPORT_NO_DATA: "Žádná data"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Kalendářní dny"
 STR_VCODEX_IMPORT_BOOKS: "Shodné knihy"
+STR_VOCAB_ANSWER_COUNT: "Počet odpovědí na otázku"
+STR_VOCAB_ANSWERS_3: "3 odpovědi"
+STR_VOCAB_ANSWERS_4: "4 odpovědi"

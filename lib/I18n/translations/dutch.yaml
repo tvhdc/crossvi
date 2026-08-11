@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Er is geen geldig CPR-vCodex statistiekenbesta
 STR_VCODEX_IMPORT_NO_DATA: "Geen gegevens"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Kalenderdagen"
 STR_VCODEX_IMPORT_BOOKS: "Overeenkomende boeken"
+STR_VOCAB_ANSWER_COUNT: "Aantal antwoorden per vraag"
+STR_VOCAB_ANSWERS_3: "3 antwoorden"
+STR_VOCAB_ANSWERS_4: "4 antwoorden"

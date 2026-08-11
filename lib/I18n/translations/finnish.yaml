@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Yhtään kelvollista CPR-vCodex-tilastotiedost
 STR_VCODEX_IMPORT_NO_DATA: "Ei tietoja"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Kalenteripäivät"
 STR_VCODEX_IMPORT_BOOKS: "Vastatut kirjat"
+STR_VOCAB_ANSWER_COUNT: "Vastausten määrä kysymystä kohti"
+STR_VOCAB_ANSWERS_3: "3 vastausta"
+STR_VOCAB_ANSWERS_4: "4 vastausta"

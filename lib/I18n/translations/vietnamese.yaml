@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Không tìm thấy tệp thống kê CPR-vCode
 STR_VCODEX_IMPORT_NO_DATA: "Không có dữ liệu"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Ngày trong lịch đọc"
 STR_VCODEX_IMPORT_BOOKS: "Sách xác định được"
+STR_VOCAB_ANSWER_COUNT: "Số đáp án mỗi câu"
+STR_VOCAB_ANSWERS_3: "3 đáp án"
+STR_VOCAB_ANSWERS_4: "4 đáp án"

@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Nerasta galiojančio CPR-vCodex statistikos fa
 STR_VCODEX_IMPORT_NO_DATA: "Nėra duomenų"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Kalendoriaus dienos"
 STR_VCODEX_IMPORT_BOOKS: "Atitinkančios knygos"
+STR_VOCAB_ANSWER_COUNT: "Atsakymų skaičius klausimui"
+STR_VOCAB_ANSWERS_3: "3 atsakymai"
+STR_VOCAB_ANSWERS_4: "4 atsakymai"

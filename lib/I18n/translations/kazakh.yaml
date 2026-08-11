@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Дұрыс CPR-vCodex статистика ф�
 STR_VCODEX_IMPORT_NO_DATA: "Деректер жоқ"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Күнтізбе күндері"
 STR_VCODEX_IMPORT_BOOKS: "Сәйкес келген кітаптар"
+STR_VOCAB_ANSWER_COUNT: "Әр сұрақтағы жауаптар саны"
+STR_VOCAB_ANSWERS_3: "3 жауап"
+STR_VOCAB_ANSWERS_4: "4 жауап"

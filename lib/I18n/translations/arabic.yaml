@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "لم يتم العثور على ملف إحص�
 STR_VCODEX_IMPORT_NO_DATA: "لا توجد بيانات"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "أيام التقويم"
 STR_VCODEX_IMPORT_BOOKS: "الكتب المتطابقة"
+STR_VOCAB_ANSWER_COUNT: "عدد الإجابات لكل سؤال"
+STR_VOCAB_ANSWERS_3: "3 إجابات"
+STR_VOCAB_ANSWERS_4: "4 إجابات"

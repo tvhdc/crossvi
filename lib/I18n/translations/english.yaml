@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "No valid CPR-vCodex statistics file was found.
 STR_VCODEX_IMPORT_NO_DATA: "No data"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Calendar days"
 STR_VCODEX_IMPORT_BOOKS: "Matched books"
+STR_VOCAB_ANSWER_COUNT: "Answers per question"
+STR_VOCAB_ANSWERS_3: "3 answers"
+STR_VOCAB_ANSWERS_4: "4 answers"

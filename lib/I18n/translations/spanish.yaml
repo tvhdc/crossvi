@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "No se encontró ningún archivo válido de est
 STR_VCODEX_IMPORT_NO_DATA: "Sin datos"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Días del calendario"
 STR_VCODEX_IMPORT_BOOKS: "Libros coincidentes"
+STR_VOCAB_ANSWER_COUNT: "Número de respuestas por pregunta"
+STR_VOCAB_ANSWERS_3: "3 respuestas"
+STR_VOCAB_ANSWERS_4: "4 respuestas"

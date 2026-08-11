@@ -146,6 +146,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["language"] = (s.language < getLanguageCount()) ? LANGUAGE_CODES[s.language] : "EN";
   doc["vocabularyQuizSize"] = s.vocabularyQuizSize;
   doc["vocabularyQuestionTime"] = s.vocabularyQuestionTime;
+  doc["vocabularyAnswerCount"] = s.vocabularyAnswerCount;
 
   JsonArray shortcutArray = doc["homeShortcuts"].to<JsonArray>();
   for (uint8_t index = 0; index < s.homeShortcuts.count && index < HomeShortcutList::CAPACITY; ++index) {
@@ -418,6 +419,9 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.vocabularyQuestionTime =
       clamp(doc["vocabularyQuestionTime"] | s.vocabularyQuestionTime,
             CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT, CrossPointSettings::VOCABULARY_TIME_15_SECONDS);
+  s.vocabularyAnswerCount =
+      clamp(doc["vocabularyAnswerCount"] | s.vocabularyAnswerCount, CrossPointSettings::VOCABULARY_ANSWER_COUNT_COUNT,
+            CrossPointSettings::VOCABULARY_ANSWERS_3);
 
   LOG_DBG("CPS", "Settings loaded from file");
 

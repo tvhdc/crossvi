@@ -25,9 +25,12 @@ constexpr std::array<StrId, CrossPointSettings::VOCABULARY_QUIZ_SIZE_COUNT> QUIZ
 constexpr std::array<StrId, CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT> QUESTION_TIME_LABELS = {
     StrId::STR_VOCAB_SECONDS_10, StrId::STR_VOCAB_SECONDS_15, StrId::STR_VOCAB_SECONDS_20, StrId::STR_VOCAB_SECONDS_30,
     StrId::STR_VOCAB_UNLIMITED};
+constexpr std::array<StrId, CrossPointSettings::VOCABULARY_ANSWER_COUNT_COUNT> ANSWER_COUNT_LABELS = {
+    StrId::STR_VOCAB_ANSWERS_3, StrId::STR_VOCAB_ANSWERS_4};
 constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_QUIZ_SIZE_COUNT> QUIZ_SIZES = {5, 10, 20, 30};
 constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT> QUESTION_SECONDS = {10, 15, 20, 30,
                                                                                                       0};
+constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_ANSWER_COUNT_COUNT> ANSWER_COUNTS = {3, 4};
 
 constexpr const char* ATTRIBUTION_LINES[] = {
     "Danh sách từ: Oxford 3000, có bổ sung các dạng ngữ pháp thiết yếu và xếp theo tần suất sử dụng.",
@@ -54,6 +57,7 @@ void VocabularyLearningActivity::onEnter() {
   randomState_ = static_cast<uint32_t>(millis()) ^ 0xC05F17A1U;
   screen_ = Screen::Settings;
   selectedSetting_ = 0;
+  skipHold_.reset();
   requestUpdate();
 }
 
@@ -67,6 +71,11 @@ uint8_t VocabularyLearningActivity::configuredQuestionSeconds() const {
   return QUESTION_SECONDS[index];
 }
 
+uint8_t VocabularyLearningActivity::configuredAnswerCount() const {
+  const size_t index = std::min<size_t>(SETTINGS.vocabularyAnswerCount, ANSWER_COUNTS.size() - 1);
+  return ANSWER_COUNTS[index];
+}
+
 const char* VocabularyLearningActivity::quizSizeLabel() const {
   return I18N.get(QUIZ_SIZE_LABELS[std::min<size_t>(SETTINGS.vocabularyQuizSize, QUIZ_SIZE_LABELS.size() - 1)]);
 }
@@ -74,6 +83,11 @@ const char* VocabularyLearningActivity::quizSizeLabel() const {
 const char* VocabularyLearningActivity::questionTimeLabel() const {
   return I18N.get(
       QUESTION_TIME_LABELS[std::min<size_t>(SETTINGS.vocabularyQuestionTime, QUESTION_TIME_LABELS.size() - 1)]);
+}
+
+const char* VocabularyLearningActivity::answerCountLabel() const {
+  return I18N.get(
+      ANSWER_COUNT_LABELS[std::min<size_t>(SETTINGS.vocabularyAnswerCount, ANSWER_COUNT_LABELS.size() - 1)]);
 }
 
 void VocabularyLearningActivity::loop() {
@@ -106,7 +120,7 @@ void VocabularyLearningActivity::loop() {
 }
 
 void VocabularyLearningActivity::handleSettingsInput() {
-  constexpr int ITEM_COUNT = 4;
+  constexpr int ITEM_COUNT = 5;
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finishActivity();
     return;
@@ -142,6 +156,14 @@ void VocabularyLearningActivity::handleSettingsInput() {
       requestUpdate();
       break;
     case 3:
+      optionPopup_.show(StrId::STR_VOCAB_ANSWER_COUNT, ANSWER_COUNT_LABELS.data(), ANSWER_COUNT_LABELS.size(),
+                        SETTINGS.vocabularyAnswerCount, [this](const int index) {
+                          SETTINGS.vocabularyAnswerCount = static_cast<uint8_t>(index);
+                          SETTINGS.saveToFile();
+                        });
+      requestUpdate();
+      break;
+    case 4:
       screen_ = Screen::Source;
       requestUpdate();
       break;
@@ -163,16 +185,23 @@ void VocabularyLearningActivity::handleQuestionInput() {
       requestUpdate();
     }
   }
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) skipHold_.onPress();
+  if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+      skipHold_.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Back), ReaderUtils::SKIP_HOLD_MS)) {
+    finishActivity();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+      skipHold_.onRelease() == ReaderUtils::HoldRelease::Short) {
     submitAnswer(-1);
     return;
   }
   navigator_.onNext([this] {
-    selectedAnswer_ = ButtonNavigator::nextIndex(selectedAnswer_, 3);
+    selectedAnswer_ = ButtonNavigator::nextIndex(selectedAnswer_, answerCount_);
     requestUpdate();
   });
   navigator_.onPrevious([this] {
-    selectedAnswer_ = ButtonNavigator::previousIndex(selectedAnswer_, 3);
+    selectedAnswer_ = ButtonNavigator::previousIndex(selectedAnswer_, answerCount_);
     requestUpdate();
   });
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) submitAnswer(selectedAnswer_);
@@ -231,12 +260,15 @@ void VocabularyLearningActivity::handleReviewInput() {
 
 void VocabularyLearningActivity::beginQuiz(const uint8_t count) {
   questionCount_ = std::clamp<uint8_t>(count, 1, MAX_QUESTIONS);
+  answerCount_ = configuredAnswerCount();
+  nextAnswerSlot_ = answerCount_;
   currentQuestion_ = 0;
   correctCount_ = 0;
   wrongCount_ = 0;
   skippedCount_ = 0;
   selectedResultAction_ = 0;
   records_.fill({});
+  skipHold_.reset();
   prepareQuestion();
 }
 
@@ -255,15 +287,23 @@ void VocabularyLearningActivity::prepareQuestion() {
   }
   QuestionRecord& record = records_[currentQuestion_];
   record.entryIndex = static_cast<uint16_t>(entryIndex);
-  record.correctSlot = static_cast<uint8_t>(nextRandom(randomState_) % 3);
-  size_t answers[3]{};
-  crossvi::vocabulary::buildAnswerIndices(entryIndex, record.correctSlot, nextRandom(randomState_), answers);
-  for (size_t index = 0; index < 3; ++index) record.answerIndices[index] = static_cast<uint16_t>(answers[index]);
+  if (nextAnswerSlot_ >= answerCount_) {
+    crossvi::vocabulary::buildAnswerSlotOrder(answerCount_, nextRandom(randomState_), answerSlotOrder_.data());
+    nextAnswerSlot_ = 0;
+  }
+  record.correctSlot = answerSlotOrder_[nextAnswerSlot_++];
+  size_t answers[crossvi::vocabulary::MAX_ANSWER_COUNT]{};
+  crossvi::vocabulary::buildAnswerIndices(entryIndex, record.correctSlot, answerCount_, nextRandom(randomState_),
+                                          answers);
+  for (size_t index = 0; index < answerCount_; ++index) {
+    record.answerIndices[index] = static_cast<uint16_t>(answers[index]);
+  }
   record.selectedSlot = -1;
   record.state = AnswerState::Skipped;
   selectedAnswer_ = 0;
   questionStartedAt_ = millis();
   countdownSegments_ = 5;
+  skipHold_.reset();
   screen_ = Screen::Question;
   requestUpdate();
 }
@@ -369,10 +409,11 @@ void VocabularyLearningActivity::renderSettings() {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = height - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   GUI.drawList(
-      renderer, Rect{0, contentTop, width, contentHeight}, 4, selectedSetting_,
+      renderer, Rect{0, contentTop, width, contentHeight}, 5, selectedSetting_,
       [](const int index) {
         constexpr StrId LABELS[] = {StrId::STR_VOCAB_START_QUIZ, StrId::STR_VOCAB_QUIZ_SIZE,
-                                    StrId::STR_VOCAB_QUESTION_TIME, StrId::STR_VOCAB_DATA_SOURCE};
+                                    StrId::STR_VOCAB_QUESTION_TIME, StrId::STR_VOCAB_ANSWER_COUNT,
+                                    StrId::STR_VOCAB_DATA_SOURCE};
         return std::string(I18N.get(LABELS[index]));
       },
       nullptr, nullptr,
@@ -382,6 +423,8 @@ void VocabularyLearningActivity::renderSettings() {
             return quizSizeLabel();
           case 2:
             return questionTimeLabel();
+          case 3:
+            return answerCountLabel();
           default:
             return {};
         }
@@ -404,12 +447,13 @@ void VocabularyLearningActivity::drawAnswerCard(const int slot, const int x, con
   }
   const auto answer = crossvi::vocabulary::entryAt(record.answerIndices[slot]);
   const int textWidth = width - 28;
-  const auto lines = renderer.wrappedText(UI_10_FONT_ID, answer.meaning, textWidth, 2);
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int answerFont = height < 42 ? SMALL_FONT_ID : UI_10_FONT_ID;
+  const auto lines = renderer.wrappedText(answerFont, answer.meaning, textWidth, 2);
+  const int lineHeight = renderer.getLineHeight(answerFont);
   const int blockHeight = static_cast<int>(lines.size()) * lineHeight;
   int textY = y + std::max(4, (height - blockHeight) / 2);
   for (const auto& line : lines) {
-    renderer.drawText(UI_10_FONT_ID, x + 14, textY, line.c_str(), !invert);
+    renderer.drawText(answerFont, x + 14, textY, line.c_str(), !invert);
     textY += lineHeight;
   }
   if (showFeedback && chosen && !correct) {
@@ -469,15 +513,15 @@ void VocabularyLearningActivity::renderQuestion(const bool showFeedback) {
     }
   }
 
-  const int optionGap = compact ? 6 : 8;
-  const int optionH = compact ? 44 : 64;
+  const int optionGap = compact ? (answerCount_ == 4 ? 4 : 6) : 8;
+  const int optionH = compact ? (answerCount_ == 4 ? 38 : 44) : (answerCount_ == 4 ? 56 : 64);
   const int optionsY = cardY + cardH + (compact ? 8 : 12);
-  for (int slot = 0; slot < 3; ++slot) {
+  for (int slot = 0; slot < answerCount_; ++slot) {
     drawAnswerCard(slot, x, optionsY + slot * (optionH + optionGap), contentWidth, optionH, showFeedback);
   }
   if (showFeedback) {
     const QuestionRecord& record = records_[currentQuestion_];
-    const int feedbackY = optionsY + optionH * 3 + optionGap * 2 + (compact ? 8 : 14);
+    const int feedbackY = optionsY + optionH * answerCount_ + optionGap * (answerCount_ - 1) + (compact ? 8 : 14);
     const int feedbackHeight = height - metrics.buttonHintsHeight - 16 - feedbackY;
     renderer.drawRoundedRect(x, feedbackY, contentWidth, feedbackHeight, 1, 6, true);
 

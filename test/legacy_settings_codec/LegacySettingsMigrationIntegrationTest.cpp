@@ -165,22 +165,26 @@ TEST(SettingsJsonIntegration, PersistsAndValidatesVocabularySettings) {
   resetFakes();
   SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_30;
   SETTINGS.vocabularyQuestionTime = CrossPointSettings::VOCABULARY_TIME_UNLIMITED;
+  SETTINGS.vocabularyAnswerCount = CrossPointSettings::VOCABULARY_ANSWERS_4;
   ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
 
   SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_5;
   SETTINGS.vocabularyQuestionTime = CrossPointSettings::VOCABULARY_TIME_10_SECONDS;
+  SETTINGS.vocabularyAnswerCount = CrossPointSettings::VOCABULARY_ANSWERS_3;
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
   EXPECT_EQ(SETTINGS.vocabularyQuizSize, CrossPointSettings::VOCABULARY_QUIZ_30);
   EXPECT_EQ(SETTINGS.vocabularyQuestionTime, CrossPointSettings::VOCABULARY_TIME_UNLIMITED);
+  EXPECT_EQ(SETTINGS.vocabularyAnswerCount, CrossPointSettings::VOCABULARY_ANSWERS_4);
 
   needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(
       SETTINGS,
-      R"({"vocabularyReaderPrompts":1,"vocabularyPromptFrequency":2,"vocabularyQuizSize":9,"vocabularyQuestionTime":9})",
+      R"({"vocabularyReaderPrompts":1,"vocabularyPromptFrequency":2,"vocabularyQuizSize":9,"vocabularyQuestionTime":9,"vocabularyAnswerCount":9})",
       &needsResave));
   EXPECT_EQ(SETTINGS.vocabularyQuizSize, CrossPointSettings::VOCABULARY_QUIZ_10);
   EXPECT_EQ(SETTINGS.vocabularyQuestionTime, CrossPointSettings::VOCABULARY_TIME_15_SECONDS);
+  EXPECT_EQ(SETTINGS.vocabularyAnswerCount, CrossPointSettings::VOCABULARY_ANSWERS_3);
   EXPECT_TRUE(needsResave);
 }
 

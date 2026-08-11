@@ -197,6 +197,11 @@ class CrossPointSettings {
     VOCABULARY_TIME_UNLIMITED = 4,
     VOCABULARY_QUESTION_TIME_COUNT,
   };
+  enum VOCABULARY_ANSWER_COUNT {
+    VOCABULARY_ANSWERS_3 = 0,
+    VOCABULARY_ANSWERS_4 = 1,
+    VOCABULARY_ANSWER_COUNT_COUNT,
+  };
   // Font size options
   enum FONT_SIZE {
     SMALL = 0,
@@ -529,6 +534,7 @@ class CrossPointSettings {
   // Vietnamese-only vocabulary trainer, launched explicitly from Shortcuts.
   uint8_t vocabularyQuizSize = VOCABULARY_QUIZ_10;
   uint8_t vocabularyQuestionTime = VOCABULARY_TIME_15_SECONDS;
+  uint8_t vocabularyAnswerCount = VOCABULARY_ANSWERS_3;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
 

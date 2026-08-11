@@ -72,6 +72,9 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("AnswerState::TimedOut", activity)
         self.assertGreaterEqual(activity.count("drawAnswerStateIcon(record.state"), 2)
         self.assertIn("labelWidth + LABEL_GAP", activity)
+        self.assertIn("buildAnswerSlotOrder(answerCount_", activity)
+        self.assertIn("ReaderUtils::SKIP_HOLD_MS", activity)
+        self.assertIn("skipHold_.onRelease() == ReaderUtils::HoldRelease::Short", activity)
 
         settings = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
         self.assertNotIn("STR_VOCABULARY_LEARNING", settings)

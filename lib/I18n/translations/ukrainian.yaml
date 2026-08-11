@@ -891,3 +891,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Не знайдено жодного дійс�
 STR_VCODEX_IMPORT_NO_DATA: "Немає даних"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Календарні дні"
 STR_VCODEX_IMPORT_BOOKS: "Співпадаючі книги"
+STR_VOCAB_ANSWER_COUNT: "Кількість відповідей на запитання"
+STR_VOCAB_ANSWERS_3: "3 відповіді"
+STR_VOCAB_ANSWERS_4: "4 відповіді"

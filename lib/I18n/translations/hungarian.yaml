@@ -892,3 +892,6 @@ STR_VCODEX_IMPORT_NOT_AVAILABLE: "Nem található érvényes CPR-vCodex statiszt
 STR_VCODEX_IMPORT_NO_DATA: "Nincs adat"
 STR_VCODEX_IMPORT_CALENDAR_DAYS: "Naptári napok"
 STR_VCODEX_IMPORT_BOOKS: "Megfelelő könyvek"
+STR_VOCAB_ANSWER_COUNT: "Válaszok száma kérdésenként"
+STR_VOCAB_ANSWERS_3: "3 válasz"
+STR_VOCAB_ANSWERS_4: "4 válasz"
