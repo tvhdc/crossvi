@@ -109,7 +109,7 @@ class CodegenTest(unittest.TestCase):
     def test_every_sleep_screen_uses_the_strong_full_panel_refresh(self):
         sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
         helper = sleep[sleep.index("void displayStrongSleepFrame") : sleep.index("void SleepActivity::onEnter")]
-        self.assertIn("constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 0;", sleep)
+        self.assertIn("constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 1;", sleep)
         self.assertIn("prepareStrongSleepRefresh();", helper)
         self.assertIn("display.displayBuffer(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);", helper)
         self.assertNotIn("display.triggerDisplay(", helper)
@@ -144,7 +144,7 @@ class CodegenTest(unittest.TestCase):
         helper = main[main.index("void enterStartupDeepSleep()") : main.index("// Enter deep sleep mode")]
         self.assertIn("display.begin(false);", helper)
         self.assertIn("display.clearScreen();", helper)
-        self.assertIn("constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 0;", helper)
+        self.assertIn("constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 2;", helper)
         self.assertIn("display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);", helper)
         self.assertIn(
             "display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_REFRESH);", helper
@@ -802,10 +802,10 @@ class CodegenTest(unittest.TestCase):
 
     def test_version_mapping_preserves_existing_environment_contract(self):
         module = load_git_branch()
-        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.0")
-        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.0-slim")
-        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.0-simulator")
-        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.0-simulator")
+        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.1")
+        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.1-slim")
+        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.1-simulator")
+        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.1-simulator")
 
     def test_ota_valid_mark_retries_transient_failures(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
