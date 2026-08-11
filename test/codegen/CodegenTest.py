@@ -113,7 +113,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("prepareStrongSleepRefresh();", helper)
         self.assertIn("display.displayBuffer(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);", helper)
         self.assertNotIn("display.triggerDisplay(", helper)
-        self.assertEqual(sleep.count("displayStrongSleepFrame();"), 5)
+        self.assertEqual(sleep.count("displayStrongSleepFrame();"), 6)
         quick_resume = sleep[sleep.index("if (renderQuickResume)") : sleep.index("switch (SETTINGS.sleepScreen)")]
         self.assertIn("renderLastScreenSleepScreen()", quick_resume)
         last_screen = sleep[sleep.index("void SleepActivity::renderLastScreenSleepScreen") :]
@@ -121,6 +121,27 @@ class CodegenTest(unittest.TestCase):
         grayscale = sleep[sleep.index("if (hasGreyscale)") : sleep.index("void SleepActivity::renderCoverSleepScreen")]
         self.assertIn("prepareStrongSleepRefresh();", grayscale)
         self.assertIn("renderer.displayGrayscaleBase(HalDisplay::FULL_REFRESH);", grayscale)
+        self.assertGreaterEqual(grayscale.count("renderer.fillRect(statsCard.x"), 2)
+        bitmap = sleep[
+            sleep.index("void SleepActivity::renderBitmapSleepScreen") :
+            sleep.index("void SleepActivity::renderCoverSleepScreen")
+        ]
+        self.assertIn("drawSleepBookStatsOverlay(renderer)", bitmap)
+        self.assertLess(bitmap.index("drawSleepBookStatsOverlay(renderer)"), bitmap.index("displayStrongSleepFrame();"))
+        modes = sleep[sleep.index("switch (SETTINGS.sleepScreen)") : sleep.index("void SleepActivity::renderReadingCalendarSleepScreen")]
+        self.assertIn("SLEEP_SCREEN_MODE::COVER_STATS", modes)
+        self.assertIn("renderCoverSleepScreen(true)", modes)
+        self.assertIn("SLEEP_SCREEN_MODE::CUSTOM_STATS", modes)
+        self.assertIn("renderCustomSleepScreen(true)", modes)
+        custom = sleep[
+            sleep.index("void SleepActivity::renderCustomSleepScreen") :
+            sleep.index("void SleepActivity::renderDefaultSleepScreen")
+        ]
+        fallback = custom[custom.rindex("if (withBookStats)") :]
+        self.assertIn("renderer.clearScreen();", fallback)
+        self.assertIn("drawSleepBookStatsOverlay(renderer);", fallback)
+        self.assertIn("displayStrongSleepFrame();", fallback)
+        self.assertLess(fallback.index("return;"), fallback.index("renderDefaultSleepScreen();"))
         calendar = sleep[
             sleep.index("void SleepActivity::renderReadingCalendarSleepScreen") :
             sleep.index("void SleepActivity::renderCustomSleepScreen")
@@ -173,7 +194,9 @@ class CodegenTest(unittest.TestCase):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
         guard = main[main.index("static bool sleepScreenMayUseGrayscale") : main.index("static bool saveSleepFrameBuffer")]
         self.assertIn("SLEEP_SCREEN_MODE::CUSTOM", guard)
+        self.assertIn("SLEEP_SCREEN_MODE::CUSTOM_STATS", guard)
         self.assertIn("SLEEP_SCREEN_MODE::COVER", guard)
+        self.assertIn("SLEEP_SCREEN_MODE::COVER_STATS", guard)
         self.assertIn("SLEEP_SCREEN_MODE::COVER_CUSTOM", guard)
         self.assertIn("SLEEP_SCREEN_COVER_FILTER::NO_FILTER", guard)
         self.assertGreaterEqual(main.count("sleepScreenMayUseGrayscale()"), 3)
@@ -784,6 +807,10 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("StrId::STR_COVER_CUSTOM", settings)
         self.assertIn("StrId::STR_READING_STATS", settings)
         self.assertIn("StrId::STR_READING_STATS", submenu)
+        self.assertIn("StrId::STR_COVER_WITH_STATS", settings)
+        self.assertIn("StrId::STR_CUSTOM_WITH_STATS", settings)
+        self.assertIn("StrId::STR_COVER_WITH_STATS", submenu)
+        self.assertIn("StrId::STR_CUSTOM_WITH_STATS", submenu)
 
     def test_settings_hide_inapplicable_choices_and_defer_dictionary_scan(self):
         settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")

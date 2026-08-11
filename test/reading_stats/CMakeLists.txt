@@ -28,6 +28,7 @@ target_include_directories(ReadingStatsTest PRIVATE
   ${REPO_ROOT}/src/activities/reader
   ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/JsonParser
+  ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/simulator/src
 )
 

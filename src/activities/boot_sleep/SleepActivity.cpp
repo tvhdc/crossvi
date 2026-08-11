@@ -17,6 +17,9 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "RecentBooksStore.h"
+#include "activities/reader/BookReadingStats.h"
+#include "activities/reader/BookStatsLoader.h"
 #include "activities/reader/DailyReadingHistory.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/reader/ReaderUtils.h"
@@ -78,6 +81,161 @@ void drawCalendarWeekdays(const GfxRenderer& renderer, const ReadingCalendarGrid
     drawCenteredInRect(renderer, SMALL_FONT_ID, column, column.y, I18N.get(labels[index]), EpdFontFamily::BOLD);
   }
 }
+
+struct SleepBookSummary {
+  std::string title;
+  std::string author;
+  std::string readingTime;
+  std::string sessions;
+  std::string pagesTurned;
+  bool available = false;
+};
+
+std::string bookTitleFromPath(const std::string& path) {
+  const size_t separator = path.find_last_of('/');
+  std::string title = separator == std::string::npos ? path : path.substr(separator + 1);
+  const size_t extension = title.find_last_of('.');
+  if (extension != std::string::npos && extension > 0) title.resize(extension);
+  return title;
+}
+
+std::string formatSleepDuration(const uint32_t seconds, const bool estimated) {
+  char value[28];
+  const char* prefix = estimated ? "~" : "";
+  if (seconds == 0) {
+    snprintf(value, sizeof(value), "%s0m", prefix);
+  } else if (seconds < 60) {
+    snprintf(value, sizeof(value), "%s<1m", prefix);
+  } else {
+    const uint32_t minutes = seconds / 60;
+    if (minutes < 60) {
+      snprintf(value, sizeof(value), "%s%lum", prefix, static_cast<unsigned long>(minutes));
+    } else {
+      const uint32_t hours = minutes / 60;
+      const uint32_t remainder = minutes % 60;
+      if (hours < 1000 && remainder > 0) {
+        snprintf(value, sizeof(value), "%s%luh %lum", prefix, static_cast<unsigned long>(hours),
+                 static_cast<unsigned long>(remainder));
+      } else {
+        snprintf(value, sizeof(value), "%s%luh", prefix, static_cast<unsigned long>(hours));
+      }
+    }
+  }
+  return value;
+}
+
+std::string formatSleepMetric(const ReadingStatsMetric& metric, const bool duration) {
+  switch (metric.state) {
+    case ReadingStatsMetricState::NotApplicable:
+      return tr(STR_STATS_NOT_APPLICABLE);
+    case ReadingStatsMetricState::NoData:
+      return tr(STR_STATS_NO_DATA);
+    case ReadingStatsMetricState::Unavailable:
+      return tr(STR_STATS_UNAVAILABLE);
+    case ReadingStatsMetricState::Known:
+    case ReadingStatsMetricState::Estimated:
+      if (duration) return formatSleepDuration(metric.value, metric.state == ReadingStatsMetricState::Estimated);
+      return std::string(metric.state == ReadingStatsMetricState::Estimated ? "~" : "") +
+             std::to_string(metric.value);
+  }
+  return tr(STR_STATS_UNAVAILABLE);
+}
+
+SleepBookSummary loadSleepBookSummary() {
+  SleepBookSummary summary;
+  const std::string& path = APP_STATE.openEpubPath;
+  if (path.empty() || !Storage.exists(path.c_str())) return summary;
+
+  RecentBook recent{path, bookTitleFromPath(path), "", ""};
+  const auto& books = RECENT_BOOKS.getBooks();
+  const auto found = std::find_if(books.begin(), books.end(), [&path](const RecentBook& book) {
+    return book.path == path;
+  });
+  if (found != books.end()) recent = *found;
+  if (recent.title.empty()) recent.title = bookTitleFromPath(path);
+
+  summary.title = recent.title;
+  summary.author = recent.author.empty() ? tr(STR_STATS_NO_DATA) : recent.author;
+  summary.available = !summary.title.empty();
+  if (!summary.available) return summary;
+
+  BookReadingStats stats;
+  if (!loadTrustedBookReadingStats(recent, stats)) {
+    summary.readingTime = tr(STR_STATS_UNAVAILABLE);
+    summary.sessions = tr(STR_STATS_UNAVAILABLE);
+    summary.pagesTurned = tr(STR_STATS_UNAVAILABLE);
+    return summary;
+  }
+  summary.readingTime = formatSleepMetric(stats.readingTimeUnavailable ? ReadingStatsMetric::noData()
+                                                                       : ReadingStatsMetric::known(
+                                                                             stats.totalReadingSeconds),
+                                                true);
+  summary.sessions = formatSleepMetric(
+      stats.sessionsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.sessionCount), false);
+  summary.pagesTurned = formatSleepMetric(stats.pageTurnsUnavailable
+                                              ? ReadingStatsMetric::noData()
+                                              : ReadingStatsMetric::known(stats.totalPagesTurned),
+                                          false);
+  return summary;
+}
+
+Rect drawSleepBookStatsOverlay(const GfxRenderer& renderer) {
+  const SleepBookSummary summary = loadSleepBookSummary();
+  if (!summary.available) return Rect{};
+
+  constexpr int cardMargin = 16;
+  constexpr int topPadding = 16;
+  constexpr int leftPadding = 18;
+  constexpr int rightPadding = 14;
+  constexpr int titleAuthorGap = 8;
+  constexpr int authorStatsGap = 12;
+  constexpr int statsHeight = 76;
+  constexpr int bottomPadding = 11;
+  const int cardWidth = renderer.getScreenWidth() - cardMargin * 2;
+  const int contentWidth = cardWidth - leftPadding - rightPadding;
+  const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int authorLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const auto titleLines =
+      renderer.wrappedText(UI_12_FONT_ID, summary.title.c_str(), contentWidth, 2, EpdFontFamily::BOLD);
+  const int titleBlockHeight = titleLineHeight * static_cast<int>(titleLines.size());
+  const int authorYInCard = topPadding + titleBlockHeight + titleAuthorGap;
+  const int statsTopInCard = authorYInCard + authorLineHeight + authorStatsGap;
+  const int cardHeight = statsTopInCard + 1 + statsHeight + bottomPadding;
+  const Rect card{cardMargin, renderer.getScreenHeight() - cardMargin - cardHeight, cardWidth, cardHeight};
+
+  renderer.fillRect(card.x, card.y, card.width, card.height, false);
+  renderer.drawRect(card.x, card.y, card.width, card.height, 2, true);
+  renderer.fillRect(card.x + 2, card.y + 2, 5, card.height - 4, true);
+
+  const int contentX = card.x + leftPadding;
+  int y = card.y + topPadding;
+
+  for (const std::string& line : titleLines) {
+    renderer.drawText(UI_12_FONT_ID, contentX, y, line.c_str(), true, EpdFontFamily::BOLD);
+    y += titleLineHeight;
+  }
+  y = card.y + authorYInCard;
+  const std::string author = renderer.truncatedText(UI_10_FONT_ID, summary.author.c_str(), contentWidth);
+  renderer.drawText(UI_10_FONT_ID, contentX, y, author.c_str());
+
+  const int statsTop = card.y + statsTopInCard;
+  renderer.drawLine(contentX, statsTop, contentX + contentWidth - 1, statsTop);
+  const Rect stats{contentX, statsTop + 1, contentWidth, statsHeight};
+  const int firstWidth = stats.width * 40 / 100;
+  const int secondWidth = stats.width * 25 / 100;
+  renderer.drawLine(stats.x + firstWidth, stats.y + 8, stats.x + firstWidth, stats.y + stats.height - 8);
+  renderer.drawLine(stats.x + firstWidth + secondWidth, stats.y + 8, stats.x + firstWidth + secondWidth,
+                    stats.y + stats.height - 8);
+  drawCalendarMetric(renderer, Rect{stats.x, stats.y, firstWidth, stats.height}, summary.readingTime,
+                     StrId::STR_STATS_READING_TIME, UI_12_FONT_ID);
+  drawCalendarMetric(renderer, Rect{stats.x + firstWidth, stats.y, secondWidth, stats.height}, summary.sessions,
+                     StrId::STR_STATS_SESSIONS);
+  drawCalendarMetric(renderer,
+                     Rect{stats.x + firstWidth + secondWidth, stats.y, stats.width - firstWidth - secondWidth,
+                          stats.height},
+                     summary.pagesTurned, StrId::STR_STATS_PAGES_TURNED);
+  return card;
+}
 }  // namespace
 
 void SleepActivity::onEnter() {
@@ -106,6 +264,10 @@ void SleepActivity::onEnter() {
       return renderCustomSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
       return renderCoverSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS):
+      return renderCoverSleepScreen(true);
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS):
+      return renderCustomSleepScreen(true);
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       if (APP_STATE.lastSleepFromReader) {
         return renderCoverSleepScreen();
@@ -245,7 +407,7 @@ void SleepActivity::renderReadingCalendarSleepScreen() const {
   displayStrongSleepFrame();
 }
 
-void SleepActivity::renderCustomSleepScreen() const {
+void SleepActivity::renderCustomSleepScreen(const bool withBookStats) const {
   // Check if we have a /.sleep (preferred) or /sleep directory
   const char* sleepDir = nullptr;
   auto dir = Storage.open("/.sleep");
@@ -258,7 +420,7 @@ void SleepActivity::renderCustomSleepScreen() const {
     Bitmap bitmap(file, true);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Loading: /sleep.bmp");
-      renderBitmapSleepScreen(bitmap, false);
+      renderBitmapSleepScreen(bitmap, false, withBookStats);
       file.close();
       if (dir) dir.close();
       return;
@@ -324,7 +486,7 @@ void SleepActivity::renderCustomSleepScreen() const {
         LOG_DBG("SLP", "Randomly loading: %s/%s", sleepDir, files[randomFileIndex].c_str());
         Bitmap bitmap(randFile, true);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-          renderBitmapSleepScreen(bitmap, false);
+          renderBitmapSleepScreen(bitmap, false, withBookStats);
           randFile.close();
           dir.close();
           return;
@@ -335,6 +497,12 @@ void SleepActivity::renderCustomSleepScreen() const {
   }
   if (dir) dir.close();
 
+  if (withBookStats) {
+    renderer.clearScreen();
+    drawSleepBookStatsOverlay(renderer);
+    displayStrongSleepFrame();
+    return;
+  }
   renderDefaultSleepScreen();
 }
 
@@ -368,7 +536,8 @@ void SleepActivity::renderDefaultSleepScreen() const {
   displayStrongSleepFrame();
 }
 
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool applyCoverSettings) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool applyCoverSettings,
+                                            const bool withBookStats) const {
   int x, y;
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -418,6 +587,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
 
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
 
+  const Rect statsCard = withBookStats ? drawSleepBookStatsOverlay(renderer) : Rect{};
+
   if (filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
   }
@@ -434,12 +605,18 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+    if (statsCard.width > 0 && statsCard.height > 0) {
+      renderer.fillRect(statsCard.x, statsCard.y, statsCard.width, statsCard.height, true);
+    }
     renderer.copyGrayscaleLsbBuffers();
 
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+    if (statsCard.width > 0 && statsCard.height > 0) {
+      renderer.fillRect(statsCard.x, statsCard.y, statsCard.width, statsCard.height, true);
+    }
     renderer.copyGrayscaleMsbBuffers();
 
     renderer.displayGrayBuffer(TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
@@ -447,7 +624,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
   }
 }
 
-void SleepActivity::renderCoverSleepScreen() const {
+void SleepActivity::renderCoverSleepScreen(const bool withBookStats) const {
   if (APP_STATE.openEpubPath.empty()) {
     return renderDefaultSleepScreen();
   }
@@ -518,7 +695,7 @@ void SleepActivity::renderCoverSleepScreen() const {
     Bitmap bitmap(file);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
-      renderBitmapSleepScreen(bitmap, true);
+      renderBitmapSleepScreen(bitmap, true, withBookStats);
       return;
     }
   }

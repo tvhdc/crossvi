@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <StreamingJsonParser.h>
 
 #include <algorithm>
@@ -568,10 +569,11 @@ class VCodexSaxHandler {
   static void onArrayEndThunk(void* self) { static_cast<VCodexSaxHandler*>(self)->onArrayEnd(); }
 };
 
-bool parseSource(ParsedDocument& output, BookVisitor visitor = nullptr, void* visitorContext = nullptr) {
+bool parseSource(const char* sourcePath, ParsedDocument& output, BookVisitor visitor = nullptr,
+                 void* visitorContext = nullptr) {
   output = {};
   HalFile file;
-  if (!Storage.openFileForRead(LOG_TAG, VCodexStatsImporter::SOURCE_PATH, file)) return false;
+  if (!Storage.openFileForRead(LOG_TAG, sourcePath, file)) return false;
   const size_t sourceSize = file.fileSize();
   if (sourceSize == 0 || sourceSize > MAX_SOURCE_BYTES) {
     file.close();
@@ -603,6 +605,21 @@ bool parseSource(ParsedDocument& output, BookVisitor visitor = nullptr, void* vi
   if (!file.close() || !parser.finish() || !handler.valid()) return false;
   handler.finalize();
   return true;
+}
+
+enum class SourceStatus : uint8_t { Missing, Invalid, Ready };
+
+SourceStatus parseAvailableSource(ParsedDocument& output, const char*& sourcePath) {
+  bool found = false;
+  for (const char* candidate : {VCodexStatsImporter::SOURCE_PATH, VCodexStatsImporter::BACKUP_SOURCE_PATH}) {
+    if (!Storage.exists(candidate)) continue;
+    found = true;
+    if (parseSource(candidate, output)) {
+      sourcePath = candidate;
+      return SourceStatus::Ready;
+    }
+  }
+  return found ? SourceStatus::Invalid : SourceStatus::Missing;
 }
 
 bool globalStatsEmpty(const GlobalReadingStats& stats) {
@@ -786,62 +803,78 @@ VCodexStatsImporter::ProbeResult probeInternal(VCodexStatsImportSummary& summary
     return VCodexStatsImporter::ProbeResult::PendingRecovery;
   }
 
-  if (!Storage.exists(VCodexStatsImporter::SOURCE_PATH)) return VCodexStatsImporter::ProbeResult::SourceMissing;
-  ParsedDocument parsed;
-  if (!parseSource(parsed)) return VCodexStatsImporter::ProbeResult::InvalidSource;
+  auto parsed = makeUniqueNoThrow<ParsedDocument>();
+  if (!parsed) {
+    LOG_ERR(LOG_TAG, "Not enough memory to inspect VCodex statistics");
+    return VCodexStatsImporter::ProbeResult::StorageError;
+  }
+  const char* sourcePath = nullptr;
+  const SourceStatus sourceStatus = parseAvailableSource(*parsed, sourcePath);
+  if (sourceStatus == SourceStatus::Missing) return VCodexStatsImporter::ProbeResult::SourceMissing;
+  if (sourceStatus != SourceStatus::Ready) return VCodexStatsImporter::ProbeResult::InvalidSource;
   if (!crossViStatsEmpty()) return VCodexStatsImporter::ProbeResult::CrossViNotEmpty;
-  summary = parsed.summary;
+  summary = parsed->summary;
   return VCodexStatsImporter::ProbeResult::Offer;
 }
 
 VCodexStatsImporter::ImportResult performImport(const int16_t utcOffsetMinutes, const bool pendingReplay) {
-  ParsedDocument inspected;
-  if (!parseSource(inspected)) {
+  auto document = makeUniqueNoThrow<ParsedDocument>();
+  if (!document) {
+    LOG_ERR(LOG_TAG, "Not enough memory to import VCodex statistics");
+    return pendingReplay ? VCodexStatsImporter::ImportResult::RecoveryPending
+                         : VCodexStatsImporter::ImportResult::Failed;
+  }
+  const char* sourcePath = nullptr;
+  if (parseAvailableSource(*document, sourcePath) != SourceStatus::Ready) {
     if (pendingReplay && rollbackImport()) saveMarker(MarkerState::Failed, 0, 0);
     return VCodexStatsImporter::ImportResult::NotAvailable;
   }
+  const uint32_t sourceSize = document->sourceSize;
+  const uint32_t sourceHash = document->sourceHash;
   if (pendingReplay) {
     Marker marker;
     if (loadMarker(marker) != MarkerStatus::Valid || marker.state != MarkerState::Pending ||
-        marker.sourceSize != inspected.sourceSize || marker.sourceHash != inspected.sourceHash) {
-      if (rollbackImport()) saveMarker(MarkerState::Failed, inspected.sourceSize, inspected.sourceHash);
+        marker.sourceSize != sourceSize || marker.sourceHash != sourceHash) {
+      if (rollbackImport()) saveMarker(MarkerState::Failed, sourceSize, sourceHash);
       return VCodexStatsImporter::ImportResult::Failed;
     }
   }
   if (!crossViStatsEmpty(pendingReplay)) return VCodexStatsImporter::ImportResult::NotEmpty;
 
-  if (!pendingReplay && !saveMarker(MarkerState::Pending, inspected.sourceSize, inspected.sourceHash)) {
+  if (!pendingReplay && !saveMarker(MarkerState::Pending, sourceSize, sourceHash)) {
     return VCodexStatsImporter::ImportResult::Failed;
   }
 
   ImportContext context{utcOffsetMinutes, true};
-  ParsedDocument replay;
-  const bool replayValid = parseSource(replay, importBook, &context);
-  const bool sourceUnchanged =
-      replayValid && replay.sourceSize == inspected.sourceSize && replay.sourceHash == inspected.sourceHash;
+  const bool replayValid = parseSource(sourcePath, *document, importBook, &context);
+  const bool sourceUnchanged = replayValid && document->sourceSize == sourceSize && document->sourceHash == sourceHash;
   bool written = context.ok && sourceUnchanged;
-  if (written) written = replay.history.save();
-  if (written) written = replay.global.saveRedundant();
+  if (written) written = document->history.save();
+  if (written) written = document->global.saveRedundant();
 
   if (written) {
     GlobalReadingStats::LoadStatus globalStatus = GlobalReadingStats::LoadStatus::Invalid;
     const GlobalReadingStats verifiedGlobal = GlobalReadingStats::load(&globalStatus);
-    DailyReadingHistory verifiedHistory;
-    const DailyReadingHistory::LoadStatus historyStatus = DailyReadingHistory::load(verifiedHistory);
-    written = GlobalReadingStats::isTrustedLoadStatus(globalStatus) &&
-              ReadingStatsCodec::encode(verifiedGlobal) == ReadingStatsCodec::encode(replay.global) &&
-              historyStatus != DailyReadingHistory::LoadStatus::Invalid &&
-              historyStatus != DailyReadingHistory::LoadStatus::IoError &&
-              historyStatus != DailyReadingHistory::LoadStatus::NewerVersion &&
-              historiesEqual(verifiedHistory, replay.history);
+    auto verifiedHistory = makeUniqueNoThrow<DailyReadingHistory>();
+    if (!verifiedHistory) {
+      written = false;
+    } else {
+      const DailyReadingHistory::LoadStatus historyStatus = DailyReadingHistory::load(*verifiedHistory);
+      written = GlobalReadingStats::isTrustedLoadStatus(globalStatus) &&
+                ReadingStatsCodec::encode(verifiedGlobal) == ReadingStatsCodec::encode(document->global) &&
+                historyStatus != DailyReadingHistory::LoadStatus::Invalid &&
+                historyStatus != DailyReadingHistory::LoadStatus::IoError &&
+                historyStatus != DailyReadingHistory::LoadStatus::NewerVersion &&
+                historiesEqual(*verifiedHistory, document->history);
+    }
   }
 
-  if (written && saveMarker(MarkerState::Completed, inspected.sourceSize, inspected.sourceHash)) {
+  if (written && saveMarker(MarkerState::Completed, sourceSize, sourceHash)) {
     return VCodexStatsImporter::ImportResult::Imported;
   }
 
   if (!rollbackImport()) return VCodexStatsImporter::ImportResult::RecoveryPending;
-  saveMarker(MarkerState::Failed, inspected.sourceSize, inspected.sourceHash);
+  saveMarker(MarkerState::Failed, sourceSize, sourceHash);
   return VCodexStatsImporter::ImportResult::Failed;
 }
 }  // namespace
@@ -863,10 +896,12 @@ VCodexStatsImporter::ImportResult VCodexStatsImporter::import(const int16_t utcO
 }
 
 VCodexStatsImporter::ImportResult VCodexStatsImporter::decline() {
-  ParsedDocument inspected;
-  if (!parseSource(inspected)) return ImportResult::NotAvailable;
-  return saveMarker(MarkerState::Declined, inspected.sourceSize, inspected.sourceHash) ? ImportResult::Declined
-                                                                                       : ImportResult::Failed;
+  auto inspected = makeUniqueNoThrow<ParsedDocument>();
+  if (!inspected) return ImportResult::Failed;
+  const char* sourcePath = nullptr;
+  if (parseAvailableSource(*inspected, sourcePath) != SourceStatus::Ready) return ImportResult::NotAvailable;
+  return saveMarker(MarkerState::Declined, inspected->sourceSize, inspected->sourceHash) ? ImportResult::Declined
+                                                                                         : ImportResult::Failed;
 }
 
 VCodexStatsImporter::ImportResult VCodexStatsImporter::recoverPending(const int16_t utcOffsetMinutes) {

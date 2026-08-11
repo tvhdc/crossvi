@@ -28,7 +28,8 @@ SettingInfo showTxtBooksSetting() {
 SettingInfo sleepScreenSetting() {
   return SettingInfo::DynamicEnum(
       StrId::STR_SLEEP_SCREEN,
-      {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT, StrId::STR_READING_STATS},
+      {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT, StrId::STR_READING_STATS,
+       StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS},
       [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
       [](const uint8_t value) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(value); });
 }
@@ -96,7 +97,8 @@ void SettingsSubmenuActivity::rebuildSettings() {
           SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
       if (!quickResume) {
         settings_.push_back(sleepScreenSetting());
-        if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER) {
+        if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
+            SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS) {
           settings_.push_back(SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
                                                 {StrId::STR_FIT, StrId::STR_CROP}));
           settings_.push_back(

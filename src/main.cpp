@@ -211,8 +211,10 @@ static bool sleepScreenMayUseGrayscale() {
       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
   switch (SETTINGS.sleepScreen) {
     case CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS:
       return true;
     case CrossPointSettings::SLEEP_SCREEN_MODE::COVER:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS:
       return unfilteredCover;
     case CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM:
       return !APP_STATE.lastSleepFromReader || unfilteredCover;

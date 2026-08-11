@@ -34,7 +34,8 @@ class CrossPointSettings {
   enum SLEEP_SCREEN_MODE {
     // Values 1, 4 and 6 are retained for compatibility with settings written
     // by older firmware. The settings UI exposes only Default, Cover, Custom,
-    // Blank and Reading statistics through the compact selection helpers below.
+    // Blank, Reading statistics and the two image-with-statistics variants
+    // through the compact selection helpers below.
     DARK = 0,
     LIGHT = 1,
     CUSTOM = 2,
@@ -43,6 +44,8 @@ class CrossPointSettings {
     BLANK = 5,
     QUICK_RESUME = 6,
     READING_CALENDAR = 7,
+    COVER_STATS = 8,
+    CUSTOM_STATS = 9,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_SELECTION {
@@ -51,6 +54,8 @@ class CrossPointSettings {
     SLEEP_SCREEN_CUSTOM = 2,
     SLEEP_SCREEN_BLANK = 3,
     SLEEP_SCREEN_READING_CALENDAR = 4,
+    SLEEP_SCREEN_COVER_STATS = 5,
+    SLEEP_SCREEN_CUSTOM_STATS = 6,
     SLEEP_SCREEN_SELECTION_COUNT
   };
   static constexpr uint8_t sleepScreenSelection(const uint8_t mode) {
@@ -64,6 +69,10 @@ class CrossPointSettings {
         return SLEEP_SCREEN_BLANK;
       case READING_CALENDAR:
         return SLEEP_SCREEN_READING_CALENDAR;
+      case COVER_STATS:
+        return SLEEP_SCREEN_COVER_STATS;
+      case CUSTOM_STATS:
+        return SLEEP_SCREEN_CUSTOM_STATS;
       case DARK:
       case LIGHT:
       case QUICK_RESUME:
@@ -81,6 +90,10 @@ class CrossPointSettings {
         return BLANK;
       case SLEEP_SCREEN_READING_CALENDAR:
         return READING_CALENDAR;
+      case SLEEP_SCREEN_COVER_STATS:
+        return COVER_STATS;
+      case SLEEP_SCREEN_CUSTOM_STATS:
+        return CUSTOM_STATS;
       case SLEEP_SCREEN_DEFAULT:
       default:
         return LIGHT;

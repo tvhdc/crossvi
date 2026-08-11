@@ -276,7 +276,7 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::DynamicEnum(
             StrId::STR_SLEEP_SCREEN,
             {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT,
-             StrId::STR_READING_STATS},
+             StrId::STR_READING_STATS, StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS},
             [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
             [](const uint8_t selection) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(selection); },
             "sleepScreen", StrId::STR_CAT_DISPLAY),

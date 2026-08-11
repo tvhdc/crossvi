@@ -352,15 +352,32 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
             CrossPointSettings::SLEEP_SCREEN_COVER);
   EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::READING_CALENDAR),
             CrossPointSettings::SLEEP_SCREEN_READING_CALENDAR);
+  EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::COVER_STATS),
+            CrossPointSettings::SLEEP_SCREEN_COVER_STATS);
+  EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::CUSTOM_STATS),
+            CrossPointSettings::SLEEP_SCREEN_CUSTOM_STATS);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_DEFAULT), CrossPointSettings::LIGHT);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_BLANK), CrossPointSettings::BLANK);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_READING_CALENDAR),
             CrossPointSettings::READING_CALENDAR);
+  EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_COVER_STATS),
+            CrossPointSettings::COVER_STATS);
+  EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_CUSTOM_STATS),
+            CrossPointSettings::CUSTOM_STATS);
 
   needsResave = false;
   ASSERT_TRUE(
       JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":7})", &needsResave));
   EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::READING_CALENDAR);
+
+  needsResave = false;
+  ASSERT_TRUE(
+      JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":8})", &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::COVER_STATS);
+
+  ASSERT_TRUE(
+      JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":9})", &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::CUSTOM_STATS);
 }
 
 TEST(LegacySettingsMigrationIntegration, InvalidBinaryDoesNotPublishArchiveOrMutateSettings) {

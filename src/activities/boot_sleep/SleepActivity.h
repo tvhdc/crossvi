@@ -11,10 +11,10 @@ class SleepActivity final : public Activity {
 
  private:
   void renderDefaultSleepScreen() const;
-  void renderCustomSleepScreen() const;
-  void renderCoverSleepScreen() const;
+  void renderCustomSleepScreen(bool withBookStats = false) const;
+  void renderCoverSleepScreen(bool withBookStats = false) const;
   void renderReadingCalendarSleepScreen() const;
-  void renderBitmapSleepScreen(const Bitmap& bitmap, bool applyCoverSettings) const;
+  void renderBitmapSleepScreen(const Bitmap& bitmap, bool applyCoverSettings, bool withBookStats = false) const;
   void renderLastScreenSleepScreen() const;
   void renderBlankSleepScreen() const;
 };

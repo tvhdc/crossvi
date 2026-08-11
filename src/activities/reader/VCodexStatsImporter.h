@@ -18,6 +18,7 @@ struct VCodexStatsImportSummary {
 class VCodexStatsImporter {
  public:
   static constexpr const char* SOURCE_PATH = "/.crosspoint/reading_stats.json";
+  static constexpr const char* BACKUP_SOURCE_PATH = "/.crosspoint/reading_stats.json.bak";
 
   enum class ProbeResult : uint8_t {
     Offer,

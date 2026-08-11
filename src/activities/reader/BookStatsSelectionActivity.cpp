@@ -55,18 +55,14 @@ bool hasBookStatsArtifact(const std::string& cachePath) {
                      [&cachePath](const char* name) { return Storage.exists((cachePath + "/" + name).c_str()); });
 }
 
-}  // namespace
-
-bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentation& presentation) {
-  std::string cachePath;
-  bool plainText = false;
+bool resolveBookStatsCache(const RecentBook& recent, std::string& cachePath, bool& plainText) {
+  plainText = false;
   if (FsHelpers::hasEpubExtension(recent.path)) {
     Epub book(recent.path, CACHE_ROOT);
     cachePath = book.getCachePath();
-    if (hasBookStatsArtifact(cachePath) && book.inspectSourceBinding() != Epub::SourceBindingStatus::Match) {
-      return false;
-    }
-  } else if (FsHelpers::hasTxtExtension(recent.path) || FsHelpers::hasMarkdownExtension(recent.path)) {
+    return !hasBookStatsArtifact(cachePath) || book.inspectSourceBinding() == Epub::SourceBindingStatus::Match;
+  }
+  if (FsHelpers::hasTxtExtension(recent.path) || FsHelpers::hasMarkdownExtension(recent.path)) {
     Txt book(recent.path, CACHE_ROOT);
     cachePath = book.getCachePath();
     ZipFile::SourceIdentity identity;
@@ -75,23 +71,39 @@ bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentatio
       return false;
     }
     plainText = true;
-  } else if (FsHelpers::hasXtcExtension(recent.path)) {
+    return true;
+  }
+  if (FsHelpers::hasXtcExtension(recent.path)) {
     Xtc book(recent.path, CACHE_ROOT);
     cachePath = book.getCachePath();
     ZipFile::SourceIdentity identity;
-    if (hasBookStatsArtifact(cachePath) &&
-        (!book.load() || !book.getSourceIdentity(identity) || !trustedIdentity(cachePath, identity))) {
-      return false;
-    }
-  } else {
-    return false;
+    return !hasBookStatsArtifact(cachePath) ||
+           (book.load() && book.getSourceIdentity(identity) && trustedIdentity(cachePath, identity));
   }
+  return false;
+}
 
+}  // namespace
+
+bool loadTrustedBookReadingStats(const RecentBook& recent, BookReadingStats& stats, bool* plainText) {
+  std::string cachePath;
+  bool isPlainText = false;
+  if (!resolveBookStatsCache(recent, cachePath, isPlainText)) return false;
   BookReadingStats::LoadStatus bookStatus = BookReadingStats::LoadStatus::Missing;
-  const BookReadingStats bookStats = BookReadingStats::load(cachePath, &bookStatus);
+  BookReadingStats loaded = BookReadingStats::load(cachePath, &bookStatus);
+  if (!BookReadingStats::isTrustedLoadStatus(bookStatus)) return false;
+  stats = std::move(loaded);
+  if (plainText) *plainText = isPlainText;
+  return true;
+}
+
+bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentation& presentation) {
+  BookReadingStats bookStats;
+  bool plainText = false;
+  if (!loadTrustedBookReadingStats(recent, bookStats, &plainText)) return false;
   GlobalReadingStats::LoadStatus globalStatus = GlobalReadingStats::LoadStatus::Missing;
   const GlobalReadingStats globalStats = GlobalReadingStats::load(&globalStatus);
-  if (!BookReadingStats::isTrustedLoadStatus(bookStatus) || !GlobalReadingStats::isTrustedLoadStatus(globalStatus)) {
+  if (!GlobalReadingStats::isTrustedLoadStatus(globalStatus)) {
     return false;
   }
   const GlobalReadingStatsAggregation aggregate = GlobalReadingStats::hasSyncedStats()

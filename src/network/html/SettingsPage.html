@@ -537,7 +537,7 @@
     const coverModeRow = document.getElementById('row-setting-sleepScreenCoverMode');
     const coverFilterRow = document.getElementById('row-setting-sleepScreenCoverFilter');
     if (sleepScreenRow) sleepScreenRow.style.display = quickResume ? 'none' : '';
-    const showCoverOptions = !quickResume && sleepScreen === 1;
+    const showCoverOptions = !quickResume && (sleepScreen === 1 || sleepScreen === 5);
     if (coverModeRow) coverModeRow.style.display = showCoverOptions ? '' : 'none';
     if (coverFilterRow) coverFilterRow.style.display = showCoverOptions ? '' : 'none';
 

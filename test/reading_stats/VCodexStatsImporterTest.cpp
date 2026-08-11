@@ -12,6 +12,7 @@
 
 namespace {
 constexpr char SOURCE_PATH[] = "/.crosspoint/reading_stats.json";
+constexpr char BACKUP_SOURCE_PATH[] = "/.crosspoint/reading_stats.json.bak";
 constexpr char BOOK_PATH[] = "/Books/Test.epub";
 
 std::string bookCachePath() {
@@ -85,6 +86,34 @@ TEST(VCodexStatsImporter, RejectsMalformedSourceWithoutWritingMarker) {
   VCodexStatsImportSummary summary;
   EXPECT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::InvalidSource);
   EXPECT_FALSE(Storage.exists("/.crosspoint/vcodex_stats_import_v1.bin"));
+}
+
+TEST(VCodexStatsImporter, ImportsBackupWhenPrimaryIsMissingAndPreservesIt) {
+  seedSource();
+  const std::vector<uint8_t> backup = Storage.file(SOURCE_PATH);
+  ASSERT_TRUE(Storage.remove(SOURCE_PATH));
+  Storage.setFile(BACKUP_SOURCE_PATH, backup);
+
+  VCodexStatsImportSummary summary;
+  ASSERT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::Offer);
+  EXPECT_EQ(summary.resolvableBooks, 1u);
+  EXPECT_EQ(VCodexStatsImporter::import(0), VCodexStatsImporter::ImportResult::Imported);
+  EXPECT_EQ(Storage.file(BACKUP_SOURCE_PATH), backup);
+  EXPECT_FALSE(Storage.exists(SOURCE_PATH));
+}
+
+TEST(VCodexStatsImporter, ImportsBackupWhenPrimaryIsInvalidAndPreservesBothSources) {
+  seedSource();
+  const std::vector<uint8_t> backup = Storage.file(SOURCE_PATH);
+  const std::vector<uint8_t> invalidPrimary = bytes("{\"formatVersion\":6,\"books\":[");
+  Storage.setFile(SOURCE_PATH, invalidPrimary);
+  Storage.setFile(BACKUP_SOURCE_PATH, backup);
+
+  VCodexStatsImportSummary summary;
+  ASSERT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::Offer);
+  EXPECT_EQ(VCodexStatsImporter::import(0), VCodexStatsImporter::ImportResult::Imported);
+  EXPECT_EQ(Storage.file(SOURCE_PATH), invalidPrimary);
+  EXPECT_EQ(Storage.file(BACKUP_SOURCE_PATH), backup);
 }
 
 TEST(VCodexStatsImporter, MissingSourceFieldsStayUnavailableInsteadOfBecomingZero) {
