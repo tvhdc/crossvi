@@ -281,6 +281,7 @@ class CrossPointSettings {
     LP_MENU_AUTO_PAGE_TURN = 5,
     LP_MENU_HIGHLIGHT = 6,
     LP_MENU_SCREENSHOT = 7,
+    LP_MENU_REFRESH = 8,
     LONG_PRESS_MENU_FUNCTION_COUNT
   };
 

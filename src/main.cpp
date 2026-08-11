@@ -735,8 +735,9 @@ void loop() {
   renderer.setFadingFix(SETTINGS.fadingFix);
 
   const bool doublePowerEnabled =
-      SETTINGS.doublePowerAction != CrossPointSettings::DOUBLE_POWER_ACTION::DOUBLE_POWER_DISABLED ||
-      SETTINGS.doublePowerReadingFunction != CrossPointSettings::LP_MENU_DISABLED;
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE &&
+      (SETTINGS.doublePowerAction != CrossPointSettings::DOUBLE_POWER_ACTION::DOUBLE_POWER_DISABLED ||
+       SETTINGS.doublePowerReadingFunction != CrossPointSettings::LP_MENU_DISABLED);
   mappedInputManager.setPowerReleaseOverride(doublePowerEnabled, false);
 
   if (Serial && millis() - lastMemPrint >= 10000) {
@@ -814,7 +815,9 @@ void loop() {
 
   if (powerEvent == PowerButtonGesture::Event::Double) {
     if (activityManager.isReaderActivity()) {
-      if (SETTINGS.doublePowerReadingFunction != CrossPointSettings::LP_MENU_DISABLED) {
+      if (SETTINGS.doublePowerReadingFunction == CrossPointSettings::LP_MENU_REFRESH) {
+        activityManager.handleGlobalShortcut(GlobalShortcut::RefreshScreen);
+      } else if (SETTINGS.doublePowerReadingFunction != CrossPointSettings::LP_MENU_DISABLED) {
         activityManager.handleReaderShortcut(SETTINGS.doublePowerReadingFunction);
       }
       return;

@@ -74,7 +74,12 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_CONFIRM_BUTTON, SettingAction::ConfirmButtonSettings));
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_POWER_BUTTON, SettingAction::PowerButtonSettings));
   if (halTiltSensor.isAvailable()) {
-    controlsSettings.push_back(SettingInfo::Action(StrId::STR_TILT_SENSOR, SettingAction::TiltSensorSettings));
+    controlsSettings.push_back(SettingInfo::DynamicEnum(
+        StrId::STR_TILT_SENSOR, {StrId::STR_DISABLED, StrId::STR_TILT_PAGE_TURN},
+        [] { return SETTINGS.tiltPageTurn == CrossPointSettings::TILT_OFF ? uint8_t{0} : uint8_t{1}; },
+        [](const uint8_t value) {
+          SETTINGS.tiltPageTurn = value == 0 ? CrossPointSettings::TILT_OFF : CrossPointSettings::TILT_ON;
+        }));
   }
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
 
@@ -375,9 +380,6 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::PowerButtonSettings:
         openSubmenu(SettingsSubmenuActivity::Page::PowerButton, {});
-        break;
-      case SettingAction::TiltSensorSettings:
-        openSubmenu(SettingsSubmenuActivity::Page::TiltSensor, {});
         break;
       case SettingAction::FirmwareUpdates:
         openSubmenu(SettingsSubmenuActivity::Page::FirmwareUpdate, {});

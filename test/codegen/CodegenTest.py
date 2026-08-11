@@ -938,6 +938,33 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("void update(uint8_t mode, uint8_t orientation, bool inReader);", sensor)
         self.assertIn("halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, readerVisible);", main)
 
+    def test_power_double_press_does_not_overlap_single_press_and_tilt_is_inline(self):
+        settings = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
+        settings_list = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        settings_header = (REPO_ROOT / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+
+        rebuild = submenu[submenu.index("void SettingsSubmenuActivity::rebuildSettings()") :]
+        power_page = rebuild[rebuild.index("case Page::PowerButton:") : rebuild.index("case Page::FirmwareUpdate:")]
+        self.assertIn("SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE", power_page)
+        self.assertIn("StrId::STR_DOUBLE_PRESS_READING", power_page)
+        self.assertIn("StrId::STR_DOUBLE_PRESS_OUTSIDE_READER", power_page)
+        self.assertIn("StrId::STR_DOUBLE_POWER_REFRESH", power_page)
+
+        self.assertIn("LP_MENU_REFRESH = 8", settings_header)
+        self.assertIn("StrId::STR_SCREENSHOT_BUTTON, StrId::STR_DOUBLE_POWER_REFRESH", settings_list)
+        self.assertIn("SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE &&", main)
+        reader_double = main[main.index("if (powerEvent == PowerButtonGesture::Event::Double)") :
+                             main.index("if (powerEvent == PowerButtonGesture::Event::Single")]
+        self.assertIn("doublePowerReadingFunction == CrossPointSettings::LP_MENU_REFRESH", reader_double)
+        self.assertIn("handleGlobalShortcut(GlobalShortcut::RefreshScreen)", reader_double)
+
+        self.assertIn("SettingInfo::DynamicEnum(\n        StrId::STR_TILT_SENSOR", settings)
+        self.assertIn("{StrId::STR_DISABLED, StrId::STR_TILT_PAGE_TURN}", settings)
+        self.assertNotIn("TiltSensorSettings", settings)
+        self.assertNotIn("Page::TiltSensor", submenu)
+
     def test_txt_font_scan_skips_unused_layout_measurements(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         prewarm = reader[reader.index("void TxtReaderActivity::prewarmCurrentPageFont") :

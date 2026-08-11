@@ -35,7 +35,6 @@ enum class SettingAction {
   PageButtonSettings,
   ConfirmButtonSettings,
   PowerButtonSettings,
-  TiltSensorSettings,
   FirmwareUpdates,
 };
 

@@ -102,6 +102,11 @@ CrossVi is developed with AI assistance. AI tools help with code exploration,
 drafting changes, and reviewing tests. The maintainer makes the design decisions,
 reviews and validates every release, and remains responsible for the firmware.
 
+## Support
+
+If CrossVi is useful to you, you can support its development on
+[Ko-fi](https://ko-fi.com/tvhdc).
+
 ## Credits
 
 CrossVi is a fork of

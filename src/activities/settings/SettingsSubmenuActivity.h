@@ -18,7 +18,6 @@ class SettingsSubmenuActivity final : public Activity {
     PageButtons,
     ConfirmButton,
     PowerButton,
-    TiltSensor,
     FirmwareUpdate,
   };
 

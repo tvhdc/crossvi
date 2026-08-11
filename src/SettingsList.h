@@ -355,7 +355,7 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Enum(StrId::STR_DOUBLE_POWER_READING, &CrossPointSettings::doublePowerReadingFunction,
                           {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION, StrId::STR_DICTIONARY,
                            StrId::STR_READING_STATS, StrId::STR_AUTO_PAGE_TURN, StrId::STR_ADD_HIGHLIGHT,
-                           StrId::STR_SCREENSHOT_BUTTON},
+                           StrId::STR_SCREENSHOT_BUTTON, StrId::STR_DOUBLE_POWER_REFRESH},
                           "doublePowerReadingFunction", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuFunction,
                           {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION, StrId::STR_DICTIONARY,

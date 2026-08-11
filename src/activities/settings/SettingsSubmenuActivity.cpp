@@ -48,8 +48,6 @@ StrId SettingsSubmenuActivity::title() const {
       return StrId::STR_CONFIRM_BUTTON;
     case Page::PowerButton:
       return StrId::STR_POWER_BUTTON;
-    case Page::TiltSensor:
-      return StrId::STR_TILT_SENSOR;
     case Page::FirmwareUpdate:
       return StrId::STR_FIRMWARE_UPDATES;
   }
@@ -144,23 +142,21 @@ void SettingsSubmenuActivity::rebuildSettings() {
       settings_.push_back(SettingInfo::Enum(
           StrId::STR_SINGLE_PRESS, &CrossPointSettings::shortPwrBtn,
           {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES}));
-      settings_.push_back(SettingInfo::Enum(StrId::STR_DOUBLE_PRESS_READING,
-                                            &CrossPointSettings::doublePowerReadingFunction,
-                                            {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION,
-                                             StrId::STR_DICTIONARY, StrId::STR_READING_STATS, StrId::STR_AUTO_PAGE_TURN,
-                                             StrId::STR_ADD_HIGHLIGHT, StrId::STR_SCREENSHOT_BUTTON}));
-      settings_.push_back(
-          SettingInfo::Enum(StrId::STR_DOUBLE_PRESS_OUTSIDE_READER, &CrossPointSettings::doublePowerAction,
-                            {StrId::STR_DISABLED, StrId::STR_DOUBLE_POWER_HOME, StrId::STR_DOUBLE_POWER_RESUME,
-                             StrId::STR_DOUBLE_POWER_REFRESH, StrId::STR_SCREENSHOT_BUTTON}));
+      if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) {
+        settings_.push_back(SettingInfo::Enum(
+            StrId::STR_DOUBLE_PRESS_READING, &CrossPointSettings::doublePowerReadingFunction,
+            {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION, StrId::STR_DICTIONARY,
+             StrId::STR_READING_STATS, StrId::STR_AUTO_PAGE_TURN, StrId::STR_ADD_HIGHLIGHT,
+             StrId::STR_SCREENSHOT_BUTTON, StrId::STR_DOUBLE_POWER_REFRESH}));
+        settings_.push_back(
+            SettingInfo::Enum(StrId::STR_DOUBLE_PRESS_OUTSIDE_READER, &CrossPointSettings::doublePowerAction,
+                              {StrId::STR_DISABLED, StrId::STR_DOUBLE_POWER_HOME, StrId::STR_DOUBLE_POWER_RESUME,
+                               StrId::STR_DOUBLE_POWER_REFRESH, StrId::STR_SCREENSHOT_BUTTON}));
+      }
       if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
         settings_.push_back(
             SettingInfo::Toggle(StrId::STR_RETURN_FROM_FOOTNOTE, &CrossPointSettings::pwrBtnFootnoteBack));
       }
-      break;
-
-    case Page::TiltSensor:
-      settings_.push_back(SettingInfo::Toggle(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn));
       break;
 
     case Page::FirmwareUpdate:
