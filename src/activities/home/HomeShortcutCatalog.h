@@ -20,6 +20,7 @@ enum class HomeShortcutTarget {
   WifiNetworks,
   KOReaderSettings,
   OpdsServers,
+  VocabularyLearning,
 };
 
 struct HomeShortcutDescriptor {

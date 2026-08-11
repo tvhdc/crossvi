@@ -19,6 +19,7 @@
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
 #include "reader/SavedClippingsActivity.h"
+#include "reader/VCodexStatsImportActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -191,6 +192,17 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
     currentActivity = std::move(newActivity);
     currentActivity->onEnter();
   }
+}
+
+void ActivityManager::maybeOfferVCodexStatsImport() {
+  if (pendingAction != PendingAction::Replace || !pendingActivity) return;
+  VCodexStatsImportSummary summary;
+  const VCodexStatsImporter::ProbeResult probe = VCodexStatsImporter::probe(summary);
+  if (probe != VCodexStatsImporter::ProbeResult::Offer && probe != VCodexStatsImporter::ProbeResult::PendingRecovery) {
+    return;
+  }
+  pendingActivity =
+      std::make_unique<VCodexStatsImportActivity>(renderer, mappedInput, probe, summary, std::move(pendingActivity));
 }
 
 void ActivityManager::goToFileTransfer() {

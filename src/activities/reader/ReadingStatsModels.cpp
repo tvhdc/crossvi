@@ -86,6 +86,11 @@ void BookReadingStats::formatDuration(const uint32_t seconds, char* buffer, cons
 }
 
 void GlobalReadingStats::merge(const GlobalReadingStats& other) {
+  importedFromVCodex = importedFromVCodex || other.importedFromVCodex;
+  readingTimeUnavailable = readingTimeUnavailable || other.readingTimeUnavailable;
+  sessionsUnavailable = sessionsUnavailable || other.sessionsUnavailable;
+  pageTurnsUnavailable = pageTurnsUnavailable || other.pageTurnsUnavailable;
+  completionUnavailable = completionUnavailable || other.completionUnavailable;
   const bool targetAlreadyHadLatestDay =
       other.hasLatestDayReadingSeconds && historyContainsDay(*this, other.latestReadingDay);
   totalSessions = addReadingStatsSaturated(totalSessions, other.totalSessions);

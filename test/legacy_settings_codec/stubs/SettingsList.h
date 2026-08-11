@@ -46,9 +46,9 @@ inline const std::vector<SettingInfo>& getBaseSettingsList() {
       statusSetting("statusBarTitle", &CrossPointSettings::statusBarTitle, SettingType::ENUM, 3),
       statusSetting("statusBarBattery", &CrossPointSettings::statusBarBattery, SettingType::TOGGLE),
       statusSetting("outsideReaderClock", &CrossPointSettings::outsideReaderClock, SettingType::TOGGLE),
+      statusSetting("outsideReaderDateTimeOrder", &CrossPointSettings::outsideReaderDateTimeOrder, SettingType::ENUM,
+                    CrossPointSettings::OUTSIDE_READER_DATE_TIME_ORDER_COUNT),
       statusSetting("readerDarkMode", &CrossPointSettings::readerDarkMode, SettingType::TOGGLE),
-      statusSetting("homeBackAction", &CrossPointSettings::homeBackAction, SettingType::ENUM,
-                    CrossPointSettings::HOME_BACK_ACTION_COUNT),
   };
   return settings;
 }

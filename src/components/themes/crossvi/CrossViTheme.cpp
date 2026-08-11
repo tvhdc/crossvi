@@ -271,6 +271,8 @@ bool outsideDateTimeText(char (&value)[40]) {
     std::snprintf(value, sizeof(value), "%s", time);
   else if (!haveTime)
     std::snprintf(value, sizeof(value), "%s", date);
+  else if (SETTINGS.outsideReaderDateTimeOrder == CrossPointSettings::OUTSIDE_READER_TIME_THEN_DATE)
+    std::snprintf(value, sizeof(value), "%s %s", time, date);
   else
     std::snprintf(value, sizeof(value), "%s %s", date, time);
   return true;

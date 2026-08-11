@@ -20,6 +20,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
 #include "PerBookReaderSettingsBridge.h"
 #include "PerBookReaderSettingsStore.h"
@@ -785,8 +786,8 @@ std::unique_ptr<Page> TxtReaderActivity::buildInteractivePageFromLines(const std
         const size_t prefixLength = ranges[index].first;
         const char next = prefix[prefixLength];
         prefix[prefixLength] = '\0';
-        positions[index] = static_cast<int16_t>(
-            renderer.getTextAdvanceX(cachedFontId, prefix.c_str(), EpdFontFamily::REGULAR));
+        positions[index] =
+            static_cast<int16_t>(renderer.getTextAdvanceX(cachedFontId, prefix.c_str(), EpdFontFamily::REGULAR));
         prefix[prefixLength] = next;
       }
     }
@@ -1214,6 +1215,9 @@ void TxtReaderActivity::markBookCompleted() {
   }
   bookReadingStats = completedBookStats;
   globalReadingStats = completedGlobalStats;
+  FINISHED_BOOKS.markCompleted(
+      txt->getPath(), txt->getTitle(), "",
+      completedBookStats.finishedDate.isValid() ? readingStatsDayIndex(completedBookStats.finishedDate) : 0);
 }
 
 void TxtReaderActivity::openReaderMenu() {

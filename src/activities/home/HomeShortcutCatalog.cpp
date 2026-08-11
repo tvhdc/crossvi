@@ -3,6 +3,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalTiltSensor.h>
+#include <I18n.h>
 
 namespace {
 using Id = HomeShortcutId;
@@ -54,6 +55,7 @@ constexpr std::array<HomeShortcutDescriptor, static_cast<size_t>(Id::Count)> CAT
     {Id::WifiNetworks, StrId::STR_WIFI_NETWORKS, Target::WifiNetworks, nullptr},
     {Id::KOReaderSettings, StrId::STR_KOREADER_SYNC, Target::KOReaderSettings, nullptr},
     {Id::OpdsServers, StrId::STR_OPDS_SERVERS, Target::OpdsServers, nullptr},
+    {Id::VocabularyLearning, StrId::STR_VOCABULARY_LEARNING, Target::VocabularyLearning, nullptr},
 }};
 static_assert(CATALOG.size() == static_cast<size_t>(Id::Count));
 }  // namespace
@@ -69,6 +71,10 @@ const HomeShortcutDescriptor* findHomeShortcut(const HomeShortcutId id) {
 
 bool isHomeShortcutAvailable(const HomeShortcutId id, const GfxRenderer& renderer) {
   switch (id) {
+    case HomeShortcutId::BackToFileBrowser:
+      // Kept as a stable persisted ID only. Reader Back now has one fixed,
+      // predictable behavior and this obsolete setting must not be offered.
+      return false;
     case HomeShortcutId::OutsideReaderClock:
     case HomeShortcutId::OutsideReaderDate:
     case HomeShortcutId::TimeSettings:
@@ -77,6 +83,8 @@ bool isHomeShortcutAvailable(const HomeShortcutId id, const GfxRenderer& rendere
       return halTiltSensor.isAvailable();
     case HomeShortcutId::TextAntiAliasing:
       return renderer.supportsStripGrayscale();
+    case HomeShortcutId::VocabularyLearning:
+      return I18N.getLanguage() == Language::VI;
     default:
       return findHomeShortcut(id) != nullptr;
   }

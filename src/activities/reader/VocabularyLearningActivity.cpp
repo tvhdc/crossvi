@@ -1,0 +1,628 @@
+#include "VocabularyLearningActivity.h"
+
+#include <Arduino.h>
+#include <GfxRenderer.h>
+#include <I18n.h>
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+#include "CrossPointSettings.h"
+#include "MappedInputManager.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+#include "vocabulary/VocabularyData.h"
+#include "vocabulary/VocabularyQuizTiming.h"
+
+namespace {
+
+constexpr std::array<StrId, CrossPointSettings::VOCABULARY_QUIZ_SIZE_COUNT> QUIZ_SIZE_LABELS = {
+    StrId::STR_VOCAB_QUESTIONS_5, StrId::STR_VOCAB_QUESTIONS_10, StrId::STR_VOCAB_QUESTIONS_20,
+    StrId::STR_VOCAB_QUESTIONS_30};
+constexpr std::array<StrId, CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT> QUESTION_TIME_LABELS = {
+    StrId::STR_VOCAB_SECONDS_10, StrId::STR_VOCAB_SECONDS_15, StrId::STR_VOCAB_SECONDS_20, StrId::STR_VOCAB_SECONDS_30,
+    StrId::STR_VOCAB_UNLIMITED};
+constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_QUIZ_SIZE_COUNT> QUIZ_SIZES = {5, 10, 20, 30};
+constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT> QUESTION_SECONDS = {10, 15, 20, 30,
+                                                                                                      0};
+
+constexpr const char* ATTRIBUTION_LINES[] = {
+    "Danh sách từ: Oxford 3000, có bổ sung các dạng ngữ pháp thiết yếu và xếp theo tần suất sử dụng.",
+    "https://english4u.com.vn/Uploads/files/3000.pdf",
+    "Dữ liệu từ điển: Từ điển Anh–Việt thichhoc.com (thichhoc-dict), giấy phép CC BY-SA 4.0.",
+    "https://github.com/thichhoc-org/thichhoc-dict",
+    "https://creativecommons.org/licenses/by-sa/4.0/",
+    "Nguồn gốc: WordNet 3.1 (Princeton), CMUdict (CMU), Wiktionary.",
+    "Đã chỉnh sửa dữ liệu: chọn 3.000 từ theo tần suất, rút gọn nghĩa và bổ sung một số từ ngữ pháp.",
+};
+
+uint32_t nextRandom(uint32_t& state) {
+  if (state == 0) state = 0x9E3779B9U;
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
+}
+
+}  // namespace
+
+void VocabularyLearningActivity::onEnter() {
+  Activity::onEnter();
+  randomState_ = static_cast<uint32_t>(millis()) ^ 0xC05F17A1U;
+  screen_ = Screen::Settings;
+  selectedSetting_ = 0;
+  requestUpdate();
+}
+
+uint8_t VocabularyLearningActivity::configuredQuestionCount() const {
+  const size_t index = std::min<size_t>(SETTINGS.vocabularyQuizSize, QUIZ_SIZES.size() - 1);
+  return QUIZ_SIZES[index];
+}
+
+uint8_t VocabularyLearningActivity::configuredQuestionSeconds() const {
+  const size_t index = std::min<size_t>(SETTINGS.vocabularyQuestionTime, QUESTION_SECONDS.size() - 1);
+  return QUESTION_SECONDS[index];
+}
+
+const char* VocabularyLearningActivity::quizSizeLabel() const {
+  return I18N.get(QUIZ_SIZE_LABELS[std::min<size_t>(SETTINGS.vocabularyQuizSize, QUIZ_SIZE_LABELS.size() - 1)]);
+}
+
+const char* VocabularyLearningActivity::questionTimeLabel() const {
+  return I18N.get(
+      QUESTION_TIME_LABELS[std::min<size_t>(SETTINGS.vocabularyQuestionTime, QUESTION_TIME_LABELS.size() - 1)]);
+}
+
+void VocabularyLearningActivity::loop() {
+  if (optionPopup_.handleInput(mappedInput, [this] { requestUpdate(); })) return;
+
+  switch (screen_) {
+    case Screen::Settings:
+      handleSettingsInput();
+      break;
+    case Screen::Question:
+      handleQuestionInput();
+      break;
+    case Screen::Feedback:
+      handleFeedbackInput();
+      break;
+    case Screen::Results:
+      handleResultsInput();
+      break;
+    case Screen::Review:
+      handleReviewInput();
+      break;
+    case Screen::Source:
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+          mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        screen_ = Screen::Settings;
+        requestUpdate();
+      }
+      break;
+  }
+}
+
+void VocabularyLearningActivity::handleSettingsInput() {
+  constexpr int ITEM_COUNT = 4;
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    finishActivity();
+    return;
+  }
+  navigator_.onNext([this] {
+    selectedSetting_ = ButtonNavigator::nextIndex(selectedSetting_, ITEM_COUNT);
+    requestUpdate();
+  });
+  navigator_.onPrevious([this] {
+    selectedSetting_ = ButtonNavigator::previousIndex(selectedSetting_, ITEM_COUNT);
+    requestUpdate();
+  });
+  if (!mappedInput.wasReleased(MappedInputManager::Button::Confirm)) return;
+
+  switch (selectedSetting_) {
+    case 0:
+      beginQuiz(configuredQuestionCount());
+      break;
+    case 1:
+      optionPopup_.show(StrId::STR_VOCAB_QUIZ_SIZE, QUIZ_SIZE_LABELS.data(), QUIZ_SIZE_LABELS.size(),
+                        SETTINGS.vocabularyQuizSize, [this](const int index) {
+                          SETTINGS.vocabularyQuizSize = static_cast<uint8_t>(index);
+                          SETTINGS.saveToFile();
+                        });
+      requestUpdate();
+      break;
+    case 2:
+      optionPopup_.show(StrId::STR_VOCAB_QUESTION_TIME, QUESTION_TIME_LABELS.data(), QUESTION_TIME_LABELS.size(),
+                        SETTINGS.vocabularyQuestionTime, [this](const int index) {
+                          SETTINGS.vocabularyQuestionTime = static_cast<uint8_t>(index);
+                          SETTINGS.saveToFile();
+                        });
+      requestUpdate();
+      break;
+    case 3:
+      screen_ = Screen::Source;
+      requestUpdate();
+      break;
+  }
+}
+
+void VocabularyLearningActivity::handleQuestionInput() {
+  const uint8_t seconds = configuredQuestionSeconds();
+  if (seconds > 0) {
+    const uint32_t elapsed = static_cast<uint32_t>(millis() - questionStartedAt_);
+    const uint32_t duration = seconds * 1000UL;
+    if (elapsed >= duration) {
+      submitAnswer(-1, true);
+      return;
+    }
+    const uint8_t segments = crossvi::vocabulary::countdownSegments(elapsed, duration);
+    if (segments != countdownSegments_) {
+      countdownSegments_ = segments;
+      requestUpdate();
+    }
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    submitAnswer(-1);
+    return;
+  }
+  navigator_.onNext([this] {
+    selectedAnswer_ = ButtonNavigator::nextIndex(selectedAnswer_, 3);
+    requestUpdate();
+  });
+  navigator_.onPrevious([this] {
+    selectedAnswer_ = ButtonNavigator::previousIndex(selectedAnswer_, 3);
+    requestUpdate();
+  });
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) submitAnswer(selectedAnswer_);
+}
+
+void VocabularyLearningActivity::handleFeedbackInput() {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+      mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    advanceAfterFeedback();
+  }
+}
+
+void VocabularyLearningActivity::handleResultsInput() {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    screen_ = Screen::Settings;
+    requestUpdate();
+    return;
+  }
+  navigator_.onNext([this] {
+    selectedResultAction_ = ButtonNavigator::nextIndex(selectedResultAction_, 2);
+    requestUpdate();
+  });
+  navigator_.onPrevious([this] {
+    selectedResultAction_ = ButtonNavigator::previousIndex(selectedResultAction_, 2);
+    requestUpdate();
+  });
+  if (!mappedInput.wasReleased(MappedInputManager::Button::Confirm)) return;
+  if (selectedResultAction_ == 0) {
+    reviewIndex_ = 0;
+    screen_ = Screen::Review;
+    requestUpdate();
+  } else {
+    beginQuiz(questionCount_);
+  }
+}
+
+void VocabularyLearningActivity::handleReviewInput() {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    screen_ = Screen::Results;
+    requestUpdate();
+    return;
+  }
+  navigator_.onNext([this] {
+    reviewIndex_ = static_cast<uint8_t>(ButtonNavigator::nextIndex(reviewIndex_, questionCount_));
+    requestUpdate();
+  });
+  navigator_.onPrevious([this] {
+    reviewIndex_ = static_cast<uint8_t>(ButtonNavigator::previousIndex(reviewIndex_, questionCount_));
+    requestUpdate();
+  });
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    reviewIndex_ = static_cast<uint8_t>(ButtonNavigator::nextIndex(reviewIndex_, questionCount_));
+    requestUpdate();
+  }
+}
+
+void VocabularyLearningActivity::beginQuiz(const uint8_t count) {
+  questionCount_ = std::clamp<uint8_t>(count, 1, MAX_QUESTIONS);
+  currentQuestion_ = 0;
+  correctCount_ = 0;
+  wrongCount_ = 0;
+  skippedCount_ = 0;
+  selectedResultAction_ = 0;
+  records_.fill({});
+  prepareQuestion();
+}
+
+void VocabularyLearningActivity::prepareQuestion() {
+  size_t entryIndex = 0;
+  for (size_t attempt = 0; attempt < crossvi::vocabulary::entryCount(); ++attempt) {
+    entryIndex = nextRandom(randomState_) % crossvi::vocabulary::entryCount();
+    bool duplicate = false;
+    for (uint8_t previous = 0; previous < currentQuestion_; ++previous) {
+      if (records_[previous].entryIndex == entryIndex) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) break;
+  }
+  QuestionRecord& record = records_[currentQuestion_];
+  record.entryIndex = static_cast<uint16_t>(entryIndex);
+  record.correctSlot = static_cast<uint8_t>(nextRandom(randomState_) % 3);
+  size_t answers[3]{};
+  crossvi::vocabulary::buildAnswerIndices(entryIndex, record.correctSlot, nextRandom(randomState_), answers);
+  for (size_t index = 0; index < 3; ++index) record.answerIndices[index] = static_cast<uint16_t>(answers[index]);
+  record.selectedSlot = -1;
+  record.state = AnswerState::Skipped;
+  selectedAnswer_ = 0;
+  questionStartedAt_ = millis();
+  countdownSegments_ = 5;
+  screen_ = Screen::Question;
+  requestUpdate();
+}
+
+void VocabularyLearningActivity::submitAnswer(const int selectedSlot, const bool timedOut) {
+  QuestionRecord& record = records_[currentQuestion_];
+  record.selectedSlot = static_cast<int8_t>(selectedSlot);
+  if (selectedSlot < 0) {
+    record.state = timedOut ? AnswerState::TimedOut : AnswerState::Skipped;
+    ++skippedCount_;
+  } else if (selectedSlot == record.correctSlot) {
+    record.state = AnswerState::Correct;
+    ++correctCount_;
+  } else {
+    record.state = AnswerState::Wrong;
+    ++wrongCount_;
+  }
+  screen_ = Screen::Feedback;
+  requestUpdate();
+}
+
+void VocabularyLearningActivity::drawAnswerStateIcon(const AnswerState state, const int x, const int y,
+                                                     const int size) const {
+  if (state == AnswerState::Correct) {
+    renderer.fillRoundedRect(x, y, size, size, 5, Color::Black);
+    renderer.drawLine(x + size / 5, y + size / 2, x + size * 2 / 5, y + size * 3 / 4, 3, false);
+    renderer.drawLine(x + size * 2 / 5, y + size * 3 / 4, x + size * 4 / 5, y + size / 4, 3, false);
+    return;
+  }
+
+  renderer.drawRoundedRect(x, y, size, size, 2, 5, true);
+  if (state == AnswerState::Skipped || state == AnswerState::TimedOut) {
+    renderer.drawLine(x + size / 2, y + size / 5, x + size / 2, y + size * 3 / 5, 3, true);
+    renderer.fillRect(x + size / 2 - 2, y + size * 3 / 4, 5, 5, true);
+  } else {
+    renderer.drawLine(x + size / 4, y + size / 4, x + size * 3 / 4, y + size * 3 / 4, 3, true);
+    renderer.drawLine(x + size / 4, y + size * 3 / 4, x + size * 3 / 4, y + size / 4, 3, true);
+  }
+}
+
+const char* VocabularyLearningActivity::answerStateLabel(const AnswerState state) const {
+  switch (state) {
+    case AnswerState::Correct:
+      return tr(STR_VOCAB_CORRECT);
+    case AnswerState::Wrong:
+      return tr(STR_VOCAB_INCORRECT);
+    case AnswerState::TimedOut:
+      return tr(STR_VOCAB_TIME_UP);
+    case AnswerState::Skipped:
+      return tr(STR_VOCAB_SKIP);
+  }
+  return tr(STR_VOCAB_INCORRECT);
+}
+
+void VocabularyLearningActivity::advanceAfterFeedback() {
+  if (currentQuestion_ + 1 < questionCount_) {
+    ++currentQuestion_;
+    prepareQuestion();
+    return;
+  }
+  screen_ = Screen::Results;
+  requestUpdate();
+}
+
+void VocabularyLearningActivity::finishActivity() {
+  ActivityResult result;
+  result.isCancelled = false;
+  setResult(std::move(result));
+  finish();
+}
+
+void VocabularyLearningActivity::render(RenderLock&&) {
+  if (optionPopup_.processRender(renderer, mappedInput)) return;
+  renderer.clearScreen();
+  switch (screen_) {
+    case Screen::Settings:
+      renderSettings();
+      break;
+    case Screen::Question:
+      renderQuestion(false);
+      break;
+    case Screen::Feedback:
+      renderQuestion(true);
+      break;
+    case Screen::Results:
+      renderResults();
+      break;
+    case Screen::Review:
+      renderReview();
+      break;
+    case Screen::Source:
+      renderSource();
+      break;
+  }
+  renderer.displayBuffer();
+}
+
+void VocabularyLearningActivity::renderSettings() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, tr(STR_VOCABULARY_LEARNING));
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = height - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  GUI.drawList(
+      renderer, Rect{0, contentTop, width, contentHeight}, 4, selectedSetting_,
+      [](const int index) {
+        constexpr StrId LABELS[] = {StrId::STR_VOCAB_START_QUIZ, StrId::STR_VOCAB_QUIZ_SIZE,
+                                    StrId::STR_VOCAB_QUESTION_TIME, StrId::STR_VOCAB_DATA_SOURCE};
+        return std::string(I18N.get(LABELS[index]));
+      },
+      nullptr, nullptr,
+      [this](const int index) -> std::string {
+        switch (index) {
+          case 1:
+            return quizSizeLabel();
+          case 2:
+            return questionTimeLabel();
+          default:
+            return {};
+        }
+      });
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void VocabularyLearningActivity::drawAnswerCard(const int slot, const int x, const int y, const int width,
+                                                const int height, const bool showFeedback) const {
+  const QuestionRecord& record = records_[currentQuestion_];
+  const bool correct = slot == record.correctSlot;
+  const bool chosen = slot == record.selectedSlot;
+  const bool selected = !showFeedback && slot == selectedAnswer_;
+  const bool invert = showFeedback ? correct : selected;
+  if (invert) {
+    renderer.fillRoundedRect(x, y, width, height, 5, Color::Black);
+  } else {
+    renderer.drawRoundedRect(x, y, width, height, 1, 5, true);
+  }
+  const auto answer = crossvi::vocabulary::entryAt(record.answerIndices[slot]);
+  const int textWidth = width - 28;
+  const auto lines = renderer.wrappedText(UI_10_FONT_ID, answer.meaning, textWidth, 2);
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int blockHeight = static_cast<int>(lines.size()) * lineHeight;
+  int textY = y + std::max(4, (height - blockHeight) / 2);
+  for (const auto& line : lines) {
+    renderer.drawText(UI_10_FONT_ID, x + 14, textY, line.c_str(), !invert);
+    textY += lineHeight;
+  }
+  if (showFeedback && chosen && !correct) {
+    renderer.drawText(SMALL_FONT_ID, x + width - 18, y + 5, "X", true, EpdFontFamily::BOLD);
+  }
+}
+
+void VocabularyLearningActivity::renderQuestion(const bool showFeedback) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  char progress[32];
+  snprintf(progress, sizeof(progress), tr(STR_VOCAB_QUESTION_FORMAT), static_cast<unsigned>(currentQuestion_ + 1),
+           static_cast<unsigned>(questionCount_));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, tr(STR_VOCABULARY_LEARNING),
+                 progress);
+
+  const int x = 18;
+  const bool compact = height < 650;
+  const int contentTop = metrics.topPadding + metrics.headerHeight + 12;
+  const int contentWidth = width - 36;
+  const int railY = contentTop;
+  renderer.drawRect(x, railY, contentWidth, 7);
+  renderer.fillRect(x + 2, railY + 2,
+                    std::max(1, (contentWidth - 4) * static_cast<int>(currentQuestion_ + 1) / questionCount_), 3, true);
+
+  const auto word = crossvi::vocabulary::entryAt(records_[currentQuestion_].entryIndex);
+  const int cardY = railY + 18;
+  const int cardH = compact ? 84 : 120;
+  renderer.drawRoundedRect(x, cardY, contentWidth, cardH, 1, 6, true);
+  renderer.drawCenteredText(NOTOSERIF_18_FONT_ID, cardY + (compact ? 5 : 6), word.word, true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, cardY + (compact ? 40 : 58), word.pronunciation);
+  if (!showFeedback) {
+    const uint8_t seconds = configuredQuestionSeconds();
+    if (seconds == 0) {
+      renderer.drawCenteredText(SMALL_FONT_ID, cardY + (compact ? 64 : 94), tr(STR_VOCAB_UNLIMITED));
+    } else {
+      constexpr int SEGMENT_COUNT = 5;
+      constexpr int SEGMENT_GAP = 5;
+      constexpr int LABEL_GAP = 8;
+      const std::string timerLabel = std::string(tr(STR_VOCAB_TIME_REMAINING)) + ":";
+      const int timerY = cardY + (compact ? 60 : 92);
+      const int labelX = x + 12;
+      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, timerLabel.c_str());
+      renderer.drawText(SMALL_FONT_ID, labelX, timerY, timerLabel.c_str());
+      const int segmentAreaX = labelX + labelWidth + LABEL_GAP;
+      const int segmentAreaY = timerY + std::max(0, (renderer.getLineHeight(SMALL_FONT_ID) - 9) / 2);
+      const int segmentAreaWidth = x + contentWidth - 12 - segmentAreaX;
+      const int segmentWidth = (segmentAreaWidth - SEGMENT_GAP * (SEGMENT_COUNT - 1)) / SEGMENT_COUNT;
+      for (int segment = 0; segment < SEGMENT_COUNT; ++segment) {
+        const int segmentX = segmentAreaX + segment * (segmentWidth + SEGMENT_GAP);
+        renderer.drawRoundedRect(segmentX, segmentAreaY, segmentWidth, 9, 1, 2, true);
+        if (segment < countdownSegments_) {
+          renderer.fillRoundedRect(segmentX + 2, segmentAreaY + 2, segmentWidth - 4, 5, 1, Color::Black);
+        }
+      }
+    }
+  }
+
+  const int optionGap = compact ? 6 : 8;
+  const int optionH = compact ? 44 : 64;
+  const int optionsY = cardY + cardH + (compact ? 8 : 12);
+  for (int slot = 0; slot < 3; ++slot) {
+    drawAnswerCard(slot, x, optionsY + slot * (optionH + optionGap), contentWidth, optionH, showFeedback);
+  }
+  if (showFeedback) {
+    const QuestionRecord& record = records_[currentQuestion_];
+    const int feedbackY = optionsY + optionH * 3 + optionGap * 2 + (compact ? 8 : 14);
+    const int feedbackHeight = height - metrics.buttonHintsHeight - 16 - feedbackY;
+    renderer.drawRoundedRect(x, feedbackY, contentWidth, feedbackHeight, 1, 6, true);
+
+    const char* feedbackTitle = answerStateLabel(record.state);
+    const int iconSize = compact ? 26 : 34;
+    const int statusGap = compact ? 8 : 12;
+    const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, feedbackTitle, EpdFontFamily::BOLD);
+    const int statusWidth = iconSize + statusGap + titleWidth;
+    const int iconX = x + std::max(10, (contentWidth - statusWidth) / 2);
+    const int iconY = feedbackY + (compact ? 10 : 20);
+    drawAnswerStateIcon(record.state, iconX, iconY, iconSize);
+    const int titleY = iconY + std::max(0, (iconSize - renderer.getLineHeight(UI_12_FONT_ID)) / 2);
+    renderer.drawText(UI_12_FONT_ID, iconX + iconSize + statusGap, titleY, feedbackTitle, true, EpdFontFamily::BOLD);
+
+    const auto answer = crossvi::vocabulary::entryAt(record.answerIndices[record.correctSlot]);
+    std::string answerText = std::string(tr(STR_VOCAB_CORRECT_ANSWER)) + ": " + answer.meaning;
+    const auto answerLines =
+        renderer.wrappedText(UI_10_FONT_ID, answerText.c_str(), contentWidth - 24, compact ? 1 : 2);
+    int answerY = feedbackY + (compact ? 42 : 68);
+    for (const auto& line : answerLines) {
+      const int answerWidth = renderer.getTextWidth(UI_10_FONT_ID, line.c_str());
+      renderer.drawText(UI_10_FONT_ID, x + std::max(12, (contentWidth - answerWidth) / 2), answerY, line.c_str());
+      answerY += renderer.getLineHeight(UI_10_FONT_ID);
+    }
+    const auto labels = mappedInput.mapLabels(tr(STR_CONTINUE), tr(STR_CONTINUE), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_VOCAB_SKIP), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+}
+
+void VocabularyLearningActivity::renderResults() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, tr(STR_VOCAB_RESULTS));
+  char score[32];
+  snprintf(score, sizeof(score), tr(STR_VOCAB_SCORE_FORMAT), static_cast<unsigned>(correctCount_),
+           static_cast<unsigned>(questionCount_));
+  renderer.drawCenteredText(NOTOSERIF_18_FONT_ID, metrics.topPadding + metrics.headerHeight + 40, score, true,
+                            EpdFontFamily::BOLD);
+
+  const int cardY = metrics.topPadding + metrics.headerHeight + 104;
+  const int cardW = (width - 52) / 3;
+  constexpr StrId labels[] = {StrId::STR_VOCAB_CORRECT_COUNT_FORMAT, StrId::STR_VOCAB_WRONG_COUNT_FORMAT,
+                              StrId::STR_VOCAB_SKIPPED_COUNT_FORMAT};
+  const uint8_t values[] = {correctCount_, wrongCount_, skippedCount_};
+  for (int index = 0; index < 3; ++index) {
+    const int cardX = 16 + index * (cardW + 10);
+    renderer.drawRoundedRect(cardX, cardY, cardW, 70, 1, 5, true);
+    char value[28];
+    snprintf(value, sizeof(value), I18N.get(labels[index]), static_cast<unsigned>(values[index]));
+    const auto safe = renderer.truncatedText(SMALL_FONT_ID, value, cardW - 8);
+    renderer.drawText(SMALL_FONT_ID, cardX + 6, cardY + 25, safe.c_str());
+  }
+
+  const int listY = cardY + 100;
+  GUI.drawList(renderer, Rect{0, listY, width, 110}, 2, selectedResultAction_, [](const int index) {
+    return std::string(I18N.get(index == 0 ? StrId::STR_VOCAB_REVIEW : StrId::STR_VOCAB_TRY_AGAIN));
+  });
+  const auto labelsHint = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labelsHint.btn1, labelsHint.btn2, labelsHint.btn3, labelsHint.btn4);
+}
+
+void VocabularyLearningActivity::renderReview() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  const bool compact = renderer.getScreenHeight() < 650;
+  char progress[32];
+  snprintf(progress, sizeof(progress), tr(STR_VOCAB_REVIEW_FORMAT), static_cast<unsigned>(reviewIndex_ + 1),
+           static_cast<unsigned>(questionCount_));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, tr(STR_VOCAB_REVIEW), progress);
+  const QuestionRecord& record = records_[reviewIndex_];
+  const auto word = crossvi::vocabulary::entryAt(record.entryIndex);
+  const int top = metrics.topPadding + metrics.headerHeight + 28;
+  renderer.drawCenteredText(NOTOSERIF_18_FONT_ID, top, word.word, true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, top + 52, word.pronunciation);
+
+  const int x = 20;
+  const int boxW = width - 40;
+  const int boxH = compact ? 104 : 124;
+  const int firstY = top + 96;
+  renderer.drawRoundedRect(x, firstY, boxW, boxH, 1, 5, true);
+  const char* stateLabel = answerStateLabel(record.state);
+  const int reviewIconSize = 26;
+  const int reviewGap = 9;
+  const int stateWidth = renderer.getTextWidth(UI_12_FONT_ID, stateLabel, EpdFontFamily::BOLD);
+  const int statusX = x + std::max(12, (boxW - reviewIconSize - reviewGap - stateWidth) / 2);
+  drawAnswerStateIcon(record.state, statusX, firstY + 16, reviewIconSize);
+  renderer.drawText(UI_12_FONT_ID, statusX + reviewIconSize + reviewGap, firstY + 17, stateLabel, true,
+                    EpdFontFamily::BOLD);
+  const int chosenLabelWidth = renderer.getTextWidth(SMALL_FONT_ID, tr(STR_VOCAB_YOUR_ANSWER));
+  renderer.drawText(SMALL_FONT_ID, x + (boxW - chosenLabelWidth) / 2, firstY + 52, tr(STR_VOCAB_YOUR_ANSWER));
+  const char* chosen = tr(STR_VOCAB_NOT_ANSWERED);
+  if (record.selectedSlot >= 0) {
+    chosen = crossvi::vocabulary::entryAt(record.answerIndices[record.selectedSlot]).meaning;
+  }
+  const auto chosenLines = renderer.wrappedText(UI_10_FONT_ID, chosen, boxW - 24, compact ? 1 : 2);
+  int y = firstY + 78;
+  for (const auto& line : chosenLines) {
+    const int lineWidth = renderer.getTextWidth(UI_10_FONT_ID, line.c_str());
+    renderer.drawText(UI_10_FONT_ID, x + std::max(12, (boxW - lineWidth) / 2), y, line.c_str());
+    y += renderer.getLineHeight(UI_10_FONT_ID);
+  }
+
+  const int secondY = firstY + boxH + 16;
+  renderer.fillRoundedRect(x, secondY, boxW, boxH, 5, Color::Black);
+  const int correctLabelWidth = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_VOCAB_CORRECT_ANSWER), EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, x + (boxW - correctLabelWidth) / 2, secondY + (compact ? 20 : 28),
+                    tr(STR_VOCAB_CORRECT_ANSWER), false, EpdFontFamily::BOLD);
+  const char* correct = crossvi::vocabulary::entryAt(record.answerIndices[record.correctSlot]).meaning;
+  const auto correctLines = renderer.wrappedText(UI_10_FONT_ID, correct, boxW - 24, 2);
+  y = secondY + (compact ? 50 : 60);
+  for (const auto& line : correctLines) {
+    const int lineWidth = renderer.getTextWidth(UI_10_FONT_ID, line.c_str());
+    renderer.drawText(UI_10_FONT_ID, x + std::max(12, (boxW - lineWidth) / 2), y, line.c_str(), false);
+    y += renderer.getLineHeight(UI_10_FONT_ID);
+  }
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONTINUE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void VocabularyLearningActivity::renderSource() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, tr(STR_VOCAB_DATA_SOURCE));
+  const int x = 20;
+  const int textWidth = width - 40;
+  int y = metrics.topPadding + metrics.headerHeight + 20;
+  const auto noticeLines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_VOCAB_SOURCE_NOTICE), textWidth, 4);
+  for (const auto& line : noticeLines) {
+    renderer.drawText(UI_10_FONT_ID, x, y, line.c_str(), true, EpdFontFamily::BOLD);
+    y += renderer.getLineHeight(UI_10_FONT_ID);
+  }
+  y += 18;
+  for (const char* paragraph : ATTRIBUTION_LINES) {
+    const auto lines = renderer.wrappedText(SMALL_FONT_ID, paragraph, textWidth, 5);
+    for (const auto& line : lines) {
+      if (y + renderer.getLineHeight(SMALL_FONT_ID) >= height - metrics.buttonHintsHeight - 8) break;
+      renderer.drawText(SMALL_FONT_ID, x, y, line.c_str());
+      y += renderer.getLineHeight(SMALL_FONT_ID);
+    }
+    y += 8;
+  }
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}

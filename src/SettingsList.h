@@ -256,6 +256,9 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                             "outsideReaderClock", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_DATE_OUTSIDE_READER, &CrossPointSettings::showDateOutsideReader,
                             "showDateOutsideReader", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_OUTSIDE_READER_DATE_TIME_ORDER, &CrossPointSettings::outsideReaderDateTimeOrder,
+                          {StrId::STR_DATE_THEN_TIME, StrId::STR_TIME_THEN_DATE}, "outsideReaderDateTimeOrder",
+                          StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_LIBRARY_DISPLAY_MODE, &CrossPointSettings::libraryView,
                           {StrId::STR_LIBRARY_LIST, StrId::STR_LIBRARY_COVERS}, "libraryView", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_LIBRARY_SORT, &CrossPointSettings::librarySort,
@@ -367,13 +370,6 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                           {StrId::STR_DISABLED, StrId::STR_DOUBLE_POWER_HOME, StrId::STR_DOUBLE_POWER_RESUME,
                            StrId::STR_DOUBLE_POWER_REFRESH, StrId::STR_SCREENSHOT_BUTTON},
                           "doublePowerAction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_WHEN_LEAVING_READER, &CrossPointSettings::backShortToFileBrowser,
-                          {StrId::STR_DESTINATION_HOME, StrId::STR_DESTINATION_FILE_BROWSER}, "backShortToFileBrowser",
-                          StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_HOME_BACK_BUTTON, &CrossPointSettings::homeBackAction,
-                          {StrId::STR_SHORTCUTS, StrId::STR_CONTINUE_READING, StrId::STR_NONE_OPT}, "homeBackAction",
-                          StrId::STR_CAT_CONTROLS),
-
         // --- System ---
         SettingInfo::Value(
             StrId::STR_TIME_TO_SLEEP, &CrossPointSettings::sleepTimeoutMinutes,

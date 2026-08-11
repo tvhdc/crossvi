@@ -408,20 +408,13 @@ void HomeActivity::loop() {
   // closed the previous activity.
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backPressSeen) {
     backPressSeen = false;
-    if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_SHORTCUTS) {
-      startActivityForResult(std::make_unique<HomeShortcutsActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
-      return;
-    }
-    if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_CONTINUE_READING && !recentBooks.empty()) {
-      const bool focusedRecentBook = (usesRecentListLayout() || usesTripleCoverLayout()) && selectorIndex >= 0 &&
-                                     selectorIndex < static_cast<int>(recentBooks.size());
-      const int bookIndex = usesCarouselLayout()
-                                ? std::clamp(carouselBookIndex, 0, static_cast<int>(recentBooks.size()) - 1)
-                                : (focusedRecentBook ? selectorIndex : 0);
-      onSelectBook(recentBooks[bookIndex].path);
-      return;
-    }
+    const HomeMenuItem returnMenuItem = selectorIndex < static_cast<int>(recentBooks.size())
+                                            ? HomeMenuItem::NONE
+                                            : indexToMenuItem(selectorIndex - static_cast<int>(recentBooks.size()),
+                                                              hasOpdsServers, hasReadingStatsShortcut());
+    startActivityForResult(std::make_unique<HomeShortcutsActivity>(renderer, mappedInput, returnMenuItem),
+                           [this](const ActivityResult&) { requestUpdate(); });
+    return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -559,17 +552,7 @@ void HomeActivity::render(RenderLock&&) {
         [&menuItems](int index) { return menuItems[index]; }, [&menuIcons](int index) { return menuIcons[index]; });
   }
 
-  const char* backLabel = "";
-  if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_SHORTCUTS) {
-    backLabel = tr(STR_SHORTCUTS);
-  } else if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_CONTINUE_READING && !recentBooks.empty()) {
-    backLabel = I18N.get(homeBookHintLabelId(bookSummary));
-    if (((carouselLayout || tripleCoverLayout) && carouselBookIndex > 0) ||
-        (recentListLayout && selectorIndex > 0 && selectorIndex < static_cast<int>(recentBooks.size()))) {
-      backLabel = tr(STR_OPEN);
-    }
-  }
-  const auto labels = mappedInput.mapLabels(backLabel, tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_SHORTCUTS), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();

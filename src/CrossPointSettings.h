@@ -181,6 +181,22 @@ class CrossPointSettings {
   static constexpr uint8_t LEGACY_DICTIONARY_FONT_NOTO_SANS = 2;
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
+
+  enum VOCABULARY_QUIZ_SIZE {
+    VOCABULARY_QUIZ_5 = 0,
+    VOCABULARY_QUIZ_10 = 1,
+    VOCABULARY_QUIZ_20 = 2,
+    VOCABULARY_QUIZ_30 = 3,
+    VOCABULARY_QUIZ_SIZE_COUNT,
+  };
+  enum VOCABULARY_QUESTION_TIME {
+    VOCABULARY_TIME_10_SECONDS = 0,
+    VOCABULARY_TIME_15_SECONDS = 1,
+    VOCABULARY_TIME_20_SECONDS = 2,
+    VOCABULARY_TIME_30_SECONDS = 3,
+    VOCABULARY_TIME_UNLIMITED = 4,
+    VOCABULARY_QUESTION_TIME_COUNT,
+  };
   // Font size options
   enum FONT_SIZE {
     SMALL = 0,
@@ -353,6 +369,12 @@ class CrossPointSettings {
     HOME_BACK_ACTION_COUNT
   };
 
+  enum OUTSIDE_READER_DATE_TIME_ORDER {
+    OUTSIDE_READER_DATE_THEN_TIME = 0,
+    OUTSIDE_READER_TIME_THEN_DATE = 1,
+    OUTSIDE_READER_DATE_TIME_ORDER_COUNT
+  };
+
   // Sleep screen settings
   uint8_t sleepScreen = LIGHT;
   // Sleep screen cover mode settings
@@ -375,6 +397,8 @@ class CrossPointSettings {
   uint8_t outsideReaderClock = 0;
   // Optionally show the local date next to the outside-reader clock.
   uint8_t showDateOutsideReader = 0;
+  // Ordering used only when both the outside-reader date and clock are shown.
+  uint8_t outsideReaderDateTimeOrder = OUTSIDE_READER_DATE_THEN_TIME;
   // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
   // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
   // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
@@ -476,6 +500,9 @@ class CrossPointSettings {
   // SD card font family name (empty = use built-in fontFamily)
   static constexpr size_t SD_FONT_FAMILY_NAME_CAPACITY = 32;
   char sdFontFamilyName[SD_FONT_FAMILY_NAME_CAPACITY] = "";
+  static constexpr size_t OTA_VERSION_CAPACITY = 24;
+  // Populated only by an explicit OTA check; displaying it never starts Wi-Fi.
+  char availableOtaVersion[OTA_VERSION_CAPACITY] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
@@ -484,10 +511,10 @@ class CrossPointSettings {
   uint8_t removeReadBooksFromRecents = 0;
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
   uint8_t moveFinishedToReadFolder = 0;
-  // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
+  // Deprecated persisted fields kept for source/binary migration compatibility.
+  // Runtime navigation is fixed: short reader Back returns Home and Home Back
+  // opens Shortcuts.
   uint8_t backShortToFileBrowser = 0;
-  // Home owns Back, so this setting is independent from the reader's Back
-  // behavior above. Shortcuts are the default for new and migrated installs.
   uint8_t homeBackAction = HOME_BACK_SHORTCUTS;
   HomeShortcutList homeShortcuts;
   // Image rendering mode in EPUB reader
@@ -499,6 +526,9 @@ class CrossPointSettings {
   uint8_t tiltPageTurn = TILT_OFF;
   // Language setting (Language enum index, default 0 = EN)
   uint8_t language = 0;
+  // Vietnamese-only vocabulary trainer, launched explicitly from Shortcuts.
+  uint8_t vocabularyQuizSize = VOCABULARY_QUIZ_10;
+  uint8_t vocabularyQuestionTime = VOCABULARY_TIME_15_SECONDS;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
 

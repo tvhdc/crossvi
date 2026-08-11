@@ -38,6 +38,7 @@
 #include "EpubReaderFootnotesActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
 #include "EpubReaderUtils.h"
+#include "FinishedBooksStore.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
@@ -742,6 +743,9 @@ void EpubReaderActivity::markBookCompleted() {
   }
   bookReadingStats = completedBookStats;
   globalReadingStats = completedGlobalStats;
+  FINISHED_BOOKS.markCompleted(
+      epub->getPath(), epub->getTitle(), epub->getAuthor(),
+      completedBookStats.finishedDate.isValid() ? readingStatsDayIndex(completedBookStats.finishedDate) : 0);
 }
 
 void EpubReaderActivity::openReaderMenu() {

@@ -9,11 +9,13 @@
 #include <memory>
 
 #include "BookStatsSelectionActivity.h"
+#include "FinishedBooksActivity.h"
 #include "GlobalReadingStats.h"
 #include "MappedInputManager.h"
 #include "ReadingCalendarActivity.h"
 #include "ReadingStatsActivity.h"
 #include "ReadingStatsPresentation.h"
+#include "VCodexStatsImportActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 
@@ -84,9 +86,19 @@ void ReadingStatsMenuActivity::handleStatsAction(const ActivityResult& result) {
     setNotice(Notice::None);
     return;
   }
+  if (action->action == ReadingStatsActionResult::Action::ShowFinishedBooks) {
+    startActivityForResult(std::make_unique<FinishedBooksActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { setNotice(Notice::None); });
+    return;
+  }
   if (action->action == ReadingStatsActionResult::Action::BackupDeviceStats) {
     setNotice(GlobalReadingStats::createBackup() == GlobalReadingStats::BackupResult::Ok ? Notice::BackupDone
                                                                                          : Notice::BackupFailed);
+    return;
+  }
+  if (action->action == ReadingStatsActionResult::Action::ImportVCodexStats) {
+    startActivityForResult(VCodexStatsImportActivity::forManualImport(renderer, mappedInput),
+                           [this](const ActivityResult&) { setNotice(Notice::None); });
     return;
   }
   if (action->action != ReadingStatsActionResult::Action::RestoreDeviceStats) return;

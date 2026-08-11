@@ -12,8 +12,6 @@ class CrossPointSettings {
   uint8_t longPressButtonBehavior = OFF;
   uint8_t tiltPageTurn = 0;
   uint8_t shortPwrBtn = IGNORE;
-  uint8_t backShortToFileBrowser = 0;
-
   int getRefreshFrequency() const { return 1; }
 };
 

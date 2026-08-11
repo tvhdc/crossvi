@@ -33,10 +33,14 @@ BookReadingStatsPresentation buildBookPresentation(const BookReadingStats& stats
 
   if (stats.isCompleted) model.progress = ReadingStatsMetric::known(100);
 
-  model.readingTime = ReadingStatsMetric::known(stats.totalReadingSeconds);
-  model.sessions = ReadingStatsMetric::known(stats.sessionCount);
-  model.pagesTurned = ReadingStatsMetric::known(stats.totalPagesTurned);
-  model.completed = ReadingStatsMetric::known(stats.isCompleted ? 1u : 0u);
+  model.readingTime = stats.readingTimeUnavailable ? ReadingStatsMetric::noData()
+                                                   : ReadingStatsMetric::known(stats.totalReadingSeconds);
+  model.sessions =
+      stats.sessionsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.sessionCount);
+  model.pagesTurned =
+      stats.pageTurnsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.totalPagesTurned);
+  model.completed = stats.completionUnavailable ? ReadingStatsMetric::noData()
+                                                : ReadingStatsMetric::known(stats.isCompleted ? 1u : 0u);
   // CrossInk v1.4.0 counts reading time from ten seconds but sessions from one
   // minute. The persisted schema therefore cannot reconstruct an honest
   // average session duration from mixed short visits.
@@ -109,10 +113,14 @@ GlobalReadingStatsPresentation buildGlobalPresentation(const GlobalReadingStats&
   GlobalReadingStatsPresentation model;
   if (!trusted) return model;
 
-  model.readingTime = ReadingStatsMetric::known(stats.totalReadingSeconds);
-  model.sessions = ReadingStatsMetric::known(stats.totalSessions);
-  model.pagesTurned = ReadingStatsMetric::known(stats.totalPagesTurned);
-  model.completedBooks = ReadingStatsMetric::known(stats.completedBooks);
+  model.readingTime = stats.readingTimeUnavailable ? ReadingStatsMetric::noData()
+                                                   : ReadingStatsMetric::known(stats.totalReadingSeconds);
+  model.sessions =
+      stats.sessionsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.totalSessions);
+  model.pagesTurned =
+      stats.pageTurnsUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.totalPagesTurned);
+  model.completedBooks =
+      stats.completionUnavailable ? ReadingStatsMetric::noData() : ReadingStatsMetric::known(stats.completedBooks);
   // See the per-book explanation above: the two cumulative fields use
   // different duration thresholds, so their ratio is not an average session.
   if (today && today->isValid()) {

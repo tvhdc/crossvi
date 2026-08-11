@@ -148,7 +148,13 @@ struct FilePathResult {
 };
 
 struct ReadingStatsActionResult {
-  enum class Action : uint8_t { EditBookDates, BackupDeviceStats, RestoreDeviceStats };
+  enum class Action : uint8_t {
+    EditBookDates,
+    ShowFinishedBooks,
+    BackupDeviceStats,
+    RestoreDeviceStats,
+    ImportVCodexStats,
+  };
 
   Action action = Action::EditBookDates;
 };

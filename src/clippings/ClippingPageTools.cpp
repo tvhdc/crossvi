@@ -214,7 +214,7 @@ HighlightPlan buildGeometry(GfxRenderer& renderer, const Page& page, const int f
     const auto& block = line.getBlock();
     if (!block || !block->valid()) continue;
     const bool backgroundSafe = !block->getBlockStyle().isRtl;
-    HighlightLine run;
+    HighlightLine run{};
     bool hasRun = false;
     const auto flushRun = [&]() {
       if (!hasRun) return true;

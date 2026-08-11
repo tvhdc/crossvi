@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +24,71 @@ def load_git_branch():
 
 
 class CodegenTest(unittest.TestCase):
+    def test_vocabulary_data_is_exact_and_ui_font_covers_pronunciations(self):
+        generated = (REPO_ROOT / "src/vocabulary/VocabularyData.generated.h").read_text(encoding="utf-8")
+        self.assertIn("inline constexpr size_t ENTRY_COUNT = 3000;", generated)
+
+        pronunciations = []
+        entry_pattern = re.compile(
+            r'^\s+"(?:\\.|[^"\\])*\\0"\s+"((?:\\.|[^"\\])*)\\0"', re.MULTILINE
+        )
+        for match in entry_pattern.finditer(generated):
+            pronunciations.append(json.loads('"' + match.group(1) + '"'))
+        self.assertEqual(len(pronunciations), 3000)
+
+        font = (REPO_ROOT / "lib/EpdFont/builtinFonts/ubuntu_10_regular.h").read_text(encoding="utf-8")
+        interval_start = font.index("ubuntu_10_regularIntervals")
+        interval_end = font.index("};", interval_start)
+        intervals = [
+            (int(start, 16), int(end, 16))
+            for start, end in re.findall(
+                r"\{\s*(0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+),", font[interval_start:interval_end]
+            )
+        ]
+        missing = {
+            character
+            for pronunciation in pronunciations
+            for character in pronunciation
+            if not any(start <= ord(character) <= end for start, end in intervals)
+        }
+        self.assertEqual(missing, set())
+
+    def test_vocabulary_is_explicit_only_and_waits_for_continue(self):
+        readers = [
+            REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp",
+            REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp",
+            REPO_ROOT / "src/activities/reader/XtcReaderActivity.cpp",
+        ]
+        for reader in readers:
+            source = reader.read_text(encoding="utf-8")
+            self.assertNotIn("VocabularyPromptScheduler", source)
+            self.assertNotIn("VocabularyLearningActivity", source)
+
+        activity = (REPO_ROOT / "src/activities/reader/VocabularyLearningActivity.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("FEEDBACK_DURATION_MS", activity)
+        self.assertNotIn("feedbackStartedAt_", activity)
+        self.assertIn("STR_VOCAB_TIME_REMAINING", activity)
+        self.assertIn("mappedInput.wasReleased(MappedInputManager::Button::Confirm)", activity)
+        self.assertIn("AnswerState::TimedOut", activity)
+        self.assertGreaterEqual(activity.count("drawAnswerStateIcon(record.state"), 2)
+        self.assertIn("labelWidth + LABEL_GAP", activity)
+
+        settings = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("STR_VOCABULARY_LEARNING", settings)
+
+    def test_home_back_is_always_shortcuts(self):
+        home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("std::make_unique<HomeShortcutsActivity>", home)
+        self.assertIn("HomeShortcutsActivity>(renderer, mappedInput, returnMenuItem)", home)
+        self.assertNotIn("SETTINGS.homeBackAction", home)
+
+        shortcuts = (REPO_ROOT / "src/activities/home/HomeShortcutsActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("onGoHome(returnMenuItem_);", shortcuts)
+
+        settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        self.assertNotIn('"homeBackAction"', settings)
+        self.assertNotIn('"backShortToFileBrowser"', settings)
+
     def test_wake_refresh_is_strong_except_for_valid_quick_resume(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
         boot = (REPO_ROOT / "src/activities/boot_sleep/BootActivity.cpp").read_text(encoding="utf-8")
@@ -39,7 +106,7 @@ class CodegenTest(unittest.TestCase):
     def test_every_sleep_screen_uses_the_strong_full_panel_refresh(self):
         sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
         helper = sleep[sleep.index("void displayStrongSleepFrame") : sleep.index("void SleepActivity::onEnter")]
-        self.assertIn("constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 1;", sleep)
+        self.assertIn("constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 0;", sleep)
         self.assertIn("prepareStrongSleepRefresh();", helper)
         self.assertIn("display.displayBuffer(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);", helper)
         self.assertNotIn("display.triggerDisplay(", helper)
@@ -74,6 +141,7 @@ class CodegenTest(unittest.TestCase):
         helper = main[main.index("void enterStartupDeepSleep()") : main.index("// Enter deep sleep mode")]
         self.assertIn("display.begin(false);", helper)
         self.assertIn("display.clearScreen();", helper)
+        self.assertIn("constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 0;", helper)
         self.assertIn("display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);", helper)
         self.assertIn(
             "display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_REFRESH);", helper
@@ -731,10 +799,10 @@ class CodegenTest(unittest.TestCase):
 
     def test_version_mapping_preserves_existing_environment_contract(self):
         module = load_git_branch()
-        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.0.1")
-        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.0.1-slim")
-        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.0.1-simulator")
-        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.0.1-simulator")
+        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.0")
+        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.0-slim")
+        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.0-simulator")
+        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.0-simulator")
 
     def test_ota_valid_mark_retries_transient_failures(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
@@ -758,6 +826,30 @@ class CodegenTest(unittest.TestCase):
         on_enter = crash[crash.index("void CrashActivity::onEnter()") : crash.index("void CrashActivity::loop()")]
         self.assertIn("if (HalSystem::panicReportPersisted())", on_enter)
         self.assertLess(on_enter.index("panicReportPersisted()"), on_enter.index("HalSystem::clearPanic();"))
+
+    def test_crash_screen_requires_a_crossvi_panic_capture(self):
+        system = (REPO_ROOT / "lib" / "hal" / "HalSystem.cpp").read_text(encoding="utf-8")
+        self.assertIn("RTC_NOINIT_ATTR uint32_t panicCaptureMagic;", system)
+        self.assertIn("panicCaptureMagic = PANIC_CAPTURE_MAGIC;", system)
+        reboot_check = system[system.index("bool isRebootFromPanic()") :]
+        self.assertIn("panicReset && panicCaptureMagic == PANIC_CAPTURE_MAGIC", reboot_check)
+        clear = system[system.index("void clearPanic()") : system.index("std::string getPanicInfo")]
+        self.assertIn("panicCaptureMagic = 0;", clear)
+
+    def test_reading_stats_confirm_hint_matches_its_action(self):
+        activity = (REPO_ROOT / "src/activities/reader/ReadingStatsActivity.cpp").read_text(encoding="utf-8")
+        render = activity[activity.index("void ReadingStatsActivity::render") :]
+        self.assertIn("page == Page::Device", render)
+        self.assertIn("StrId::STR_STATS_MANAGE", render)
+        self.assertIn("page == Page::Book && allowBookDateEdit", render)
+        self.assertIn("StrId::STR_STATS_EDIT_DATES", render)
+
+    def test_home_shortcuts_always_end_with_customize(self):
+        activity = (REPO_ROOT / "src/activities/home/HomeShortcutsActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("const int itemCount = static_cast<int>(items_.size()) + 1;", activity)
+        self.assertIn("index == static_cast<int>(items_.size())", activity)
+        self.assertIn("STR_CUSTOMIZE_SHORTCUTS", activity)
+        self.assertIn("std::make_unique<HomeShortcutManagerActivity>", activity)
 
     def test_recent_book_removal_rolls_back_failed_publication(self):
         store = (REPO_ROOT / "src/RecentBooksStore.cpp").read_text(encoding="utf-8")

@@ -219,7 +219,9 @@ static bool loadSleepFrameBuffer() {
 // font systems are initialized. Even those early exits must leave the panel in
 // a clean, powered-down state instead of cutting power behind a stale frame.
 void enterStartupDeepSleep() {
-  constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 2;
+  // A full refresh is already the strongest cleanup. Match the normal sleep
+  // path and avoid re-driving the parked X3 frame with extra condition passes.
+  constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 0;
   constexpr bool TURN_OFF_SCREEN_AFTER_REFRESH = true;
 
   display.begin(false);
@@ -562,6 +564,12 @@ void setup() {
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path, allowFastInitialReaderRefresh);
+  }
+
+  // Recovery, Safe Boot and crash-report routes remain authoritative. Only a
+  // normal startup destination may be wrapped by the one-time VCodex prompt.
+  if (!recoveryFirmwareMode && !safeStartup && !HalSystem::isRebootFromPanic()) {
+    activityManager.maybeOfferVCodexStatsImport();
   }
 
   if (resume == BootResume::Silent) {

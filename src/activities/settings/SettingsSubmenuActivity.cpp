@@ -10,7 +10,6 @@
 #include <memory>
 
 #include "CrossPointSettings.h"
-#include "HomeShortcutManagerActivity.h"
 #include "OtaUpdateActivity.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
@@ -49,8 +48,6 @@ StrId SettingsSubmenuActivity::title() const {
       return StrId::STR_CONFIRM_BUTTON;
     case Page::PowerButton:
       return StrId::STR_POWER_BUTTON;
-    case Page::BackButton:
-      return StrId::STR_BACK_BUTTON;
     case Page::TiltSensor:
       return StrId::STR_TILT_SENSOR;
     case Page::FirmwareUpdate:
@@ -78,6 +75,11 @@ void SettingsSubmenuActivity::rebuildSettings() {
             SettingInfo::Toggle(StrId::STR_CLOCK_OUTSIDE_READER, &CrossPointSettings::outsideReaderClock));
         settings_.push_back(
             SettingInfo::Toggle(StrId::STR_DATE_OUTSIDE_READER, &CrossPointSettings::showDateOutsideReader));
+        if (SETTINGS.outsideReaderClock && SETTINGS.showDateOutsideReader) {
+          settings_.push_back(SettingInfo::Enum(StrId::STR_OUTSIDE_READER_DATE_TIME_ORDER,
+                                                &CrossPointSettings::outsideReaderDateTimeOrder,
+                                                {StrId::STR_DATE_THEN_TIME, StrId::STR_TIME_THEN_DATE}));
+        }
       }
       settings_.push_back(showTxtBooksSetting());
       settings_.push_back(SettingInfo::Enum(StrId::STR_READ_BOOKS_IN_RECENTS,
@@ -154,16 +156,6 @@ void SettingsSubmenuActivity::rebuildSettings() {
       if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
         settings_.push_back(
             SettingInfo::Toggle(StrId::STR_RETURN_FROM_FOOTNOTE, &CrossPointSettings::pwrBtnFootnoteBack));
-      }
-      break;
-
-    case Page::BackButton:
-      settings_.push_back(SettingInfo::Enum(StrId::STR_WHEN_LEAVING_READER, &CrossPointSettings::backShortToFileBrowser,
-                                            {StrId::STR_DESTINATION_HOME, StrId::STR_DESTINATION_FILE_BROWSER}));
-      settings_.push_back(SettingInfo::Enum(StrId::STR_AT_HOME, &CrossPointSettings::homeBackAction,
-                                            {StrId::STR_SHORTCUTS, StrId::STR_CONTINUE_READING, StrId::STR_NONE_OPT}));
-      if (SETTINGS.homeBackAction == CrossPointSettings::HOME_BACK_SHORTCUTS) {
-        settings_.push_back(SettingInfo::Action(StrId::STR_CUSTOMIZE_SHORTCUTS, SettingAction::CustomizeHomeShortcuts));
       }
       break;
 
@@ -278,9 +270,6 @@ void SettingsSubmenuActivity::openSleepTimeoutPicker() {
 void SettingsSubmenuActivity::openAction(const SettingAction action) {
   std::unique_ptr<Activity> activity;
   switch (action) {
-    case SettingAction::CustomizeHomeShortcuts:
-      activity = std::make_unique<HomeShortcutManagerActivity>(renderer, mappedInput);
-      break;
     case SettingAction::CheckForUpdates:
       activity = std::make_unique<OtaUpdateActivity>(renderer, mappedInput);
       break;

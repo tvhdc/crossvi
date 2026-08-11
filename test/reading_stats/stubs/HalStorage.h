@@ -99,6 +99,12 @@ class HalStorage {
         directory.entries_.push_back(filePath);
       }
     }
+    for (const auto& directoryPath : directories_) {
+      if (directoryPath != path && directoryPath.starts_with(prefix) &&
+          directoryPath.find('/', prefix.size()) == std::string::npos) {
+        directory.entries_.push_back(directoryPath);
+      }
+    }
     return directory;
   }
   bool openFileForRead(const char*, const char* path, HalFile& file) {
@@ -266,7 +272,10 @@ inline HalFile HalFile::openNextFile() {
     error_ = 1;
     return {};
   }
-  return storage_->makeFile(entries_[nextEntry_++], false);
+  const std::string path = entries_[nextEntry_++];
+  HalFile entry = storage_->makeFile(path, false);
+  entry.directory_ = storage_->directories_.count(path) != 0;
+  return entry;
 }
 
 #define Storage HalStorage::getInstance()

@@ -21,7 +21,7 @@ additional safeguards for data stored on the SD card.
 > CrossVi has not yet been validated on every newer X3/X4 hardware revision.
 > Read [Hardware compatibility](#hardware-compatibility) before flashing.
 
-**[Download v1.0.1](https://github.com/tvhdc/crossvi/releases/download/v1.0.1/firmware.bin) ·
+**[Download v1.1.0](https://github.com/tvhdc/crossvi/releases/download/v1.1.0/firmware.bin) ·
 [Installation](#installation) · [User Guide](USER_GUIDE.md) ·
 [Report a Bug](https://github.com/tvhdc/crossvi/issues/new?template=bug_report.yml) ·
 [Contributing](docs/contributing/README.md)**
@@ -33,8 +33,10 @@ additional safeguards for data stored on the SD card.
   pinning, incremental updates, EPUB image optimization, and reusable cover caches.
 - **Reader tools:** Bookmarks, highlights, dictionary lookup, in-book search,
   clipping export, screenshots, and device, book, and calendar statistics.
-- **Customization:** Built-in and downloadable fonts up to 28 pt, per-book
+- **Customization:** Built-in Noto Serif and downloadable fonts up to 28 pt, per-book
   typography, margins, spacing, orientation, image handling, and reader dark mode.
+- **Learning and migration:** A Vietnamese-interface quiz using 3,000 common
+  English words, plus one-time reading-statistics import from CPR-vCodex.
 - **Connectivity:** Wi-Fi file transfer, OPDS, Calibre/WebDAV, KOReader Sync, OTA, and Nearby Sync.
 - **Device and reliability:** Configurable buttons, sleep screens, Quick Resume,
   clock, automatic and tilt page turns, plus transactional storage for important data.
@@ -58,7 +60,7 @@ display or power hardware.
   [controller work](https://github.com/crosspoint-reader/crosspoint-reader/pull/2707).
 - **New X4 units:** Some revisions require a
   [battery-latch fix](https://github.com/crosspoint-reader/crosspoint-reader/pull/2774)
-  to remain powered without USB. CrossVi 1.0.1 includes that behavior, but it
+  to remain powered without USB. CrossVi 1.1.0 includes that behavior, but it
   has not yet been validated on a new-revision X4.
 
 Keep the SD card backed up and flash only a recoverable device.

@@ -5,6 +5,9 @@
 #include <Version.h>
 #include <WiFi.h>
 
+#include <cstring>
+
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -40,12 +43,19 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 
   if (!updater.isUpdateNewer()) {
     LOG_DBG("OTA", "No new update available");
+    SETTINGS.availableOtaVersion[0] = '\0';
+    SETTINGS.saveToFile();
     {
       RenderLock lock(*this);
       state = NO_UPDATE;
     }
     return;
   }
+
+  std::strncpy(SETTINGS.availableOtaVersion, updater.getLatestVersion().c_str(),
+               CrossPointSettings::OTA_VERSION_CAPACITY - 1);
+  SETTINGS.availableOtaVersion[CrossPointSettings::OTA_VERSION_CAPACITY - 1] = '\0';
+  SETTINGS.saveToFile();
 
   {
     RenderLock lock(*this);

@@ -59,6 +59,18 @@ BookSavedItemsActivity::BookSavedItemsActivity(GfxRenderer& renderer, MappedInpu
 
 void BookSavedItemsActivity::onEnter() {
   Activity::onEnter();
+  if (!clippingStore_ && readerKind_ != ReaderKind::FixedLayout && !bookPath_.empty()) {
+    ownedClippingStore_ = std::make_unique<ClippingStore>();
+    const auto result = ownedClippingStore_->loadForBook(bookPath_, bookTitle_, bookAuthor_,
+                                                         readerKind_ == ReaderKind::Text ? "txt" : "epub");
+    if (result == ClippingStore::LoadResult::Ready || result == ClippingStore::LoadResult::Loaded ||
+        result == ClippingStore::LoadResult::Recovered || result == ClippingStore::LoadResult::Migrated ||
+        result == ClippingStore::LoadResult::LoadedLegacy) {
+      clippingStore_ = ownedClippingStore_.get();
+    } else {
+      ownedClippingStore_.reset();
+    }
+  }
   loadBookmarks();
   loadHighlightPreviews();
   rebuildProjection();

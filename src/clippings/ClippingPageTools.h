@@ -95,6 +95,7 @@ struct HighlightPlan {
   size_t count = 0;
   bool truncated = false;
 
+  // cppcheck-suppress uninitMemberVar
   HighlightPlan() noexcept {}
 
   // Invert after page text is rendered: light pages become black with white

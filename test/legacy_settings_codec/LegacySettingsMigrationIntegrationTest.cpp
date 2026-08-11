@@ -144,6 +144,46 @@ TEST(SettingsJsonIntegration, PersistsReaderDarkModeAndMigratesOutsideClockToTog
   EXPECT_TRUE(needsResave);
 }
 
+TEST(SettingsJsonIntegration, PersistsAndValidatesOutsideReaderDateTimeOrder) {
+  resetFakes();
+  SETTINGS.outsideReaderDateTimeOrder = CrossPointSettings::OUTSIDE_READER_TIME_THEN_DATE;
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.outsideReaderDateTimeOrder = CrossPointSettings::OUTSIDE_READER_DATE_THEN_TIME;
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.outsideReaderDateTimeOrder, CrossPointSettings::OUTSIDE_READER_TIME_THEN_DATE);
+  EXPECT_FALSE(needsResave);
+
+  SETTINGS.outsideReaderDateTimeOrder = CrossPointSettings::OUTSIDE_READER_DATE_THEN_TIME;
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"outsideReaderDateTimeOrder":9})", &needsResave));
+  EXPECT_EQ(SETTINGS.outsideReaderDateTimeOrder, CrossPointSettings::OUTSIDE_READER_DATE_THEN_TIME);
+}
+
+TEST(SettingsJsonIntegration, PersistsAndValidatesVocabularySettings) {
+  resetFakes();
+  SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_30;
+  SETTINGS.vocabularyQuestionTime = CrossPointSettings::VOCABULARY_TIME_UNLIMITED;
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_5;
+  SETTINGS.vocabularyQuestionTime = CrossPointSettings::VOCABULARY_TIME_10_SECONDS;
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.vocabularyQuizSize, CrossPointSettings::VOCABULARY_QUIZ_30);
+  EXPECT_EQ(SETTINGS.vocabularyQuestionTime, CrossPointSettings::VOCABULARY_TIME_UNLIMITED);
+
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(
+      SETTINGS,
+      R"({"vocabularyReaderPrompts":1,"vocabularyPromptFrequency":2,"vocabularyQuizSize":9,"vocabularyQuestionTime":9})",
+      &needsResave));
+  EXPECT_EQ(SETTINGS.vocabularyQuizSize, CrossPointSettings::VOCABULARY_QUIZ_10);
+  EXPECT_EQ(SETTINGS.vocabularyQuestionTime, CrossPointSettings::VOCABULARY_TIME_15_SECONDS);
+  EXPECT_TRUE(needsResave);
+}
+
 TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
   resetFakes();
   SETTINGS.language = static_cast<uint8_t>(Language::VI);
@@ -153,6 +193,23 @@ TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
   EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+}
+
+TEST(SettingsJsonIntegration, PersistsValidatedOtaBadge) {
+  resetFakes();
+  std::strcpy(SETTINGS.availableOtaVersion, "1.0.2");
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.availableOtaVersion[0] = '\0';
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_STREQ(SETTINGS.availableOtaVersion, "1.0.2");
+  EXPECT_FALSE(needsResave);
+
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"availableOtaVersion":"1.0.1"})", &needsResave));
+  EXPECT_STREQ(SETTINGS.availableOtaVersion, "");
+  EXPECT_TRUE(needsResave);
 }
 
 TEST(SettingsJsonIntegration, RemovedNotoSansChoicesFallBackToNotoSerif) {
@@ -172,22 +229,33 @@ TEST(SettingsJsonIntegration, RemovedNotoSansChoicesFallBackToNotoSerif) {
   EXPECT_TRUE(needsResave);
 }
 
-TEST(SettingsJsonIntegration, PersistsHomeBackModeAndOrderedShortcuts) {
+TEST(SettingsJsonIntegration, RemovesLegacyBackModesAndPreservesOrderedShortcuts) {
   resetFakes();
-  SETTINGS.homeBackAction = CrossPointSettings::HOME_BACK_CONTINUE_READING;
   SETTINGS.homeShortcuts.clear();
   ASSERT_TRUE(SETTINGS.homeShortcuts.add(HomeShortcutId::StatusBar));
   ASSERT_TRUE(SETTINGS.homeShortcuts.add(HomeShortcutId::TextSettings));
   ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
 
-  SETTINGS.homeBackAction = CrossPointSettings::HOME_BACK_NONE;
   SETTINGS.homeShortcuts.clear();
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
-  EXPECT_EQ(SETTINGS.homeBackAction, CrossPointSettings::HOME_BACK_CONTINUE_READING);
+  EXPECT_EQ(SETTINGS.homeBackAction, CrossPointSettings::HOME_BACK_SHORTCUTS);
+  EXPECT_EQ(SETTINGS.backShortToFileBrowser, 0);
   ASSERT_EQ(SETTINGS.homeShortcuts.count, 2);
   EXPECT_EQ(SETTINGS.homeShortcuts.at(0), HomeShortcutId::StatusBar);
   EXPECT_EQ(SETTINGS.homeShortcuts.at(1), HomeShortcutId::TextSettings);
+
+  SETTINGS.homeBackAction = CrossPointSettings::HOME_BACK_NONE;
+  SETTINGS.backShortToFileBrowser = 1;
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(
+      SETTINGS, R"({"homeBackAction":1,"backShortToFileBrowser":1,"homeShortcuts":[5,36,1]})", &needsResave));
+  EXPECT_EQ(SETTINGS.homeBackAction, CrossPointSettings::HOME_BACK_SHORTCUTS);
+  EXPECT_EQ(SETTINGS.backShortToFileBrowser, 0);
+  ASSERT_EQ(SETTINGS.homeShortcuts.count, 2);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(0), HomeShortcutId::StatusBar);
+  EXPECT_EQ(SETTINGS.homeShortcuts.at(1), HomeShortcutId::TextSettings);
+  EXPECT_TRUE(needsResave);
 }
 
 TEST(SettingsJsonIntegration, RepairsInvalidDuplicateAndOversizedShortcutLists) {

@@ -8,6 +8,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Txt.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -19,13 +20,22 @@
 #include <span>
 
 #include "CrossPointSettings.h"
+#include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
+#include "activities/reader/BookReadingStats.h"
+#include "activities/reader/BookSavedItemsActivity.h"
+#include "activities/reader/BookStatsLoader.h"
+#include "activities/reader/GlobalReadingStats.h"
+#include "activities/reader/ReadingStatsActivity.h"
+#include "activities/reader/ReadingStatsCompletionTransaction.h"
+#include "activities/reader/ReadingStatsPresentation.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/LibraryGridModel.h"
 #include "components/LibraryGridView.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookCacheUtils.h"
 #include "util/BookPathMoveUtils.h"
 
 namespace {
@@ -33,6 +43,73 @@ constexpr unsigned long LONG_PRESS_MS = 500;
 constexpr uint32_t NAVIGATION_RELEASE_GUARD_MS = 150;
 constexpr unsigned long POPUP_DURATION_MS = 1500;
 constexpr unsigned long CATALOG_LOOP_BUDGET_MS = 8;
+
+enum class BookAction : uint8_t { Open, Stats, Saved, ClearCache, Completion, Pin, RemoveRecent, Delete };
+
+std::string bookCachePath(const std::string& path) {
+  if (FsHelpers::hasEpubExtension(path)) return Epub(path, "/.crosspoint").getCachePath();
+  if (FsHelpers::hasXtcExtension(path)) return Xtc(path, "/.crosspoint").getCachePath();
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return Txt(path, "/.crosspoint").getCachePath();
+  }
+  return {};
+}
+
+bool loadCompletionState(const LibraryBookRecord& record, std::string& cachePath, BookReadingStats& bookStats,
+                         GlobalReadingStats& globalStats) {
+  ReadingStatsPresentation ignored;
+  if (!loadBookStatsPresentation({record.path, record.title, record.author, record.coverBmpPath}, ignored))
+    return false;
+  cachePath = bookCachePath(record.path);
+  if (cachePath.empty()) return false;
+  BookReadingStats::LoadStatus bookStatus = BookReadingStats::LoadStatus::Invalid;
+  GlobalReadingStats::LoadStatus globalStatus = GlobalReadingStats::LoadStatus::Invalid;
+  bookStats = BookReadingStats::load(cachePath, &bookStatus);
+  globalStats = GlobalReadingStats::load(&globalStatus);
+  return BookReadingStats::isTrustedLoadStatus(bookStatus) && GlobalReadingStats::isTrustedLoadStatus(globalStatus);
+}
+
+bool setBookCompletion(const LibraryBookRecord& record, const bool completed) {
+  std::string cachePath;
+  BookReadingStats oldBook;
+  GlobalReadingStats oldGlobal;
+  if (!loadCompletionState(record, cachePath, oldBook, oldGlobal) || oldBook.isCompleted == completed) return false;
+  BookReadingStats nextBook = oldBook;
+  GlobalReadingStats nextGlobal = oldGlobal;
+  nextBook.isCompleted = completed;
+  if (completed) {
+    nextBook.estimatedTimeLeftSeconds = 0;
+    if (!nextBook.finishedDate.isValid()) {
+      ReadingStatsDateTime now;
+      if (getCurrentLocalReadingStatsDateTime(now)) {
+        nextBook.finishedDate = now.date;
+        nextBook.finishedMinuteOfDay = static_cast<uint16_t>(now.hour) * 60u + now.minute;
+      }
+    }
+    nextGlobal.completedBooks = addReadingStatsSaturated(nextGlobal.completedBooks, 1);
+  } else {
+    nextBook.finishedDateManual = false;
+    nextBook.finishedDate.clear();
+    nextBook.finishedMinuteOfDay = BookReadingStats::INVALID_MINUTE_OF_DAY;
+    if (nextGlobal.completedBooks > 0) --nextGlobal.completedBooks;
+  }
+  if (!ReadingStatsCompletionTransaction::commit(cachePath, oldBook, nextBook, oldGlobal, nextGlobal)) return false;
+  if (completed) {
+    FINISHED_BOOKS.markCompleted(record.path, record.title, record.author,
+                                 nextBook.finishedDate.isValid() ? readingStatsDayIndex(nextBook.finishedDate) : 0);
+  } else {
+    FINISHED_BOOKS.removeByPath(record.path);
+  }
+  return true;
+}
+
+BookSavedItemsActivity::ReaderKind savedItemsKind(const std::string& path) {
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return BookSavedItemsActivity::ReaderKind::Text;
+  }
+  return FsHelpers::hasXtcExtension(path) ? BookSavedItemsActivity::ReaderKind::FixedLayout
+                                          : BookSavedItemsActivity::ReaderKind::Epub;
+}
 constexpr uint8_t CATALOG_STEPS_PER_LOOP = 8;
 constexpr size_t SEARCH_RECORDS_PER_STEP = 8;
 constexpr int LIBRARY_BOTTOM_GAP = 8;
@@ -1481,43 +1558,110 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
   if (!loadVisibleBook(visibleIndex, selected)) return;
   const bool inRecent = std::any_of(RECENT_BOOKS.getBooks().begin(), RECENT_BOOKS.getBooks().end(),
                                     [&selected](const RecentBook& book) { return book.path == selected.path; });
-  std::vector<std::string> options = {RECENT_BOOKS.isPinned(selected.path) ? tr(STR_UNPIN_BOOK) : tr(STR_PIN_BOOK)};
-  if (!allTab() && inRecent) options.push_back(tr(STR_REMOVE_FROM_RECENTS));
+  std::string completionCache;
+  BookReadingStats completionStats;
+  GlobalReadingStats completionGlobal;
+  const bool completionAvailable = loadCompletionState(selected, completionCache, completionStats, completionGlobal);
+  std::vector<BookAction> actions = {BookAction::Open, BookAction::Stats, BookAction::Saved, BookAction::ClearCache};
+  std::vector<std::string> options = {tr(STR_OPEN_BOOK), tr(STR_READING_STATS), tr(STR_BOOKMARKS_AND_HIGHLIGHTS),
+                                      tr(STR_DELETE_CACHE)};
+  if (completionAvailable) {
+    actions.push_back(BookAction::Completion);
+    options.push_back(
+        I18N.get(completionStats.isCompleted ? StrId::STR_MARK_BOOK_UNREAD : StrId::STR_MARK_BOOK_FINISHED));
+  }
+  actions.push_back(BookAction::Pin);
+  options.push_back(RECENT_BOOKS.isPinned(selected.path) ? tr(STR_UNPIN_BOOK) : tr(STR_PIN_BOOK));
+  if (!allTab() && inRecent) {
+    actions.push_back(BookAction::RemoveRecent);
+    options.push_back(tr(STR_REMOVE_FROM_RECENTS));
+  }
+  actions.push_back(BookAction::Delete);
   options.push_back(tr(STR_DELETE));
   optionPopup.show(
-      StrId::STR_BOOK_ACTIONS, std::move(options), 0, [this, visibleIndex, selected, inRecent](const int option) {
-        if (option == 0) {
-          rememberedBookIndex[tabIndex()] = visibleIndex;
-          rememberedBookPath[tabIndex()] = selected.path;
-          const auto result = RECENT_BOOKS.togglePin(selected.path);
-          popupMessage = result == RecentBooksStore::PinResult::Pinned         ? StrId::STR_BOOK_PINNED
-                         : result == RecentBooksStore::PinResult::Unpinned     ? StrId::STR_BOOK_UNPINNED
-                         : result == RecentBooksStore::PinResult::LimitReached ? StrId::STR_PIN_LIMIT_REACHED
-                                                                               : StrId::STR_ERROR_GENERAL_FAILURE;
-          popupTime = millis();
-          if (!allTab()) {
+      StrId::STR_BOOK_ACTIONS, std::move(options), 0,
+      [this, visibleIndex, selected, actions = std::move(actions), completionStats](const int option) {
+        if (option < 0 || static_cast<size_t>(option) >= actions.size()) return;
+        switch (actions[static_cast<size_t>(option)]) {
+          case BookAction::Open:
+            captureReaderReturnContext(selected);
+            onSelectBook(selected.path);
+            return;
+          case BookAction::Stats: {
+            ReadingStatsPresentation presentation;
+            if (!loadBookStatsPresentation({selected.path, selected.title, selected.author, selected.coverBmpPath},
+                                           presentation)) {
+              popupMessage = StrId::STR_STATS_UNAVAILABLE;
+              popupTime = millis();
+              requestUpdate();
+              return;
+            }
+            const std::string title = selected.title.empty() ? selected.path : selected.title;
+            startActivityForResult(
+                std::make_unique<ReadingStatsActivity>(renderer, mappedInput, title, std::move(presentation),
+                                                       ReadingStatsActivity::Page::Book, false, false),
+                [this](const ActivityResult&) { requestUpdate(); });
+            return;
+          }
+          case BookAction::Saved:
+            startActivityForResult(
+                std::make_unique<BookSavedItemsActivity>(renderer, mappedInput, selected.path, selected.title,
+                                                         selected.author, savedItemsKind(selected.path)),
+                [this](const ActivityResult&) { requestUpdate(); });
+            return;
+          case BookAction::ClearCache: {
+            const std::string cachePath = bookCachePath(selected.path);
+            popupMessage = !cachePath.empty() && clearBookCacheDirectoryPreservingUserState(cachePath)
+                               ? StrId::STR_BOOK_CACHE_CLEARED
+                               : StrId::STR_CLEAR_CACHE_FAILED;
+            popupTime = millis();
+            requestUpdate();
+            return;
+          }
+          case BookAction::Completion:
+            popupMessage =
+                setBookCompletion(selected, !completionStats.isCompleted)
+                    ? (completionStats.isCompleted ? StrId::STR_BOOK_MARKED_UNREAD : StrId::STR_BOOK_MARKED_FINISHED)
+                    : StrId::STR_ERROR_GENERAL_FAILURE;
+            popupTime = millis();
+            requestUpdate();
+            return;
+          case BookAction::Pin: {
             rememberedBookIndex[tabIndex()] = visibleIndex;
             rememberedBookPath[tabIndex()] = selected.path;
+            const auto result = RECENT_BOOKS.togglePin(selected.path);
+            popupMessage = result == RecentBooksStore::PinResult::Pinned         ? StrId::STR_BOOK_PINNED
+                           : result == RecentBooksStore::PinResult::Unpinned     ? StrId::STR_BOOK_UNPINNED
+                           : result == RecentBooksStore::PinResult::LimitReached ? StrId::STR_PIN_LIMIT_REACHED
+                                                                                 : StrId::STR_ERROR_GENERAL_FAILURE;
+            popupTime = millis();
+            if (!allTab()) {
+              rememberedBookIndex[tabIndex()] = visibleIndex;
+              rememberedBookPath[tabIndex()] = selected.path;
+            }
+            const bool rebuildSearch = !allTab() && searchActive[tabIndex()];
+            const std::string activeQuery = rebuildSearch ? searchQuery[tabIndex()] : std::string{};
+            loadRecentBooks();
+            if (rebuildSearch) applySearch(activeQuery);
+            if (allTab()) {
+              rebuildPinnedProjection();
+              // Pinning changes the visible order without changing the catalog
+              // generation. Drop the cached page and cover queue so the next frame
+              // cannot open/render the previous order.
+              invalidateRenderPage();
+              resetCoverQueue();
+            }
+            rememberedBookPath[tabIndex()] = selected.path;
+            restoreRememberedBook(true);
+            requestUpdate();
+            return;
           }
-          const bool rebuildSearch = !allTab() && searchActive[tabIndex()];
-          const std::string activeQuery = rebuildSearch ? searchQuery[tabIndex()] : std::string{};
-          loadRecentBooks();
-          if (rebuildSearch) applySearch(activeQuery);
-          if (allTab()) {
-            rebuildPinnedProjection();
-            // Pinning changes the visible order without changing the catalog
-            // generation. Drop the cached page and cover queue so the next frame
-            // cannot open/render the previous order.
-            invalidateRenderPage();
-            resetCoverQueue();
-          }
-          rememberedBookPath[tabIndex()] = selected.path;
-          restoreRememberedBook(true);
-          requestUpdate();
-        } else if (!allTab() && inRecent && option == 1) {
-          promptRemoveBook(selected.path, selected.title);
-        } else {
-          promptDeleteBook(visibleIndex, selected.path, selected.title);
+          case BookAction::RemoveRecent:
+            promptRemoveBook(selected.path, selected.title);
+            return;
+          case BookAction::Delete:
+            promptDeleteBook(visibleIndex, selected.path, selected.title);
+            return;
         }
       });
   requestUpdate();

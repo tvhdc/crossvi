@@ -32,6 +32,11 @@ void expectBookStatsEqual(const BookReadingStats& lhs, const BookReadingStats& r
   EXPECT_EQ(lhs.estimatedTimeLeftSeconds, rhs.estimatedTimeLeftSeconds);
   EXPECT_EQ(lhs.startDateManual, rhs.startDateManual);
   EXPECT_EQ(lhs.finishedDateManual, rhs.finishedDateManual);
+  EXPECT_EQ(lhs.importedFromVCodex, rhs.importedFromVCodex);
+  EXPECT_EQ(lhs.readingTimeUnavailable, rhs.readingTimeUnavailable);
+  EXPECT_EQ(lhs.sessionsUnavailable, rhs.sessionsUnavailable);
+  EXPECT_EQ(lhs.pageTurnsUnavailable, rhs.pageTurnsUnavailable);
+  EXPECT_EQ(lhs.completionUnavailable, rhs.completionUnavailable);
   EXPECT_EQ(lhs.startDate.year, rhs.startDate.year);
   EXPECT_EQ(lhs.startDate.month, rhs.startDate.month);
   EXPECT_EQ(lhs.startDate.day, rhs.startDate.day);
@@ -58,6 +63,11 @@ void expectGlobalStatsEqual(const GlobalReadingStats& lhs, const GlobalReadingSt
   EXPECT_EQ(lhs.latestDayReadingSeconds, rhs.latestDayReadingSeconds);
   EXPECT_EQ(lhs.latestDaySessions, rhs.latestDaySessions);
   EXPECT_EQ(lhs.hasLatestDayReadingSeconds, rhs.hasLatestDayReadingSeconds);
+  EXPECT_EQ(lhs.importedFromVCodex, rhs.importedFromVCodex);
+  EXPECT_EQ(lhs.readingTimeUnavailable, rhs.readingTimeUnavailable);
+  EXPECT_EQ(lhs.sessionsUnavailable, rhs.sessionsUnavailable);
+  EXPECT_EQ(lhs.pageTurnsUnavailable, rhs.pageTurnsUnavailable);
+  EXPECT_EQ(lhs.completionUnavailable, rhs.completionUnavailable);
 }
 
 template <typename Bytes>
@@ -771,6 +781,11 @@ TEST(ReadingStatsCodec, BookV6RoundTripPreservesExactTimestamps) {
   input.estimatedTimeLeftSeconds = 6543;
   input.startDateManual = true;
   input.finishedDateManual = true;
+  input.importedFromVCodex = true;
+  input.readingTimeUnavailable = true;
+  input.sessionsUnavailable = true;
+  input.pageTurnsUnavailable = true;
+  input.completionUnavailable = true;
   input.startDate = {2024, 2, 29};
   input.finishedDate = {2025, 12, 31};
   input.startMinuteOfDay = 14u * 60u + 35u;
@@ -821,6 +836,11 @@ TEST(ReadingStatsCodec, GlobalV3RoundTripAndLegacyV1) {
   input.readingHistoryAnchorDay = readingStatsDayIndex({2025, 7, 20});
   input.readingHistoryBits[0] = 0x07;
   input.longestReadingStreak = 3;
+  input.importedFromVCodex = true;
+  input.readingTimeUnavailable = true;
+  input.sessionsUnavailable = true;
+  input.pageTurnsUnavailable = true;
+  input.completionUnavailable = true;
 
   const auto encoded = ReadingStatsCodec::encode(input);
   EXPECT_EQ(encoded.size(), 159u);

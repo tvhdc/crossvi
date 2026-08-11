@@ -36,6 +36,10 @@ TEST(HomeShortcuts, DefaultsAreBoundedUniqueAndStable) {
   EXPECT_EQ(shortcuts.count, 6);
   EXPECT_EQ(shortcuts.at(0), HomeShortcutId::Appearance);
   EXPECT_EQ(shortcuts.at(1), HomeShortcutId::TextSettings);
+  EXPECT_EQ(shortcuts.at(2), HomeShortcutId::QuickResume);
+  EXPECT_EQ(shortcuts.at(3), HomeShortcutId::SleepScreen);
+  EXPECT_EQ(shortcuts.at(4), HomeShortcutId::StatusBar);
+  EXPECT_EQ(shortcuts.at(5), HomeShortcutId::VocabularyLearning);
   for (uint8_t index = 0; index < shortcuts.count; ++index) {
     EXPECT_TRUE(isValidHomeShortcutId(shortcuts.items[index]));
     for (uint8_t other = index + 1; other < shortcuts.count; ++other) {

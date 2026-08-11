@@ -73,7 +73,6 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_PAGE_TURN_BUTTONS, SettingAction::PageButtonSettings));
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_CONFIRM_BUTTON, SettingAction::ConfirmButtonSettings));
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_POWER_BUTTON, SettingAction::PowerButtonSettings));
-  controlsSettings.push_back(SettingInfo::Action(StrId::STR_BACK_BUTTON, SettingAction::BackButtonSettings));
   if (halTiltSensor.isAvailable()) {
     controlsSettings.push_back(SettingInfo::Action(StrId::STR_TILT_SENSOR, SettingAction::TiltSensorSettings));
   }
@@ -377,9 +376,6 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::PowerButtonSettings:
         openSubmenu(SettingsSubmenuActivity::Page::PowerButton, {});
         break;
-      case SettingAction::BackButtonSettings:
-        openSubmenu(SettingsSubmenuActivity::Page::BackButton, {});
-        break;
       case SettingAction::TiltSensorSettings:
         openSubmenu(SettingsSubmenuActivity::Page::TiltSensor, {});
         break;
@@ -388,7 +384,6 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::CheckForUpdates:
       case SettingAction::SdFirmwareUpdate:
-      case SettingAction::CustomizeHomeShortcuts:
         // These actions belong to SettingsSubmenuActivity and are not exposed
         // directly by the four top-level tabs.
         break;
@@ -474,6 +469,9 @@ void SettingsActivity::render(RenderLock&&) {
                           ? setting.stringGetter()
                           : std::string(reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset);
           if (valueText.empty()) valueText = tr(STR_NONE_OPT);
+        } else if (setting.type == SettingType::ACTION && setting.nameId == StrId::STR_FIRMWARE_UPDATES &&
+                   SETTINGS.availableOtaVersion[0] != '\0') {
+          valueText = SETTINGS.availableOtaVersion;
         }
         return valueText;
       },

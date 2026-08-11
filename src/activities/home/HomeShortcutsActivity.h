@@ -4,6 +4,7 @@
 
 #include "HomeShortcutCatalog.h"
 #include "activities/Activity.h"
+#include "activities/home/HomeMenuMapping.h"
 #include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
@@ -11,14 +12,15 @@ struct SettingInfo;
 
 class HomeShortcutsActivity final : public Activity {
  public:
-  explicit HomeShortcutsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("HomeShortcuts", renderer, mappedInput) {}
+  HomeShortcutsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, HomeMenuItem returnMenuItem)
+      : Activity("HomeShortcuts", renderer, mappedInput), returnMenuItem_(returnMenuItem) {}
 
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
 
  private:
+  const HomeMenuItem returnMenuItem_;
   std::vector<HomeShortcutId> items_;
   int selectedIndex_ = 0;
   ButtonNavigator buttonNavigator_;

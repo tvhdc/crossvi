@@ -27,6 +27,13 @@ struct GlobalReadingStats {
   uint32_t readingHistoryAnchorDay = 0;
   std::array<uint8_t, READING_HISTORY_BYTES> readingHistoryBits{};
   uint16_t longestReadingStreak = 0;
+  // Stored in the unused high bits of the final history byte. Existing files
+  // contain zero in those bits and decode as ordinary complete CrossVi data.
+  bool importedFromVCodex = false;
+  bool readingTimeUnavailable = false;
+  bool sessionsUnavailable = false;
+  bool pageTurnsUnavailable = false;
+  bool completionUnavailable = false;
   // Exact time and session count for the most recent locally recorded calendar
   // day. These live in a separate CRC-protected sidecar so the CrossInk-
   // compatible global payload and Nearby Sync contract remain unchanged.

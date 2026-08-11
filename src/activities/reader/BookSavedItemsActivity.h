@@ -55,6 +55,7 @@ class BookSavedItemsActivity final : public Activity {
   std::string bookAuthor_;
   ReaderKind readerKind_ = ReaderKind::Epub;
   ClippingStore* clippingStore_ = nullptr;
+  std::unique_ptr<ClippingStore> ownedClippingStore_;
   uint32_t fixedPageCount_ = 0;
 
   std::vector<BookmarkEntry> bookmarks_;

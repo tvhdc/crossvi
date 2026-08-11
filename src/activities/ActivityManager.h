@@ -137,6 +137,9 @@ class ActivityManager {
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE);
+  // Wraps the already-selected normal startup destination without changing
+  // recovery/crash routing. No-op when there is nothing eligible to import.
+  void maybeOfferVCodexStatsImport();
 
   void captureYourBooksReturnContext(uint8_t tab, size_t selectedIndex, std::string selectedPath,
                                      std::string searchQuery = {});

@@ -297,6 +297,12 @@ bool DailyReadingHistory::valueForDate(const ReadingStatsDate& date, uint32_t& s
   return date.isValid() && valueForDay(readingStatsDayIndex(date), seconds);
 }
 
+bool DailyReadingHistory::empty() const {
+  if (!hasAnchor_) return true;
+  return std::all_of(seconds_.begin(), seconds_.end(),
+                     [](const uint32_t seconds) { return seconds == 0 || seconds == UNKNOWN_SECONDS; });
+}
+
 bool DailyReadingHistory::reset() { return DailyReadingHistory{}.save(); }
 
 DailyReadingHistory::BackupResult DailyReadingHistory::createBackup() {

@@ -11,7 +11,9 @@
 #include "CrossPointSettings.h"
 #include "SettingsList.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/VocabularyLearningActivity.h"
 #include "activities/settings/FontDownloadActivity.h"
+#include "activities/settings/HomeShortcutManagerActivity.h"
 #include "activities/settings/KOReaderSettingsActivity.h"
 #include "activities/settings/LanguageSelectActivity.h"
 #include "activities/settings/OpdsServerListActivity.h"
@@ -39,7 +41,9 @@ void HomeShortcutsActivity::rebuildItems() {
     const auto id = static_cast<HomeShortcutId>(raw);
     if (isHomeShortcutAvailable(id, renderer)) items_.push_back(id);
   }
-  selectedIndex_ = std::clamp(selectedIndex_, 0, std::max(0, static_cast<int>(items_.size()) - 1));
+  // "Customize shortcuts" is a fixed final row and is intentionally not
+  // stored in the configurable shortcut list.
+  selectedIndex_ = std::clamp(selectedIndex_, 0, static_cast<int>(items_.size()));
 }
 
 void HomeShortcutsActivity::loop() {
@@ -48,16 +52,14 @@ void HomeShortcutsActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     // Home may need a different number of recent books after a layout change.
     // Replace it instead of revealing the stale instance under this activity.
-    onGoHome();
+    onGoHome(returnMenuItem_);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activateSelected();
     return;
   }
-  if (items_.empty()) return;
-
-  const int count = static_cast<int>(items_.size());
+  const int count = static_cast<int>(items_.size()) + 1;
   buttonNavigator_.onNext([this, count] {
     selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, count);
     requestUpdate();
@@ -78,7 +80,15 @@ const SettingInfo* HomeShortcutsActivity::findSetting(const char* key) const {
 }
 
 void HomeShortcutsActivity::activateSelected() {
-  if (selectedIndex_ < 0 || selectedIndex_ >= static_cast<int>(items_.size())) return;
+  if (selectedIndex_ == static_cast<int>(items_.size())) {
+    startActivityForResult(std::make_unique<HomeShortcutManagerActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) {
+                             rebuildItems();
+                             requestUpdate();
+                           });
+    return;
+  }
+  if (selectedIndex_ < 0 || selectedIndex_ > static_cast<int>(items_.size())) return;
   const HomeShortcutDescriptor* descriptor = findHomeShortcut(items_[selectedIndex_]);
   if (!descriptor) return;
   if (descriptor->target == HomeShortcutTarget::Setting) {
@@ -184,6 +194,9 @@ void HomeShortcutsActivity::openScreen(const HomeShortcutTarget target) {
     case HomeShortcutTarget::OpdsServers:
       activity = std::make_unique<OpdsServerListActivity>(renderer, mappedInput);
       break;
+    case HomeShortcutTarget::VocabularyLearning:
+      activity = std::make_unique<VocabularyLearningActivity>(renderer, mappedInput);
+      break;
     case HomeShortcutTarget::Setting:
       return;
   }
@@ -245,20 +258,22 @@ void HomeShortcutsActivity::render(RenderLock&&) {
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = height - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-  if (items_.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, contentTop + contentHeight / 2, tr(STR_NO_SHORTCUTS));
-  } else {
-    GUI.drawList(
-        renderer, Rect{0, contentTop, width, contentHeight}, static_cast<int>(items_.size()), selectedIndex_,
-        [this](const int index) {
-          const auto* descriptor = findHomeShortcut(items_[index]);
-          return descriptor ? std::string(I18N.get(descriptor->label)) : std::string();
-        },
-        nullptr, nullptr, [this](const int index) { return valueLabel(items_[index]); }, true);
-  }
+  const int itemCount = static_cast<int>(items_.size()) + 1;
+  GUI.drawList(
+      renderer, Rect{0, contentTop, width, contentHeight}, itemCount, selectedIndex_,
+      [this](const int index) {
+        if (index == static_cast<int>(items_.size())) return std::string(tr(STR_CUSTOMIZE_SHORTCUTS));
+        const auto* descriptor = findHomeShortcut(items_[static_cast<size_t>(index)]);
+        return descriptor ? std::string(I18N.get(descriptor->label)) : std::string();
+      },
+      nullptr, nullptr,
+      [this](const int index) {
+        return index == static_cast<int>(items_.size()) ? std::string()
+                                                        : valueLabel(items_[static_cast<size_t>(index)]);
+      },
+      true);
 
-  const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), items_.empty() ? "" : tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

@@ -24,6 +24,13 @@ struct BookReadingStats {
   uint32_t estimatedTimeLeftSeconds = 0;
   bool startDateManual = false;
   bool finishedDateManual = false;
+  // Import provenance and missing-field state live in spare bits of the v6
+  // flags byte. Existing CrossVi/CrossInk files therefore keep their meaning.
+  bool importedFromVCodex = false;
+  bool readingTimeUnavailable = false;
+  bool sessionsUnavailable = false;
+  bool pageTurnsUnavailable = false;
+  bool completionUnavailable = false;
   ReadingStatsDate startDate;
   ReadingStatsDate finishedDate;
   uint16_t startMinuteOfDay = INVALID_MINUTE_OF_DAY;

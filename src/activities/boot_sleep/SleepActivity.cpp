@@ -36,9 +36,10 @@ namespace {
 // Power the panel down as part of that refresh so teardown work cannot leave it
 // electrically driven and darken the image after it has settled.
 constexpr bool TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH = true;
-// Keep one X3 conditioning pass for the strong sleep cleanup, without the
-// previous second pass that could over-drive the parked image.
-constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 1;
+// The full refresh already cleans the panel. Extra X3 conditioning passes can
+// re-drive black pixels immediately before parking the image, so sleep uses no
+// additional pass.
+constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 0;
 
 void prepareStrongSleepRefresh() { display.requestResync(X3_SLEEP_CONDITION_PASSES); }
 

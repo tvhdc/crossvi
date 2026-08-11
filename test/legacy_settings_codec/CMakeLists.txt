@@ -22,6 +22,7 @@ target_include_directories(LegacySettingsCodecTest PRIVATE
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/I18n
   ${REPO_ROOT}/lib/Serialization
+  ${REPO_ROOT}/lib/Version
   ${REPO_ROOT}/simulator/src
 )
 

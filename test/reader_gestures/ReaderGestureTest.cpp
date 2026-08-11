@@ -157,8 +157,6 @@ TEST(ReaderGesture, KeepsBackNavigationBoundaryAtOneSecond) {
                                             }};
   const ReaderUtils::BackNavCallback prepare{&trace,
                                              [](void* ctx) { static_cast<NavigationTrace*>(ctx)->prepared = true; }};
-  testSettings.backShortToFileBrowser = 0;
-
   input.held[static_cast<size_t>(MappedInputManager::Button::Back)] = true;
   input.heldTime = ReaderUtils::GO_BACK_OR_HOME_MS;
   EXPECT_TRUE(ReaderUtils::handleBackNavigation(input, activities, "/book.epub", goHome, prepare));
@@ -173,15 +171,6 @@ TEST(ReaderGesture, KeepsBackNavigationBoundaryAtOneSecond) {
   EXPECT_TRUE(ReaderUtils::handleBackNavigation(input, activities, "/book.epub", goHome, prepare));
   EXPECT_TRUE(trace.prepared);
   EXPECT_TRUE(trace.wentHomeAfterPreparation);
-
-  trace = {};
-  activities.openedFileBrowser = false;
-  activities.yourBooksReturnContext = true;
-  testSettings.backShortToFileBrowser = 1;
-  EXPECT_TRUE(ReaderUtils::handleBackNavigation(input, activities, "/book.epub", goHome, prepare));
-  EXPECT_TRUE(trace.prepared);
-  EXPECT_TRUE(trace.wentHomeAfterPreparation);
-  EXPECT_FALSE(activities.openedFileBrowser);
 }
 
 TEST(ReaderGesture, DefaultPhysicalDirectionsTurnExpectedPages) {

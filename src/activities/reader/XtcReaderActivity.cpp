@@ -22,6 +22,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "EpubReaderMenuActivity.h"
+#include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
 #include "ProgressFile.h"
 #include "ProgressFileCodec.h"
@@ -902,6 +903,9 @@ void XtcReaderActivity::markBookCompleted() {
   }
   bookReadingStats = completedBookStats;
   globalReadingStats = completedGlobalStats;
+  FINISHED_BOOKS.markCompleted(
+      xtc->getPath(), xtc->getTitle(), xtc->getAuthor(),
+      completedBookStats.finishedDate.isValid() ? readingStatsDayIndex(completedBookStats.finishedDate) : 0);
 }
 
 void XtcReaderActivity::openReadingStats() {

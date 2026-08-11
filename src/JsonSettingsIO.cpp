@@ -17,7 +17,9 @@
 #include "OpdsServerStore.h"
 #include "ReaderScreenMargin.h"
 #include "RecentBooksStore.h"
+#include "SemanticVersion.h"
 #include "SettingsList.h"
+#include "Version.h"
 #include "WifiCredentialStore.h"
 #include "components/LibraryGridModel.h"
 
@@ -137,10 +139,13 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   if (s.dictionaryName[0] != '\0') {
     doc["dictionaryName"] = s.dictionaryName;
   }
+  if (s.availableOtaVersion[0] != '\0') doc["availableOtaVersion"] = s.availableOtaVersion;
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (s.language < getLanguageCount()) ? LANGUAGE_CODES[s.language] : "EN";
+  doc["vocabularyQuizSize"] = s.vocabularyQuizSize;
+  doc["vocabularyQuestionTime"] = s.vocabularyQuestionTime;
 
   JsonArray shortcutArray = doc["homeShortcuts"].to<JsonArray>();
   for (uint8_t index = 0; index < s.homeShortcuts.count && index < HomeShortcutList::CAPACITY; ++index) {
@@ -260,8 +265,9 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
           continue;
         }
         const int raw = item.as<int>();
+        const auto shortcut = static_cast<HomeShortcutId>(raw);
         if (raw < 0 || raw > UINT8_MAX || !isValidHomeShortcutId(static_cast<uint8_t>(raw)) ||
-            !loaded.add(static_cast<HomeShortcutId>(raw))) {
+            shortcut == HomeShortcutId::BackToFileBrowser || !loaded.add(shortcut)) {
           if (needsResave) *needsResave = true;
         }
       }
@@ -380,10 +386,38 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   strncpy(s.dictionaryName, dictName, sizeof(s.dictionaryName) - 1);
   s.dictionaryName[sizeof(s.dictionaryName) - 1] = '\0';
 
+  const char* otaVersion = doc["availableOtaVersion"] | "";
+  if (std::strlen(otaVersion) < CrossPointSettings::OTA_VERSION_CAPACITY && ota_version::isValid(otaVersion) &&
+      ota_version::isNewer(otaVersion, CROSSPOINT_VERSION)) {
+    std::strncpy(s.availableOtaVersion, otaVersion, CrossPointSettings::OTA_VERSION_CAPACITY - 1);
+    s.availableOtaVersion[CrossPointSettings::OTA_VERSION_CAPACITY - 1] = '\0';
+  } else {
+    s.availableOtaVersion[0] = '\0';
+    if (otaVersion[0] != '\0' && needsResave) *needsResave = true;
+  }
+
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {
     s.language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
   }
+  // These controls were removed: Home Back always opens Shortcuts and a short
+  // reader Back always returns Home. Drop stale values on the next save.
+  if (!doc["homeBackAction"].isNull() || !doc["backShortToFileBrowser"].isNull()) {
+    if (needsResave) *needsResave = true;
+  }
+  s.homeBackAction = CrossPointSettings::HOME_BACK_SHORTCUTS;
+  s.backShortToFileBrowser = 0;
+
+  // Reader vocabulary prompts were intentionally removed because they
+  // interrupt reading. Preserve only explicit quiz settings.
+  if (!doc["vocabularyReaderPrompts"].isNull() || !doc["vocabularyPromptFrequency"].isNull()) {
+    if (needsResave) *needsResave = true;
+  }
+  s.vocabularyQuizSize = clamp(doc["vocabularyQuizSize"] | s.vocabularyQuizSize,
+                               CrossPointSettings::VOCABULARY_QUIZ_SIZE_COUNT, CrossPointSettings::VOCABULARY_QUIZ_10);
+  s.vocabularyQuestionTime =
+      clamp(doc["vocabularyQuestionTime"] | s.vocabularyQuestionTime,
+            CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT, CrossPointSettings::VOCABULARY_TIME_15_SECONDS);
 
   LOG_DBG("CPS", "Settings loaded from file");
 

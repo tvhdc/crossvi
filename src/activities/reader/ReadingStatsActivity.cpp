@@ -28,8 +28,12 @@ struct SummaryCells {
   std::array<SummaryCell, Capacity> items{};
   size_t count = 0;
 
-  void add(const StrId label, const ReadingStatsMetric& metric, const MetricFormat format) {
-    if (metric.state != ReadingStatsMetricState::Known && metric.state != ReadingStatsMetricState::Estimated) return;
+  void add(const StrId label, const ReadingStatsMetric& metric, const MetricFormat format,
+           const bool includeNoData = false) {
+    if (metric.state != ReadingStatsMetricState::Known && metric.state != ReadingStatsMetricState::Estimated &&
+        !(includeNoData && metric.state == ReadingStatsMetricState::NoData)) {
+      return;
+    }
     if (count >= Capacity) return;
     items[count++] = {label, &metric, format};
   }
@@ -231,9 +235,9 @@ SummaryCells<5> bookCells(const BookReadingStatsPresentation& model) {
   const StrId finishLabel = knownIncomplete || model.finishDate.state == ReadingStatsMetricState::Estimated
                                 ? StrId::STR_STATS_EST_FINISH_DATE
                                 : StrId::STR_STATS_FINISHED_DATE;
-  cells.add(StrId::STR_STATS_READING_TIME, model.readingTime, MetricFormat::Duration);
+  cells.add(StrId::STR_STATS_READING_TIME, model.readingTime, MetricFormat::Duration, true);
   cells.add(StrId::STR_STATS_PROGRESS, model.progress, MetricFormat::Percent);
-  cells.add(StrId::STR_STATS_SESSIONS, model.sessions, MetricFormat::Count);
+  cells.add(StrId::STR_STATS_SESSIONS, model.sessions, MetricFormat::Count, true);
   cells.add(StrId::STR_STATS_STARTED_DATE, model.startDate, MetricFormat::DateTime);
   if (model.finishDate.state == ReadingStatsMetricState::Known ||
       model.finishDate.state == ReadingStatsMetricState::Estimated) {
@@ -246,10 +250,10 @@ SummaryCells<5> bookCells(const BookReadingStatsPresentation& model) {
 
 SummaryCells<6> globalCells(const GlobalReadingStatsPresentation& model) {
   SummaryCells<6> cells;
-  cells.add(StrId::STR_STATS_READING_TIME, model.readingTime, MetricFormat::Duration);
-  cells.add(StrId::STR_STATS_SESSIONS, model.sessions, MetricFormat::Count);
-  cells.add(StrId::STR_STATS_PAGES_TURNED, model.pagesTurned, MetricFormat::Count);
-  cells.add(StrId::STR_STATS_COMPLETED_BOOKS, model.completedBooks, MetricFormat::Count);
+  cells.add(StrId::STR_STATS_READING_TIME, model.readingTime, MetricFormat::Duration, true);
+  cells.add(StrId::STR_STATS_SESSIONS, model.sessions, MetricFormat::Count, true);
+  cells.add(StrId::STR_STATS_PAGES_TURNED, model.pagesTurned, MetricFormat::Count, true);
+  cells.add(StrId::STR_STATS_COMPLETED_BOOKS, model.completedBooks, MetricFormat::Count, true);
   cells.add(StrId::STR_STATS_STREAK, model.currentStreak, MetricFormat::Count);
   cells.add(StrId::STR_STATS_LONGEST_STREAK, model.longestStreak, MetricFormat::Count);
   return cells;
@@ -296,18 +300,17 @@ void ReadingStatsActivity::loop() {
     return;
   }
   if (page == Page::Device) {
-    static constexpr std::array<StrId, 2> options = {StrId::STR_STATS_BACKUP, StrId::STR_STATS_RESTORE};
-    if (!allowDeviceBackup) {
+    static constexpr std::array<StrId, 4> options = {StrId::STR_FINISHED_BOOKS, StrId::STR_STATS_BACKUP,
+                                                     StrId::STR_STATS_RESTORE, StrId::STR_VCODEX_IMPORT_ACTION};
+    const int optionCount = allowDeviceBackup ? static_cast<int>(options.size()) : 1;
+    optionPopup.show(StrId::STR_STATS_MANAGE, options.data(), optionCount, 0, [this](const int selected) {
+      static constexpr std::array<ReadingStatsActionResult::Action, 4> actions = {
+          ReadingStatsActionResult::Action::ShowFinishedBooks, ReadingStatsActionResult::Action::BackupDeviceStats,
+          ReadingStatsActionResult::Action::RestoreDeviceStats, ReadingStatsActionResult::Action::ImportVCodexStats};
+      const auto action = actions[static_cast<size_t>(selected)];
+      setResult(ReadingStatsActionResult{action});
       finish();
-      return;
-    }
-    optionPopup.show(StrId::STR_STATS_MANAGE, options.data(), static_cast<int>(options.size()), 0,
-                     [this](const int selected) {
-                       const auto action = selected == 0 ? ReadingStatsActionResult::Action::BackupDeviceStats
-                                                         : ReadingStatsActionResult::Action::RestoreDeviceStats;
-                       setResult(ReadingStatsActionResult{action});
-                       finish();
-                     });
+    });
     requestUpdate();
     return;
   }
@@ -377,7 +380,10 @@ void ReadingStatsActivity::render(RenderLock&&) {
               StrId::STR_STATS_DAY_OF_WEEK, dayChart, DAY_LABELS);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
+  const StrId confirmLabel = page == Page::Device                      ? StrId::STR_STATS_MANAGE
+                             : page == Page::Book && allowBookDateEdit ? StrId::STR_STATS_EDIT_DATES
+                                                                       : StrId::STR_DONE;
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), I18N.get(confirmLabel), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   if (optionPopup.processRender(renderer, mappedInput)) return;
   renderer.displayBuffer();

@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "BookReadingStats.h"
+#include "BookStatsLoader.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "ReadingStatsActivity.h"
@@ -53,6 +54,8 @@ bool hasBookStatsArtifact(const std::string& cachePath) {
   return std::any_of(names.begin(), names.end(),
                      [&cachePath](const char* name) { return Storage.exists((cachePath + "/" + name).c_str()); });
 }
+
+}  // namespace
 
 bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentation& presentation) {
   std::string cachePath;
@@ -101,7 +104,6 @@ bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentatio
   if (plainText) markReadingStatsPageMetricsNotApplicable(presentation);
   return true;
 }
-}  // namespace
 
 void BookStatsSelectionActivity::onEnter() {
   Activity::onEnter();

@@ -3,6 +3,9 @@ add_executable(ReadingStatsTest
   ReadingCalendarModelTest.cpp
   ReadingStatsTest.cpp
   ReadingStatsPresentationTest.cpp
+  VCodexStatsImporterTest.cpp
+  ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
+  ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp
   ${REPO_ROOT}/src/activities/network/NearbyStatsStorage.cpp
   ${REPO_ROOT}/src/activities/reader/BookReadingStats.cpp
   ${REPO_ROOT}/src/activities/reader/DailyReadingHistory.cpp
@@ -16,12 +19,16 @@ add_executable(ReadingStatsTest
   ${REPO_ROOT}/src/activities/reader/ReadingStatsStorage.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsVersionGuard.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsUtils.cpp
+  ${REPO_ROOT}/src/activities/reader/VCodexStatsImporter.cpp
 )
 
 target_include_directories(ReadingStatsTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}/src
   ${REPO_ROOT}/src/activities/reader
+  ${REPO_ROOT}/lib/FsHelpers
+  ${REPO_ROOT}/lib/JsonParser
+  ${REPO_ROOT}/simulator/src
 )
 
 target_link_libraries(ReadingStatsTest PRIVATE

@@ -51,7 +51,8 @@ enum class HomeShortcutId : uint8_t {
   WifiNetworks = 41,
   KOReaderSettings = 42,
   OpdsServers = 43,
-  Count = 44,
+  VocabularyLearning = 44,
+  Count = 45,
 };
 
 constexpr bool isValidHomeShortcutId(const uint8_t raw) { return raw < static_cast<uint8_t>(HomeShortcutId::Count); }
@@ -63,7 +64,7 @@ struct HomeShortcutList {
   uint8_t items[CAPACITY] = {
       static_cast<uint8_t>(HomeShortcutId::Appearance),  static_cast<uint8_t>(HomeShortcutId::TextSettings),
       static_cast<uint8_t>(HomeShortcutId::QuickResume), static_cast<uint8_t>(HomeShortcutId::SleepScreen),
-      static_cast<uint8_t>(HomeShortcutId::HideBattery), static_cast<uint8_t>(HomeShortcutId::StatusBar),
+      static_cast<uint8_t>(HomeShortcutId::StatusBar),   static_cast<uint8_t>(HomeShortcutId::VocabularyLearning),
   };
 
   [[nodiscard]] bool contains(const HomeShortcutId id, const int exceptIndex = -1) const {

@@ -13,6 +13,11 @@ constexpr size_t GLOBAL_SIZE_V1 = 13;
 constexpr size_t GLOBAL_SIZE_V2 = 17;
 constexpr uint8_t FLAG_START_DATE_MANUAL = 1u << 0;
 constexpr uint8_t FLAG_FINISHED_DATE_MANUAL = 1u << 1;
+constexpr uint8_t FLAG_IMPORTED_VCODEX = 1u << 2;
+constexpr uint8_t FLAG_READING_TIME_UNAVAILABLE = 1u << 3;
+constexpr uint8_t FLAG_SESSIONS_UNAVAILABLE = 1u << 4;
+constexpr uint8_t FLAG_PAGE_TURNS_UNAVAILABLE = 1u << 5;
+constexpr uint8_t FLAG_COMPLETION_UNAVAILABLE = 1u << 6;
 
 uint16_t readLe16(const uint8_t* data, const size_t offset) {
   return static_cast<uint16_t>(data[offset]) | static_cast<uint16_t>(data[offset + 1]) << 8;
@@ -75,7 +80,12 @@ BookBytes encode(const BookReadingStats& stats) {
   writeLe16(data.data(), 12, stats.avgSecondsPerForwardPage);
   writeLe16(data.data(), 14, std::min(stats.paceSampleCount, BookReadingStats::MAX_PACE_SAMPLE_COUNT));
   data[16] = (stats.startDateManual && stats.startDate.isValid() ? FLAG_START_DATE_MANUAL : 0u) |
-             (stats.finishedDateManual && stats.finishedDate.isValid() ? FLAG_FINISHED_DATE_MANUAL : 0u);
+             (stats.finishedDateManual && stats.finishedDate.isValid() ? FLAG_FINISHED_DATE_MANUAL : 0u) |
+             (stats.importedFromVCodex ? FLAG_IMPORTED_VCODEX : 0u) |
+             (stats.readingTimeUnavailable ? FLAG_READING_TIME_UNAVAILABLE : 0u) |
+             (stats.sessionsUnavailable ? FLAG_SESSIONS_UNAVAILABLE : 0u) |
+             (stats.pageTurnsUnavailable ? FLAG_PAGE_TURNS_UNAVAILABLE : 0u) |
+             (stats.completionUnavailable ? FLAG_COMPLETION_UNAVAILABLE : 0u);
   writeLe16(data.data(), 17, stats.startDate.isValid() ? stats.startDate.year : 0);
   data[19] = stats.startDate.isValid() ? stats.startDate.month : 0;
   data[20] = stats.startDate.isValid() ? stats.startDate.day : 0;
@@ -111,6 +121,11 @@ GlobalBytes encode(const GlobalReadingStats& stats) {
   writeLe32(data.data(), 61, stats.readingHistoryAnchorDay);
   memcpy(data.data() + 65, stats.readingHistoryBits.data(), stats.readingHistoryBits.size());
   data[156] &= 0x03;  // Only 730 of the 736 allocated bits belong to the history.
+  data[156] |= (stats.importedFromVCodex ? FLAG_IMPORTED_VCODEX : 0u) |
+               (stats.readingTimeUnavailable ? FLAG_READING_TIME_UNAVAILABLE : 0u) |
+               (stats.sessionsUnavailable ? FLAG_SESSIONS_UNAVAILABLE : 0u) |
+               (stats.pageTurnsUnavailable ? FLAG_PAGE_TURNS_UNAVAILABLE : 0u) |
+               (stats.completionUnavailable ? FLAG_COMPLETION_UNAVAILABLE : 0u);
   writeLe16(data.data(), 157, std::min<uint16_t>(stats.longestReadingStreak, READING_HISTORY_DAYS));
   return data;
 }
@@ -144,6 +159,11 @@ ReadingStatsDecodeResult decode(const uint8_t* data, const size_t size, BookRead
     decoded.finishedDate = readDate(data, 21);
     decoded.startDateManual = decoded.startDate.isValid() && (flags & FLAG_START_DATE_MANUAL) != 0;
     decoded.finishedDateManual = decoded.finishedDate.isValid() && (flags & FLAG_FINISHED_DATE_MANUAL) != 0;
+    decoded.importedFromVCodex = (flags & FLAG_IMPORTED_VCODEX) != 0;
+    decoded.readingTimeUnavailable = (flags & FLAG_READING_TIME_UNAVAILABLE) != 0;
+    decoded.sessionsUnavailable = (flags & FLAG_SESSIONS_UNAVAILABLE) != 0;
+    decoded.pageTurnsUnavailable = (flags & FLAG_PAGE_TURNS_UNAVAILABLE) != 0;
+    decoded.completionUnavailable = (flags & FLAG_COMPLETION_UNAVAILABLE) != 0;
     for (size_t i = 0; i < decoded.timeOfDaySeconds.size(); ++i)
       decoded.timeOfDaySeconds[i] = readLe32(data, 25 + i * 4);
     for (size_t i = 0; i < decoded.dayOfWeekSeconds.size(); ++i)
@@ -187,6 +207,12 @@ ReadingStatsDecodeResult decode(const uint8_t* data, const size_t size, GlobalRe
       decoded.dayOfWeekSeconds[i] = readLe32(data, 33 + i * 4);
     decoded.readingHistoryAnchorDay = readLe32(data, 61);
     memcpy(decoded.readingHistoryBits.data(), data + 65, decoded.readingHistoryBits.size());
+    const uint8_t flags = decoded.readingHistoryBits.back();
+    decoded.importedFromVCodex = (flags & FLAG_IMPORTED_VCODEX) != 0;
+    decoded.readingTimeUnavailable = (flags & FLAG_READING_TIME_UNAVAILABLE) != 0;
+    decoded.sessionsUnavailable = (flags & FLAG_SESSIONS_UNAVAILABLE) != 0;
+    decoded.pageTurnsUnavailable = (flags & FLAG_PAGE_TURNS_UNAVAILABLE) != 0;
+    decoded.completionUnavailable = (flags & FLAG_COMPLETION_UNAVAILABLE) != 0;
     decoded.readingHistoryBits.back() &= 0x03;
     decoded.longestReadingStreak = std::min<uint16_t>(readLe16(data, 157), READING_HISTORY_DAYS);
     ReadingStatsDate anchorDate;

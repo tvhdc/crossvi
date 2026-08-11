@@ -50,6 +50,15 @@ ARABIC_INTERVALS=(
   --additional-intervals 0xFE80,0xFEFC  # Presentation Forms-B: core Arabic + Lam-Alef
 )
 
+# Pronunciation line used by the Vietnamese vocabulary trainer. Keep this on
+# the 10 pt UI family only: it covers IPA Extensions plus the primary/secondary
+# stress and length marks without growing every reader font size.
+IPA_INTERVALS=(
+  --additional-intervals 0x0250,0x02AF
+  --additional-intervals 0x02C8,0x02D0
+  --additional-intervals 0x03B8,0x03B8
+)
+
 for size in ${UI_FONT_SIZES[@]}; do
   for style in ${UI_FONT_STYLES[@]}; do
     font_name="ubuntu_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
@@ -68,13 +77,21 @@ for size in ${UI_FONT_SIZES[@]}; do
     noto_source_path="../builtinFonts/source/NotoSans/NotoSans-${style}.ttf"
     noto_fallback_path="$UI_FALLBACK_DIR/NotoSans-UiVietnamese-${style}.ttf"
     if [ ! -f "$noto_fallback_path" ]; then
+      noto_subset="U+0309,U+031B,U+0323,U+20AB,U+FFFD"
+      if [ "$size" -eq 10 ]; then
+        noto_subset="$noto_subset,U+0250-02AF,U+02C8-02D0,U+03B8"
+      fi
       python -m fontTools.subset "$noto_source_path" \
-        --unicodes=U+0309,U+031B,U+0323,U+20AB,U+FFFD \
+        --unicodes="$noto_subset" \
         --output-file="$noto_fallback_path"
     fi
     output_path="../builtinFonts/${font_name}.h"
+    extra_intervals=()
+    if [ "$size" -eq 10 ]; then
+      extra_intervals=("${IPA_INTERVALS[@]}")
+    fi
     python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path $noto_fallback_path \
-      --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
+      --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" "${extra_intervals[@]}" > $output_path
     echo "Generated $output_path"
   done
 done

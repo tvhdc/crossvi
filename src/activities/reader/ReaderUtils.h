@@ -209,12 +209,9 @@ struct BackNavCallback {
 };
 
 // Returns true if the back button was consumed (caller should return).
-// Long press (>= GO_BACK_OR_HOME_MS):
-// - default: go to file browser
-// - with backShortToFileBrowser: go home
-// Short press (< GO_BACK_OR_HOME_MS):
-// - default: go home
-// - with backShortToFileBrowser: go to file browser.
+// Long press (>= GO_BACK_OR_HOME_MS) opens the file browser. A short press
+// returns Home. Keeping this fixed avoids a hidden navigation mode that could
+// make Back leave the reader for an unexpected screen.
 inline bool handleBackNavigation(const MappedInputManager& mappedInput, ActivityManager& activityManager,
                                  const char* filePath, BackNavCallback goHome,
                                  BackNavCallback beforeNavigate = {nullptr, nullptr}) {
@@ -224,29 +221,13 @@ inline bool handleBackNavigation(const MappedInputManager& mappedInput, Activity
   if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime(MappedInputManager::Button::Back) >= GO_BACK_OR_HOME_MS) {
     prepareNavigation();
-    if (SETTINGS.backShortToFileBrowser) {
-      goHome.fn(goHome.ctx);
-    } else {
-      activityManager.goToFileBrowser(filePath);
-    }
+    activityManager.goToFileBrowser(filePath);
     return true;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime(MappedInputManager::Button::Back) < GO_BACK_OR_HOME_MS) {
     prepareNavigation();
-    if (SETTINGS.backShortToFileBrowser) {
-      // A reader launched from Your Books has a more precise return target
-      // than the legacy global File Browser shortcut. Preserve that origin
-      // even when the setting is enabled; readers opened elsewhere retain the
-      // existing File Browser behavior.
-      if (activityManager.hasYourBooksReturnContext()) {
-        goHome.fn(goHome.ctx);
-      } else {
-        activityManager.goToFileBrowser(filePath);
-      }
-    } else {
-      goHome.fn(goHome.ctx);
-    }
+    goHome.fn(goHome.ctx);
     return true;
   }
   return false;

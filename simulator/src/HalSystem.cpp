@@ -6,3 +6,4 @@ void HalSystem::checkPanic() {}
 void HalSystem::clearPanic() {}
 std::string HalSystem::getPanicInfo(bool full) { return {}; }
 bool HalSystem::isRebootFromPanic() { return false; }
+bool HalSystem::panicReportPersisted() { return false; }

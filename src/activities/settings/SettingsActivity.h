@@ -30,13 +30,11 @@ enum class SettingAction {
   DeviceInfo,
   Appearance,
   TextSettings,
-  CustomizeHomeShortcuts,
   SleepSettings,
   DictionarySettings,
   PageButtonSettings,
   ConfirmButtonSettings,
   PowerButtonSettings,
-  BackButtonSettings,
   TiltSensorSettings,
   FirmwareUpdates,
 };

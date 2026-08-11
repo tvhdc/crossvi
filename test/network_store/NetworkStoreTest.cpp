@@ -4,6 +4,7 @@
 
 #include <string>
 
+#include "FinishedBooksStore.h"
 #include "KOReaderCredentialStore.h"
 #include "OpdsServerStore.h"
 #include "WifiCredentialStore.h"
@@ -163,4 +164,30 @@ TEST(NetworkStore, FailedCredentialClearsLeaveMemoryUnchanged) {
   ASSERT_FALSE(deserializeJson(persistedWifi, wifiBytes.data(), wifiBytes.size()));
   EXPECT_EQ(persistedWifi["credentials"].as<JsonArrayConst>().size(), 0U);
   EXPECT_STREQ(persistedWifi["lastConnectedSsid"].as<const char*>(), "");
+}
+
+TEST(NetworkStore, FinishedBooksAreBoundedDeduplicatedAndRollbackFailedWrites) {
+  Storage.reset();
+  auto& store = FINISHED_BOOKS;
+  ASSERT_TRUE(store.ensureLoaded());
+
+  ASSERT_TRUE(store.markCompleted("/Original.epub", "Original", "Author", 1));
+  Storage.makeUnwritable("/.crosspoint/finished_books.json.tmp");
+  EXPECT_FALSE(store.markCompleted("/Failed.epub", "Failed", "Author", 2));
+  ASSERT_EQ(store.books().size(), 1U);
+  EXPECT_EQ(store.books().front().path, "/Original.epub");
+  Storage.makeWritable("/.crosspoint/finished_books.json.tmp");
+
+  for (size_t i = 0; i < 40; ++i) {
+    ASSERT_TRUE(
+        store.markCompleted("/Book" + std::to_string(i) + ".epub", "Book", "Author", static_cast<uint32_t>(i + 10)));
+  }
+  ASSERT_EQ(store.books().size(), FinishedBooksStore::MAX_BOOKS);
+  EXPECT_EQ(store.books().front().path, "/Book39.epub");
+  EXPECT_EQ(store.books().back().path, "/Book8.epub");
+
+  ASSERT_TRUE(store.markCompleted("/Book20.epub", "Updated", "New author", 99));
+  ASSERT_EQ(store.books().size(), FinishedBooksStore::MAX_BOOKS);
+  EXPECT_EQ(store.books().front().path, "/Book20.epub");
+  EXPECT_EQ(store.books().front().title, "Updated");
 }

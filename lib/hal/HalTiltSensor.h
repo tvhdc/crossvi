@@ -24,10 +24,10 @@ class HalTiltSensor {
   bool _tiltBackEvent = false;     // Consumed by wasTiltedBack()
   bool _hadActivity = false;       // Non-consuming flag for sleep timer
   bool _inTilt = false;            // Currently tilted past threshold
-  bool _isAwake = false;            // Tracks power state
-  unsigned long _initMs = 0;        // Timestamp of sensor init
+  bool _isAwake = false;           // Tracks power state
+  unsigned long _initMs = 0;       // Timestamp of sensor init
   unsigned long _lastTiltMs = 0;   // Debounce / cooldown
-  unsigned long _wakeMs = 0;        // Timestamp of last wake() for stabilization
+  unsigned long _wakeMs = 0;       // Timestamp of last wake() for stabilization
 
   // CrossPoint's original gyro gesture tuning.
   static constexpr float RATE_THRESHOLD_DPS = 270.0f;

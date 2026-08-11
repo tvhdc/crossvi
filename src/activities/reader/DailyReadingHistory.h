@@ -63,6 +63,7 @@ class DailyReadingHistory {
   bool valueForDate(const ReadingStatsDate& date, uint32_t& seconds) const;
   bool hasAnchor() const { return hasAnchor_; }
   uint32_t anchorDay() const { return anchorDay_; }
+  bool empty() const;
 
   // Used by the codec and when migrating the exact latest-day summary that
   // predates the 730-day sidecar.

@@ -13,9 +13,11 @@
 #include "esp_private/panic_internal.h"
 
 #define MAX_PANIC_STACK_DEPTH 32
+#define PANIC_CAPTURE_MAGIC 0x4356504Eu
 
 RTC_NOINIT_ATTR char panicMessage[256];
 RTC_NOINIT_ATTR HalSystem::StackFrame panicStack[MAX_PANIC_STACK_DEPTH];
+RTC_NOINIT_ATTR uint32_t panicCaptureMagic;
 
 extern "C" {
 
@@ -24,6 +26,7 @@ void __real_panic_print_backtrace(const void* frame, int core);
 
 static DRAM_ATTR const char PANIC_REASON_UNKNOWN[] = "(unknown panic reason)";
 void IRAM_ATTR __wrap_panic_abort(const char* message) {
+  panicCaptureMagic = PANIC_CAPTURE_MAGIC;
   if (!message) message = PANIC_REASON_UNKNOWN;
   // IRAM-safe bounded copy (strncpy is not IRAM-safe in panic context)
   int i = 0;
@@ -36,6 +39,7 @@ void IRAM_ATTR __wrap_panic_abort(const char* message) {
 }
 
 void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
+  panicCaptureMagic = PANIC_CAPTURE_MAGIC;
   if (!frame) {
     __real_panic_print_backtrace(frame, core);
     return;
@@ -118,6 +122,7 @@ void checkPanic() {
 bool panicReportPersisted() { return panicReportSavedThisBoot; }
 
 void clearPanic() {
+  panicCaptureMagic = 0;
   panicMessage[0] = '\0';
   for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
     panicStack[i].sp = 0;
@@ -159,8 +164,10 @@ std::string getPanicInfo(bool full) {
 
 bool isRebootFromPanic() {
   const auto resetReason = esp_reset_reason();
-  return resetReason == ESP_RST_PANIC || resetReason == ESP_RST_CPU_LOCKUP || resetReason == ESP_RST_INT_WDT ||
-         resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_WDT;
+  const bool panicReset = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_CPU_LOCKUP ||
+                          resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT ||
+                          resetReason == ESP_RST_WDT;
+  return panicReset && panicCaptureMagic == PANIC_CAPTURE_MAGIC;
 }
 
 }  // namespace HalSystem
