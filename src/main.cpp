@@ -13,7 +13,9 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#ifndef SIMULATOR
 #include <Preferences.h>
+#endif
 #include <SPI.h>
 #include <Version.h>
 #include <WiFi.h>
