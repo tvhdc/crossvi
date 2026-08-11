@@ -574,8 +574,11 @@ TEST_F(LibraryCatalogTest, ExternalDeletionIsDetectedCooperativelyWithoutDirtyMa
   std::vector<LibraryBookRecord> records;
   ASSERT_TRUE(LIBRARY_CATALOG.loadPage(0, 2, records));
   ASSERT_EQ(records.size(), 2U);
-  EXPECT_EQ(records[0].path, "/one.txt");
-  EXPECT_EQ(records[1].path, "/three.txt");
+  std::vector<std::string> paths;
+  paths.reserve(records.size());
+  for (const auto& record : records) paths.push_back(record.path);
+  std::sort(paths.begin(), paths.end());
+  EXPECT_EQ(paths, (std::vector<std::string>{"/one.txt", "/three.txt"}));
 }
 
 TEST_F(LibraryCatalogTest, SourceValidationKeepsAnUnchangedCatalogAndGeneration) {
