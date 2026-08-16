@@ -613,15 +613,16 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 }
 
 bool BookMetadataCache::cleanupTmpFiles() const {
+  bool cleaned = true;
   const auto spineBinFile = cachePath + tmpSpineBinFile;
   if (Storage.exists(spineBinFile.c_str())) {
-    Storage.remove(spineBinFile.c_str());
+    cleaned = Storage.remove(spineBinFile.c_str()) && cleaned;
   }
   const auto tocBinFile = cachePath + tmpTocBinFile;
   if (Storage.exists(tocBinFile.c_str())) {
-    Storage.remove(tocBinFile.c_str());
+    cleaned = Storage.remove(tocBinFile.c_str()) && cleaned;
   }
-  return true;
+  return cleaned;
 }
 
 uint32_t BookMetadataCache::writeSpineEntry(HalFile& file, const SpineEntry& entry) const {

@@ -17,6 +17,9 @@
 #include "util/ScreenshotInfo.h"
 
 struct RawSourceIdentityHandoff;
+class Epub;
+class Txt;
+class Xtc;
 
 class Activity {
   friend class ActivityManager;
@@ -38,6 +41,12 @@ class Activity {
   void openBookWithFeedback(const std::string& path, ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default,
                             bool completionStatsAlreadyRecovered = false,
                             const RawSourceIdentityHandoff* preparedSourceIdentity = nullptr);
+  void openBookWithFeedback(std::unique_ptr<Epub>&& preparedEpub, ReaderOpenOrigin openOrigin,
+                            bool completionStatsAlreadyRecovered = false);
+  void openBookWithFeedback(std::unique_ptr<Xtc>&& preparedXtc, ReaderOpenOrigin openOrigin,
+                            bool completionStatsAlreadyRecovered = false);
+  void openBookWithFeedback(std::unique_ptr<Txt>&& preparedTxt, ReaderOpenOrigin openOrigin,
+                            bool completionStatsAlreadyRecovered = false);
   bool renderBookLoadingOverlay();
   void showReaderExitFeedback();
   bool renderReaderExitOverlay();

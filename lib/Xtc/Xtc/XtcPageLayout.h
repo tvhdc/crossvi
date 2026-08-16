@@ -200,11 +200,12 @@ struct XthPortraitRows {
 // source width/height may only shrink: that keeps every source column bounded
 // to at most one output row, so callers need scratch for this chunk rather than
 // a second full framebuffer. Output planes use the controller's packed polarity.
-inline bool composeScaledXthPortraitRows(
-    const uint8_t* bit0, const uint8_t* bit1, const size_t size, const size_t planeOffset,
-    const PageLayout& layout, const uint16_t sourceWidth, const uint16_t sourceHeight, const Viewport& viewport,
-    const uint16_t panelWidth, const uint16_t panelHeight, uint8_t* baseRows, uint8_t* lsbRows, uint8_t* msbRows,
-    const size_t rowBufferSize, XthPortraitRows& rows) {
+inline bool composeScaledXthPortraitRows(const uint8_t* bit0, const uint8_t* bit1, const size_t size,
+                                         const size_t planeOffset, const PageLayout& layout, const uint16_t sourceWidth,
+                                         const uint16_t sourceHeight, const Viewport& viewport,
+                                         const uint16_t panelWidth, const uint16_t panelHeight,
+                                         const bool portraitInverted, uint8_t* baseRows, uint8_t* lsbRows,
+                                         uint8_t* msbRows, const size_t rowBufferSize, XthPortraitRows& rows) {
   rows = {};
   PageLayout expected;
   if (!bit0 || !bit1 || (!baseRows && !lsbRows && !msbRows) || size == 0 || panelWidth == 0 || panelHeight == 0 ||
@@ -229,7 +230,8 @@ inline bool composeScaledXthPortraitRows(
     const uint16_t sourceX = static_cast<uint16_t>(sourceWidth - 1U - (firstColumn + localColumn));
     const CoordinateRange destination = mapSourceCoordinateRange(sourceX, sourceWidth, viewport.width);
     for (uint16_t x = destination.begin; x < destination.end; ++x) {
-      const uint16_t physicalRow = static_cast<uint16_t>(panelHeight - 1U - viewport.x - x);
+      const uint16_t physicalRow = portraitInverted ? static_cast<uint16_t>(viewport.x + x)
+                                                    : static_cast<uint16_t>(panelHeight - 1U - viewport.x - x);
       firstPhysicalRow = std::min(firstPhysicalRow, physicalRow);
       lastPhysicalRow = std::max(lastPhysicalRow, physicalRow);
       hasRows = true;
@@ -255,14 +257,16 @@ inline bool composeScaledXthPortraitRows(
     const uint8_t* const firstColumnBytes = bit0 + localColumn * layout.columnBytes;
     const uint8_t* const secondColumnBytes = bit1 + localColumn * layout.columnBytes;
     for (uint16_t x = destination.begin; x < destination.end; ++x) {
-      const uint16_t physicalRow = static_cast<uint16_t>(panelHeight - 1U - viewport.x - x);
+      const uint16_t physicalRow = portraitInverted ? static_cast<uint16_t>(viewport.x + x)
+                                                    : static_cast<uint16_t>(panelHeight - 1U - viewport.x - x);
       const size_t rowOffset = static_cast<size_t>(physicalRow - rows.yStart) * panelRowBytes;
       for (uint16_t y = 0; y < viewport.height; ++y) {
         const uint16_t sourceY = mapViewportCoordinate(y, viewport.height, sourceHeight);
         const uint8_t sourceMask = static_cast<uint8_t>(1U << (7U - sourceY % 8U));
         const bool first = (firstColumnBytes[sourceY / 8U] & sourceMask) != 0;
         const bool second = (secondColumnBytes[sourceY / 8U] & sourceMask) != 0;
-        const uint16_t physicalX = static_cast<uint16_t>(viewport.y + y);
+        const uint16_t physicalX = portraitInverted ? static_cast<uint16_t>(panelWidth - 1U - viewport.y - y)
+                                                    : static_cast<uint16_t>(viewport.y + y);
         const size_t byteOffset = rowOffset + physicalX / 8U;
         const uint8_t outputMask = static_cast<uint8_t>(1U << (7U - physicalX % 8U));
         if (baseRows && (first || second)) baseRows[byteOffset] &= static_cast<uint8_t>(~outputMask);

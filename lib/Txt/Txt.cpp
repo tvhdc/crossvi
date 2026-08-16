@@ -156,13 +156,18 @@ std::string Txt::getTitle() const {
   return filename;
 }
 
-void Txt::setupCacheDir() const {
-  if (!Storage.exists(cacheBasePath.c_str())) {
-    Storage.mkdir(cacheBasePath.c_str());
+bool Txt::setupCacheDir() const {
+  if (Storage.exists(cachePath.c_str())) {
+    return true;
   }
-  if (!Storage.exists(cachePath.c_str())) {
-    Storage.mkdir(cachePath.c_str());
+
+  // HalStorage::mkdir creates missing parents by default, so creating the
+  // per-book directory directly avoids a second FAT lookup and mkdir call.
+  if (!Storage.mkdir(cachePath.c_str())) {
+    LOG_ERR("TXT", "Failed to create cache directory: %s", cachePath.c_str());
+    return false;
   }
+  return true;
 }
 
 std::string Txt::findCoverImage() const {

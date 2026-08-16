@@ -102,12 +102,17 @@ bool HomeActivity::usesRecentListLayout() const {
 }
 
 void HomeActivity::selectHomeItem(const int index) {
+  const bool selectionChanged = selectorIndex != index;
   selectorIndex = index;
+  if (selectionChanged) {
+    coverPreparationAttempted = false;
+    preparedEpub.reset();
+    preparedXtc.reset();
+    preparedTxt.reset();
+  }
   if (usesMultiBookCoverLayout() && selectorIndex >= 0 && selectorIndex < static_cast<int>(recentBooks.size()) &&
       carouselBookIndex != selectorIndex) {
     carouselBookIndex = selectorIndex;
-    preparedEpub.reset();
-    preparedXtc.reset();
     coverPreparationAttempted = false;
     coverRendered = false;
     freeCoverBuffer();
@@ -168,7 +173,15 @@ void HomeActivity::loadBookSummary() {
   // durable source binding once and then opens only the existing book.bin;
   // it never indexes book contents or performs the Reader's second
   // central-directory check during Home startup.
-  Epub recentEpub(recentBooks[0].path, "/.crosspoint");
+  if (!preparedEpub || preparedEpub->getPath() != recentBooks[0].path) {
+    preparedEpub.reset(new (std::nothrow) Epub(recentBooks[0].path, "/.crosspoint"));
+  }
+  if (!preparedEpub) {
+    bookSummary.progressState = DashboardMetricState::Unavailable;
+    logSummaryTiming("epub_allocation_failed");
+    return;
+  }
+  Epub& recentEpub = *preparedEpub;
 
   // Validate the metadata against the backing EPUB before reading any
   // path-keyed statistics or progress. A replaced, legacy, unreadable, or
@@ -457,9 +470,20 @@ void HomeActivity::loop() {
   const bool x3 = renderer.getDisplayHeight() == 528;
   const bool needsShared = CrossPointSettings::needsSharedCoverThumbnail(SETTINGS.homeLayout, SETTINGS.libraryView);
   const bool needsCarousel = CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout);
-  if (!needsShared && !needsCarousel && !bookSummaryPending) {
-    preparedEpub.reset();
-    preparedXtc.reset();
+  if (!needsShared && !needsCarousel && !bookSummaryPending && firstRenderDone && !hadInput && !homeInputHeld &&
+      coverWorkIdle && !sourcePreparationInProgress && focusedRecentBook && !coverPreparationAttempted &&
+      mediaAvailable) {
+    coverPreparationAttempted = true;
+    const std::string& path = recentBooks[static_cast<size_t>(selectorIndex)].path;
+    SourcePreparationResult preparation = SourcePreparationResult::NotNeeded;
+    if (FsHelpers::hasEpubExtension(path)) {
+      preparation = stepPreparedEpub(path);
+    } else if (FsHelpers::hasXtcExtension(path)) {
+      preparation = stepPreparedXtc(path);
+    } else if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+      preparation = stepPreparedTxt(path);
+    }
+    if (preparation == SourcePreparationResult::InProgress) coverPreparationAttempted = false;
   }
   const int carouselWidth = x3 ? Epub::CAROUSEL_THUMB_WIDTH : Epub::CAROUSEL_X4_THUMB_WIDTH;
   const int carouselHeight = x3 ? Epub::CAROUSEL_THUMB_HEIGHT : Epub::CAROUSEL_X4_THUMB_HEIGHT;
@@ -685,15 +709,17 @@ void HomeActivity::render(RenderLock&&) {
 
 void HomeActivity::onSelectBook(const std::string& path) {
   RawSourceIdentityHandoff preparedIdentity;
-  const RawSourceIdentityHandoff* reusableIdentity = nullptr;
   if (preparedEpub && preparedEpub->getPath() == path && preparedEpub->getSourceIdentityHandoff(preparedIdentity)) {
-    reusableIdentity = &preparedIdentity;
+    openBookWithFeedback(std::move(preparedEpub), ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered);
+    return;
   } else if (preparedXtc && preparedXtc->getPath() == path && preparedXtc->getSourceIdentityHandoff(preparedIdentity)) {
-    reusableIdentity = &preparedIdentity;
+    openBookWithFeedback(std::move(preparedXtc), ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered);
+    return;
   } else if (preparedTxt && preparedTxt->getPath() == path && preparedTxt->getSourceIdentityHandoff(preparedIdentity)) {
-    reusableIdentity = &preparedIdentity;
+    openBookWithFeedback(std::move(preparedTxt), ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered);
+    return;
   }
-  openBookWithFeedback(path, ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered, reusableIdentity);
+  openBookWithFeedback(path, ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered);
 }
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
@@ -709,6 +735,8 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
 HomeActivity::SourcePreparationResult HomeActivity::stepPreparedEpub(const std::string& path) {
+  preparedXtc.reset();
+  preparedTxt.reset();
   if (!preparedEpub || preparedEpub->getPath() != path) {
     preparedEpub.reset(new (std::nothrow) Epub(path, "/.crosspoint"));
     if (!preparedEpub || !preparedEpub->beginCoreMetadataRead()) {
@@ -732,6 +760,8 @@ HomeActivity::SourcePreparationResult HomeActivity::stepPreparedEpub(const std::
 }
 
 HomeActivity::SourcePreparationResult HomeActivity::stepPreparedXtc(const std::string& path) {
+  preparedEpub.reset();
+  preparedTxt.reset();
   if (!preparedXtc || preparedXtc->getPath() != path) {
     preparedXtc.reset(new (std::nothrow) Xtc(path, "/.crosspoint"));
     if (!preparedXtc || !preparedXtc->beginLoad()) {
@@ -748,14 +778,9 @@ HomeActivity::SourcePreparationResult HomeActivity::stepPreparedXtc(const std::s
   return SourcePreparationResult::Failed;
 }
 
-HomeActivity::SourcePreparationResult HomeActivity::stepRecentNonEpubSummarySource() {
-  if (recentBooks.empty()) return SourcePreparationResult::NotNeeded;
-  const std::string& path = recentBooks.front().path;
-  if (FsHelpers::hasXtcExtension(path)) return stepPreparedXtc(path);
-  if (!FsHelpers::hasTxtExtension(path) && !FsHelpers::hasMarkdownExtension(path)) {
-    return SourcePreparationResult::NotNeeded;
-  }
-
+HomeActivity::SourcePreparationResult HomeActivity::stepPreparedTxt(const std::string& path) {
+  preparedEpub.reset();
+  preparedXtc.reset();
   if (!preparedTxt || preparedTxt->getPath() != path) {
     preparedTxt.reset(new (std::nothrow) Txt(path, "/.crosspoint"));
     if (!preparedTxt || !preparedTxt->beginLoad()) {
@@ -770,6 +795,17 @@ HomeActivity::SourcePreparationResult HomeActivity::stepRecentNonEpubSummarySour
   if (result == Txt::LoadStepResult::Loaded) return SourcePreparationResult::Ready;
   preparedTxt.reset();
   return SourcePreparationResult::Failed;
+}
+
+HomeActivity::SourcePreparationResult HomeActivity::stepRecentNonEpubSummarySource() {
+  if (recentBooks.empty()) return SourcePreparationResult::NotNeeded;
+  const std::string& path = recentBooks.front().path;
+  if (FsHelpers::hasXtcExtension(path)) return stepPreparedXtc(path);
+  if (!FsHelpers::hasTxtExtension(path) && !FsHelpers::hasMarkdownExtension(path)) {
+    return SourcePreparationResult::NotNeeded;
+  }
+
+  return stepPreparedTxt(path);
 }
 
 bool HomeActivity::loadRecentNonEpubReadingStats() {

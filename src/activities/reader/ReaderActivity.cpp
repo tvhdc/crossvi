@@ -113,10 +113,16 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
                                                PerBookReaderSettings& bookSettings, bool& settingsWritable,
                                                bool& deferCoverPreparation,
                                                const ZipFile::SourceIdentity& verifiedEpubIdentity,
-                                               BookMetadataCache::LoadStepResult& cacheStepResult) {
+                                               BookMetadataCache::LoadStepResult& cacheStepResult,
+                                               std::unique_ptr<Epub> preparedEpub) {
   deferCoverPreparation = false;
   const auto createEpub = [&]() { return makeUniqueNoThrow<Epub>(path, "/.crosspoint", verifiedEpubIdentity); };
-  auto epub = createEpub();
+  auto epub = std::move(preparedEpub);
+  if (!epub || epub->getPath() != path || !epub->prepareForReaderLoadAfterRecovery(verifiedEpubIdentity)) {
+    epub = createEpub();
+  } else {
+    LOG_DBG("READER", "Reusing prepared EPUB source: %s", path.c_str());
+  }
   if (!epub) {
     LOG_ERR("READER", "Failed to allocate EPUB object");
     return nullptr;
@@ -228,7 +234,14 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
 bool ReaderActivity::beginEpubLoad(const std::string& path) {
   openingEpubIdentityJob.reset();
   openingEpubIdentityStartedMs = 0;
-  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
+  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity;
+  if (openingPreparedEpub && openingPreparedEpub->getPath() == path) {
+    RawSourceIdentityHandoff preparedIdentity;
+    if (openingPreparedEpub->getSourceIdentityHandoff(preparedIdentity)) {
+      preparedSourceIdentity = std::move(preparedIdentity);
+    }
+  }
+  if (!preparedSourceIdentity) preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
   const bool matchingPreparedIdentity = preparedSourceIdentity && preparedSourceIdentity->valid &&
                                         !preparedSourceIdentity->identity.isRawFile() &&
                                         preparedSourceIdentity->path == path;
@@ -244,7 +257,10 @@ bool ReaderActivity::beginEpubLoad(const std::string& path) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return false;
   }
-  if (recoveredIdentity) return finishEpubLoad(*recoveredIdentity);
+  if (recoveredIdentity) {
+    openingPreparedEpub.reset();
+    return finishEpubLoad(*recoveredIdentity);
+  }
 
   if (matchingPreparedIdentity && !replacementArtifactWasPresent && !hasBookFileReplacementArtifacts(path) &&
       Storage.probeMedia()) {
@@ -255,6 +271,7 @@ bool ReaderActivity::beginEpubLoad(const std::string& path) {
     if (sameDirectoryEntry) return finishEpubLoad(preparedSourceIdentity->identity);
   }
 
+  openingPreparedEpub.reset();
   openingEpubIdentityJob = makeUniqueNoThrow<ZipSourceIdentityJob>();
   openingEpubIdentityStartedMs = static_cast<uint32_t>(millis());
   if (!openingEpubIdentityJob || !openingEpubIdentityJob->begin(path)) {
@@ -270,8 +287,9 @@ bool ReaderActivity::finishEpubLoad(const ZipFile::SourceIdentity& verifiedEpubI
   openingEpubDeferCoverPreparation = false;
   BookMetadataCache::LoadStepResult cacheStepResult = BookMetadataCache::LoadStepResult::Error;
   const uint32_t prepareStartedMs = static_cast<uint32_t>(millis());
-  auto epub = loadEpub(initialBookPath, openingGlobalSettings, openingBookSettings, openingSettingsWritable,
-                       openingEpubDeferCoverPreparation, verifiedEpubIdentity, cacheStepResult);
+  auto epub =
+      loadEpub(initialBookPath, openingGlobalSettings, openingBookSettings, openingSettingsWritable,
+               openingEpubDeferCoverPreparation, verifiedEpubIdentity, cacheStepResult, std::move(openingPreparedEpub));
   activityManager.reportReaderOpenStage("epub", "reader_prepare", prepareStartedMs);
   if (!epub) return false;
 
@@ -342,7 +360,15 @@ bool ReaderActivity::finishEpubCacheInspection(const BookMetadataCache::LoadStep
 bool ReaderActivity::beginXtcLoad(const std::string& path) {
   openingXtc.reset();
   openingXtcStartedMs = static_cast<uint32_t>(millis());
-  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
+  std::unique_ptr<Xtc> preparedXtc = std::move(openingPreparedXtc);
+  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity;
+  if (preparedXtc && preparedXtc->getPath() == path) {
+    RawSourceIdentityHandoff preparedIdentity;
+    if (preparedXtc->getSourceIdentityHandoff(preparedIdentity)) {
+      preparedSourceIdentity = std::move(preparedIdentity);
+    }
+  }
+  if (!preparedSourceIdentity) preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
   const bool matchingPreparedIdentity = preparedSourceIdentity && preparedSourceIdentity->path == path;
   const bool replacementArtifactWasPresent = matchingPreparedIdentity && hasBookFileReplacementArtifacts(path);
   if (!recoverInterruptedBookFileReplacement(path, nullptr, completionStatsWritableAtOpen)) {
@@ -352,6 +378,23 @@ bool ReaderActivity::beginXtcLoad(const std::string& path) {
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return false;
+  }
+
+  if (preparedXtc && preparedXtc->getPath() == path && !recoverBookCacheUserState(preparedXtc->getCachePath(), path)) {
+    LOG_ERR("READER", "Could not recover staged XTC state: %s", preparedXtc->getCachePath().c_str());
+    return false;
+  }
+  if (preparedXtc && matchingPreparedIdentity && !replacementArtifactWasPresent &&
+      !hasBookFileReplacementArtifacts(path) && Storage.probeMedia()) {
+    HalFile preparedFile;
+    const bool sameDirectoryEntry = Storage.openFileForRead("READER", path, preparedFile) &&
+                                    preparedSourceIdentity->matchesOpenFile(path, preparedFile);
+    preparedFile.close();
+    if (sameDirectoryEntry) {
+      LOG_DBG("READER", "Reusing prepared XTC source: %s", path.c_str());
+      openingXtc = std::move(preparedXtc);
+      return true;
+    }
   }
 
   openingXtc = makeUniqueNoThrow<Xtc>(path, "/.crosspoint");
@@ -442,7 +485,15 @@ bool ReaderActivity::finishXtcLoad(bool& deferCoverPreparation) {
 bool ReaderActivity::beginTxtLoad(const std::string& path) {
   openingTxt.reset();
   openingTxtStartedMs = static_cast<uint32_t>(millis());
-  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
+  std::unique_ptr<Txt> preparedTxt = std::move(openingPreparedTxt);
+  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity;
+  if (preparedTxt && preparedTxt->getPath() == path) {
+    RawSourceIdentityHandoff preparedIdentity;
+    if (preparedTxt->getSourceIdentityHandoff(preparedIdentity)) {
+      preparedSourceIdentity = std::move(preparedIdentity);
+    }
+  }
+  if (!preparedSourceIdentity) preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
   const bool matchingPreparedIdentity = preparedSourceIdentity && preparedSourceIdentity->path == path;
   const bool replacementArtifactWasPresent = matchingPreparedIdentity && hasBookFileReplacementArtifacts(path);
   if (!recoverInterruptedBookFileReplacement(path, nullptr, completionStatsWritableAtOpen)) {
@@ -452,6 +503,26 @@ bool ReaderActivity::beginTxtLoad(const std::string& path) {
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return false;
+  }
+
+  if (preparedTxt && matchingPreparedIdentity && !replacementArtifactWasPresent &&
+      !hasBookFileReplacementArtifacts(path) && Storage.probeMedia()) {
+    HalFile preparedFile;
+    const bool sameDirectoryEntry = Storage.openFileForRead("READER", path, preparedFile) &&
+                                    preparedSourceIdentity->matchesOpenFile(path, preparedFile);
+    preparedFile.close();
+    if (sameDirectoryEntry) {
+      LOG_DBG("READER", "Reusing prepared TXT source: %s", path.c_str());
+      openingTxt = std::move(preparedTxt);
+      openingGlobalSettings = captureReaderSettings();
+      openingBookSettings = openingGlobalSettings;
+      if (!recoverBookCacheUserState(openingTxt->getCachePath(), path)) {
+        LOG_ERR("READER", "Could not recover staged TXT state: %s", openingTxt->getCachePath().c_str());
+        openingTxt.reset();
+        return false;
+      }
+      return true;
+    }
   }
 
   openingTxt = makeUniqueNoThrow<Txt>(path, "/.crosspoint");
@@ -564,6 +635,9 @@ void ReaderActivity::cancelCooperativeOpen() {
   openingXtc.reset();
   openingTxt.reset();
   openingEpub.reset();
+  openingPreparedXtc.reset();
+  openingPreparedTxt.reset();
+  openingPreparedEpub.reset();
   openingEpubIdentityJob.reset();
   openingEpubCacheInspection = false;
   openingEpubCacheStartedMs = 0;
@@ -717,7 +791,8 @@ void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub, PerBookReaderS
 }
 
 void ReaderActivity::onGoToBmpViewer(const std::string& path) {
-  activityManager.replaceActivity(std::make_unique<BmpViewerActivity>(renderer, mappedInput, path));
+  activityManager.replaceActivity(
+      std::make_unique<BmpViewerActivity>(renderer, mappedInput, path, readerOpenFeedbackAlreadyShown));
 }
 
 void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc, const bool deferCoverPreparation) {

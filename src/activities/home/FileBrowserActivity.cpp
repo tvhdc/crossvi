@@ -1,10 +1,13 @@
 #include "FileBrowserActivity.h"
 
+#include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <Txt.h>
+#include <Xtc.h>
 
 #include <algorithm>
 
@@ -25,12 +28,21 @@ constexpr size_t NAME_BUFFER_SIZE = 500;
 constexpr size_t FILE_SCAN_ENTRIES_PER_TICK = 8;
 constexpr size_t MAX_FILE_ENTRIES = 256;
 constexpr size_t MAX_FILE_NAME_BYTES = 24U * 1024U;
+constexpr uint32_t SOURCE_PREPARATION_IDLE_MS = 250;
 
 bool isPinnableBookPath(const std::string_view path) {
   return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) || FsHelpers::hasTxtExtension(path) ||
          FsHelpers::hasMarkdownExtension(path);
 }
 }  // namespace
+
+FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                         std::string initialPath, const Mode mode)
+    : Activity("FileBrowser", renderer, mappedInput),
+      mode(mode),
+      basepath(initialPath.empty() ? "/" : std::move(initialPath)) {}
+
+FileBrowserActivity::~FileBrowserActivity() = default;
 
 void FileBrowserActivity::cancelFileLoad() {
   if (fileLoadDirectory) fileLoadDirectory.close();
@@ -44,6 +56,10 @@ void FileBrowserActivity::cancelFileLoad() {
 
 void FileBrowserActivity::loadFiles(std::string selectionName, const size_t selectionIndex) {
   cancelFileLoad();
+  preparedEpub.reset();
+  preparedXtc.reset();
+  preparedTxt.reset();
+  sourcePreparationFailedPath.clear();
   clearSearch();
   files.clear();
   filesTruncated = false;
@@ -228,6 +244,7 @@ void FileBrowserActivity::onEnter() {
   }
 
   selectorIndex = 0;
+  sourcePreparationLastInputAt = static_cast<uint32_t>(millis());
 
   // If Confirm was held while this activity opened (typical when launched from a menu), ignore
   // its release — otherwise we'd immediately auto-open whatever is at index 0.
@@ -258,6 +275,11 @@ void FileBrowserActivity::onExit() {
   cancelFileLoad();
   files.clear();
   fileNameBuffer.reset();
+}
+
+bool FileBrowserActivity::skipLoopDelay() {
+  return filesLoading || (preparedEpub && preparedEpub->isReadingCoreMetadata()) ||
+         (preparedXtc && preparedXtc->isLoadInProgress()) || (preparedTxt && preparedTxt->isLoadInProgress());
 }
 
 // To avoid traversing directories twice (once for cache clearing, once for deletion),
@@ -391,7 +413,107 @@ void FileBrowserActivity::showBookActions(const std::string& fullPath, const std
   requestUpdate();
 }
 
+void FileBrowserActivity::openPreparedBook(const std::string& path) {
+  RawSourceIdentityHandoff preparedIdentity;
+  if (preparedEpub && preparedEpub->getPath() == path && preparedEpub->getSourceIdentityHandoff(preparedIdentity)) {
+    openBookWithFeedback(std::move(preparedEpub), ReaderOpenOrigin::Default);
+    return;
+  }
+  if (preparedXtc && preparedXtc->getPath() == path && preparedXtc->getSourceIdentityHandoff(preparedIdentity)) {
+    openBookWithFeedback(std::move(preparedXtc), ReaderOpenOrigin::Default);
+    return;
+  }
+  if (preparedTxt && preparedTxt->getPath() == path && preparedTxt->getSourceIdentityHandoff(preparedIdentity)) {
+    openBookWithFeedback(std::move(preparedTxt), ReaderOpenOrigin::Default);
+    return;
+  }
+  onSelectBook(path);
+}
+
+void FileBrowserActivity::processSelectedSourcePreparation() {
+  if (mode != Mode::Books || filesLoading || optionPopup.isActive() || popupMessage != StrId::STR_NONE_OPT ||
+      mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+      mappedInput.isPressed(MappedInputManager::Button::Back) ||
+      mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+      mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+      mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+      static_cast<uint32_t>(millis() - sourcePreparationLastInputAt) < SOURCE_PREPARATION_IDLE_MS) {
+    return;
+  }
+
+  const std::string* entry = visibleEntry(selectorIndex);
+  if (!entry || entry->empty() || entry->back() == '/') {
+    preparedEpub.reset();
+    preparedXtc.reset();
+    preparedTxt.reset();
+    return;
+  }
+  std::string path = basepath;
+  if (path.back() != '/') path += '/';
+  path += *entry;
+  if (sourcePreparationFailedPath == path) return;
+
+  if (preparedEpub && preparedEpub->getPath() != path) preparedEpub.reset();
+  if (preparedXtc && preparedXtc->getPath() != path) preparedXtc.reset();
+  if (preparedTxt && preparedTxt->getPath() != path) preparedTxt.reset();
+
+  if (FsHelpers::hasEpubExtension(path)) {
+    if (!preparedEpub || preparedEpub->getPath() != path) {
+      preparedEpub.reset(new (std::nothrow) Epub(path, "/.crosspoint"));
+      if (!preparedEpub) {
+        sourcePreparationFailedPath = path;
+        return;
+      }
+    }
+    if (preparedEpub->hasPreparedCoreMetadata()) return;
+    if (!preparedEpub->isReadingCoreMetadata() && !preparedEpub->beginCoreMetadataRead()) {
+      preparedEpub.reset();
+      sourcePreparationFailedPath = path;
+      return;
+    }
+    BookMetadataCache::BookMetadata metadata;
+    if (preparedEpub->stepCoreMetadataRead(metadata) == Epub::CoreMetadataStepResult::Error) {
+      preparedEpub.reset();
+      sourcePreparationFailedPath = path;
+    }
+    return;
+  }
+
+  if (FsHelpers::hasXtcExtension(path)) {
+    if (!preparedXtc || preparedXtc->getPath() != path) {
+      preparedXtc.reset(new (std::nothrow) Xtc(path, "/.crosspoint"));
+      if (!preparedXtc || !preparedXtc->beginLoad()) {
+        preparedXtc.reset();
+        sourcePreparationFailedPath = path;
+        return;
+      }
+    }
+    if (!preparedXtc->isLoaded() && preparedXtc->stepLoad(4, 16U * 1024U) == Xtc::LoadStepResult::Error) {
+      preparedXtc.reset();
+      sourcePreparationFailedPath = path;
+    }
+    return;
+  }
+
+  if (!FsHelpers::hasTxtExtension(path) && !FsHelpers::hasMarkdownExtension(path)) return;
+  if (!preparedTxt || preparedTxt->getPath() != path) {
+    preparedTxt.reset(new (std::nothrow) Txt(path, "/.crosspoint"));
+    if (!preparedTxt || !preparedTxt->beginLoad()) {
+      preparedTxt.reset();
+      sourcePreparationFailedPath = path;
+      return;
+    }
+  }
+  if (!preparedTxt->isLoaded() && preparedTxt->stepLoad(16U * 1024U) == Txt::LoadStepResult::Error) {
+    preparedTxt.reset();
+    sourcePreparationFailedPath = path;
+  }
+}
+
 void FileBrowserActivity::loop() {
+  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) {
+    sourcePreparationLastInputAt = static_cast<uint32_t>(millis());
+  }
   if (optionPopup.isActive() && suppressPopupConfirmRelease &&
       mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     suppressPopupConfirmRelease = false;
@@ -535,7 +657,7 @@ void FileBrowserActivity::loop() {
       basepath += entry.substr(0, entry.length() - 1);
       loadFiles();
     } else {
-      onSelectBook(basepath + entry);
+      openPreparedBook(basepath + entry);
     }
     return;
   }
@@ -590,6 +712,7 @@ void FileBrowserActivity::loop() {
     selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
     requestUpdate();
   });
+  processSelectedSourcePreparation();
 }
 
 std::string getFileName(std::string filename) {

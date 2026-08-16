@@ -21,6 +21,9 @@
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
+class Epub;
+class Txt;
+class Xtc;
 struct ClippingJumpResult;
 struct RawSourceIdentityHandoff;
 struct SavedBookmarkJumpResult;
@@ -131,8 +134,14 @@ class ActivityManager {
   void goToBrowser();
   void goToReader(std::string path, bool allowFastInitialRefresh = false,
                   ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default, bool completionStatsAlreadyRecovered = false,
-                  bool readerOpenMetricAlreadyStarted = false,
+                  bool readerOpenFeedbackAlreadyShown = false,
                   const RawSourceIdentityHandoff* preparedSourceIdentity = nullptr);
+  void goToReader(std::unique_ptr<Epub>&& preparedEpub, ReaderOpenOrigin openOrigin,
+                  bool completionStatsAlreadyRecovered, bool readerOpenFeedbackAlreadyShown);
+  void goToReader(std::unique_ptr<Xtc>&& preparedXtc, ReaderOpenOrigin openOrigin, bool completionStatsAlreadyRecovered,
+                  bool readerOpenFeedbackAlreadyShown);
+  void goToReader(std::unique_ptr<Txt>&& preparedTxt, ReaderOpenOrigin openOrigin, bool completionStatsAlreadyRecovered,
+                  bool readerOpenFeedbackAlreadyShown);
   void goToReader(std::string path, ClippingJumpResult clippingJump,
                   ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
   void goToReader(std::string path, SavedBookmarkJumpResult bookmarkJump,

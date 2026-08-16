@@ -366,6 +366,19 @@ void RecentBooksActivity::captureReaderReturnContext(const LibraryBookRecord& bo
 }
 
 void RecentBooksActivity::openSelectedBook(const std::string& path) {
+  RawSourceIdentityHandoff preparedIdentity;
+  if (preparedEpub && preparedEpub->getPath() == path && preparedEpub->getSourceIdentityHandoff(preparedIdentity)) {
+    openBookWithFeedback(std::move(preparedEpub), ReaderOpenOrigin::Default);
+    return;
+  }
+  if (preparedXtc && preparedXtc->getPath() == path && preparedXtc->getSourceIdentityHandoff(preparedIdentity)) {
+    openBookWithFeedback(std::move(preparedXtc), ReaderOpenOrigin::Default);
+    return;
+  }
+  if (preparedTxt && preparedTxt->getPath() == path && preparedTxt->getSourceIdentityHandoff(preparedIdentity)) {
+    openBookWithFeedback(std::move(preparedTxt), ReaderOpenOrigin::Default);
+    return;
+  }
   const RawSourceIdentityHandoff* reusableIdentity = nullptr;
   if (preparedEpubSourceIdentity && preparedEpubSourceIdentity->path == path) {
     reusableIdentity = &*preparedEpubSourceIdentity;
@@ -870,6 +883,17 @@ void RecentBooksActivity::processCoverQueue() {
           preparedEpubSourceIdentity = std::move(preparedIdentity);
         }
       };
+      const auto finishEpubPreparation = [&]() {
+        if (offset == coverQueueSelected) {
+          RawSourceIdentityHandoff preparedIdentity;
+          if (epub.getSourceIdentityHandoff(preparedIdentity)) {
+            preparedEpubSourceIdentity = std::move(preparedIdentity);
+            preparedEpub = std::move(coverPreparationEpub);
+          }
+        }
+        coverPreparationEpub.reset();
+        coverPreparationPath.clear();
+      };
       const auto stepCoreMetadata = [&]() {
         if (epub.hasPreparedCoreMetadata()) return Epub::CoreMetadataStepResult::Loaded;
         if (!epub.isReadingCoreMetadata() && !epub.beginCoreMetadataRead()) {
@@ -899,8 +923,7 @@ void RecentBooksActivity::processCoverQueue() {
         // not need another EPUB central-directory scan merely to advance this
         // UI queue. Book replacement paths invalidate their derived cache.
         generated = true;
-        coverPreparationEpub.reset();
-        coverPreparationPath.clear();
+        finishEpubPreparation();
       } else if (coverPreparationEpub) {
         const Epub::ThumbnailRequest request{needsShared, needsCarousel, renderer.getDisplayHeight() == 528};
         const bool preparationWasActive = epub.thumbnailPreparationActive();
@@ -924,8 +947,7 @@ void RecentBooksActivity::processCoverQueue() {
         } else if (preparation == Epub::ThumbnailPreparationStatus::Ready && !preparationWasActive) {
           // beginThumbnailPreparation() already validated both requested caches.
           generated = true;
-          coverPreparationEpub.reset();
-          coverPreparationPath.clear();
+          finishEpubPreparation();
         } else {
           const Epub::ThumbnailSetStatus thumbnails =
               epub.ensureThumbnails(request, Epub::ThumbnailMode::EmbeddedThenCover);
@@ -938,8 +960,7 @@ void RecentBooksActivity::processCoverQueue() {
           LOG_INF("COVDBG", "EPUB thumbnails path=%s shared=%u carousel=%u", book.path.c_str(),
                   static_cast<unsigned>(thumbnails.shared), static_cast<unsigned>(thumbnails.carousel));
 #endif
-          coverPreparationEpub.reset();
-          coverPreparationPath.clear();
+          finishEpubPreparation();
         }
       }
     } else if (book.format == LibraryBookFormat::Xtc || book.format == LibraryBookFormat::Xtch) {
@@ -954,6 +975,17 @@ void RecentBooksActivity::processCoverQueue() {
         coverPreparationPath = book.path;
       }
       Xtc& xtc = *coverPreparationXtc;
+      const auto finishXtcPreparation = [&]() {
+        if (offset == coverQueueSelected) {
+          RawSourceIdentityHandoff preparedIdentity;
+          if (xtc.getSourceIdentityHandoff(preparedIdentity)) {
+            preparedXtcSourceIdentity = std::move(preparedIdentity);
+            preparedXtc = std::move(coverPreparationXtc);
+          }
+        }
+        coverPreparationXtc.reset();
+        coverPreparationPath.clear();
+      };
       const int carouselHeight =
           renderer.getDisplayHeight() == 528 ? Epub::CAROUSEL_THUMB_HEIGHT : Epub::CAROUSEL_X4_THUMB_HEIGHT;
       const int carouselWidth =
@@ -965,8 +997,7 @@ void RecentBooksActivity::processCoverQueue() {
       if (thumbnailStatus == Xtc::ThumbnailPreparationStatus::Ready) {
         cachedBefore = true;
         generated = true;
-        coverPreparationXtc.reset();
-        coverPreparationPath.clear();
+        finishXtcPreparation();
 #if defined(CROSSVI_COVER_DEBUG)
         LOG_INF("COVDBG", "XTC thumbnail pair already valid path=%s", book.path.c_str());
 #endif
@@ -1002,11 +1033,18 @@ void RecentBooksActivity::processCoverQueue() {
         }
         generated = thumbnailStatus == Xtc::ThumbnailPreparationStatus::Ready;
 #if defined(CROSSVI_COVER_DEBUG)
-        LOG_INF("COVDBG", "XTC open path=%s ok=%d elapsed_ms=%u", book.path.c_str(), xtc.isLoaded(),
+        const bool xtcLoaded = xtc.isLoaded();
+#endif
+        if (generated) {
+          finishXtcPreparation();
+        } else {
+          coverPreparationXtc.reset();
+          coverPreparationPath.clear();
+        }
+#if defined(CROSSVI_COVER_DEBUG)
+        LOG_INF("COVDBG", "XTC open path=%s ok=%d elapsed_ms=%u", book.path.c_str(), xtcLoaded,
                 static_cast<unsigned>(static_cast<uint32_t>(millis()) - loadStart));
 #endif
-        coverPreparationXtc.reset();
-        coverPreparationPath.clear();
       }
     }
 #if defined(CROSSVI_COVER_DEBUG)
@@ -1027,6 +1065,82 @@ void RecentBooksActivity::processCoverQueue() {
     if (!cachedBefore || !generated || millis() - batchStarted >= CACHED_COVER_BATCH_BUDGET_MS) break;
   }
   if (drawsCovers) requestUpdate();
+}
+
+void RecentBooksActivity::processSelectedSourcePreparation() {
+  if (catalogLoading() || coverPreparationEpub || coverPreparationXtc ||
+      static_cast<uint32_t>(millis() - coverQueueLastInputAt) < COVER_WORK_IDLE_MS || mappedInput.wasAnyPressed() ||
+      mappedInput.wasAnyReleased() || confirmBookPressCaptured || pendingNavigation != 0 || pendingTabSwitch != 0 ||
+      pendingPageSwitch != 0 || pendingSearch || pendingBack || pendingTabConfirm || pendingBookConfirmRelease) {
+    return;
+  }
+
+  if (!bookSelected()) {
+    preparedEpub.reset();
+    preparedXtc.reset();
+    preparedTxt.reset();
+    return;
+  }
+
+  LibraryBookRecord book;
+  if (!loadVisibleBook(selectedBookIndex(), book) || book.path.empty()) return;
+  if (sourcePreparationFailedPath == book.path) return;
+
+  if (preparedEpub && preparedEpub->getPath() != book.path) preparedEpub.reset();
+  if (preparedXtc && preparedXtc->getPath() != book.path) preparedXtc.reset();
+  if (preparedTxt && preparedTxt->getPath() != book.path) preparedTxt.reset();
+
+  if (book.format == LibraryBookFormat::Epub) {
+    if (!preparedEpub || preparedEpub->getPath() != book.path) {
+      preparedEpub.reset(new (std::nothrow) Epub(book.path, "/.crosspoint"));
+      if (!preparedEpub) {
+        sourcePreparationFailedPath = book.path;
+        return;
+      }
+    }
+    if (preparedEpub->hasPreparedCoreMetadata()) return;
+    if (!preparedEpub->isReadingCoreMetadata() && !preparedEpub->beginCoreMetadataRead()) {
+      preparedEpub.reset();
+      sourcePreparationFailedPath = book.path;
+      return;
+    }
+    BookMetadataCache::BookMetadata metadata;
+    if (preparedEpub->stepCoreMetadataRead(metadata) == Epub::CoreMetadataStepResult::Error) {
+      preparedEpub.reset();
+      sourcePreparationFailedPath = book.path;
+    }
+    return;
+  }
+
+  if (book.format == LibraryBookFormat::Xtc || book.format == LibraryBookFormat::Xtch) {
+    if (!preparedXtc || preparedXtc->getPath() != book.path) {
+      preparedXtc.reset(new (std::nothrow) Xtc(book.path, "/.crosspoint"));
+      if (!preparedXtc || !preparedXtc->beginLoad()) {
+        preparedXtc.reset();
+        sourcePreparationFailedPath = book.path;
+        return;
+      }
+    }
+    if (!preparedXtc->isLoaded() && preparedXtc->stepLoad(4, 16U * 1024U) == Xtc::LoadStepResult::Error) {
+      preparedXtc.reset();
+      sourcePreparationFailedPath = book.path;
+    }
+    return;
+  }
+
+  if (book.format != LibraryBookFormat::Text && book.format != LibraryBookFormat::Markdown) return;
+  if (!preparedTxt || preparedTxt->getPath() != book.path) {
+    preparedTxt.reset(new (std::nothrow) Txt(book.path, "/.crosspoint"));
+    if (!preparedTxt || !preparedTxt->beginLoad()) {
+      preparedTxt.reset();
+      sourcePreparationFailedPath = book.path;
+      return;
+    }
+  }
+  if (!preparedTxt->isLoaded() && preparedTxt->stepLoad(16U * 1024U) == Txt::LoadStepResult::Error) {
+    preparedTxt.reset();
+    sourcePreparationFailedPath = book.path;
+  }
 }
 
 int RecentBooksActivity::noticeHeight() const {
@@ -1354,7 +1468,9 @@ bool RecentBooksActivity::skipLoopDelay() {
           (coverPreparationEpub->isReadingCoreMetadata() || coverPreparationEpub->thumbnailPreparationActive())) ||
          (coverPreparationXtc &&
           (coverPreparationXtc->isLoadInProgress() || coverPreparationXtc->thumbnailPreparationActive())) ||
-         LIBRARY_CATALOG.isOrderBuilding() || LIBRARY_CATALOG.isBuilding();
+         (preparedEpub && preparedEpub->isReadingCoreMetadata()) || (preparedXtc && preparedXtc->isLoadInProgress()) ||
+         (preparedTxt && preparedTxt->isLoadInProgress()) || LIBRARY_CATALOG.isOrderBuilding() ||
+         LIBRARY_CATALOG.isBuilding();
 }
 
 void RecentBooksActivity::loop() {
@@ -1594,6 +1710,7 @@ void RecentBooksActivity::loop() {
     return;
   }
   processCoverQueue();
+  processSelectedSourcePreparation();
 
   const size_t availableFocus = controlCount() + visibleBookCount();
   if (availableFocus > 0 && selectorIndex >= availableFocus) selectorIndex = availableFocus - 1;

@@ -11,7 +11,8 @@
 
 class BmpViewerActivity final : public Activity {
  public:
-  BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath);
+  BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath,
+                    bool loadingFeedbackAlreadyShown = false);
 
   void onEnter() override;
   void onExit() override;
@@ -36,4 +37,5 @@ class BmpViewerActivity final : public Activity {
   bool siblingScanStarted = false;
   bool siblingScanActive = false;
   bool navigationHintsPending = false;
+  bool loadingFeedbackAlreadyShown = false;
 };

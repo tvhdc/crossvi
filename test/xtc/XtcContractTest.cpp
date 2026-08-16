@@ -1001,7 +1001,7 @@ TEST_F(XtcContractTest, ScaledPortraitPlanePairsMatchReferenceWithoutAFullFrameS
     xtc::XthPortraitRows rows;
     ASSERT_TRUE(xtc::composeScaledXthPortraitRows(
         bit0.data() + planeOffset, bit1.data() + planeOffset, size, planeOffset, layout, sourceWidth, sourceHeight,
-        viewport, panelWidth, panelHeight, firstScratch.data(), nullptr, nullptr, firstScratch.size(), rows));
+        viewport, panelWidth, panelHeight, false, firstScratch.data(), nullptr, nullptr, firstScratch.size(), rows));
     if (rows.count > 0) {
       EXPECT_EQ(rows.yStart, nextPhysicalRow);
       std::memcpy(base.data() + static_cast<size_t>(rows.yStart) * panelRowBytes, firstScratch.data(),
@@ -1012,8 +1012,8 @@ TEST_F(XtcContractTest, ScaledPortraitPlanePairsMatchReferenceWithoutAFullFrameS
 
     ASSERT_TRUE(xtc::composeScaledXthPortraitRows(bit0.data() + planeOffset, bit1.data() + planeOffset, size,
                                                   planeOffset, layout, sourceWidth, sourceHeight, viewport, panelWidth,
-                                                  panelHeight, nullptr, firstScratch.data(), secondScratch.data(),
-                                                  firstScratch.size(), rows));
+                                                  panelHeight, false, nullptr, firstScratch.data(),
+                                                  secondScratch.data(), firstScratch.size(), rows));
     if (rows.count > 0) {
       std::memcpy(lsb.data() + static_cast<size_t>(rows.yStart) * panelRowBytes, firstScratch.data(),
                   static_cast<size_t>(rows.count) * panelRowBytes);
@@ -1048,8 +1048,55 @@ TEST_F(XtcContractTest, ScaledPortraitPlanePairsMatchReferenceWithoutAFullFrameS
 
   xtc::XthPortraitRows rows;
   EXPECT_FALSE(xtc::composeScaledXthPortraitRows(bit0.data(), bit1.data(), layout.columnBytes - 1U, 0, layout,
-                                                 sourceWidth, sourceHeight, viewport, panelWidth, panelHeight,
+                                                 sourceWidth, sourceHeight, viewport, panelWidth, panelHeight, false,
                                                  firstScratch.data(), nullptr, nullptr, firstScratch.size(), rows));
+}
+
+TEST_F(XtcContractTest, InvertedPortraitPlanePairsMatchReference) {
+  constexpr uint16_t sourceWidth = 8;
+  constexpr uint16_t sourceHeight = 16;
+  constexpr uint16_t panelWidth = 16;
+  constexpr uint16_t panelHeight = 8;
+  constexpr size_t panelRowBytes = panelWidth / 8U;
+
+  xtc::PageLayout layout;
+  ASSERT_TRUE(xtc::calculatePageLayout(sourceWidth, sourceHeight, 2, layout));
+  const xtc::Viewport viewport{0, 0, sourceWidth, sourceHeight};
+  std::vector<uint8_t> bit0(layout.planeBytes, 0);
+  std::vector<uint8_t> bit1(layout.planeBytes, 0);
+  for (uint16_t x = 0; x < sourceWidth; ++x) {
+    for (uint16_t y = 0; y < sourceHeight; ++y) {
+      const uint8_t level = static_cast<uint8_t>((x + y) & 3U);
+      const size_t offset = static_cast<size_t>(sourceWidth - 1U - x) * layout.columnBytes + y / 8U;
+      const uint8_t mask = static_cast<uint8_t>(1U << (7U - y % 8U));
+      if ((level & 1U) != 0) bit0[offset] |= mask;
+      if ((level & 2U) != 0) bit1[offset] |= mask;
+    }
+  }
+
+  std::array<uint8_t, panelHeight * panelRowBytes> base{};
+  std::array<uint8_t, panelHeight * panelRowBytes> lsb{};
+  std::array<uint8_t, panelHeight * panelRowBytes> msb{};
+  xtc::XthPortraitRows rows;
+  ASSERT_TRUE(xtc::composeScaledXthPortraitRows(bit0.data(), bit1.data(), layout.planeBytes, 0, layout, sourceWidth,
+                                                sourceHeight, viewport, panelWidth, panelHeight, true, base.data(),
+                                                lsb.data(), msb.data(), base.size(), rows));
+  EXPECT_EQ(rows.yStart, 0);
+  EXPECT_EQ(rows.count, panelHeight);
+
+  const auto packedBit = [](const auto& plane, const uint16_t x, const uint16_t y) {
+    return (plane[static_cast<size_t>(y) * panelRowBytes + x / 8U] >> (7U - x % 8U)) & 1U;
+  };
+  for (uint16_t logicalX = 0; logicalX < sourceWidth; ++logicalX) {
+    for (uint16_t logicalY = 0; logicalY < sourceHeight; ++logicalY) {
+      const uint8_t level = static_cast<uint8_t>((logicalX + logicalY) & 3U);
+      const uint16_t physicalX = static_cast<uint16_t>(panelWidth - 1U - logicalY);
+      const uint16_t physicalY = logicalX;
+      EXPECT_EQ(packedBit(base, physicalX, physicalY), level == 0 ? 1U : 0U);
+      EXPECT_EQ(packedBit(lsb, physicalX, physicalY), level == 1 ? 1U : 0U);
+      EXPECT_EQ(packedBit(msb, physicalX, physicalY), level == 1 || level == 2 ? 1U : 0U);
+    }
+  }
 }
 
 TEST_F(XtcContractTest, X3ScaledPlanePairChunksCoverOnlyTheFittedRows) {
@@ -1083,8 +1130,8 @@ TEST_F(XtcContractTest, X3ScaledPlanePairChunksCoverOnlyTheFittedRows) {
     const size_t size = std::min(chunkBytes, layout.planeBytes - planeOffset);
     xtc::XthPortraitRows rows;
     ASSERT_TRUE(xtc::composeScaledXthPortraitRows(bit0.data(), bit1.data(), size, planeOffset, layout, sourceWidth,
-                                                  sourceHeight, viewport, panelWidth, panelHeight, scratch.data(),
-                                                  nullptr, nullptr, scratch.size(), rows));
+                                                  sourceHeight, viewport, panelWidth, panelHeight, false,
+                                                  scratch.data(), nullptr, nullptr, scratch.size(), rows));
     EXPECT_EQ(rows.yStart, nextPhysicalRow);
     EXPECT_LE(rows.count, rowsPerChunk);
     nextPhysicalRow = static_cast<uint16_t>(rows.yStart + rows.count);

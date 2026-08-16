@@ -150,6 +150,9 @@ class Epub {
   bool isReadingCoreMetadata() const;
   bool hasPreparedCoreMetadata() const;
   bool getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const;
+  // ReaderActivity has already reconciled any staged replacement and matched
+  // this object's verified FAT entry before transferring ownership.
+  bool prepareForReaderLoadAfterRecovery(const ZipFile::SourceIdentity& verifiedSourceIdentity);
   SourceBindingStatus inspectSourceBinding() const;
   // Produces a one-shot proof consumed by the next load/indexing attempt. The
   // final source identity check still runs before derived data is returned.
@@ -170,7 +173,7 @@ class Epub {
   bool ensureCssCache();
   bool isExternalCssUnavailable() const { return externalCssUnavailable; }
   bool clearCache() const;
-  void setupCacheDir() const;
+  bool setupCacheDir() const;
   const std::string& getCachePath() const;
   const std::string& getPath() const;
   const std::string& getTitle() const;

@@ -21,8 +21,12 @@ class ReaderActivity final : public Activity {
   bool allowFastInitialRefresh = false;
   bool completionStatsWritableAtOpen = true;
   bool completionStatsAlreadyRecovered = false;
+  bool readerOpenFeedbackAlreadyShown = false;
   ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default;
   std::optional<RawSourceIdentityHandoff> openingPreparedSourceIdentity;
+  std::unique_ptr<Epub> openingPreparedEpub;
+  std::unique_ptr<Xtc> openingPreparedXtc;
+  std::unique_ptr<Txt> openingPreparedTxt;
   std::unique_ptr<Xtc> openingXtc;
   std::unique_ptr<Txt> openingTxt;
   uint32_t openingXtcStartedMs = 0;
@@ -44,7 +48,8 @@ class ReaderActivity final : public Activity {
   std::unique_ptr<Epub> loadEpub(const std::string& path, PerBookReaderSettings& globalSettings,
                                  PerBookReaderSettings& bookSettings, bool& settingsWritable,
                                  bool& deferCoverPreparation, const ZipFile::SourceIdentity& verifiedEpubIdentity,
-                                 BookMetadataCache::LoadStepResult& cacheStepResult);
+                                 BookMetadataCache::LoadStepResult& cacheStepResult,
+                                 std::unique_ptr<Epub> preparedEpub = nullptr);
   bool beginEpubLoad(const std::string& path);
   bool finishEpubLoad(const ZipFile::SourceIdentity& verifiedEpubIdentity);
   bool finishEpubCacheInspection(BookMetadataCache::LoadStepResult result);
@@ -81,15 +86,43 @@ class ReaderActivity final : public Activity {
         openOrigin(openOrigin) {}
   ReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialBookPath,
                  const bool allowFastInitialRefresh, const ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default,
-                 const bool completionStatsAlreadyRecovered = false,
+                 const bool completionStatsAlreadyRecovered = false, const bool readerOpenFeedbackAlreadyShown = false,
                  const RawSourceIdentityHandoff* const preparedSourceIdentity = nullptr)
       : Activity("Reader", renderer, mappedInput),
         initialBookPath(std::move(initialBookPath)),
         allowFastInitialRefresh(allowFastInitialRefresh),
         completionStatsAlreadyRecovered(completionStatsAlreadyRecovered),
+        readerOpenFeedbackAlreadyShown(readerOpenFeedbackAlreadyShown),
         openOrigin(openOrigin),
         openingPreparedSourceIdentity(
             preparedSourceIdentity ? std::optional<RawSourceIdentityHandoff>(*preparedSourceIdentity) : std::nullopt) {}
+  ReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> preparedEpub,
+                 const ReaderOpenOrigin openOrigin, const bool completionStatsAlreadyRecovered,
+                 const bool readerOpenFeedbackAlreadyShown)
+      : Activity("Reader", renderer, mappedInput),
+        initialBookPath(preparedEpub ? preparedEpub->getPath() : std::string{}),
+        completionStatsAlreadyRecovered(completionStatsAlreadyRecovered),
+        readerOpenFeedbackAlreadyShown(readerOpenFeedbackAlreadyShown),
+        openOrigin(openOrigin),
+        openingPreparedEpub(std::move(preparedEpub)) {}
+  ReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> preparedXtc,
+                 const ReaderOpenOrigin openOrigin, const bool completionStatsAlreadyRecovered,
+                 const bool readerOpenFeedbackAlreadyShown)
+      : Activity("Reader", renderer, mappedInput),
+        initialBookPath(preparedXtc ? preparedXtc->getPath() : std::string{}),
+        completionStatsAlreadyRecovered(completionStatsAlreadyRecovered),
+        readerOpenFeedbackAlreadyShown(readerOpenFeedbackAlreadyShown),
+        openOrigin(openOrigin),
+        openingPreparedXtc(std::move(preparedXtc)) {}
+  ReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> preparedTxt,
+                 const ReaderOpenOrigin openOrigin, const bool completionStatsAlreadyRecovered,
+                 const bool readerOpenFeedbackAlreadyShown)
+      : Activity("Reader", renderer, mappedInput),
+        initialBookPath(preparedTxt ? preparedTxt->getPath() : std::string{}),
+        completionStatsAlreadyRecovered(completionStatsAlreadyRecovered),
+        readerOpenFeedbackAlreadyShown(readerOpenFeedbackAlreadyShown),
+        openOrigin(openOrigin),
+        openingPreparedTxt(std::move(preparedTxt)) {}
   ReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialBookPath,
                  SavedBookmarkJumpResult initialBookmarkJump,
                  const ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default)

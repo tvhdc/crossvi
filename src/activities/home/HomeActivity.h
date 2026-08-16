@@ -68,6 +68,7 @@ class HomeActivity final : public Activity {
   enum class SourcePreparationResult : uint8_t { NotNeeded, InProgress, Ready, Failed };
   SourcePreparationResult stepPreparedEpub(const std::string& path);
   SourcePreparationResult stepPreparedXtc(const std::string& path);
+  SourcePreparationResult stepPreparedTxt(const std::string& path);
   SourcePreparationResult stepRecentNonEpubSummarySource();
 
   int getMenuItemCount() const;

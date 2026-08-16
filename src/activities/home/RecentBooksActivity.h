@@ -127,6 +127,10 @@ class RecentBooksActivity final : public Activity {
   uint32_t coverQueueLastInputAt = 0;
   std::unique_ptr<Epub> coverPreparationEpub;
   std::unique_ptr<Xtc> coverPreparationXtc;
+  std::unique_ptr<Epub> preparedEpub;
+  std::unique_ptr<Xtc> preparedXtc;
+  std::unique_ptr<Txt> preparedTxt;
+  std::string sourcePreparationFailedPath;
   std::string coverPreparationPath;
   std::optional<RawSourceIdentityHandoff> preparedEpubSourceIdentity;
   std::optional<RawSourceIdentityHandoff> preparedXtcSourceIdentity;
@@ -170,6 +174,7 @@ class RecentBooksActivity final : public Activity {
   void resetCoverQueue();
   bool coverCachesRequested() const;
   void processCoverQueue();
+  void processSelectedSourcePreparation();
   void loadRenderPage(size_t pageStart, size_t count);
   void rememberCurrentBook();
   void restoreRememberedBook(bool locateByPath = false);

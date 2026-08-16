@@ -1,6 +1,9 @@
 #include "Activity.h"
 
+#include <Epub.h>
 #include <I18n.h>
+#include <Txt.h>
+#include <Xtc.h>
 
 #include "ActivityManager.h"
 #include "components/UITheme.h"
@@ -26,6 +29,33 @@ void Activity::openBookWithFeedback(const std::string& path, const ReaderOpenOri
   openingBook.store(true, std::memory_order_release);
   requestUpdateAndWait();
   activityManager.goToReader(path, false, openOrigin, completionStatsAlreadyRecovered, true, preparedSourceIdentity);
+}
+
+void Activity::openBookWithFeedback(std::unique_ptr<Epub>&& preparedEpub, const ReaderOpenOrigin openOrigin,
+                                    const bool completionStatsAlreadyRecovered) {
+  if (!preparedEpub) return;
+  activityManager.beginReaderOpenMetric();
+  openingBook.store(true, std::memory_order_release);
+  requestUpdateAndWait();
+  activityManager.goToReader(std::move(preparedEpub), openOrigin, completionStatsAlreadyRecovered, true);
+}
+
+void Activity::openBookWithFeedback(std::unique_ptr<Xtc>&& preparedXtc, const ReaderOpenOrigin openOrigin,
+                                    const bool completionStatsAlreadyRecovered) {
+  if (!preparedXtc) return;
+  activityManager.beginReaderOpenMetric();
+  openingBook.store(true, std::memory_order_release);
+  requestUpdateAndWait();
+  activityManager.goToReader(std::move(preparedXtc), openOrigin, completionStatsAlreadyRecovered, true);
+}
+
+void Activity::openBookWithFeedback(std::unique_ptr<Txt>&& preparedTxt, const ReaderOpenOrigin openOrigin,
+                                    const bool completionStatsAlreadyRecovered) {
+  if (!preparedTxt) return;
+  activityManager.beginReaderOpenMetric();
+  openingBook.store(true, std::memory_order_release);
+  requestUpdateAndWait();
+  activityManager.goToReader(std::move(preparedTxt), openOrigin, completionStatsAlreadyRecovered, true);
 }
 
 bool Activity::renderBookLoadingOverlay() {

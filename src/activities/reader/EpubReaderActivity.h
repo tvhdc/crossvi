@@ -96,6 +96,7 @@ class EpubReaderActivity final : public Activity {
   bool skipStartupRecentUpdate = false;
   bool deferredOpenStatePending = true;
   bool deferredOpenStateReady = false;
+  bool readerStateSaveRetryPending = false;
   uint32_t deferredGlobalPageTurns = 0;
   std::atomic<bool> safeModePromptRequested{false};
   std::atomic<bool> pendingSafeModeFailureNotice{false};
@@ -254,7 +255,7 @@ class EpubReaderActivity final : public Activity {
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Kept small so a
   // background build chunk never noticeably delays input or a pending render.
-  static constexpr int BUILD_PAGES_PER_CHUNK = 8;
+  static constexpr int MAX_INITIAL_BUILD_PAGES = 8;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
   // Background parsing grows vectors/strings through throwing allocation
   // paths. Defer optional build ticks before fragmented heap reaches OOM.

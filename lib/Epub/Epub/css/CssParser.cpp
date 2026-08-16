@@ -587,6 +587,7 @@ bool CssParser::loadFromStream(HalFile& source) {
     LOG_ERR("CSS", "Cannot read from invalid file");
     return false;
   }
+  cacheMaterialized_ = false;
 
   const size_t expectedSize = source.fileSize();
   size_t totalRead = 0;
@@ -1126,6 +1127,7 @@ bool CssParser::readCache(const bool materializeRules) {
     return false;
   }
 
+  if (materializeRules) cacheMaterialized_ = true;
   LOG_DBG("CSS", "%s %u rules from cache", materializeRules ? "Loaded" : "Validated", decodedRuleCount);
   return true;
 }

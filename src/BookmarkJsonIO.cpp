@@ -94,7 +94,16 @@ bool parseBookmarks(const uint8_t* data, const size_t size, std::vector<Bookmark
   return true;
 }
 
-bool validateBookmarkJson(const uint8_t* data, const size_t size, void*) { return parseBookmarks(data, size, nullptr); }
+struct BookmarkParseContext {
+  std::vector<BookmarkEntry>* bookmarks = nullptr;
+  BookmarkBookMetadata* metadata = nullptr;
+};
+
+bool validateBookmarkJson(const uint8_t* data, const size_t size, void* context) {
+  auto* parseContext = static_cast<BookmarkParseContext*>(context);
+  return parseBookmarks(data, size, parseContext ? parseContext->bookmarks : nullptr,
+                        parseContext ? parseContext->metadata : nullptr);
+}
 
 bool equalBookmark(const BookmarkEntry& left, const BookmarkEntry& right) {
   return left.xpath == right.xpath && left.summary == right.summary &&
@@ -174,13 +183,15 @@ JsonSettingsIO::BookmarkLoadStatus JsonSettingsIO::loadBookmarksFromFile(std::ve
                                                                          BookmarkBookMetadata* metadata) {
   if (metadata) *metadata = {};
   std::string json;
-  const AtomicFile::LoadStatus loaded = AtomicFile::load(path, json, BOOKMARK_FILE_MAX_BYTES, validateBookmarkJson);
+  BookmarkParseContext parseContext{&bookmarks, metadata};
+  const AtomicFile::LoadStatus loaded =
+      AtomicFile::load(path, json, BOOKMARK_FILE_MAX_BYTES, validateBookmarkJson, &parseContext);
   switch (loaded) {
     case AtomicFile::LoadStatus::Primary:
     case AtomicFile::LoadStatus::Backup:
     case AtomicFile::LoadStatus::Temp:
-      return loadBookmarks(bookmarks, json.c_str(), metadata) ? BookmarkLoadStatus::Loaded
-                                                              : BookmarkLoadStatus::Invalid;
+      LOG_DBG("BKM", "Loaded %zu bookmarks from file", bookmarks.size());
+      return BookmarkLoadStatus::Loaded;
     case AtomicFile::LoadStatus::Missing:
       return BookmarkLoadStatus::Missing;
     case AtomicFile::LoadStatus::Oversize:

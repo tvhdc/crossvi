@@ -90,7 +90,13 @@ class CssParser {
   /**
    * Clear all loaded rules
    */
-  void clear() { rulesBySelector_.clear(); }
+  void clear() {
+    rulesBySelector_.clear();
+    cacheMaterialized_ = false;
+  }
+
+  /** Whether the current rule map came from a fully verified cache read. */
+  [[nodiscard]] bool hasMaterializedCache() const { return cacheMaterialized_; }
 
   /**
    * Check if CSS rules cache file exists
@@ -155,6 +161,7 @@ class CssParser {
 
   // Storage: maps selector -> style properties. Hash/equal are case-insensitive.
   std::unordered_map<std::string, CssStyle, SvHash, SvEqual> rulesBySelector_;
+  bool cacheMaterialized_ = false;
 
   std::string cachePath;
 

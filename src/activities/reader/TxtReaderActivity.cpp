@@ -94,7 +94,7 @@ void TxtReaderActivity::onEnter() {
   pageTurnGesture.reset();
   ignoreNextConfirmRelease = false;
 
-  txt->setupCacheDir();
+  if (!txt->setupCacheDir()) pendingBookmarkStorageError = true;
   progressWriteSession.invalidate();
 
   const ClippingStore::LoadResult clippingLoad = clippingStore.loadForBook(txt->getPath(), txt->getTitle(), "", "txt");
@@ -134,7 +134,8 @@ void TxtReaderActivity::onEnter() {
   auto filePath = txt->getPath();
   if (APP_STATE.openEpubPath != filePath) {
     APP_STATE.openEpubPath = filePath;
-    APP_STATE.saveToFile();
+    readerStateSaveRetryPending = !APP_STATE.saveToFile();
+    if (readerStateSaveRetryPending) LOG_ERR("TRS", "Could not persist reader resume state; retrying after first page");
   }
   activityManager.reportReaderOpenStage("text", "catalog_recent", catalogStartedMs);
 
@@ -164,7 +165,7 @@ void TxtReaderActivity::onExit() {
   currentPageLineOffsets.clear();
   releaseContentReadSession();
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  if (!APP_STATE.saveToFile()) LOG_ERR("TRS", "Could not persist reader exit state");
   txt.reset();
   clippingStore.unload();
 
@@ -509,6 +510,9 @@ void TxtReaderActivity::releaseContentReadSession() {
   pageScratch.reset();
   pageScratchSize = 0;
   pageIndexScratchLines = {};
+  pageIndexScratchLineOffsets = {};
+  pageIndexScratchOffset.reset();
+  pageIndexScratchNextOffset = 0;
 }
 
 void TxtReaderActivity::processRequestedPageIndex() {
@@ -619,17 +623,26 @@ bool TxtReaderActivity::buildPageIndexUntil(const size_t targetOffset, const siz
   size_t offset = pageOffsets[pageOffsetCount - 1];
 
   pageIndexScratchLines.clear();
+  pageIndexScratchLineOffsets.clear();
   if (pageIndexScratchLines.capacity() < static_cast<size_t>(linesPerPage)) {
     pageIndexScratchLines.reserve(linesPerPage);
   }
+  if (pageIndexScratchLineOffsets.capacity() < static_cast<size_t>(linesPerPage)) {
+    pageIndexScratchLineOffsets.reserve(linesPerPage);
+  }
   size_t parsedPages = 0;
   while (offset < fileSize) {
+    const size_t pageStartOffset = offset;
     size_t nextOffset = offset;
 
-    if (!loadPageAtOffsetWithScratch(offset, pageIndexScratchLines, nextOffset, nullptr, contentFile, pageScratch.get(),
-                                     pageScratchSize)) {
+    if (!loadPageAtOffsetWithScratch(offset, pageIndexScratchLines, nextOffset, &pageIndexScratchLineOffsets,
+                                     contentFile, pageScratch.get(), pageScratchSize)) {
+      pageIndexScratchOffset.reset();
       return false;
     }
+
+    pageIndexScratchOffset = static_cast<uint32_t>(pageStartOffset);
+    pageIndexScratchNextOffset = nextOffset;
 
     if (nextOffset <= offset) {
       // No progress made, avoid infinite loop
@@ -1045,7 +1058,6 @@ void TxtReaderActivity::render(RenderLock&&) {
     signalReadingPageHidden();
     renderer.clearScreen();
     GUI.drawPopup(renderer, tr(STR_INDEXING));
-    renderer.displayBuffer();
     return;
   }
 
@@ -1080,7 +1092,18 @@ void TxtReaderActivity::render(RenderLock&&) {
   size_t offset = pageOffsets[currentPage];
   size_t nextOffset;
   currentPageLines.clear();
-  if (!loadPageAtOffset(offset, currentPageLines, nextOffset, &currentPageLineOffsets)) {
+  currentPageLineOffsets.clear();
+  bool pageReused = false;
+  if (pageIndexScratchOffset && *pageIndexScratchOffset == offset &&
+      pageIndexScratchLines.size() == pageIndexScratchLineOffsets.size()) {
+    currentPageLines.swap(pageIndexScratchLines);
+    currentPageLineOffsets.swap(pageIndexScratchLineOffsets);
+    nextOffset = pageIndexScratchNextOffset;
+    pageIndexScratchOffset.reset();
+    pageIndexScratchNextOffset = 0;
+    pageReused = true;
+  }
+  if (!pageReused && !loadPageAtOffset(offset, currentPageLines, nextOffset, &currentPageLineOffsets)) {
     lastSuccessfullyRenderedPage = -1;
     signalReadingPageHidden();
     renderer.clearScreen();
@@ -1323,6 +1346,15 @@ void TxtReaderActivity::signalReadingPageHidden() {
 void TxtReaderActivity::finishDeferredOpenState() {
   if (!deferredOpenStatePending || !deferredOpenStateReady) return;
   deferredOpenStatePending = false;
+
+  if (readerStateSaveRetryPending) {
+    readerStateSaveRetryPending = false;
+    if (!APP_STATE.saveToFile()) {
+      LOG_ERR("TRS", "Could not persist reader resume state after retry");
+      pendingBookmarkStorageError = true;
+      requestUpdate();
+    }
+  }
 
   const uint32_t statsStartedMs = static_cast<uint32_t>(millis());
   GlobalReadingStats::LoadStatus globalStatsStatus = GlobalReadingStats::LoadStatus::Missing;

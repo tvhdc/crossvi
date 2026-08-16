@@ -13,6 +13,10 @@
 #include "util/BookSearchUtils.h"
 #include "util/ButtonNavigator.h"
 
+class Epub;
+class Txt;
+class Xtc;
+
 class FileBrowserActivity final : public Activity {
  public:
   // Books = standard reader browser; PickFirmware = filter to .bin only and return path via ActivityResult.
@@ -59,6 +63,11 @@ class FileBrowserActivity final : public Activity {
   std::vector<size_t> searchResults;
   StrId popupMessage = StrId::STR_NONE_OPT;
   unsigned long popupTime = 0;
+  std::unique_ptr<Epub> preparedEpub;
+  std::unique_ptr<Xtc> preparedXtc;
+  std::unique_ptr<Txt> preparedTxt;
+  std::string sourcePreparationFailedPath;
+  uint32_t sourcePreparationLastInputAt = 0;
 
   // Data loading
   void loadFiles(std::string selectionName = {}, size_t selectionIndex = static_cast<size_t>(-1));
@@ -72,18 +81,18 @@ class FileBrowserActivity final : public Activity {
   void launchSearch();
   void applySearch(const std::string& query);
   void clearSearch(bool preserveQuery = false);
+  void processSelectedSourcePreparation();
+  void openPreparedBook(const std::string& path);
 
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",
-                               Mode mode = Mode::Books)
-      : Activity("FileBrowser", renderer, mappedInput),
-        mode(mode),
-        basepath(initialPath.empty() ? "/" : std::move(initialPath)) {}
+                               Mode mode = Mode::Books);
+  ~FileBrowserActivity() override;
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool skipLoopDelay() override { return filesLoading; }
+  bool skipLoopDelay() override;
   bool handleGlobalShortcut(GlobalShortcut shortcut) override {
     return mode == Mode::Books && !optionPopup.isActive() && handleSafeGlobalShortcut(shortcut);
   }

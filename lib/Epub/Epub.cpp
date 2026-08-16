@@ -765,6 +765,7 @@ BookMetadataCache::LoadStatus Epub::inspectCache() {
 
 BookMetadataCache::LoadStepResult Epub::beginCacheInspection() {
   if (!ensureSourceIdentitySnapshot()) return BookMetadataCache::LoadStepResult::Error;
+  if (bookMetadataCache && bookMetadataCache->isLoaded()) return BookMetadataCache::LoadStepResult::Loaded;
   bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   if (!bookMetadataCache) {
     LOG_ERR("EBP", "Not enough memory to inspect EPUB cache");
@@ -998,14 +999,26 @@ bool Epub::getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const {
   return true;
 }
 
+bool Epub::prepareForReaderLoadAfterRecovery(const ZipFile::SourceIdentity& verifiedSourceIdentity) {
+  if (!hasSourceIdentitySnapshot || sourceIdentitySnapshot != verifiedSourceIdentity || isReadingCoreMetadata() ||
+      isIndexing()) {
+    return false;
+  }
+  sourceReplacementRecoveryDone = true;
+  return true;
+}
+
 bool Epub::prepareCssCache(const bool verifySourceAtEntry) {
   if (!cssParser || !bookMetadataCache || (verifySourceAtEntry && !sourceStillMatchesSnapshot())) {
     LOG_ERR("EBP", "Cannot prepare CSS cache without a loaded, matching EPUB");
     return false;
   }
 
-  if (cssParser->validateCache()) {
-    cssParser->clear();
+  // Materialize while validating when memory permits so the first section
+  // build can reuse this exact read. Under low heap loadFromCache() rejects
+  // before rule allocation and preserves the file, so retain the validation-
+  // only fallback that lets an already-cached section remain readable.
+  if (cssParser->loadFromCache() || (cssParser->hasCache() && cssParser->validateCache())) {
     externalCssUnavailable = false;
     return true;
   }
@@ -1050,14 +1063,16 @@ bool Epub::prepareCssCache(const bool verifySourceAtEntry) {
       bookMetadataCache && bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
   if (!bookMetadataCache) LOG_ERR("EBP", "Not enough memory to reload metadata after CSS parsing");
 
-  if (!saved || !metadataReloaded || !sourceStillMatchesSnapshot() || !cssParser->validateCache()) {
+  const bool sourceReady = saved && metadataReloaded && sourceStillMatchesSnapshot();
+  const bool cacheReady =
+      sourceReady && (cssParser->loadFromCache() || (cssParser->hasCache() && cssParser->validateCache()));
+  if (!cacheReady) {
     LOG_ERR("EBP", "Failed to build and verify CSS cache");
     cssParser->clear();
     cssParser->deleteCache();
     return false;
   }
 
-  cssParser->clear();
   externalCssUnavailable = false;
   return true;
 }
@@ -1127,11 +1142,6 @@ bool Epub::loadImpl(const bool buildIfMissing, const bool skipLoadingCss, const 
 #endif
   if (cacheStatus == BookMetadataCache::LoadStatus::Loaded) {
     if (!prepareCssForLoad(skipLoadingCss)) return false;
-    // Release the resolved CSS rule map: it is only needed transiently while building
-    // section caches, and createSectionFile reloads it from cache on demand. Holding it
-    // resident pins tens of KB for the whole reading session (more on warm resume into
-    // an already-cached chapter, where createSectionFile never runs to clear it).
-    cssParser->clear();
     if (verifySourceAtReturn && !sourceStillMatchesSnapshot()) {
       LOG_ERR("EBP", "EPUB changed while cache was loading");
       return false;
@@ -1481,7 +1491,6 @@ Epub::IndexStepResult Epub::stepIndexing() {
         return fail("EPUB changed while indexing");
       }
 
-      cssParser->clear();
       indexingPhase = IndexingPhase::Idle;
       indexingReadState.reset();
       indexingMetadata = {};
@@ -1535,12 +1544,16 @@ bool Epub::clearCache() const {
   return true;
 }
 
-void Epub::setupCacheDir() const {
+bool Epub::setupCacheDir() const {
   if (Storage.exists(cachePath.c_str())) {
-    return;
+    return true;
   }
 
-  Storage.mkdir(cachePath.c_str());
+  if (!Storage.mkdir(cachePath.c_str())) {
+    LOG_ERR("EPB", "Failed to create cache directory: %s", cachePath.c_str());
+    return false;
+  }
+  return true;
 }
 
 const std::string& Epub::getCachePath() const { return cachePath; }

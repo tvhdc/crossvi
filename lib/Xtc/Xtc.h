@@ -56,7 +56,7 @@ class Xtc {
   /**
    * Setup cache directory
    */
-  void setupCacheDir() const;
+  bool setupCacheDir() const;
 
   // Path accessors
   const std::string& getCachePath() const { return cachePath; }

@@ -19,8 +19,11 @@ constexpr size_t MAX_SIBLING_IMAGES = 256;
 constexpr size_t MAX_SIBLING_NAME_BYTES = 24U * 1024U;
 }  // namespace
 
-BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path)
-    : Activity("BmpViewer", renderer, mappedInput), filePath(std::move(path)) {}
+BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path,
+                                     const bool loadingFeedbackAlreadyShown)
+    : Activity("BmpViewer", renderer, mappedInput),
+      filePath(std::move(path)),
+      loadingFeedbackAlreadyShown(loadingFeedbackAlreadyShown) {}
 
 void BmpViewerActivity::beginSiblingImageScan() {
   cancelSiblingImageScan();
@@ -143,8 +146,8 @@ void BmpViewerActivity::onEnter() {
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-  Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-  GUI.fillPopupProgress(renderer, popupRect, 20);  // Initial 20% progress
+  if (!loadingFeedbackAlreadyShown) GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  loadingFeedbackAlreadyShown = false;
   // 1. Open the file
   if (Storage.openFileForRead("BMP", filePath, file)) {
     Bitmap bitmap(file, true);
@@ -180,18 +183,20 @@ void BmpViewerActivity::onEnter() {
       const auto labels =
           mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER), (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
 
-      GUI.fillPopupProgress(renderer, popupRect, 50);
-
       renderer.clearScreen();
-      // Assuming drawBitmap defaults to 0,0 crop if omitted, or pass explicitly: drawBitmap(bitmap, x, y, pageWidth,
-      // pageHeight, 0, 0)
-      renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
-
-      // Draw UI hints on the base layer
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      // Single pass for non-grayscale images
-
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      if (renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
+        // Draw UI hints on the base layer
+        GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+        // Single pass for non-grayscale images
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      } else {
+        LOG_ERR("BMP", "Failed to render bitmap: %s", filePath.c_str());
+        renderer.clearScreen();
+        renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_PAGE_LOAD_ERROR));
+        const auto errorLabels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+        GUI.drawButtonHints(renderer, errorLabels.btn1, errorLabels.btn2, errorLabels.btn3, errorLabels.btn4);
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      }
 
     } else {
       // Handle file parsing error

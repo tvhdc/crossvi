@@ -297,7 +297,7 @@ void EpubReaderActivity::onEnter() {
   // NOTE: This affects layout math and must be applied before any render calls.
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
-  epub->setupCacheDir();
+  if (!epub->setupCacheDir()) pendingBookmarkStorageError = true;
   progressWriteSession.invalidate();
 
   const ClippingStore::LoadResult clippingLoad =
@@ -410,7 +410,8 @@ void EpubReaderActivity::onEnter() {
   const uint32_t catalogStartedMs = static_cast<uint32_t>(millis());
   if (APP_STATE.openEpubPath != epub->getPath()) {
     APP_STATE.openEpubPath = epub->getPath();
-    APP_STATE.saveToFile();
+    readerStateSaveRetryPending = !APP_STATE.saveToFile();
+    if (readerStateSaveRetryPending) LOG_ERR("ERS", "Could not persist reader resume state; retrying after first page");
   }
   activityManager.reportReaderOpenStage("epub", "catalog_recent", catalogStartedMs);
 
@@ -448,7 +449,7 @@ void EpubReaderActivity::onExit() {
   sdFontSystem.releaseLoadedFont(renderer);
 
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  if (!APP_STATE.saveToFile()) LOG_ERR("ERS", "Could not persist reader exit state");
 
   // Leaving mid-footnote loses the in-RAM return stack on deep sleep; persist the
   // pre-footnote position so the book reopens at the link origin, not the footnote.
@@ -513,6 +514,15 @@ void EpubReaderActivity::signalReadingPageHidden() {
 void EpubReaderActivity::finishDeferredOpenState() {
   if (!deferredOpenStatePending || !deferredOpenStateReady) return;
   deferredOpenStatePending = false;
+
+  if (readerStateSaveRetryPending) {
+    readerStateSaveRetryPending = false;
+    if (!APP_STATE.saveToFile()) {
+      LOG_ERR("ERS", "Could not persist reader resume state after retry");
+      pendingBookmarkStorageError = true;
+      requestUpdate();
+    }
+  }
 
   const uint32_t statsStartedMs = static_cast<uint32_t>(millis());
   GlobalReadingStats::LoadStatus globalStatsStatus = GlobalReadingStats::LoadStatus::Missing;
@@ -931,6 +941,12 @@ void EpubReaderActivity::loop() {
     return;
   }
   const bool inputEdge = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
+  const bool readerInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                               mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                               mappedInput.isPressed(MappedInputManager::Button::PageForward);
 
   if (safeModePromptRequested.exchange(false, std::memory_order_acq_rel)) {
     startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_EPUB_SAFE_MODE),
@@ -964,8 +980,8 @@ void EpubReaderActivity::loop() {
   // partial being extended.
   {
     RenderLock lock(std::try_to_lock);
-    if (lock.ownsLock() && section && !section->isBuilding() && section->isPartial() && buildViewportWidth > 0 &&
-        !partialRebuildStartFailed &&
+    if (!inputEdge && !readerInputHeld && lock.ownsLock() && section && !section->isBuilding() &&
+        section->isPartial() && buildViewportWidth > 0 && !partialRebuildStartFailed &&
         section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
       releaseGrayscaleStripScratch();
       if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
@@ -1001,7 +1017,7 @@ void EpubReaderActivity::loop() {
   // watermark re-parses the whole chapter synchronously. Keep ticking until it finalizes.
   {
     RenderLock lock(std::try_to_lock);
-    if (lock.ownsLock()) {
+    if (!inputEdge && !readerInputHeld && lock.ownsLock()) {
       const bool requiredBuild = sectionLandingPending || sectionRenderWaiting;
       const bool withinBuildWindow =
           section && (requiredBuild || section->isPartial() ||
@@ -1240,12 +1256,6 @@ void EpubReaderActivity::loop() {
   const bool nextTriggered = pageGesture.next;
   const bool longPress = pageGesture.longPress;
   if (!prevTriggered && !nextTriggered) {
-    const bool readerInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::Left) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::Right) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::PageForward);
     if (!inputEdge && !readerInputHeld) {
       // Secondary state performs its bounded publication only after the first
       // page is visible and input is idle. Upcoming page images take one
@@ -2950,7 +2960,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
         const uint16_t debugPagesBefore = section->debugBuiltPageCount();
 #endif
-        if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
+        int initialBuildPages = 1;
+        if (!pendingPercentJump && !anchorJump && !contentReposition &&
+            target >= static_cast<int>(section->pageCount)) {
+          const int missingPages = target - static_cast<int>(section->pageCount) + 1;
+          initialBuildPages = std::clamp(missingPages, 1, MAX_INITIAL_BUILD_PAGES);
+        }
+        if (!section->buildSomeMore(initialBuildPages)) {
           LOG_ERR("ERS", "Failed during initial section build slice");
           const EpubBuildStatus failure = section->lastBuildStatus();
           loan.end();
@@ -2964,6 +2980,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       }
     } else {
       LOG_DBG("ERS", "Cache found, skipping build...");
+    }
+
+    // A matching complete/usable partial section needs no CSS map in RAM.
+    // A started build owns the shared map and clears it on finalize/abandon.
+    if (!section->isBuilding()) {
+      if (auto* cssParser = epub->getCssParser()) cssParser->clear();
     }
 
     sectionLandingPending = true;

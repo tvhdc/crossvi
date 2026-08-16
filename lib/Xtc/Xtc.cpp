@@ -616,18 +616,19 @@ bool Xtc::clearCache() const {
   return true;
 }
 
-void Xtc::setupCacheDir() const {
+bool Xtc::setupCacheDir() const {
   if (Storage.exists(cachePath.c_str())) {
-    return;
+    return true;
   }
 
-  // Create directories recursively
-  for (size_t i = 1; i < cachePath.length(); i++) {
-    if (cachePath[i] == '/') {
-      Storage.mkdir(cachePath.substr(0, i).c_str());
-    }
+  // HalStorage::mkdir creates missing parents by default. The previous loop
+  // retried recursive mkdir for every path component before doing it again for
+  // the final path.
+  if (!Storage.mkdir(cachePath.c_str())) {
+    LOG_ERR("XTC", "Failed to create cache directory: %s", cachePath.c_str());
+    return false;
   }
-  Storage.mkdir(cachePath.c_str());
+  return true;
 }
 
 bool Xtc::readCoreMetadata(std::string& title, std::string& author) const {

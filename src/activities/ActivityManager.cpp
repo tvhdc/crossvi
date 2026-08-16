@@ -254,12 +254,36 @@ void ActivityManager::goToBrowser() {
 
 void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh,
                                  const ReaderOpenOrigin openOrigin, const bool completionStatsAlreadyRecovered,
-                                 const bool readerOpenMetricAlreadyStarted,
+                                 const bool readerOpenFeedbackAlreadyShown,
                                  const RawSourceIdentityHandoff* const preparedSourceIdentity) {
-  if (!readerOpenMetricAlreadyStarted) beginReaderOpenMetric();
+  if (!readerOpenFeedbackAlreadyShown) beginReaderOpenMetric();
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), allowFastInitialRefresh,
                                                    openOrigin, completionStatsAlreadyRecovered,
-                                                   preparedSourceIdentity));
+                                                   readerOpenFeedbackAlreadyShown, preparedSourceIdentity));
+}
+
+void ActivityManager::goToReader(std::unique_ptr<Epub>&& preparedEpub, const ReaderOpenOrigin openOrigin,
+                                 const bool completionStatsAlreadyRecovered,
+                                 const bool readerOpenFeedbackAlreadyShown) {
+  if (!readerOpenFeedbackAlreadyShown) beginReaderOpenMetric();
+  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(preparedEpub), openOrigin,
+                                                   completionStatsAlreadyRecovered, readerOpenFeedbackAlreadyShown));
+}
+
+void ActivityManager::goToReader(std::unique_ptr<Xtc>&& preparedXtc, const ReaderOpenOrigin openOrigin,
+                                 const bool completionStatsAlreadyRecovered,
+                                 const bool readerOpenFeedbackAlreadyShown) {
+  if (!readerOpenFeedbackAlreadyShown) beginReaderOpenMetric();
+  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(preparedXtc), openOrigin,
+                                                   completionStatsAlreadyRecovered, readerOpenFeedbackAlreadyShown));
+}
+
+void ActivityManager::goToReader(std::unique_ptr<Txt>&& preparedTxt, const ReaderOpenOrigin openOrigin,
+                                 const bool completionStatsAlreadyRecovered,
+                                 const bool readerOpenFeedbackAlreadyShown) {
+  if (!readerOpenFeedbackAlreadyShown) beginReaderOpenMetric();
+  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(preparedTxt), openOrigin,
+                                                   completionStatsAlreadyRecovered, readerOpenFeedbackAlreadyShown));
 }
 
 void ActivityManager::goToReader(std::string path, ClippingJumpResult clippingJump, const ReaderOpenOrigin openOrigin) {

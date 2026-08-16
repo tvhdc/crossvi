@@ -470,6 +470,16 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
     }
   }
 
+  CssParser* preparedCssParser = nullptr;
+  if (embeddedStyle) {
+    preparedCssParser = epub->getCssParser();
+    if (!preparedCssParser || (!preparedCssParser->hasMaterializedCache() && !preparedCssParser->loadFromCache())) {
+      LOG_ERR("SCT", "Failed to load CSS from cache");
+      lastBuildStatus_ = EpubBuildStatus::CacheError;
+      return false;
+    }
+  }
+
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
     lastBuildStatus_ = EpubBuildStatus::IoError;
@@ -515,12 +525,7 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   ctx->contentBase = (lastSlash != std::string::npos) ? localPath.substr(0, lastSlash + 1) : "";
   ctx->imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
 
-  if (embeddedStyle) {
-    ctx->cssParser = epub->getCssParser();
-    if (ctx->cssParser && !ctx->cssParser->loadFromCache()) {
-      LOG_ERR("SCT", "Failed to load CSS from cache");
-    }
-  }
+  ctx->cssParser = preparedCssParser;
 
   // Collect TOC anchors for this spine so the parser can insert page breaks at chapter boundaries
   std::vector<std::string> tocAnchors;

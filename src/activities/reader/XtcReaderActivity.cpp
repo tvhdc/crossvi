@@ -109,7 +109,7 @@ void XtcReaderActivity::onEnter() {
     return;
   }
   const uint32_t readerStateStartedMs = static_cast<uint32_t>(millis());
-  xtc->setupCacheDir();
+  if (!xtc->setupCacheDir()) pendingBookmarkStorageError = true;
   progressWriteSession.invalidate();
 
   BookReadingStats::LoadStatus bookStatsStatus = BookReadingStats::LoadStatus::Missing;
@@ -166,7 +166,8 @@ void XtcReaderActivity::onEnter() {
   const uint32_t catalogStartedMs = static_cast<uint32_t>(millis());
   if (APP_STATE.openEpubPath != xtc->getPath()) {
     APP_STATE.openEpubPath = xtc->getPath();
-    APP_STATE.saveToFile();
+    readerStateSaveRetryPending = !APP_STATE.saveToFile();
+    if (readerStateSaveRetryPending) LOG_ERR("XTR", "Could not persist reader resume state; retrying after first page");
   }
   activityManager.reportReaderOpenStage("xtc", "catalog_recent", catalogStartedMs);
 
@@ -181,7 +182,7 @@ void XtcReaderActivity::onExit() {
   saveReadingStats();
 
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  if (!APP_STATE.saveToFile()) LOG_ERR("XTR", "Could not persist reader exit state");
   xtc.reset();
 
   sdFontSystem.releaseLoadedFont(renderer);
@@ -817,6 +818,15 @@ void XtcReaderActivity::finishDeferredOpenState() {
   if (!deferredOpenStatePending || !deferredOpenStateReady) return;
   deferredOpenStatePending = false;
 
+  if (readerStateSaveRetryPending) {
+    readerStateSaveRetryPending = false;
+    if (!APP_STATE.saveToFile()) {
+      LOG_ERR("XTR", "Could not persist reader resume state after retry");
+      pendingBookmarkStorageError = true;
+      requestUpdate();
+    }
+  }
+
   const uint32_t statsStartedMs = static_cast<uint32_t>(millis());
   GlobalReadingStats::LoadStatus globalStatsStatus = GlobalReadingStats::LoadStatus::Missing;
   globalReadingStats = GlobalReadingStats::load(&globalStatsStatus);
@@ -1204,12 +1214,13 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
     constexpr size_t XTH_PAIR_CHUNK_BYTES = 1000;
     const size_t pairedColumns = pageLayout.columnBytes == 0 ? 0 : XTH_PAIR_CHUNK_BYTES / pageLayout.columnBytes;
     const size_t panelRowBytes = renderer.getDisplayWidthBytes();
+    const bool portraitInverted = renderer.getOrientation() == GfxRenderer::PortraitInverted;
     size_t pairedPlaneScratchBytes = 0;
     size_t pairedScratchBytes = 0;
     const bool scaledPairCandidate =
-        !nativeX4Xtch && renderer.getOrientation() == GfxRenderer::Portrait && renderer.hasFrameBuffer() &&
-        renderer.supportsStripGrayscale() && viewport.width <= pageWidth && viewport.height <= pageHeight &&
-        pairedColumns > 0 && renderer.getDisplayWidth() % 8U == 0 &&
+        !nativeX4Xtch && (renderer.getOrientation() == GfxRenderer::Portrait || portraitInverted) &&
+        renderer.hasFrameBuffer() && renderer.supportsStripGrayscale() && viewport.width <= pageWidth &&
+        viewport.height <= pageHeight && pairedColumns > 0 && renderer.getDisplayWidth() % 8U == 0 &&
         renderer.getBufferSize() >= static_cast<size_t>(renderer.getDisplayHeight()) * panelRowBytes &&
         xtc::checkedMultiply(pairedColumns, panelRowBytes, pairedPlaneScratchBytes) &&
         xtc::checkedMultiply(pairedPlaneScratchBytes, 2U, pairedScratchBytes);
@@ -1240,7 +1251,8 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
             xtc::XthPortraitRows rows;
             composed = xtc::composeScaledXthPortraitRows(
                 bit0, bit1, size, planeOffset, pageLayout, pageWidth, pageHeight, viewport, renderer.getDisplayWidth(),
-                renderer.getDisplayHeight(), xtchPlaneScratch.get(), nullptr, nullptr, pairedPlaneScratchBytes, rows);
+                renderer.getDisplayHeight(), portraitInverted, xtchPlaneScratch.get(), nullptr, nullptr,
+                pairedPlaneScratchBytes, rows);
             const size_t rowOffset = static_cast<size_t>(rows.yStart) * panelRowBytes;
             const size_t rowBytes = static_cast<size_t>(rows.count) * panelRowBytes;
             if (composed && rows.count > 0 && rowOffset <= renderer.getBufferSize() &&
@@ -1325,8 +1337,11 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
           rows = static_cast<uint16_t>(rows - chunkRows);
         }
       };
-      const uint16_t activeRowStart = static_cast<uint16_t>(renderer.getDisplayHeight() - viewport.x - viewport.width);
-      const uint16_t activeRowEnd = static_cast<uint16_t>(renderer.getDisplayHeight() - viewport.x);
+      const uint16_t activeRowStart =
+          portraitInverted ? viewport.x
+                           : static_cast<uint16_t>(renderer.getDisplayHeight() - viewport.x - viewport.width);
+      const uint16_t activeRowEnd = portraitInverted ? static_cast<uint16_t>(viewport.x + viewport.width)
+                                                     : static_cast<uint16_t>(renderer.getDisplayHeight() - viewport.x);
       clearRows(true, 0, activeRowStart);
       clearRows(false, 0, activeRowStart);
       clearRows(true, activeRowEnd, static_cast<uint16_t>(renderer.getDisplayHeight() - activeRowEnd));
@@ -1338,9 +1353,10 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
           [&](uint8_t* bit0, uint8_t* bit1, const size_t size, const size_t planeOffset) {
             if (!composed) return;
             xtc::XthPortraitRows rows;
-            composed = xtc::composeScaledXthPortraitRows(
-                bit0, bit1, size, planeOffset, pageLayout, pageWidth, pageHeight, viewport, renderer.getDisplayWidth(),
-                renderer.getDisplayHeight(), nullptr, lsbScratch, msbScratch, pairedPlaneScratchBytes, rows);
+            composed = xtc::composeScaledXthPortraitRows(bit0, bit1, size, planeOffset, pageLayout, pageWidth,
+                                                         pageHeight, viewport, renderer.getDisplayWidth(),
+                                                         renderer.getDisplayHeight(), portraitInverted, nullptr,
+                                                         lsbScratch, msbScratch, pairedPlaneScratchBytes, rows);
             if (composed && rows.count > 0) {
               renderer.writeGrayscalePlaneStrip(true, lsbScratch, rows.yStart, rows.count);
               renderer.writeGrayscalePlaneStrip(false, msbScratch, rows.yStart, rows.count);

@@ -628,6 +628,19 @@ TEST_F(EpubSourceIdentityTest, ColdIndexingCanBeCancelledAndRetriedBetweenPasses
   EXPECT_FALSE(Storage.exists((cachePath + "/toc.bin.tmp").c_str()));
 }
 
+TEST_F(EpubSourceIdentityTest, MetadataScratchCleanupReportsRemovalFailure) {
+  ASSERT_TRUE(Storage.exists(CACHE_PATH));
+  const std::string spineScratch = std::string(CACHE_PATH) + "/spine.bin.tmp";
+  Storage.setFile(spineScratch, {0x01U});
+  Storage.failRemoveFor(spineScratch);
+
+  BookMetadataCache cache(CACHE_PATH);
+  EXPECT_FALSE(cache.cleanupTmpFiles());
+  EXPECT_TRUE(Storage.exists(spineScratch.c_str()));
+  EXPECT_TRUE(cache.cleanupTmpFiles());
+  EXPECT_FALSE(Storage.exists(spineScratch.c_str()));
+}
+
 TEST_F(EpubSourceIdentityTest, ReaderLinksResolveRelativeToTheCurrentSpineDirectory) {
   identify(makeDuplicateBasenameEpub());
   Epub epub(EPUB_PATH, "/.crosspoint");
@@ -1296,6 +1309,21 @@ TEST_F(EpubSourceIdentityTest, ReadCoreMetadataServesVerifiedBookCache) {
   EXPECT_EQ(metadata.title, "A safe title");
   EXPECT_EQ(metadata.author, "An author");
   EXPECT_EQ(metadata.coverItemHref, "cover.xhtml");
+}
+
+TEST_F(EpubSourceIdentityTest, ReaderCacheInspectionReusesPreparedCoreMetadata) {
+  const auto identity = identify(makeCssTestEpub());
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  const std::string cachePath = epub.getCachePath();
+  ASSERT_TRUE(Storage.mkdir(cachePath.c_str()));
+  Storage.setFile(cachePath + "/book.bin", makeBookCache(identity));
+
+  BookMetadataCache::BookMetadata metadata;
+  ASSERT_TRUE(epub.readCoreMetadata(metadata));
+  Storage.resetIoCounters();
+
+  EXPECT_EQ(epub.beginCacheInspection(), BookMetadataCache::LoadStepResult::Loaded);
+  EXPECT_EQ(Storage.openReadAttemptsFor(cachePath + "/book.bin"), 0U);
 }
 
 TEST_F(EpubSourceIdentityTest, LoadReusesMetadataCacheAlreadyInspectedForTheSameSource) {
@@ -2009,6 +2037,22 @@ TEST_F(EpubSourceIdentityTest, WarmBookValidatesCssCacheWithoutMaterializingRule
   ASSERT_TRUE(warmLoad.load(false, false));
   EXPECT_TRUE(warmLoad.getCssParser()->empty());
   EXPECT_TRUE(warmLoad.getCssParser()->hasCache());
+}
+
+TEST_F(EpubSourceIdentityTest, WarmBookPreparesCssRulesForTheFirstSectionBuild) {
+  const auto identity = identify(makeCssTestEpub());
+  Epub firstLoad(EPUB_PATH, "/.crosspoint");
+  const std::string cachePath = firstLoad.getCachePath();
+  ASSERT_TRUE(Storage.mkdir(cachePath.c_str()));
+  ASSERT_TRUE(firstLoad.bindCurrentSource());
+  Storage.setFile(cachePath + "/book.bin", makeBookCache(identity));
+  ASSERT_TRUE(firstLoad.load(false, true));
+  ASSERT_TRUE(firstLoad.ensureCssCache());
+
+  Epub warmLoad(EPUB_PATH, "/.crosspoint");
+  ASSERT_TRUE(warmLoad.load(false, false));
+  ASSERT_TRUE(warmLoad.getCssParser()->hasMaterializedCache());
+  EXPECT_EQ(warmLoad.getCssParser()->resolveStyle("p", "note").textAlign, CssTextAlign::Right);
 }
 
 TEST_F(EpubSourceIdentityTest, SmallCapsCssSurvivesParsingAndCacheRoundTrip) {

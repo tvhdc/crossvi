@@ -51,6 +51,9 @@ class TxtReaderActivity final : public Activity {
   std::unique_ptr<uint8_t[]> pageScratch;
   size_t pageScratchSize = 0;
   std::vector<std::string> pageIndexScratchLines;
+  std::vector<uint32_t> pageIndexScratchLineOffsets;
+  std::optional<uint32_t> pageIndexScratchOffset;
+  size_t pageIndexScratchNextOffset = 0;
   int linesPerPage = 0;
   int viewportWidth = 0;
   int cachedLineAdvance = 0;
@@ -109,6 +112,7 @@ class TxtReaderActivity final : public Activity {
   bool skipStartupRecentUpdate = false;
   bool deferredOpenStatePending = true;
   bool deferredOpenStateReady = false;
+  bool readerStateSaveRetryPending = false;
   uint32_t deferredGlobalPageTurns = 0;
   std::vector<BookmarkEntry> cachedBookmarks;
   bool bookmarksWritable = true;
