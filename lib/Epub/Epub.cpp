@@ -1217,7 +1217,7 @@ bool Epub::beginColdIndexing(const bool skipLoadingCss) {
   if (isIndexing() || !bookMetadataCache || !cssParser) return false;
 
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
-  setupCacheDir();
+  if (!setupCacheDir()) return false;
 
   // Bind the whole indexing attempt to one source snapshot. buildBookBin()
   // rechecks this before publishing, and the final load checks it once more.
@@ -1763,7 +1763,11 @@ bool Epub::generateJpegThumbnailPair(const int carouselWidth, const int carousel
     return false;
   }
 
-  setupCacheDir();
+  if (!setupCacheDir()) {
+    result.shared = ThumbnailStatus::IoError;
+    result.carousel = ThumbnailStatus::IoError;
+    return true;
+  }
   const std::array<std::string, 2> finalPaths = {getThumbBmpPath(SHARED_THUMB_HEIGHT), getThumbBmpPath(carouselHeight)};
   const std::array<std::string, 2> stagingPaths = {finalPaths[0] + ".tmp", finalPaths[1] + ".tmp"};
   const std::array<std::string, 2> identityPaths = {finalPaths[0] + ".identity", finalPaths[1] + ".fit-v2.identity"};
@@ -1914,7 +1918,11 @@ Epub::ThumbnailPreparationStatus Epub::beginThumbnailPreparation(const Thumbnail
                : ThumbnailPreparationStatus::Error;
   }
 
-  setupCacheDir();
+  if (!setupCacheDir()) {
+    coverStreamJob->cancel();
+    coverStreamJob.reset();
+    return ThumbnailPreparationStatus::Error;
+  }
   coverSourcePath = getCachePath() + (jpeg ? "/.cover.jpg" : "/.cover.png");
   if ((Storage.exists(coverSourcePath.c_str()) && !Storage.remove(coverSourcePath.c_str())) ||
       !Storage.openFileForWrite("EBP", coverSourcePath, coverStreamOutput)) {
@@ -2036,7 +2044,7 @@ Epub::ThumbnailStatus Epub::ensureThumbnail(const int width, const int height, c
                              stat.uncompressedSize >= 62U && stat.uncompressedSize <= 64U * 1024U;
   if (embeddedPresent && !embeddedValid && mode == ThumbnailMode::EmbeddedOnly) return ThumbnailStatus::Invalid;
   if (embeddedValid) {
-    setupCacheDir();
+    if (!setupCacheDir()) return ThumbnailStatus::IoError;
     const std::string stagingPath = finalPath + ".tmp";
     const std::string backupPath = finalPath + ".bak";
     const std::string sourceProof = identityPath + ".tmp";
@@ -2139,7 +2147,7 @@ bool Epub::generateThumbBmp(const int width, const int height, const bool crop) 
     return false;
   }
 
-  setupCacheDir();
+  if (!setupCacheDir()) return false;
   const auto coverImageHref = metadata->coverItemHref;
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");

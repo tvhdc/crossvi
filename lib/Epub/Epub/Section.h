@@ -77,6 +77,7 @@ class Section {
     bool parserStarted = false;
     EpubBuildStatus callbackFailure = EpubBuildStatus::Ok;
     uint8_t htmlStreamAttempts = 0;
+    uint32_t htmlStreamRetryAtMs = 0;
     CssParser* cssParser = nullptr;
     // HTML byte progress, for estimating the section's total page count while it's still building.
     uint32_t bytesConsumed = 0;

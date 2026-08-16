@@ -415,9 +415,13 @@ void EpubReaderActivity::onEnter() {
   }
   activityManager.reportReaderOpenStage("epub", "catalog_recent", catalogStartedMs);
 
-  const uint32_t bookmarksStartedMs = static_cast<uint32_t>(millis());
-  loadCachedBookmarks();
-  activityManager.reportReaderOpenStage("epub", "bookmarks", bookmarksStartedMs);
+  // Bookmarks are secondary UI state. Loading the JSON file can touch SD and
+  // allocate a vector, so defer it until after the first page reaches the panel.
+  cachedBookmarks.clear();
+  bookmarksWritable = false;
+  bookmarksLoaded = false;
+  deferredBookmarkLoadPending = false;
+  currentPageBookmarked = false;
 
   // Trigger first update
   requestUpdate();
@@ -552,6 +556,7 @@ void EpubReaderActivity::consumeReadingViewSignal() {
   if (signal > 0) {
     deferredOpenStateReady = true;
     deferredCoverFirstPageVisible = true;
+    if (!bookmarksLoaded) deferredBookmarkLoadPending = true;
     if (readingSessionTracker.pageVisible(eventAtMs)) {
       ReadingStatsDateTime localStart;
       hasActiveReadingSpanStartLocalDateTime = getCurrentLocalReadingStatsDateTime(localStart);
@@ -676,6 +681,17 @@ bool EpubReaderActivity::pumpImagePreparation() {
     LOG_ERR("ERS", "Could not begin image preparation for page %d", targetPage);
   }
   return true;
+}
+
+void EpubReaderActivity::pumpDeferredBookmarkLoad() {
+  if (!deferredBookmarkLoadPending || bookmarksLoaded) return;
+
+  const bool wasBookmarked = currentPageBookmarked;
+  const uint32_t bookmarksStartedMs = static_cast<uint32_t>(millis());
+  loadCachedBookmarks();
+  LOG_DBG("ROPM", "post_visible format=epub name=bookmarks elapsed_ms=%u",
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - bookmarksStartedMs));
+  if (currentPageBookmarked != wasBookmarked) requestUpdate();
 }
 
 void EpubReaderActivity::recordReadingSample(const ReadingSessionSample& sample) {
@@ -871,6 +887,7 @@ void EpubReaderActivity::markBookCompleted() {
 }
 
 void EpubReaderActivity::openReaderMenu() {
+  ensureBookmarksLoaded();
   const int currentPage = section ? section->currentPage + 1 : 0;
   const int totalPages = section ? section->estimatedTotalPages() : 0;
   float bookProgress = 0.0f;
@@ -1261,6 +1278,7 @@ void EpubReaderActivity::loop() {
       // page is visible and input is idle. Upcoming page images take one
       // bounded ZIP chunk before optional cover work gets the idle slice.
       finishDeferredOpenState();
+      pumpDeferredBookmarkLoad();
       if (!pumpImagePreparation()) pumpDeferredCoverPreparation();
     }
     return;
@@ -3599,6 +3617,8 @@ void EpubReaderActivity::restoreSavedPosition() {
 void EpubReaderActivity::loadCachedBookmarks() {
   cachedBookmarks.clear();
   bookmarksWritable = false;
+  bookmarksLoaded = true;
+  deferredBookmarkLoadPending = false;
   if (cachedBookmarks.capacity() < initialBookmarkCacheCapacity) {
     cachedBookmarks.reserve(initialBookmarkCacheCapacity);
   }
@@ -3635,10 +3655,15 @@ void EpubReaderActivity::loadCachedBookmarks() {
   updateBookmarkFlag();
 }
 
+void EpubReaderActivity::ensureBookmarksLoaded() {
+  if (!bookmarksLoaded) loadCachedBookmarks();
+}
+
 bool EpubReaderActivity::addBookmark() {
   if (!section || !epub) {
     return false;
   }
+  ensureBookmarksLoaded();
   if (!bookmarksWritable) {
     pendingBookmarkStorageError = true;
     requestUpdate();
@@ -3694,9 +3719,9 @@ bool EpubReaderActivity::addBookmark() {
 
   const std::string path = BookmarkUtil::getBookmarkPath(epub->getPath());
   const std::string bookmarksDir = BookmarkUtil::getBookmarksDir();
-  Storage.mkdir(bookmarksDir.c_str());
   const BookmarkBookMetadata metadata{epub->getPath(), epub->getTitle(), epub->getAuthor(), "epub"};
-  const bool ok = JsonSettingsIO::saveBookmarks(cachedBookmarks, path.c_str(), &metadata);
+  const bool ok = (Storage.exists(bookmarksDir.c_str()) || Storage.mkdir(bookmarksDir.c_str())) &&
+                  JsonSettingsIO::saveBookmarks(cachedBookmarks, path.c_str(), &metadata);
   if (!ok) {
     LOG_ERR("ERS", "Failed to save bookmarks to: %s", path.c_str());
     cachedBookmarks = previousBookmarks;

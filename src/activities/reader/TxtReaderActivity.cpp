@@ -2140,9 +2140,10 @@ bool TxtReaderActivity::toggleBookmark() {
     if (bookmark.summary.empty()) bookmark.summary = txt->getTitle();
     cachedBookmarks.push_back(std::move(bookmark));
   }
-  Storage.mkdir(BookmarkUtil::getBookmarksDir().c_str());
+  const std::string bookmarksDir = BookmarkUtil::getBookmarksDir();
   const BookmarkBookMetadata metadata{txt->getPath(), txt->getTitle(), "", "txt"};
-  if (!JsonSettingsIO::saveBookmarks(cachedBookmarks, BookmarkUtil::getBookmarkPath(txt->getPath()).c_str(),
+  if ((!Storage.exists(bookmarksDir.c_str()) && !Storage.mkdir(bookmarksDir.c_str())) ||
+      !JsonSettingsIO::saveBookmarks(cachedBookmarks, BookmarkUtil::getBookmarkPath(txt->getPath()).c_str(),
                                      &metadata)) {
     cachedBookmarks = previous;
     pendingBookmarkStorageError = true;

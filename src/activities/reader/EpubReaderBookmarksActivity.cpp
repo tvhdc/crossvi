@@ -96,8 +96,9 @@ void EpubReaderBookmarksActivity::loop() {
       const std::vector<BookmarkEntry> previousBookmarks = bookmarks;
       bookmarks.erase(bookmarks.begin() + selectorIndex);
       const std::string path = BookmarkUtil::getBookmarkPath(bookPath);
-      Storage.mkdir(BookmarkUtil::getBookmarksDir().c_str());
-      if (!JsonSettingsIO::saveBookmarks(bookmarks, path.c_str(), &bookmarkMetadata)) {
+      const std::string bookmarksDir = BookmarkUtil::getBookmarksDir();
+      if ((!Storage.exists(bookmarksDir.c_str()) && !Storage.mkdir(bookmarksDir.c_str())) ||
+          !JsonSettingsIO::saveBookmarks(bookmarks, path.c_str(), &bookmarkMetadata)) {
         LOG_ERR("EPB", "Failed to save bookmarks after delete");
         bookmarks = previousBookmarks;
         storageError = true;

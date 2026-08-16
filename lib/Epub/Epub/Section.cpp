@@ -437,7 +437,11 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   // Create cache directory if it doesn't exist
   {
     const auto sectionsDir = epub->getCachePath() + "/sections";
-    Storage.mkdir(sectionsDir.c_str());
+    if (!Storage.exists(sectionsDir.c_str()) && !Storage.mkdir(sectionsDir.c_str())) {
+      LOG_ERR("SCT", "Failed to create section cache directory: %s", sectionsDir.c_str());
+      lastBuildStatus_ = EpubBuildStatus::IoError;
+      return false;
+    }
   }
 
   // Reuse the previously unzipped HTML if we already have it. The unzipped HTML is keyed only on the
@@ -459,7 +463,11 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
     cachedHtml.close();
     LOG_DBG("SCT", "Reusing cached HTML %s", htmlPath.c_str());
   } else {
-    Storage.mkdir(htmlDir.c_str());
+    if (!Storage.exists(htmlDir.c_str()) && !Storage.mkdir(htmlDir.c_str())) {
+      LOG_ERR("SCT", "Failed to create HTML cache directory: %s", htmlDir.c_str());
+      lastBuildStatus_ = EpubBuildStatus::IoError;
+      return false;
+    }
     const uint32_t cumulativeSize = epub->getCumulativeSpineItemSize(spineIndex);
     const uint32_t previousCumulativeSize = spineIndex > 0 ? epub->getCumulativeSpineItemSize(spineIndex - 1) : 0;
     if (cumulativeSize < previousCumulativeSize ||
@@ -613,8 +621,16 @@ Section::HtmlExtractionStep Section::stepHtmlExtraction() {
       return HtmlExtractionStep::Error;
     }
     if (build_->htmlStreamAttempts > 0) {
-      LOG_DBG("SCT", "Retrying cooperative HTML stream (attempt %u)...", build_->htmlStreamAttempts + 1);
-      delay(50);
+      const uint32_t nowMs = static_cast<uint32_t>(millis());
+      if (build_->htmlStreamRetryAtMs == 0) {
+        build_->htmlStreamRetryAtMs = nowMs + 50U;
+        LOG_DBG("SCT", "Retrying cooperative HTML stream (attempt %u)...", build_->htmlStreamAttempts + 1);
+        return HtmlExtractionStep::InProgress;
+      }
+      if (static_cast<int32_t>(nowMs - build_->htmlStreamRetryAtMs) < 0) {
+        return HtmlExtractionStep::InProgress;
+      }
+      build_->htmlStreamRetryAtMs = 0;
     }
     if (Storage.exists(build_->tmpHtmlPath.c_str())) Storage.remove(build_->tmpHtmlPath.c_str());
     ++build_->htmlStreamAttempts;

@@ -438,7 +438,7 @@ class Xtc::ThumbnailPairJob {
       return false;
     }
 
-    book.setupCacheDir();
+    if (!book.setupCacheDir()) return false;
     hasSourceIdentityHandoff = book.parser->getSourceIdentityHandoff(sourceIdentityHandoff);
     if (pageInfo.offset > std::numeric_limits<uint64_t>::max() - sizeof(xtc::XtgPageHeader)) return false;
     const uint64_t payloadOffset = pageInfo.offset + sizeof(xtc::XtgPageHeader);
@@ -707,7 +707,7 @@ bool Xtc::generateCoverBmp() const {
   }
 
   // Setup cache directory
-  setupCacheDir();
+  if (!setupCacheDir()) return false;
 
   // Get first page info for cover
   xtc::PageInfo pageInfo;
@@ -890,7 +890,7 @@ bool Xtc::generateThumbBmp(const int width, const int height, const bool crop) c
   }
 
   // Setup cache directory
-  setupCacheDir();
+  if (!setupCacheDir()) return false;
 
   // Get first page info for cover
   xtc::PageInfo pageInfo;

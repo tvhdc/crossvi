@@ -234,6 +234,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
 bool ReaderActivity::beginEpubLoad(const std::string& path) {
   openingEpubIdentityJob.reset();
   openingEpubIdentityStartedMs = 0;
+  openingEpubFinalIdentityCheck = false;
   std::optional<RawSourceIdentityHandoff> preparedSourceIdentity;
   if (openingPreparedEpub && openingPreparedEpub->getPath() == path) {
     RawSourceIdentityHandoff preparedIdentity;

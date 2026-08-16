@@ -71,6 +71,8 @@ class EpubReaderActivity final : public Activity {
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
   bool bookmarksWritable = false;
+  bool bookmarksLoaded = false;
+  bool deferredBookmarkLoadPending = false;
   bool pendingBookmarkStorageError = false;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
@@ -329,6 +331,8 @@ class EpubReaderActivity final : public Activity {
   bool moveOnePageWithoutRendering(bool forward);
   bool skipCoverPageIfNeeded(const Page& page);
   void loadCachedBookmarks();
+  void ensureBookmarksLoaded();
+  void pumpDeferredBookmarkLoad();
   bool addBookmark();
   void updateBookmarkFlag();
 

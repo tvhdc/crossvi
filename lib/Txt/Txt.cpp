@@ -225,7 +225,7 @@ bool Txt::generateCoverBmp() const {
   }
 
   // Setup cache directory
-  setupCacheDir();
+  if (!setupCacheDir()) return false;
 
   if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) return false;
 
