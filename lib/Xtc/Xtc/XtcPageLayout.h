@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 namespace xtc {
@@ -53,6 +54,21 @@ inline uint8_t readXthPixel(const uint8_t* payload, const PageLayout& layout, co
   return static_cast<uint8_t>(bit0 | (bit1 << 1U));
 }
 
+// Native X4 portrait maps XTH's right-to-left source columns directly onto
+// physical landscape framebuffer rows. Compose the B/W base and the two
+// controller grayscale planes byte-for-byte; outputs may alias either input.
+inline void composeNativeXthPlaneBytes(const uint8_t* bit0, const uint8_t* bit1, const size_t size, uint8_t* base,
+                                       uint8_t* lsb, uint8_t* msb) {
+  if (!bit0 || !bit1) return;
+  for (size_t index = 0; index < size; ++index) {
+    const uint8_t first = bit0[index];
+    const uint8_t second = bit1[index];
+    if (base) base[index] = static_cast<uint8_t>(~(first | second));
+    if (lsb) lsb[index] = static_cast<uint8_t>(first & ~second);
+    if (msb) msb[index] = static_cast<uint8_t>(first ^ second);
+  }
+}
+
 struct Viewport {
   uint16_t x = 0;
   uint16_t y = 0;
@@ -92,6 +108,50 @@ inline uint16_t mapViewportCoordinate(const uint16_t destination, const uint16_t
   return static_cast<uint16_t>((static_cast<uint64_t>(destination) * (sourceSize - 1U)) / (destinationSize - 1U));
 }
 
+// Rotate whole eight-row strips from XTG's portrait row-major payload into a
+// native landscape framebuffer. Source and destination use the same 1=white,
+// 0=black polarity, so the hot path is only an 8x8 bit transpose plus row
+// reversal; no per-pixel renderer calls or full-page staging buffer are needed.
+inline bool rotateXtgPortraitRowsToNativeLandscape(const uint8_t* source, const size_t sourceSize,
+                                                   const size_t sourceOffset, const uint16_t sourceWidth,
+                                                   const uint16_t sourceHeight, uint8_t* target,
+                                                   const size_t targetSize) {
+  PageLayout layout;
+  if (!source || !target || sourceWidth % 8U != 0 || sourceHeight % 8U != 0 ||
+      !calculatePageLayout(sourceWidth, sourceHeight, 1, layout) || sourceOffset > layout.payloadBytes ||
+      sourceSize > layout.payloadBytes - sourceOffset || sourceOffset % layout.rowBytes != 0 ||
+      sourceSize % layout.rowBytes != 0) {
+    return false;
+  }
+
+  const size_t firstSourceRow = sourceOffset / layout.rowBytes;
+  const size_t sourceRowCount = sourceSize / layout.rowBytes;
+  const size_t targetRowBytes = sourceHeight / 8U;
+  size_t requiredTargetBytes = 0;
+  if (firstSourceRow % 8U != 0 || sourceRowCount == 0 || sourceRowCount % 8U != 0 ||
+      firstSourceRow + sourceRowCount > sourceHeight ||
+      !checkedMultiply(targetRowBytes, sourceWidth, requiredTargetBytes) || targetSize < requiredTargetBytes) {
+    return false;
+  }
+
+  for (size_t localRow = 0; localRow < sourceRowCount; localRow += 8U) {
+    const size_t targetByte = (firstSourceRow + localRow) / 8U;
+    for (size_t sourceByte = 0; sourceByte < layout.rowBytes; ++sourceByte) {
+      for (uint8_t sourceBit = 0; sourceBit < 8U; ++sourceBit) {
+        uint8_t transposed = 0;
+        for (uint8_t rowBit = 0; rowBit < 8U; ++rowBit) {
+          const uint8_t sourceValue = source[(localRow + rowBit) * layout.rowBytes + sourceByte];
+          transposed |= static_cast<uint8_t>(((sourceValue >> (7U - sourceBit)) & 1U) << (7U - rowBit));
+        }
+        const size_t sourceX = sourceByte * 8U + sourceBit;
+        const size_t targetRow = sourceWidth - 1U - sourceX;
+        target[targetRow * targetRowBytes + targetByte] = transposed;
+      }
+    }
+  }
+  return true;
+}
+
 // Inverse of mapViewportCoordinate(). The half-open result contains every
 // destination coordinate which samples this source coordinate. It lets the
 // XTCH reader keep the exact fit-to-screen behavior while processing source
@@ -128,6 +188,89 @@ inline bool locateXthStreamByte(const PageLayout& layout, const uint16_t width, 
   if (column >= width || rowByte * 8U >= height) return false;
   x = static_cast<uint16_t>(width - 1U - column);
   yBase = static_cast<uint16_t>(rowByte * 8U);
+  return true;
+}
+
+struct XthPortraitRows {
+  uint16_t yStart = 0;
+  uint16_t count = 0;
+};
+
+// Scale matching XTH column chunks straight into physical portrait rows. The
+// source width/height may only shrink: that keeps every source column bounded
+// to at most one output row, so callers need scratch for this chunk rather than
+// a second full framebuffer. Output planes use the controller's packed polarity.
+inline bool composeScaledXthPortraitRows(
+    const uint8_t* bit0, const uint8_t* bit1, const size_t size, const size_t planeOffset,
+    const PageLayout& layout, const uint16_t sourceWidth, const uint16_t sourceHeight, const Viewport& viewport,
+    const uint16_t panelWidth, const uint16_t panelHeight, uint8_t* baseRows, uint8_t* lsbRows, uint8_t* msbRows,
+    const size_t rowBufferSize, XthPortraitRows& rows) {
+  rows = {};
+  PageLayout expected;
+  if (!bit0 || !bit1 || (!baseRows && !lsbRows && !msbRows) || size == 0 || panelWidth == 0 || panelHeight == 0 ||
+      panelWidth % 8U != 0 || !calculatePageLayout(sourceWidth, sourceHeight, 2, expected) ||
+      layout.columnBytes != expected.columnBytes || layout.planeBytes != expected.planeBytes ||
+      layout.payloadBytes != expected.payloadBytes || viewport.width == 0 || viewport.height == 0 ||
+      viewport.width > sourceWidth || viewport.height > sourceHeight ||
+      static_cast<uint32_t>(viewport.x) + viewport.width > panelHeight ||
+      static_cast<uint32_t>(viewport.y) + viewport.height > panelWidth || planeOffset % layout.columnBytes != 0 ||
+      size % layout.columnBytes != 0 || planeOffset > layout.planeBytes || size > layout.planeBytes - planeOffset) {
+    return false;
+  }
+
+  const size_t firstColumn = planeOffset / layout.columnBytes;
+  const size_t columnCount = size / layout.columnBytes;
+  if (firstColumn >= sourceWidth || columnCount > sourceWidth - firstColumn) return false;
+
+  bool hasRows = false;
+  uint16_t firstPhysicalRow = panelHeight;
+  uint16_t lastPhysicalRow = 0;
+  for (size_t localColumn = 0; localColumn < columnCount; ++localColumn) {
+    const uint16_t sourceX = static_cast<uint16_t>(sourceWidth - 1U - (firstColumn + localColumn));
+    const CoordinateRange destination = mapSourceCoordinateRange(sourceX, sourceWidth, viewport.width);
+    for (uint16_t x = destination.begin; x < destination.end; ++x) {
+      const uint16_t physicalRow = static_cast<uint16_t>(panelHeight - 1U - viewport.x - x);
+      firstPhysicalRow = std::min(firstPhysicalRow, physicalRow);
+      lastPhysicalRow = std::max(lastPhysicalRow, physicalRow);
+      hasRows = true;
+    }
+  }
+  if (!hasRows) return true;
+
+  rows.yStart = firstPhysicalRow;
+  rows.count = static_cast<uint16_t>(lastPhysicalRow - firstPhysicalRow + 1U);
+  const size_t panelRowBytes = panelWidth / 8U;
+  size_t requiredBytes = 0;
+  if (!checkedMultiply(rows.count, panelRowBytes, requiredBytes) || requiredBytes > rowBufferSize) {
+    rows = {};
+    return false;
+  }
+  if (baseRows) std::memset(baseRows, 0xFF, requiredBytes);
+  if (lsbRows) std::memset(lsbRows, 0x00, requiredBytes);
+  if (msbRows) std::memset(msbRows, 0x00, requiredBytes);
+
+  for (size_t localColumn = 0; localColumn < columnCount; ++localColumn) {
+    const uint16_t sourceX = static_cast<uint16_t>(sourceWidth - 1U - (firstColumn + localColumn));
+    const CoordinateRange destination = mapSourceCoordinateRange(sourceX, sourceWidth, viewport.width);
+    const uint8_t* const firstColumnBytes = bit0 + localColumn * layout.columnBytes;
+    const uint8_t* const secondColumnBytes = bit1 + localColumn * layout.columnBytes;
+    for (uint16_t x = destination.begin; x < destination.end; ++x) {
+      const uint16_t physicalRow = static_cast<uint16_t>(panelHeight - 1U - viewport.x - x);
+      const size_t rowOffset = static_cast<size_t>(physicalRow - rows.yStart) * panelRowBytes;
+      for (uint16_t y = 0; y < viewport.height; ++y) {
+        const uint16_t sourceY = mapViewportCoordinate(y, viewport.height, sourceHeight);
+        const uint8_t sourceMask = static_cast<uint8_t>(1U << (7U - sourceY % 8U));
+        const bool first = (firstColumnBytes[sourceY / 8U] & sourceMask) != 0;
+        const bool second = (secondColumnBytes[sourceY / 8U] & sourceMask) != 0;
+        const uint16_t physicalX = static_cast<uint16_t>(viewport.y + y);
+        const size_t byteOffset = rowOffset + physicalX / 8U;
+        const uint8_t outputMask = static_cast<uint8_t>(1U << (7U - physicalX % 8U));
+        if (baseRows && (first || second)) baseRows[byteOffset] &= static_cast<uint8_t>(~outputMask);
+        if (lsbRows && first && !second) lsbRows[byteOffset] |= outputMask;
+        if (msbRows && first != second) msbRows[byteOffset] |= outputMask;
+      }
+    }
+  }
   return true;
 }
 

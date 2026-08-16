@@ -12,8 +12,10 @@
 #include <Utf8.h>
 #include <Xtc.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <new>
 #include <optional>
 #include <vector>
 
@@ -36,6 +38,8 @@
 
 namespace {
 constexpr uint32_t HOME_COVER_WORK_IDLE_MS = 2000;
+constexpr size_t SOURCE_FINGERPRINT_BYTES_PER_STEP = 16U * 1024U;
+constexpr size_t XTC_RECORDS_PER_STEP = 4;
 
 struct DashboardProgressValidationContext {
   const std::string* cachePath = nullptr;
@@ -74,6 +78,12 @@ StrId homeBookHintLabelId(const HomeBookSummary& summary) {
 
 }  // namespace
 
+HomeActivity::HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                           const HomeMenuItem initialMenuItemValue)
+    : Activity("Home", renderer, mappedInput), initialMenuItem(initialMenuItemValue) {}
+
+HomeActivity::~HomeActivity() = default;
+
 int HomeActivity::getMenuItemCount() const {
   return HomeMenuMapping::selectionCount(static_cast<int>(recentBooks.size()), hasOpdsServers,
                                          hasReadingStatsShortcut());
@@ -96,6 +106,8 @@ void HomeActivity::selectHomeItem(const int index) {
   if (usesMultiBookCoverLayout() && selectorIndex >= 0 && selectorIndex < static_cast<int>(recentBooks.size()) &&
       carouselBookIndex != selectorIndex) {
     carouselBookIndex = selectorIndex;
+    preparedEpub.reset();
+    preparedXtc.reset();
     coverPreparationAttempted = false;
     coverRendered = false;
     freeCoverBuffer();
@@ -114,11 +126,6 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
     // Limit to maximum number of recent books
     if (recentBooks.size() >= maxBooks) {
       break;
-    }
-
-    // Skip if file no longer exists
-    if (RecentBooksStore::isMissing(book)) {
-      continue;
     }
 
     // Keep the launcher consistent with My Books when the user opted out of
@@ -250,7 +257,13 @@ void HomeActivity::loadBookSummary() {
 void HomeActivity::onEnter() {
   Activity::onEnter();
   coverPreparationAttempted = false;
+  preparedEpub.reset();
+  preparedXtc.reset();
+  preparedTxt.reset();
   coverPreparationLastInputAt = static_cast<uint32_t>(millis());
+  recentPruneIndex = 0;
+  pinnedPruneIndex = 0;
+  completionStatsAlreadyRecovered = false;
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t enterStartedMs = static_cast<uint32_t>(millis());
@@ -259,30 +272,29 @@ void HomeActivity::onEnter() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   mediaAvailable = Storage.probeMedia();
   if (mediaAvailable) {
-    if (ReadingStatsCompletionTransaction::recoverPending() ==
-        ReadingStatsCompletionTransaction::RecoveryResult::Blocked) {
+    const ReadingStatsCompletionTransaction::RecoveryResult completionRecovery =
+        ReadingStatsCompletionTransaction::recoverPending();
+    completionStatsAlreadyRecovered = completionRecovery != ReadingStatsCompletionTransaction::RecoveryResult::Blocked;
+    if (!completionStatsAlreadyRecovered) {
       LOG_ERR("HOME", "Pending reading-statistics transaction remains blocked");
     }
-    int recentLimit = metrics.homeRecentBooksCount;
+    recentBookLimit = metrics.homeRecentBooksCount;
     if (usesRecentListLayout()) {
       const int recentListTileHeight = CrossViMetrics::HOME_RECENT_LIST_TILE_HEIGHT;
-      recentLimit = CrossViRecentListLayout::capacity(
+      recentBookLimit = CrossViRecentListLayout::capacity(
           Rect{0, metrics.homeTopPadding, renderer.getScreenWidth(), recentListTileHeight});
     } else if (usesMultiBookCoverLayout()) {
-      recentLimit = 3;
+      recentBookLimit = 3;
     }
-    loadRecentBooks(recentLimit);
+    loadRecentBooks(recentBookLimit);
   } else {
     recentBooks.clear();
+    recentBookLimit = 0;
   }
+  recentPrunePending = mediaAvailable;
   hasOpdsServers = OPDS_STORE.hasServers();
-  const bool isNonEpub = !recentBooks.empty() && (FsHelpers::hasXtcExtension(recentBooks.front().path) ||
-                                                  FsHelpers::hasTxtExtension(recentBooks.front().path) ||
-                                                  FsHelpers::hasMarkdownExtension(recentBooks.front().path));
   bookSummary = {};
-  if (!usesRecentListLayout() && mediaAvailable && (!isNonEpub || !loadRecentNonEpubReadingStats())) {
-    loadBookSummary();
-  }
+  bookSummaryPending = !usesRecentListLayout() && mediaAvailable && !recentBooks.empty();
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   LOG_DBG("HOMT", "onEnter before_request_update elapsed_ms=%u",
           static_cast<unsigned>(static_cast<uint32_t>(millis()) - enterStartedMs));
@@ -313,6 +325,9 @@ void HomeActivity::onExit() {
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
+  preparedEpub.reset();
+  preparedXtc.reset();
+  preparedTxt.reset();
 }
 
 bool HomeActivity::storeCoverBuffer() {
@@ -351,22 +366,106 @@ void HomeActivity::freeCoverBuffer() {
   coverBufferStored = false;
 }
 
+void HomeActivity::processRecentBooksMaintenance() {
+  RenderLock lock(std::try_to_lock);
+  if (!lock.ownsLock()) return;
+
+  std::string removedPath;
+  const RecentBooksStore::PruneStepResult result =
+      RECENT_BOOKS.pruneMissingStep(recentPruneIndex, pinnedPruneIndex, &removedPath);
+  if (result == RecentBooksStore::PruneStepResult::Pending) return;
+  if (result == RecentBooksStore::PruneStepResult::Complete ||
+      result == RecentBooksStore::PruneStepResult::MediaUnavailable ||
+      result == RecentBooksStore::PruneStepResult::SaveFailed) {
+    recentPrunePending = false;
+    return;
+  }
+
+  const int oldRecentCount = static_cast<int>(recentBooks.size());
+  const bool bookSelected = selectorIndex >= 0 && selectorIndex < oldRecentCount;
+  const bool menuSelected = selectorIndex >= oldRecentCount;
+  const HomeMenuItem selectedMenu =
+      menuSelected ? indexToMenuItem(selectorIndex - oldRecentCount, hasOpdsServers, hasReadingStatsShortcut())
+                   : HomeMenuItem::NONE;
+  const std::string selectedBookPath = bookSelected ? recentBooks[selectorIndex].path : std::string{};
+
+  loadRecentBooks(recentBookLimit);
+  if (menuSelected) {
+    selectorIndex = HomeMenuMapping::selectorIndexOf(selectedMenu, static_cast<int>(recentBooks.size()), hasOpdsServers,
+                                                     hasReadingStatsShortcut());
+  } else if (bookSelected) {
+    const auto selected = std::find_if(recentBooks.begin(), recentBooks.end(),
+                                       [&](const RecentBook& book) { return book.path == selectedBookPath; });
+    selectorIndex = selected == recentBooks.end() ? std::min(selectorIndex, static_cast<int>(recentBooks.size()))
+                                                  : static_cast<int>(std::distance(recentBooks.begin(), selected));
+  } else {
+    selectorIndex = 0;
+  }
+  carouselBookIndex = std::clamp(carouselBookIndex, 0, std::max(static_cast<int>(recentBooks.size()) - 1, 0));
+  coverPreparationAttempted = false;
+  coverRendered = false;
+  freeCoverBuffer();
+  preparedEpub.reset();
+  preparedXtc.reset();
+  preparedTxt.reset();
+
+  bookSummary = {};
+  bookSummaryPending = !usesRecentListLayout() && !recentBooks.empty();
+  requestUpdate();
+}
+
 void HomeActivity::loop() {
-  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) {
+  const bool hadInput = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
+  const bool homeInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                             mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                             mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                             mappedInput.isPressed(MappedInputManager::Button::NavPrevious);
+  if (hadInput) {
     coverPreparationLastInputAt = static_cast<uint32_t>(millis());
   }
   const bool coverWorkIdle =
       static_cast<uint32_t>(static_cast<uint32_t>(millis()) - coverPreparationLastInputAt) >= HOME_COVER_WORK_IDLE_MS;
+
+  // Source validation and summary I/O are not needed to paint the launcher.
+  // Run them only after the first frame and the same quiet period used by
+  // derived cover work. RenderLock protects bookSummary from render().
+  bool sourcePreparationInProgress = false;
+  if (bookSummaryPending && firstRenderDone && !hadInput && !homeInputHeld && coverWorkIdle) {
+    const SourcePreparationResult preparation = stepRecentNonEpubSummarySource();
+    sourcePreparationInProgress = preparation == SourcePreparationResult::InProgress;
+    bool summaryReady = false;
+    if (!sourcePreparationInProgress) {
+      RenderLock lock(std::try_to_lock);
+      if (lock.ownsLock() && firstRenderDone) {
+        bookSummaryPending = false;
+        if (preparation == SourcePreparationResult::Ready) {
+          if (!loadRecentNonEpubReadingStats()) loadBookSummary();
+        } else {
+          loadBookSummary();
+        }
+        summaryReady = true;
+      }
+    }
+    if (summaryReady) {
+      requestUpdate();
+      return;
+    }
+  }
+
   const bool focusedRecentBook = selectorIndex >= 0 && selectorIndex < static_cast<int>(recentBooks.size());
   const int coverBookIndex = usesMultiBookCoverLayout() ? carouselBookIndex : 0;
   const bool x3 = renderer.getDisplayHeight() == 528;
   const bool needsShared = CrossPointSettings::needsSharedCoverThumbnail(SETTINGS.homeLayout, SETTINGS.libraryView);
   const bool needsCarousel = CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout);
+  if (!needsShared && !needsCarousel && !bookSummaryPending) {
+    preparedEpub.reset();
+    preparedXtc.reset();
+  }
   const int carouselWidth = x3 ? Epub::CAROUSEL_THUMB_WIDTH : Epub::CAROUSEL_X4_THUMB_WIDTH;
   const int carouselHeight = x3 ? Epub::CAROUSEL_THUMB_HEIGHT : Epub::CAROUSEL_X4_THUMB_HEIGHT;
-  if ((needsShared || needsCarousel) && firstRenderDone && coverWorkIdle && focusedRecentBook &&
-      !coverPreparationAttempted && mediaAvailable && coverBookIndex >= 0 &&
-      coverBookIndex < static_cast<int>(recentBooks.size()) &&
+  if ((needsShared || needsCarousel) && firstRenderDone && !hadInput && !homeInputHeld && coverWorkIdle &&
+      !sourcePreparationInProgress && focusedRecentBook && !coverPreparationAttempted && mediaAvailable &&
+      coverBookIndex >= 0 && coverBookIndex < static_cast<int>(recentBooks.size()) &&
       (FsHelpers::hasEpubExtension(recentBooks[coverBookIndex].path) ||
        FsHelpers::hasXtcExtension(recentBooks[coverBookIndex].path))) {
     coverPreparationAttempted = true;
@@ -375,16 +474,30 @@ void HomeActivity::loop() {
     if (usesMultiBookCoverLayout()) freeCoverBuffer();
     bool coverReady = false;
     if (FsHelpers::hasEpubExtension(recentBooks[coverBookIndex].path)) {
-      Epub epub(recentBooks[coverBookIndex].path, "/.crosspoint");
-      const Epub::ThumbnailSetStatus thumbnails = epub.ensureThumbnails(
-          Epub::ThumbnailRequest{needsShared, needsCarousel, x3}, Epub::ThumbnailMode::EmbeddedOnly);
-      coverReady = needsCarousel ? thumbnails.carousel == Epub::ThumbnailStatus::Ready
-                                 : thumbnails.shared == Epub::ThumbnailStatus::Ready;
+      const SourcePreparationResult preparation = stepPreparedEpub(recentBooks[coverBookIndex].path);
+      if (preparation == SourcePreparationResult::InProgress) {
+        coverPreparationAttempted = false;
+      } else if (preparation == SourcePreparationResult::Ready) {
+        const Epub::ThumbnailSetStatus thumbnails = preparedEpub->ensureThumbnails(
+            Epub::ThumbnailRequest{needsShared, needsCarousel, x3}, Epub::ThumbnailMode::EmbeddedOnly);
+        coverReady = needsCarousel ? thumbnails.carousel == Epub::ThumbnailStatus::Ready
+                                   : thumbnails.shared == Epub::ThumbnailStatus::Ready;
+      }
     } else {
-      Xtc xtc(recentBooks[coverBookIndex].path, "/.crosspoint");
-      coverReady = xtc.generateThumbBmpPair(carouselWidth, carouselHeight);
-      if (!coverReady && xtc.load()) {
-        coverReady = xtc.generateThumbBmpPair(carouselWidth, carouselHeight);
+      const std::string& path = recentBooks[coverBookIndex].path;
+      const SourcePreparationResult preparation = stepPreparedXtc(path);
+      if (preparation == SourcePreparationResult::InProgress) {
+        coverPreparationAttempted = false;
+      } else if (preparation == SourcePreparationResult::Ready) {
+        const Xtc::ThumbnailPreparationStatus status =
+            preparedXtc->thumbnailPreparationActive()
+                ? preparedXtc->stepThumbnailPreparation(1024, 8)
+                : preparedXtc->beginThumbnailPreparation(carouselWidth, carouselHeight);
+        if (status == Xtc::ThumbnailPreparationStatus::InProgress) {
+          coverPreparationAttempted = false;
+        } else {
+          coverReady = status == Xtc::ThumbnailPreparationStatus::Ready;
+        }
       }
     }
     if (coverReady) {
@@ -448,6 +561,13 @@ void HomeActivity::loop() {
           break;
       }
     }
+  }
+
+  // External SD edits are uncommon, so verify one stored path per idle loop
+  // after the first frame instead of probing every recent/pinned entry on the
+  // launcher and reader-open critical paths.
+  if (!hadInput && !homeInputHeld && recentPrunePending && firstRenderDone && coverWorkIdle) {
+    processRecentBooksMaintenance();
   }
 }
 
@@ -563,7 +683,18 @@ void HomeActivity::render(RenderLock&&) {
   }
 }
 
-void HomeActivity::onSelectBook(const std::string& path) { openBookWithFeedback(path, ReaderOpenOrigin::HomeRecent); }
+void HomeActivity::onSelectBook(const std::string& path) {
+  RawSourceIdentityHandoff preparedIdentity;
+  const RawSourceIdentityHandoff* reusableIdentity = nullptr;
+  if (preparedEpub && preparedEpub->getPath() == path && preparedEpub->getSourceIdentityHandoff(preparedIdentity)) {
+    reusableIdentity = &preparedIdentity;
+  } else if (preparedXtc && preparedXtc->getPath() == path && preparedXtc->getSourceIdentityHandoff(preparedIdentity)) {
+    reusableIdentity = &preparedIdentity;
+  } else if (preparedTxt && preparedTxt->getPath() == path && preparedTxt->getSourceIdentityHandoff(preparedIdentity)) {
+    reusableIdentity = &preparedIdentity;
+  }
+  openBookWithFeedback(path, ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered, reusableIdentity);
+}
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
@@ -577,6 +708,70 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
+HomeActivity::SourcePreparationResult HomeActivity::stepPreparedEpub(const std::string& path) {
+  if (!preparedEpub || preparedEpub->getPath() != path) {
+    preparedEpub.reset(new (std::nothrow) Epub(path, "/.crosspoint"));
+    if (!preparedEpub || !preparedEpub->beginCoreMetadataRead()) {
+      preparedEpub.reset();
+      return SourcePreparationResult::Failed;
+    }
+  }
+
+  if (preparedEpub->hasPreparedCoreMetadata()) return SourcePreparationResult::Ready;
+  if (!preparedEpub->isReadingCoreMetadata() && !preparedEpub->beginCoreMetadataRead()) {
+    preparedEpub.reset();
+    return SourcePreparationResult::Failed;
+  }
+
+  BookMetadataCache::BookMetadata metadata;
+  const Epub::CoreMetadataStepResult result = preparedEpub->stepCoreMetadataRead(metadata);
+  if (result == Epub::CoreMetadataStepResult::InProgress) return SourcePreparationResult::InProgress;
+  if (result == Epub::CoreMetadataStepResult::Loaded) return SourcePreparationResult::Ready;
+  preparedEpub.reset();
+  return SourcePreparationResult::Failed;
+}
+
+HomeActivity::SourcePreparationResult HomeActivity::stepPreparedXtc(const std::string& path) {
+  if (!preparedXtc || preparedXtc->getPath() != path) {
+    preparedXtc.reset(new (std::nothrow) Xtc(path, "/.crosspoint"));
+    if (!preparedXtc || !preparedXtc->beginLoad()) {
+      preparedXtc.reset();
+      return SourcePreparationResult::Failed;
+    }
+  }
+  if (preparedXtc->isLoaded()) return SourcePreparationResult::Ready;
+
+  const Xtc::LoadStepResult result = preparedXtc->stepLoad(XTC_RECORDS_PER_STEP, SOURCE_FINGERPRINT_BYTES_PER_STEP);
+  if (result == Xtc::LoadStepResult::InProgress) return SourcePreparationResult::InProgress;
+  if (result == Xtc::LoadStepResult::Loaded) return SourcePreparationResult::Ready;
+  preparedXtc.reset();
+  return SourcePreparationResult::Failed;
+}
+
+HomeActivity::SourcePreparationResult HomeActivity::stepRecentNonEpubSummarySource() {
+  if (recentBooks.empty()) return SourcePreparationResult::NotNeeded;
+  const std::string& path = recentBooks.front().path;
+  if (FsHelpers::hasXtcExtension(path)) return stepPreparedXtc(path);
+  if (!FsHelpers::hasTxtExtension(path) && !FsHelpers::hasMarkdownExtension(path)) {
+    return SourcePreparationResult::NotNeeded;
+  }
+
+  if (!preparedTxt || preparedTxt->getPath() != path) {
+    preparedTxt.reset(new (std::nothrow) Txt(path, "/.crosspoint"));
+    if (!preparedTxt || !preparedTxt->beginLoad()) {
+      preparedTxt.reset();
+      return SourcePreparationResult::Failed;
+    }
+  }
+  if (preparedTxt->isLoaded()) return SourcePreparationResult::Ready;
+
+  const Txt::LoadStepResult result = preparedTxt->stepLoad(SOURCE_FINGERPRINT_BYTES_PER_STEP);
+  if (result == Txt::LoadStepResult::InProgress) return SourcePreparationResult::InProgress;
+  if (result == Txt::LoadStepResult::Loaded) return SourcePreparationResult::Ready;
+  preparedTxt.reset();
+  return SourcePreparationResult::Failed;
+}
+
 bool HomeActivity::loadRecentNonEpubReadingStats() {
   if (recentBooks.empty()) return false;
   const std::string& path = recentBooks.front().path;
@@ -588,16 +783,20 @@ bool HomeActivity::loadRecentNonEpubReadingStats() {
   size_t txtFileSize = 0;
 
   if (isXtc) {
-    Xtc xtc(path, "/.crosspoint");
-    if (!xtc.load() || !xtc.getSourceIdentity(currentIdentity)) return false;
-    cachePath = xtc.getCachePath();
-    xtcPageCount = xtc.getPageCount();
+    if (!preparedXtc || preparedXtc->getPath() != path || !preparedXtc->isLoaded() ||
+        !preparedXtc->getSourceIdentity(currentIdentity)) {
+      return false;
+    }
+    cachePath = preparedXtc->getCachePath();
+    xtcPageCount = preparedXtc->getPageCount();
     if (xtcPageCount == 0) return false;
   } else {
-    Txt txt(path, "/.crosspoint");
-    if (!txt.load() || !txt.getSourceIdentity(currentIdentity)) return false;
-    cachePath = txt.getCachePath();
-    txtFileSize = txt.getFileSize();
+    if (!preparedTxt || preparedTxt->getPath() != path || !preparedTxt->isLoaded() ||
+        !preparedTxt->getSourceIdentity(currentIdentity)) {
+      return false;
+    }
+    cachePath = preparedTxt->getCachePath();
+    txtFileSize = preparedTxt->getFileSize();
   }
 
   const SourceIdentityStore::LoadStatus identityStatus = SourceIdentityStore::load(cachePath, storedIdentity);

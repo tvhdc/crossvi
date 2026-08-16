@@ -7,6 +7,7 @@
 #include <string>
 
 #include "TxtLineWrap.h"
+#include "TxtPageIndex.h"
 #include "Utf8.h"
 
 namespace {
@@ -36,6 +37,66 @@ int codepointCount(const char* text) {
     ++width;
   }
   return width;
+}
+
+constexpr uint32_t kFiLigature = 0xFB01;
+constexpr uint32_t kFilLigature = 0xE000;
+
+int32_t shapedAdvance(const uint32_t cp) {
+  switch (cp) {
+    case ' ':
+      return 32;
+    case 'f':
+      return 80;
+    case 'i':
+    case 'l':
+      return 64;
+    case 'x':
+      return 96;
+    case kFiLigature:
+      return 32;  // Deliberately narrower than "f" to make prefixes non-monotonic.
+    case kFilLigature:
+      return 48;
+    default:
+      return 72;
+  }
+}
+
+int32_t shapedKerning(const uint32_t leftCp, const uint32_t rightCp) {
+  return leftCp == 'x' && rightCp == 'f' ? -24 : 0;
+}
+
+uint32_t shapedLigature(const uint32_t leftCp, const uint32_t rightCp) {
+  if (leftCp == 'f' && rightCp == 'i') return kFiLigature;
+  if (leftCp == kFiLigature && rightCp == 'l') return kFilLigature;
+  return 0;
+}
+
+int shapedTextWidth(const char* text) {
+  int width = 0;
+  int32_t previousAdvance = 0;
+  uint32_t previousCp = 0;
+  auto* cursor = reinterpret_cast<const unsigned char*>(text);
+
+  while (*cursor) {
+    uint32_t cp = utf8NextCodepoint(&cursor);
+    while (*cursor) {
+      const auto* nextCursor = cursor;
+      const uint32_t nextCp = utf8NextCodepoint(&nextCursor);
+      const uint32_t joined = shapedLigature(cp, nextCp);
+      if (joined == 0) break;
+      cp = joined;
+      cursor = nextCursor;
+    }
+
+    if (previousCp != 0) {
+      width += fp4::toPixel(previousAdvance + shapedKerning(previousCp, cp));
+    }
+    previousCp = cp;
+    previousAdvance = shapedAdvance(cp);
+  }
+
+  return width + fp4::toPixel(previousAdvance);
 }
 
 template <typename Measure>
@@ -101,6 +162,31 @@ TEST(TxtLineWrapInput, DetectsOnlyACompleteLeadingUtf8Bom) {
   EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(bomText.data(), 2), 0U);
   EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(plainText.data(), plainText.size()), 0U);
   EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(nullptr, 3), 0U);
+}
+
+TEST(TxtPageIndexTarget, ParsesPastAnExactTargetBoundary) {
+  EXPECT_FALSE(TxtPageIndex::reachedTargetPage(100, 1000, 100));
+  EXPECT_TRUE(TxtPageIndex::reachedTargetPage(101, 1000, 100));
+  EXPECT_TRUE(TxtPageIndex::reachedTargetPage(1000, 1000, 1000));
+}
+
+TEST(TxtPageIndexTarget, PublishesOnlyOffsetsCoveredByTheStagedIndex) {
+  const std::array<uint32_t, 3> offsets = {0, 100, 220};
+  EXPECT_TRUE(TxtPageIndex::containsTarget(offsets.data(), offsets.size(), false, 219));
+  EXPECT_FALSE(TxtPageIndex::containsTarget(offsets.data(), offsets.size(), false, 220));
+  EXPECT_TRUE(TxtPageIndex::containsTarget(offsets.data(), offsets.size(), true, 1000));
+  EXPECT_FALSE(TxtPageIndex::containsTarget(nullptr, 0, false, 0));
+}
+
+TEST(TxtPageIndexEstimate, UsesCompletedPagesAndHonorsBounds) {
+  const std::array<uint32_t, 3> evenOffsets = {0, 100, 200};
+  EXPECT_EQ(TxtPageIndex::estimateTotalPages(evenOffsets.data(), 2, 1000, 16384), 10U);
+  EXPECT_EQ(TxtPageIndex::estimateTotalPages(evenOffsets.data(), 3, 1000, 16384), 10U);
+
+  const std::array<uint32_t, 2> nearEnd = {0, 900};
+  EXPECT_EQ(TxtPageIndex::estimateTotalPages(nearEnd.data(), nearEnd.size(), 1000, 16384), 2U);
+  EXPECT_EQ(TxtPageIndex::estimateTotalPages(evenOffsets.data(), 2, 1000000, 16), 16U);
+  EXPECT_EQ(TxtPageIndex::estimateTotalPages(nullptr, 0, 1000, 16384), 0U);
 }
 
 TEST(TxtLineWrapSearch, PreservesLegacyWordBreakAcrossWidths) {
@@ -223,4 +309,39 @@ TEST(TxtLineWrapSearch, MatchesBackwardSearchWithFarFewerMeasurements) {
   EXPECT_LE(binaryCalls, 14);
   EXPECT_GT(backwardCalls, 2000);
   EXPECT_EQ(binaryText, backwardText);
+}
+
+TEST(TxtLineWrapShapedSearch, MatchesLegacyBreaksWithKerningAndGreedyLigatures) {
+  const std::array<std::string, 4> texts = {"fifilx", "xxfi alpha", "first fix last", "xfil xfi end"};
+  for (const std::string& original : texts) {
+    for (int maxWidth = 0; maxWidth < shapedTextWidth(original.c_str()); ++maxWidth) {
+      std::string legacyText = original;
+      const size_t expected = findLegacyLineBreak(legacyText, maxWidth, shapedTextWidth);
+      const size_t actual = TxtLineWrap::findLargestFittingShapedLineBreak(original, maxWidth, shapedAdvance,
+                                                                           shapedKerning, shapedLigature);
+      EXPECT_EQ(actual, expected) << "text=" << original << " maxWidth=" << maxWidth;
+    }
+  }
+}
+
+TEST(TxtLineWrapShapedSearch, ScansLongUnbrokenTextOnce) {
+  const std::string text(4096, 'x');
+  size_t calls = 0;
+  const size_t result = TxtLineWrap::findLargestFittingShapedLineBreak(
+      text, 300,
+      [&](const uint32_t cp) {
+        ++calls;
+        return shapedAdvance(cp);
+      },
+      [&](const uint32_t leftCp, const uint32_t rightCp) {
+        ++calls;
+        return shapedKerning(leftCp, rightCp);
+      },
+      [&](const uint32_t leftCp, const uint32_t rightCp) {
+        ++calls;
+        return shapedLigature(leftCp, rightCp);
+      });
+
+  EXPECT_EQ(result, 50u);
+  EXPECT_LE(calls, text.size() * 3);
 }

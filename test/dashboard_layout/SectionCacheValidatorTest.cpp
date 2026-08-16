@@ -38,13 +38,17 @@ class MemoryInput final : public SectionCacheValidation::Input {
 
   uint64_t size() const override { return bytes_.size(); }
   bool readAt(const uint64_t offset, void* destination, const size_t length) override {
+    ++readCalls_;
     if ((!destination && length != 0) || offset > bytes_.size() || length > bytes_.size() - offset) return false;
     if (length != 0) memcpy(destination, bytes_.data() + offset, length);
     return true;
   }
 
+  size_t readCalls() const { return readCalls_; }
+
  private:
   const std::vector<uint8_t>& bytes_;
+  size_t readCalls_ = 0;
 };
 
 std::vector<uint8_t> emptyPage() {
@@ -79,6 +83,21 @@ std::vector<uint8_t> imagePageWithSourcePath() {
   page.insert(page.end(), {'i', 'm', 'g'});
   append<uint32_t>(page, 6);
   page.insert(page.end(), {'c', 'o', 'v', 'e', 'r', 's'});
+  append<int16_t>(page, 10);
+  append<int16_t>(page, 12);
+  append<uint16_t>(page, 0);
+  return page;
+}
+
+std::vector<uint8_t> imagePageCrossingReadAheadBoundary() {
+  std::vector<uint8_t> page;
+  append<uint16_t>(page, 1);
+  append<uint8_t>(page, 2);
+  append<int16_t>(page, 0);
+  append<int16_t>(page, 0);
+  append<uint32_t>(page, 72);
+  page.insert(page.end(), 72, 'i');
+  append<uint32_t>(page, 0);
   append<int16_t>(page, 10);
   append<int16_t>(page, 12);
   append<uint16_t>(page, 0);
@@ -300,6 +319,20 @@ TEST(SectionCacheValidator, StructureProbeSkipsPagePayloadButKeepsPageCountSafe)
   ASSERT_TRUE(validatesStructure(cache.bytes, &layout));
   EXPECT_EQ(layout.pageCount, 1);
   EXPECT_FALSE(validates(cache.bytes));
+}
+
+TEST(SectionCacheValidator, BatchesAdjacentStructureReadsThroughABoundedWindow) {
+  const auto cache = cacheWithPage(twoWordTextPage(), false, true);
+  MemoryInput input(cache.bytes);
+  SectionCacheValidation::Layout layout;
+  ASSERT_TRUE(SectionCacheValidation::validateStructure(input, HEADER_SIZE, FINAL_VERSION, PARTIAL_VERSION, layout));
+  EXPECT_LE(input.readCalls(), 3U);
+  EXPECT_EQ(layout.pageCount, 1U);
+}
+
+TEST(SectionCacheValidator, AcceptsScalarThatCrossesAReadAheadBoundary) {
+  const auto cache = cacheWithPage(imagePageCrossingReadAheadBoundary());
+  EXPECT_TRUE(validates(cache.bytes));
 }
 
 TEST(SectionCacheValidator, StructureProbeRejectsBrokenPageOffsetsAndTables) {

@@ -1,5 +1,6 @@
 #include <Epub.h>
 #include <HalStorage.h>
+#include <Xtc.h>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
@@ -31,6 +32,7 @@ class LibraryCatalogTest : public testing::Test {
     LIBRARY_CATALOG.cancel();
     LIBRARY_CATALOG.invalidateSourceValidation();
     Epub::resetMetadata();
+    Xtc::resetMetadata();
   }
 
   void TearDown() override {
@@ -88,9 +90,17 @@ TEST_F(LibraryCatalogTest, FinalizeCopiesOneRecordPerStep) {
   EXPECT_GT(sizes[0], 0U);
   EXPECT_EQ(sizes[1] - sizes[0], sizes[2] - sizes[1]);
 
+  // Rotation is constant-size work; read-back validation then checks one
+  // record per subsequent step while the previous catalog stays recoverable.
+  LIBRARY_CATALOG.step();
+  EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Sorting);
+  EXPECT_FALSE(fs::exists(temporary));
+  for (size_t record = 0; record < 3; ++record) {
+    LIBRARY_CATALOG.step();
+    EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Sorting);
+  }
   LIBRARY_CATALOG.step();
   EXPECT_TRUE(LIBRARY_CATALOG.isReady());
-  EXPECT_FALSE(fs::exists(temporary));
 }
 
 TEST_F(LibraryCatalogTest, CancelDuringFinalizeRestoresPrimaryState) {
@@ -116,6 +126,30 @@ TEST_F(LibraryCatalogTest, CancelDuringFinalizeRestoresPrimaryState) {
   EXPECT_EQ(restored.path, original.path);
   EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.idx.tmp"));
   EXPECT_FALSE(LIBRARY_CATALOG.consumeLastBuildFailed());
+}
+
+TEST_F(LibraryCatalogTest, CancelDuringCooperativePublishRollsBackToPrimaryCatalog) {
+  addBook("original.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+  ASSERT_EQ(LIBRARY_CATALOG.count(), 1U);
+
+  addBook("new.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToSorting();
+  ASSERT_EQ(LIBRARY_CATALOG.count(), 2U);
+  LIBRARY_CATALOG.step();
+  LIBRARY_CATALOG.step();
+  LIBRARY_CATALOG.step();  // rotate; read-back validation remains pending
+  ASSERT_TRUE(fs::exists(root_ / ".crosspoint/library.idx.bak"));
+
+  LIBRARY_CATALOG.cancel();
+  EXPECT_TRUE(LIBRARY_CATALOG.isReady());
+  EXPECT_EQ(LIBRARY_CATALOG.count(), 1U);
+  EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.idx.bak"));
+  LibraryBookRecord record;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(0, record));
+  EXPECT_EQ(record.path, "/original.txt");
 }
 
 TEST_F(LibraryCatalogTest, CancelDuringDiscoveryRestoresPrimaryState) {
@@ -162,7 +196,7 @@ TEST_F(LibraryCatalogTest, CorruptFinalRecordNeverReplacesPrimary) {
   file.write(&byte, 1);
   file.close();
 
-  LIBRARY_CATALOG.step();
+  advanceToReady();
   EXPECT_TRUE(LIBRARY_CATALOG.isReady());
   EXPECT_EQ(LIBRARY_CATALOG.generation(), originalGeneration);
   EXPECT_EQ(LIBRARY_CATALOG.count(), 1U);
@@ -234,6 +268,8 @@ TEST_F(LibraryCatalogTest, IncrementalUpdateTruncatesMetadataAndDropsOversizedDe
   Epub::setMetadata({longTitle, longAuthor, "cover.jpg"}, std::string(LibraryCatalogStore::MAX_PATH_BYTES + 1, 'c'));
   LibraryCatalogStore::markDirtyPath("/new.epub");
   ASSERT_TRUE(LIBRARY_CATALOG.open());
+  EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Updating);
+  advanceToReady();
   ASSERT_EQ(LIBRARY_CATALOG.count(), 2U);
 
   size_t index = 0;
@@ -244,6 +280,55 @@ TEST_F(LibraryCatalogTest, IncrementalUpdateTruncatesMetadataAndDropsOversizedDe
   EXPECT_EQ(record.title, longTitle.substr(0, 253));
   EXPECT_EQ(record.author.size(), LibraryCatalogStore::MAX_AUTHOR_BYTES);
   EXPECT_TRUE(record.coverBmpPath.empty());
+}
+
+TEST_F(LibraryCatalogTest, XtcEnrichmentUsesMetadataProbeWithoutOpeningTheWholeBook) {
+  addBook("metadata.xtc");
+  Xtc::setMetadata("Metadata title", "Metadata author", "/.crosspoint/xtc/thumb.bmp");
+
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+
+  ASSERT_EQ(LIBRARY_CATALOG.count(), 1U);
+  LibraryBookRecord record;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(0, record));
+  EXPECT_EQ(record.title, "Metadata title");
+  EXPECT_EQ(record.author, "Metadata author");
+  EXPECT_EQ(record.coverBmpPath, "/.crosspoint/xtc/thumb.bmp");
+  EXPECT_EQ(Xtc::metadataReadCalls(), 1U);
+  EXPECT_EQ(Xtc::loadCalls(), 0U);
+}
+
+TEST_F(LibraryCatalogTest, EpubDiscoveryAndMetadataEnrichmentRunInSeparateBoundedSteps) {
+  addBook("metadata.epub");
+  Epub::setMetadata({"Metadata title", "Metadata author", "cover.jpg"}, "/.crosspoint/epub/thumb.bmp", 3);
+
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  for (size_t steps = 0; steps < 1000 && LIBRARY_CATALOG.phase() == LibraryCatalogStore::Phase::Discovering; ++steps) {
+    LIBRARY_CATALOG.step();
+  }
+  ASSERT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Enriching);
+  EXPECT_EQ(Epub::metadataBeginCalls(), 0U);
+  EXPECT_EQ(Epub::metadataStepCalls(), 0U);
+
+  // One catalog step only starts the job; subsequent steps pump exactly one
+  // bounded metadata chunk instead of parsing the whole EPUB during discovery.
+  LIBRARY_CATALOG.step();
+  EXPECT_EQ(Epub::metadataBeginCalls(), 1U);
+  EXPECT_EQ(Epub::metadataStepCalls(), 0U);
+  for (size_t step = 1; step <= 3; ++step) {
+    LIBRARY_CATALOG.step();
+    EXPECT_EQ(Epub::metadataStepCalls(), step);
+    EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Enriching);
+  }
+  LIBRARY_CATALOG.step();
+  EXPECT_EQ(Epub::metadataStepCalls(), 4U);
+
+  LibraryBookRecord record;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(0, record));
+  EXPECT_EQ(record.title, "Metadata title");
+  EXPECT_EQ(record.author, "Metadata author");
+  EXPECT_EQ(record.coverBmpPath, "/.crosspoint/epub/thumb.bmp");
 }
 
 TEST_F(LibraryCatalogTest, OversizedSourcePathKeepsCommittedCatalogAndDirtyMarker) {
@@ -292,6 +377,30 @@ TEST_F(LibraryCatalogTest, OrderedIndicesUsePersistedSortOrder) {
   EXPECT_EQ(records[0].title, "alpha");
   EXPECT_EQ(records[1].title, "Middle");
   EXPECT_EQ(records[2].title, "Zulu");
+}
+
+TEST_F(LibraryCatalogTest, FoldedSortKeysPreserveOriginalValueAndEmptyAuthorTieBreaks) {
+  addBook("alpha.txt");
+  addBook("Álpha.txt");
+  addBook("punctuation.epub");
+  Epub::setMetadata({"Punctuation", "---", ""}, "");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+
+  std::vector<size_t> indices;
+  ASSERT_TRUE(loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_TITLE_ASC, indices));
+  std::vector<LibraryBookRecord> records;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecords(indices, records));
+  ASSERT_EQ(records.size(), 3U);
+  EXPECT_EQ(records[0].title, "alpha");
+  EXPECT_EQ(records[1].title, "Álpha");
+
+  ASSERT_TRUE(loadOrderedIndices(CrossPointSettings::LIBRARY_SORT_AUTHOR_ASC, indices));
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecords(indices, records));
+  ASSERT_EQ(records.size(), 3U);
+  EXPECT_EQ(records[0].author, "---");
+  EXPECT_TRUE(records[1].author.empty());
+  EXPECT_TRUE(records[2].author.empty());
 }
 
 TEST_F(LibraryCatalogTest, OptimizedOrderPreservesDateAuthorAndLongPathTieBreaks) {
@@ -462,6 +571,8 @@ TEST_F(LibraryCatalogTest, SinglePublishedPathUpdatesReadyCatalogWithoutFullRebu
   addBook("new.txt");
   LibraryCatalogStore::markDirtyPath("/new.txt");
   ASSERT_TRUE(LIBRARY_CATALOG.open());
+  EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Updating);
+  advanceToReady();
 
   EXPECT_TRUE(LIBRARY_CATALOG.isReady());
   EXPECT_EQ(LIBRARY_CATALOG.count(), 2U);
@@ -472,6 +583,43 @@ TEST_F(LibraryCatalogTest, SinglePublishedPathUpdatesReadyCatalogWithoutFullRebu
   ASSERT_EQ(records.size(), 2U);
   EXPECT_TRUE(std::any_of(records.begin(), records.end(),
                           [](const LibraryBookRecord& record) { return record.path == "/new.txt"; }));
+}
+
+TEST_F(LibraryCatalogTest, SinglePathUpdateLocatesCopiesAndVerifiesOneRecordPerStep) {
+  addBook("one.txt");
+  addBook("two.txt");
+  addBook("three.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+
+  addBook("four.txt");
+  LibraryCatalogStore::markDirtyPath("/four.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.open());
+  ASSERT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Updating);
+
+  // The committed catalog remains readable while the replacement is built.
+  std::vector<LibraryBookRecord> committed;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadPage(0, 3, committed));
+  ASSERT_EQ(committed.size(), 3U);
+
+  const fs::path temporary = root_ / ".crosspoint/library.idx.tmp";
+  for (size_t record = 0; record < 3; ++record) {
+    LIBRARY_CATALOG.step();
+    EXPECT_FALSE(fs::exists(temporary));
+  }
+  LIBRARY_CATALOG.step();  // finish locate and write only the header
+  ASSERT_TRUE(fs::exists(temporary));
+  const uintmax_t headerSize = fs::file_size(temporary);
+
+  std::array<uintmax_t, 3> sizes{};
+  for (size_t record = 0; record < sizes.size(); ++record) {
+    LIBRARY_CATALOG.step();
+    sizes[record] = fs::file_size(temporary);
+  }
+  EXPECT_GT(sizes[0], headerSize);
+  EXPECT_EQ(sizes[1] - sizes[0], sizes[2] - sizes[1]);
+  advanceToReady();
+  EXPECT_EQ(LIBRARY_CATALOG.count(), 4U);
 }
 
 TEST_F(LibraryCatalogTest, MultiplePendingPathsFallBackToFullRebuild) {
@@ -520,6 +668,8 @@ TEST_F(LibraryCatalogTest, SinglePublishedPathReplacesExistingRecordWithoutChang
   }
   LibraryCatalogStore::markDirtyPath("/book.txt");
   ASSERT_TRUE(LIBRARY_CATALOG.open());
+  EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Updating);
+  advanceToReady();
 
   EXPECT_EQ(LIBRARY_CATALOG.count(), 1U);
   EXPECT_GT(LIBRARY_CATALOG.generation(), originalGeneration);
@@ -540,6 +690,8 @@ TEST_F(LibraryCatalogTest, SingleDeletedPathRemovesOnlyThatRecordWithoutRediscov
   ASSERT_TRUE(fs::remove(root_ / "two.txt"));
   LibraryCatalogStore::markDeletedPath("/two.txt");
   ASSERT_TRUE(LIBRARY_CATALOG.open());
+  EXPECT_EQ(LIBRARY_CATALOG.phase(), LibraryCatalogStore::Phase::Updating);
+  advanceToReady();
 
   EXPECT_TRUE(LIBRARY_CATALOG.isReady());
   EXPECT_EQ(LIBRARY_CATALOG.count(), 2U);

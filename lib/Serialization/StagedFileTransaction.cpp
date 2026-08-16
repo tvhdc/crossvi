@@ -154,4 +154,22 @@ Status publishAndVerify(const char* finalPath, const char* stagingPath, const ch
   return Status::Published;
 }
 
+Status beginPendingPublish(const char* finalPath, const char* stagingPath, const char* backupPath,
+                           const uint64_t expectedSize, const Validator recoveryValidator, void* context) {
+  if (!finalPath || !stagingPath || !backupPath || !recoveryValidator || !Storage.exists(stagingPath) ||
+      !fileSizeMatches(stagingPath, expectedSize)) {
+    return Status::InvalidStaging;
+  }
+  const Status recovered = recover(finalPath, backupPath, recoveryValidator, context);
+  if (recovered == Status::IoError) return Status::IoError;
+  return rotateAndPublish(finalPath, stagingPath, backupPath, expectedSize, true);
+}
+
+bool commitPendingPublish(const char* backupPath) { return backupPath && removeIfPresent(backupPath); }
+
+bool rollbackPendingPublish(const char* finalPath, const char* backupPath) {
+  if (!finalPath || !backupPath || !removeIfPresent(finalPath)) return false;
+  return !Storage.exists(backupPath) || Storage.rename(backupPath, finalPath);
+}
+
 }  // namespace StagedFileTransaction

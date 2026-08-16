@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <utility>
 
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
@@ -21,6 +22,13 @@ constexpr unsigned long SKIP_HOLD_MS = 700;
 constexpr unsigned long CONFIRM_HOLD_MS = 500;
 constexpr unsigned long BOOKMARK_MESSAGE_DURATION_MS = 2500;
 constexpr uint8_t DEFAULT_AUTO_PAGE_TURN_SECONDS = 30;
+constexpr size_t GRAYSCALE_STRIP_SCRATCH_BYTES = 13U * 1024U;
+
+inline int grayscaleStripRows(const int widthBytes, const int height) {
+  if (widthBytes <= 0 || height <= 0) return 0;
+  const size_t rows = std::max<size_t>(1, GRAYSCALE_STRIP_SCRATCH_BYTES / static_cast<size_t>(widthBytes));
+  return std::min<int>(height, static_cast<int>(rows));
+}
 
 enum class HoldRelease : uint8_t { None, Short, Long };
 
@@ -166,21 +174,29 @@ inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntil
 // and other overlays should be drawn before calling this.
 // Kept as a template to avoid std::function overhead; instantiated once per reader type.
 template <typename RenderFn>
-void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
+void renderAntiAliased(GfxRenderer& renderer, std::unique_ptr<uint8_t[]>& scratch, size_t& scratchCapacity,
+                       RenderFn&& renderFn) {
   if (!renderer.supportsStripGrayscale()) return;
 
-  constexpr int STRIP_ROWS = 80;
   const int height = renderer.getDisplayHeight();
   const int widthBytes = renderer.getDisplayWidthBytes();
-  std::unique_ptr<uint8_t[]> scratch(new (std::nothrow) uint8_t[static_cast<size_t>(widthBytes) * STRIP_ROWS]);
+  const int stripRows = grayscaleStripRows(widthBytes, height);
+  if (stripRows <= 0) return;
+  const size_t requiredScratch = static_cast<size_t>(widthBytes) * stripRows;
+  if (scratchCapacity < requiredScratch) {
+    scratch.reset();
+    scratchCapacity = 0;
+    scratch.reset(new (std::nothrow) uint8_t[requiredScratch]);
+    if (scratch) scratchCapacity = requiredScratch;
+  }
   if (!scratch) {
-    LOG_ERR("READER", "OOM: grayscale strip scratch (%d bytes)", widthBytes * STRIP_ROWS);
+    LOG_ERR("READER", "OOM: grayscale strip scratch (%u bytes)", static_cast<unsigned>(requiredScratch));
     return;
   }
 
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-  for (int y = 0; y < height; y += STRIP_ROWS) {
-    const int rows = std::min(STRIP_ROWS, height - y);
+  for (int y = 0; y < height; y += stripRows) {
+    const int rows = std::min(stripRows, height - y);
     renderer.beginStripTarget(scratch.get(), y, rows);
     renderer.clearScreen(0x00);
     renderFn();
@@ -189,8 +205,8 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   }
 
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-  for (int y = 0; y < height; y += STRIP_ROWS) {
-    const int rows = std::min(STRIP_ROWS, height - y);
+  for (int y = 0; y < height; y += stripRows) {
+    const int rows = std::min(stripRows, height - y);
     renderer.beginStripTarget(scratch.get(), y, rows);
     renderer.clearScreen(0x00);
     renderFn();
@@ -201,6 +217,13 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.setRenderMode(GfxRenderer::BW);
   renderer.displayGrayBuffer();
   renderer.cleanupGrayscaleWithFrameBuffer();
+}
+
+template <typename RenderFn>
+void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
+  std::unique_ptr<uint8_t[]> scratch;
+  size_t scratchCapacity = 0;
+  renderAntiAliased(renderer, scratch, scratchCapacity, std::forward<RenderFn>(renderFn));
 }
 
 struct BackNavCallback {

@@ -47,6 +47,7 @@ class TextSettingsActivity final : public Activity {
   int customPreviewFontIndex_ = -1;
   uint8_t customPreviewFontSize_ = UINT8_MAX;
   bool customPreviewPending_ = false;
+  bool settingsSavePending_ = false;
   std::unique_ptr<uint8_t[]> customPreviewSnapshot_;
   size_t customPreviewSnapshotSize_ = 0;
   std::vector<std::shared_ptr<TextBlock>> previewLines_;
@@ -63,6 +64,7 @@ class TextSettingsActivity final : public Activity {
   void handleSelection();
   void applyFontSelection(int index);
   void applySizeSelection(int index);
+  void persistSettings();
   void invalidatePreviewLocked();
   void refreshPreviewAfterSettingChange(StrId settingId);
   void preparePreviewLines(int fontId, const char* text, int width, int maxLines);

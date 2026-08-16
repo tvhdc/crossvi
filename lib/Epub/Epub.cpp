@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <new>
 #include <string_view>
 
@@ -211,6 +212,67 @@ bool validateRasterFile(const char* path, void*) {
 }
 }  // namespace
 
+class Epub::IndexingReadState {
+ public:
+  enum class Kind : uint8_t { Container, Opf, TocNav, TocNcx };
+
+  Kind kind = Kind::Container;
+  std::string entryPath;
+  std::string basePath;
+  ZipStreamReadJob job;
+  std::unique_ptr<ContainerParser> containerParser;
+  std::unique_ptr<ContentOpfParser> opfParser;
+  std::unique_ptr<TocNavParser> navParser;
+  std::unique_ptr<TocNcxParser> ncxParser;
+};
+
+class Epub::CoreMetadataReadState final : public Print {
+ public:
+  enum class Phase : uint8_t { Source, Cache, Container, Opf, Guide, Verify };
+
+  size_t write(const uint8_t data) override { return write(&data, 1); }
+  size_t write(const uint8_t* buffer, const size_t size) override {
+    if (!buffer || !guideBuffer || guideWritten > guideSize || size > guideSize - guideWritten) return 0;
+    memcpy(guideBuffer.get() + guideWritten, buffer, size);
+    guideWritten += size;
+    return size;
+  }
+
+  Phase phase = Phase::Source;
+  ZipSourceIdentityJob identityJob;
+  ZipStreamReadJob streamJob;
+  ZipFile::SourceIdentity initialIdentity{};
+  BookMetadataCache::BookMetadata metadata;
+  std::string entryPath;
+  std::string guidePath;
+  std::unique_ptr<ContainerParser> containerParser;
+  std::unique_ptr<ContentOpfParser> opfParser;
+  std::unique_ptr<uint8_t[]> guideBuffer;
+  size_t guideSize = 0;
+  size_t guideWritten = 0;
+  bool cacheLoadActive = false;
+  bool verifyStarted = false;
+};
+
+Epub::Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
+  cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
+}
+
+Epub::Epub(std::string filepath, const std::string& cacheDir, const ZipFile::SourceIdentity& verifiedSourceIdentity)
+    : Epub(std::move(filepath), cacheDir) {
+  sourceIdentitySnapshot = verifiedSourceIdentity;
+  hasSourceIdentitySnapshot = true;
+  sourceReplacementRecoveryDone = true;
+}
+
+Epub::~Epub() {
+  cancelCoreMetadataRead();
+  cancelIndexing();
+  cancelThumbnailPreparation();
+  cancelImagePreparation();
+  clearCoverSource();
+}
+
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
 namespace {
 class EpubLoadDebugMetric {
@@ -318,6 +380,11 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
     return false;
   }
 
+  return finalizeContentOpf(opfParser, bookMetadata);
+}
+
+bool Epub::finalizeContentOpf(ContentOpfParser& opfParser, BookMetadataCache::BookMetadata& bookMetadata,
+                              const bool resolveGuide) {
   // Grab data from opfParser into epub. Normalize titles to NFC so NFD (combining
   // mark) text renders correctly — the device fonts have no mark positioning.
   bookMetadata.title = utf8ComposeNfc(opfParser.title);
@@ -328,7 +395,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
 
   // Guide-based cover fallback: if no cover found via metadata/properties,
   // try extracting the image reference from the guide's cover page XHTML
-  if (bookMetadata.coverItemHref.empty() && !opfParser.guideCoverPageHref.empty()) {
+  if (resolveGuide && bookMetadata.coverItemHref.empty() && !opfParser.guideCoverPageHref.empty()) {
     LOG_DBG("EBP", "No cover from metadata, trying guide cover page: %s", opfParser.guideCoverPageHref.c_str());
     size_t coverPageSize = 0;
     uint8_t* coverPageData = nullptr;
@@ -340,48 +407,8 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
       coverPageData = readItemContentsToBytes(opfParser.guideCoverPageHref, &coverPageSize, true);
     }
     if (coverPageData) {
-      const std::string coverPageHtml(reinterpret_cast<char*>(coverPageData), coverPageSize);
+      resolveGuideCover(opfParser.guideCoverPageHref, coverPageData, coverPageSize, bookMetadata);
       free(coverPageData);
-
-      // Determine base path of the cover page for resolving relative image references
-      std::string coverPageBase;
-      const auto lastSlash = opfParser.guideCoverPageHref.rfind('/');
-      if (lastSlash != std::string::npos) {
-        coverPageBase = opfParser.guideCoverPageHref.substr(0, lastSlash + 1);
-      }
-
-      // Search for image references in both XML attribute quote forms.
-      std::string imageRef;
-      for (const char* pattern : {"xlink:href=\"", "xlink:href='", "src=\"", "src='"}) {
-        auto pos = coverPageHtml.find(pattern);
-        while (pos != std::string::npos) {
-          const size_t patternLength = strlen(pattern);
-          const char quote = pattern[patternLength - 1];
-          pos += patternLength;
-          const auto endPos = coverPageHtml.find(quote, pos);
-          if (endPos != std::string::npos) {
-            const auto ref = std::string_view{coverPageHtml}.substr(pos, endPos - pos);
-            // Cover BMP generation supports JPG/PNG only; skip GIF so an unsupported wrapper image
-            // does not block a later supported cover reference.
-            if (FsHelpers::hasPngExtension(ref) || FsHelpers::hasJpgExtension(ref)) {
-              imageRef = ref;
-              break;
-            }
-          }
-          pos = coverPageHtml.find(pattern, pos);
-        }
-        if (!imageRef.empty()) break;
-      }
-
-      // The guide wrapper was read completely. From this point an empty
-      // imageRef is a verified "no supported cover" result, not a transient
-      // ZIP/I/O failure, so thumbnail generation may persist its small marker.
-      coverResolutionComplete = true;
-
-      if (!imageRef.empty()) {
-        bookMetadata.coverItemHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(coverPageBase + imageRef));
-        LOG_DBG("EBP", "Found cover image from guide: %s", bookMetadata.coverItemHref.c_str());
-      }
     }
   }
 
@@ -401,6 +428,46 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
 
   LOG_DBG("EBP", "Successfully parsed content.opf");
   return true;
+}
+
+void Epub::resolveGuideCover(const std::string& guidePath, const uint8_t* contents, const size_t size,
+                             BookMetadataCache::BookMetadata& bookMetadata) {
+  if (!contents && size != 0) return;
+  const std::string_view coverPageHtml(reinterpret_cast<const char*>(contents), size);
+
+  std::string coverPageBase;
+  const auto lastSlash = guidePath.rfind('/');
+  if (lastSlash != std::string::npos) coverPageBase = guidePath.substr(0, lastSlash + 1);
+
+  std::string imageRef;
+  for (const char* pattern : {"xlink:href=\"", "xlink:href='", "src=\"", "src='"}) {
+    auto pos = coverPageHtml.find(pattern);
+    while (pos != std::string_view::npos) {
+      const size_t patternLength = strlen(pattern);
+      const char quote = pattern[patternLength - 1];
+      pos += patternLength;
+      const auto endPos = coverPageHtml.find(quote, pos);
+      if (endPos != std::string_view::npos) {
+        const auto ref = coverPageHtml.substr(pos, endPos - pos);
+        // Cover BMP generation supports JPG/PNG only; skip GIF so an
+        // unsupported wrapper image does not block a later supported one.
+        if (FsHelpers::hasPngExtension(ref) || FsHelpers::hasJpgExtension(ref)) {
+          imageRef = ref;
+          break;
+        }
+      }
+      pos = coverPageHtml.find(pattern, pos);
+    }
+    if (!imageRef.empty()) break;
+  }
+
+  // A complete guide wrapper with no supported image is an authoritative
+  // no-cover result. Failed or oversized reads deliberately never call here.
+  coverResolutionComplete = true;
+  if (!imageRef.empty()) {
+    bookMetadata.coverItemHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(coverPageBase + imageRef));
+    LOG_DBG("EBP", "Found cover image from guide: %s", bookMetadata.coverItemHref.c_str());
+  }
 }
 
 bool Epub::parseTocNcxFile() const {
@@ -639,17 +706,21 @@ Epub::SourceBindingStatus Epub::inspectSourceBinding() const {
   // A power loss after the durable replacement marker was published but
   // before the backing file changed leaves the old EPUB authoritative. Restore
   // its retained identity instead of misclassifying it as a replacement.
-  switch (SourceIdentityStore::recoverReplacement(cachePath, sourceIdentitySnapshot)) {
-    case SourceIdentityStore::RecoverReplacementStatus::RestoredCurrentSource:
-    case SourceIdentityStore::RecoverReplacementStatus::NotPrepared:
-    case SourceIdentityStore::RecoverReplacementStatus::ReplacementPublished:
-      break;
-    case SourceIdentityStore::RecoverReplacementStatus::NewerVersion:
-      return SourceBindingStatus::NewerVersion;
-    case SourceIdentityStore::RecoverReplacementStatus::Invalid:
-      return SourceBindingStatus::Invalid;
-    case SourceIdentityStore::RecoverReplacementStatus::IoError:
-      return SourceBindingStatus::IoError;
+  if (sourceReplacementRecoveryDone) {
+    sourceReplacementRecoveryDone = false;
+  } else {
+    switch (SourceIdentityStore::recoverReplacement(cachePath, sourceIdentitySnapshot)) {
+      case SourceIdentityStore::RecoverReplacementStatus::RestoredCurrentSource:
+      case SourceIdentityStore::RecoverReplacementStatus::NotPrepared:
+      case SourceIdentityStore::RecoverReplacementStatus::ReplacementPublished:
+        break;
+      case SourceIdentityStore::RecoverReplacementStatus::NewerVersion:
+        return SourceBindingStatus::NewerVersion;
+      case SourceIdentityStore::RecoverReplacementStatus::Invalid:
+        return SourceBindingStatus::Invalid;
+      case SourceIdentityStore::RecoverReplacementStatus::IoError:
+        return SourceBindingStatus::IoError;
+    }
   }
 
   ZipFile::SourceIdentity stored;
@@ -670,6 +741,12 @@ Epub::SourceBindingStatus Epub::inspectSourceBinding() const {
   return SourceBindingStatus::IoError;
 }
 
+Epub::SourceBindingStatus Epub::inspectSourceBindingForLoad() {
+  const SourceBindingStatus status = inspectSourceBinding();
+  sourceBindingPreparedForLoad = status == SourceBindingStatus::Match;
+  return status;
+}
+
 bool Epub::bindCurrentSource() const {
   if (!ensureSourceIdentitySnapshot()) return false;
   const SourceIdentityStore::SaveStatus saved = SourceIdentityStore::save(cachePath, sourceIdentitySnapshot);
@@ -686,39 +763,238 @@ BookMetadataCache::LoadStatus Epub::inspectCache() {
   return bookMetadataCache->load(sourceIdentitySnapshot);
 }
 
+BookMetadataCache::LoadStepResult Epub::beginCacheInspection() {
+  if (!ensureSourceIdentitySnapshot()) return BookMetadataCache::LoadStepResult::Error;
+  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+  if (!bookMetadataCache) {
+    LOG_ERR("EBP", "Not enough memory to inspect EPUB cache");
+    return BookMetadataCache::LoadStepResult::Error;
+  }
+  return bookMetadataCache->beginLoad(sourceIdentitySnapshot);
+}
+
+BookMetadataCache::LoadStepResult Epub::stepCacheInspection(const size_t maxEntries) {
+  if (!bookMetadataCache) return BookMetadataCache::LoadStepResult::Error;
+  return bookMetadataCache->stepLoad(maxEntries);
+}
+
+void Epub::cancelCacheInspection() {
+  if (bookMetadataCache) bookMetadataCache->cancelLoad();
+}
+
+BookMetadataCache::LoadStatus Epub::getCacheLoadStatus() const {
+  return bookMetadataCache ? bookMetadataCache->getLastLoadStatus() : BookMetadataCache::LoadStatus::IoError;
+}
+
 bool Epub::readCoreMetadata(BookMetadataCache::BookMetadata& metadata) {
-  // Prefer the source-verified metadata cache: book.bin is bound to the exact
-  // bytes of this EPUB, so a matching cache supplies the same core fields the
-  // OPF parse would, without opening the zip or parsing XML. Falls back to a
-  // full parse when the cache is absent, stale, or corrupt, and also when the
-  // cached cover href is empty: that state can be a transient guide-page read
-  // failure at index time rather than a verified no-cover result, and only the
-  // parse (which sets coverResolutionComplete) can re-resolve it.
-  bool fromCache = false;
-  if (bookMetadataCache && bookMetadataCache->isLoaded()) {
-    fromCache = !bookMetadataCache->coreMetadata.coverItemHref.empty();
-  } else if (Storage.exists((cachePath + "/book.bin").c_str()) && ensureSourceIdentitySnapshot()) {
-    bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
-    const bool loaded =
-        bookMetadataCache && bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
-    if (!bookMetadataCache) LOG_ERR("EBP", "Not enough memory for cached metadata; parsing OPF instead");
-    if (loaded) fromCache = !bookMetadataCache->coreMetadata.coverItemHref.empty();
+  if (!beginCoreMetadataRead()) return false;
+  CoreMetadataStepResult result = CoreMetadataStepResult::InProgress;
+  while (result == CoreMetadataStepResult::InProgress) result = stepCoreMetadataRead(metadata);
+  return result == CoreMetadataStepResult::Loaded;
+}
+
+bool Epub::beginCoreMetadataRead() {
+  if (isReadingCoreMetadata() || isIndexing()) return false;
+  sourceIdentityHandoff = {};
+  auto state = makeUniqueNoThrow<CoreMetadataReadState>();
+  if (!state) {
+    LOG_ERR("EBP", "Not enough memory for cooperative EPUB metadata");
+    return false;
   }
-  if (fromCache) {
-    metadata = bookMetadataCache->coreMetadata;
-    // A non-empty cached cover is a resolved result (the guide-cover fallback
-    // already ran when the cache was built).
-    coverResolutionComplete = true;
-  } else {
-    // Drop the stale cache before the fallback parse: thumbnail consumers
-    // prefer bookMetadataCache->coreMetadata over transientMetadata, and the
-    // re-parse may have found a cover the old cache baked in as empty.
+  if (hasSourceIdentitySnapshot) {
+    state->initialIdentity = sourceIdentitySnapshot;
+    state->phase = CoreMetadataReadState::Phase::Cache;
+  } else if (!state->identityJob.begin(filepath)) {
+    LOG_ERR("EBP", "Could not begin EPUB metadata source check");
+    return false;
+  }
+  coreMetadataReadState = std::move(state);
+  return true;
+}
+
+Epub::CoreMetadataStepResult Epub::stepCoreMetadataRead(BookMetadataCache::BookMetadata& metadata) {
+  if (!coreMetadataReadState) return CoreMetadataStepResult::Error;
+  auto& state = *coreMetadataReadState;
+  const auto fail = [this](const char* message) {
+    (void)message;
+    LOG_ERR("EBP", "%s", message);
+    cancelCoreMetadataRead();
+    return CoreMetadataStepResult::Error;
+  };
+  const auto beginContainer = [this, &state, &fail]() {
+    constexpr char containerPath[] = "META-INF/container.xml";
     bookMetadataCache.reset();
-    metadata = {};
-    if (!parseContentOpf(metadata, /*writeSpineEntries=*/false)) return false;
+    state.metadata = {};
+    size_t containerSize = 0;
+    if (!getItemSize(containerPath, &containerSize)) return fail("Could not size container.xml metadata");
+    state.containerParser = makeUniqueNoThrow<ContainerParser>(containerSize);
+    if (!state.containerParser || !state.containerParser->setup() ||
+        state.streamJob.begin(filepath, containerPath, *state.containerParser, 1024, containerSize, true) !=
+            ZipStreamReadJob::BeginStatus::Started) {
+      return fail("Could not begin cooperative container.xml metadata read");
+    }
+    state.phase = CoreMetadataReadState::Phase::Container;
+    return CoreMetadataStepResult::InProgress;
+  };
+
+  switch (state.phase) {
+    case CoreMetadataReadState::Phase::Source: {
+      ZipFile::SourceIdentity identity;
+      const auto status = state.identityJob.step(16U * 1024U, identity);
+      if (status == ZipSourceIdentityJob::StepStatus::InProgress) return CoreMetadataStepResult::InProgress;
+      if (status != ZipSourceIdentityJob::StepStatus::Done) return fail("Could not identify EPUB metadata source");
+      sourceIdentitySnapshot = identity;
+      hasSourceIdentitySnapshot = true;
+      state.initialIdentity = identity;
+      state.phase = CoreMetadataReadState::Phase::Cache;
+      return CoreMetadataStepResult::InProgress;
+    }
+
+    case CoreMetadataReadState::Phase::Cache: {
+      BookMetadataCache::LoadStepResult loadResult = BookMetadataCache::LoadStepResult::Error;
+      if (bookMetadataCache && bookMetadataCache->isLoaded()) {
+        loadResult = BookMetadataCache::LoadStepResult::Loaded;
+      } else if (!state.cacheLoadActive) {
+        if (!Storage.exists((cachePath + "/book.bin").c_str())) return beginContainer();
+        bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+        if (!bookMetadataCache) {
+          LOG_ERR("EBP", "Not enough memory for cached metadata; parsing OPF instead");
+          return beginContainer();
+        }
+        loadResult = bookMetadataCache->beginLoad(state.initialIdentity);
+        state.cacheLoadActive = loadResult == BookMetadataCache::LoadStepResult::InProgress;
+      } else {
+        loadResult = bookMetadataCache->stepLoad(8);
+        state.cacheLoadActive = loadResult == BookMetadataCache::LoadStepResult::InProgress;
+      }
+      if (loadResult == BookMetadataCache::LoadStepResult::InProgress) return CoreMetadataStepResult::InProgress;
+      if (loadResult != BookMetadataCache::LoadStepResult::Loaded ||
+          bookMetadataCache->coreMetadata.coverItemHref.empty()) {
+        return beginContainer();
+      }
+      state.metadata = bookMetadataCache->coreMetadata;
+      coverResolutionComplete = true;
+      state.phase = CoreMetadataReadState::Phase::Verify;
+      return CoreMetadataStepResult::InProgress;
+    }
+
+    case CoreMetadataReadState::Phase::Container: {
+      const auto readStatus = state.streamJob.step();
+      if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return CoreMetadataStepResult::InProgress;
+      if (readStatus != ZipStreamReadJob::StepStatus::Done || !state.containerParser ||
+          state.containerParser->fullPath.empty()) {
+        return fail("Could not stream container.xml metadata");
+      }
+      state.entryPath = std::move(state.containerParser->fullPath);
+      state.containerParser.reset();
+      contentBasePath = state.entryPath.substr(0, state.entryPath.find_last_of('/') + 1);
+
+      size_t opfSize = 0;
+      if (!getItemSize(state.entryPath, &opfSize)) return fail("Could not size content.opf metadata");
+      state.opfParser = makeUniqueNoThrow<ContentOpfParser>(getCachePath(), getBasePath(), opfSize, nullptr);
+      if (!state.opfParser || !state.opfParser->setup() ||
+          state.streamJob.begin(filepath, state.entryPath.c_str(), *state.opfParser, 1024, opfSize, true) !=
+              ZipStreamReadJob::BeginStatus::Started) {
+        return fail("Could not begin cooperative content.opf metadata read");
+      }
+      state.phase = CoreMetadataReadState::Phase::Opf;
+      return CoreMetadataStepResult::InProgress;
+    }
+
+    case CoreMetadataReadState::Phase::Opf: {
+      const auto readStatus = state.streamJob.step();
+      if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return CoreMetadataStepResult::InProgress;
+      if (readStatus != ZipStreamReadJob::StepStatus::Done || !state.opfParser || !state.opfParser->succeeded()) {
+        return fail("Could not stream content.opf metadata");
+      }
+      state.guidePath = state.opfParser->guideCoverPageHref;
+      if (!finalizeContentOpf(*state.opfParser, state.metadata, /*resolveGuideCover=*/false)) {
+        return fail("Could not finalize content.opf metadata");
+      }
+      state.opfParser.reset();
+      if (state.metadata.coverItemHref.empty() && !state.guidePath.empty()) {
+        if (!getItemSize(state.guidePath, &state.guideSize)) {
+          LOG_ERR("EBP", "Could not size guide cover page");
+        } else if (state.guideSize > GUIDE_COVER_PAGE_MAX_BYTES) {
+          LOG_ERR("EBP", "Guide cover page is too large (%zu bytes)", state.guideSize);
+        } else if (state.guideSize == 0) {
+          resolveGuideCover(state.guidePath, nullptr, 0, state.metadata);
+        } else {
+          state.guideBuffer = makeUniqueNoThrow<uint8_t[]>(state.guideSize);
+          if (state.guideBuffer &&
+              state.streamJob.begin(filepath, state.guidePath.c_str(), state, 1024, state.guideSize, true) ==
+                  ZipStreamReadJob::BeginStatus::Started) {
+            state.phase = CoreMetadataReadState::Phase::Guide;
+            return CoreMetadataStepResult::InProgress;
+          }
+          LOG_ERR("EBP", "Could not begin cooperative guide cover read");
+          state.guideBuffer.reset();
+        }
+      }
+      state.phase = CoreMetadataReadState::Phase::Verify;
+      return CoreMetadataStepResult::InProgress;
+    }
+
+    case CoreMetadataReadState::Phase::Guide: {
+      const auto readStatus = state.streamJob.step();
+      if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return CoreMetadataStepResult::InProgress;
+      if (readStatus == ZipStreamReadJob::StepStatus::Done && state.guideWritten == state.guideSize) {
+        resolveGuideCover(state.guidePath, state.guideBuffer.get(), state.guideSize, state.metadata);
+      } else {
+        LOG_ERR("EBP", "Could not stream guide cover metadata");
+      }
+      state.guideBuffer.reset();
+      state.phase = CoreMetadataReadState::Phase::Verify;
+      return CoreMetadataStepResult::InProgress;
+    }
+
+    case CoreMetadataReadState::Phase::Verify: {
+      if (!state.verifyStarted) {
+        if (!state.identityJob.begin(filepath)) return fail("Could not begin final EPUB metadata source check");
+        state.verifyStarted = true;
+        return CoreMetadataStepResult::InProgress;
+      }
+      ZipFile::SourceIdentity finalIdentity;
+      ZipSourceIdentityJob::FileStamp fileStamp;
+      const auto status = state.identityJob.step(16U * 1024U, finalIdentity, &fileStamp);
+      if (status == ZipSourceIdentityJob::StepStatus::InProgress) return CoreMetadataStepResult::InProgress;
+      if (status != ZipSourceIdentityJob::StepStatus::Done || finalIdentity != state.initialIdentity) {
+        return fail("EPUB changed while core metadata was loading");
+      }
+      if (!fileStamp.valid ||
+          !sourceIdentityHandoff.captureVerified(filepath, finalIdentity, fileStamp.modifyDate, fileStamp.modifyTime)) {
+        sourceIdentityHandoff = {};
+      }
+      metadata = state.metadata;
+      transientMetadata = state.metadata;
+      hasTransientMetadata = true;
+      coreMetadataReadState.reset();
+      return CoreMetadataStepResult::Loaded;
+    }
   }
-  transientMetadata = metadata;
-  hasTransientMetadata = true;
+  return fail("Invalid cooperative EPUB metadata state");
+}
+
+void Epub::cancelCoreMetadataRead() {
+  if (!coreMetadataReadState) return;
+  coreMetadataReadState->identityJob.cancel();
+  coreMetadataReadState->streamJob.cancel();
+  if (coreMetadataReadState->cacheLoadActive && bookMetadataCache) bookMetadataCache->cancelLoad();
+  coreMetadataReadState.reset();
+}
+
+bool Epub::isReadingCoreMetadata() const { return coreMetadataReadState != nullptr; }
+
+bool Epub::hasPreparedCoreMetadata() const {
+  return hasTransientMetadata || (bookMetadataCache && bookMetadataCache->isLoaded());
+}
+
+bool Epub::getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const {
+  if (!hasSourceIdentitySnapshot || !sourceIdentityHandoff.valid || sourceIdentityHandoff.path != filepath ||
+      sourceIdentityHandoff.identity != sourceIdentitySnapshot) {
+    return false;
+  }
+  handoff = sourceIdentityHandoff;
   return true;
 }
 
@@ -728,7 +1004,7 @@ bool Epub::prepareCssCache(const bool verifySourceAtEntry) {
     return false;
   }
 
-  if (cssParser->loadFromCache()) {
+  if (cssParser->validateCache()) {
     cssParser->clear();
     externalCssUnavailable = false;
     return true;
@@ -774,7 +1050,7 @@ bool Epub::prepareCssCache(const bool verifySourceAtEntry) {
       bookMetadataCache && bookMetadataCache->load(sourceIdentitySnapshot) == BookMetadataCache::LoadStatus::Loaded;
   if (!bookMetadataCache) LOG_ERR("EBP", "Not enough memory to reload metadata after CSS parsing");
 
-  if (!saved || !metadataReloaded || !sourceStillMatchesSnapshot() || !cssParser->loadFromCache()) {
+  if (!saved || !metadataReloaded || !sourceStillMatchesSnapshot() || !cssParser->validateCache()) {
     LOG_ERR("EBP", "Failed to build and verify CSS cache");
     cssParser->clear();
     cssParser->deleteCache();
@@ -788,20 +1064,53 @@ bool Epub::prepareCssCache(const bool verifySourceAtEntry) {
 
 bool Epub::ensureCssCache() { return prepareCssCache(true); }
 
-// load in the meta data for the epub file
+bool Epub::prepareCssForLoad(const bool skipLoadingCss) {
+  // The caller already verified the source before reading derived data and
+  // verifies it again before returning. Avoid a redundant full central-
+  // directory hash here while retaining both safety boundaries.
+  if (skipLoadingCss || prepareCssCache(false)) return true;
+
+  // External CSS is best-effort while opening a book. Keep the EPUB usable
+  // only when its authoritative metadata/source remain valid and no stale
+  // rendered section survived the failed cache rebuild.
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded() || !sourceStillMatchesSnapshot() ||
+      Storage.exists((cachePath + "/sections").c_str())) {
+    return false;
+  }
+  externalCssUnavailable = true;
+  LOG_ERR("EBP", "Continuing without external CSS cache");
+  return true;
+}
+
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
+  return loadImpl(buildIfMissing, skipLoadingCss, true);
+}
+
+bool Epub::loadForCooperativeSourceCheck(const bool buildIfMissing, const bool skipLoadingCss) {
+  return loadImpl(buildIfMissing, skipLoadingCss, false);
+}
+
+// load in the meta data for the epub file
+bool Epub::loadImpl(const bool buildIfMissing, const bool skipLoadingCss, const bool verifySourceAtReturn) {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   EpubLoadDebugMetric debugLoadMetric;
 #endif
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
   externalCssUnavailable = false;
 
-  // The durable sidecar survives a derived-cache clear. Refuse to load any
-  // metadata or user state unless it still identifies this exact EPUB.
-  if (inspectSourceBinding() != SourceBindingStatus::Match) return false;
+  // The durable sidecar survives a derived-cache clear. ReaderActivity may
+  // have prepared this exact load already; consume that proof once rather than
+  // reopening all three sidecar candidates. Every success path still checks
+  // the current EPUB against the source snapshot before returning.
+  const bool sourceBindingAlreadyVerified = sourceBindingPreparedForLoad;
+  sourceBindingPreparedForLoad = false;
+  if (!sourceBindingAlreadyVerified && inspectSourceBinding() != SourceBindingStatus::Match) return false;
 
-  // Initialize spine/TOC cache
-  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+  // ReaderActivity may already have inspected and fully loaded this exact
+  // source-bound cache while choosing the loading flow. Reuse it instead of
+  // validating and materializing book.bin a second time.
+  const bool reuseInspectedMetadata = bookMetadataCache && bookMetadataCache->isLoaded();
+  if (!reuseInspectedMetadata) bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   // Always create CssParser - needed for inline style parsing even without CSS files
   cssParser = makeUniqueNoThrow<CssParser>(cachePath);
   if (!bookMetadataCache || !cssParser) {
@@ -810,37 +1119,20 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     cssParser.reset();
     return false;
   }
-  const auto prepareCssForLoad = [this, skipLoadingCss]() {
-    // load() already verified the source before reading derived data and
-    // verifies it again before returning. Avoid a redundant full central-
-    // directory hash here while retaining both safety boundaries.
-    if (skipLoadingCss || prepareCssCache(false)) return true;
-
-    // External CSS is best-effort while opening a book. Keep the EPUB usable
-    // only when its authoritative metadata/source remain valid and no stale
-    // rendered section survived the failed cache rebuild.
-    if (!bookMetadataCache || !bookMetadataCache->isLoaded() || !sourceStillMatchesSnapshot() ||
-        Storage.exists((cachePath + "/sections").c_str())) {
-      return false;
-    }
-    externalCssUnavailable = true;
-    LOG_ERR("EBP", "Continuing without external CSS cache");
-    return true;
-  };
-
   // Try to load existing cache first
-  const BookMetadataCache::LoadStatus cacheStatus = bookMetadataCache->load(sourceIdentitySnapshot);
+  const BookMetadataCache::LoadStatus cacheStatus =
+      reuseInspectedMetadata ? BookMetadataCache::LoadStatus::Loaded : bookMetadataCache->load(sourceIdentitySnapshot);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   debugLoadMetric.classifyCache(cacheStatus, buildIfMissing);
 #endif
   if (cacheStatus == BookMetadataCache::LoadStatus::Loaded) {
-    if (!prepareCssForLoad()) return false;
+    if (!prepareCssForLoad(skipLoadingCss)) return false;
     // Release the resolved CSS rule map: it is only needed transiently while building
     // section caches, and createSectionFile reloads it from cache on demand. Holding it
     // resident pins tens of KB for the whole reading session (more on warm resume into
     // an already-cached chapter, where createSectionFile never runs to clear it).
     cssParser->clear();
-    if (!sourceStillMatchesSnapshot()) {
+    if (verifySourceAtReturn && !sourceStillMatchesSnapshot()) {
       LOG_ERR("EBP", "EPUB changed while cache was loading");
       return false;
     }
@@ -864,7 +1156,56 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
-  // Cache doesn't exist or is invalid, build it
+  if (!beginColdIndexing(skipLoadingCss)) return false;
+  IndexStepResult result = IndexStepResult::InProgress;
+  while (result == IndexStepResult::InProgress) result = stepIndexing();
+  if (result != IndexStepResult::Loaded) return false;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  debugLoadMetric.markSuccess();
+#endif
+  return true;
+}
+
+bool Epub::beginIndexing(const bool skipLoadingCss) {
+  if (isIndexing()) return false;
+
+  LOG_DBG("EBP", "Beginning cooperative EPUB indexing: %s", filepath.c_str());
+  externalCssUnavailable = false;
+
+  const bool sourceBindingAlreadyVerified = sourceBindingPreparedForLoad;
+  sourceBindingPreparedForLoad = false;
+  if (!sourceBindingAlreadyVerified && inspectSourceBinding() != SourceBindingStatus::Match) return false;
+
+  BookMetadataCache::LoadStatus cacheStatus = BookMetadataCache::LoadStatus::Missing;
+  if (bookMetadataCache) {
+    cacheStatus =
+        bookMetadataCache->isLoaded() ? BookMetadataCache::LoadStatus::Loaded : bookMetadataCache->getLastLoadStatus();
+  } else {
+    bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+    if (bookMetadataCache) cacheStatus = bookMetadataCache->load(sourceIdentitySnapshot);
+  }
+  cssParser = makeUniqueNoThrow<CssParser>(cachePath);
+  if (!bookMetadataCache || !cssParser) {
+    LOG_ERR("EBP", "Not enough memory to initialize EPUB metadata and CSS");
+    bookMetadataCache.reset();
+    cssParser.reset();
+    return false;
+  }
+
+  if (cacheStatus == BookMetadataCache::LoadStatus::Loaded) {
+    LOG_DBG("EBP", "Cooperative indexing requested for an already loaded cache");
+    return false;
+  }
+  if (cacheStatus == BookMetadataCache::LoadStatus::NewerVersion ||
+      cacheStatus == BookMetadataCache::LoadStatus::IoError) {
+    return false;
+  }
+  return beginColdIndexing(skipLoadingCss);
+}
+
+bool Epub::beginColdIndexing(const bool skipLoadingCss) {
+  if (isIndexing() || !bookMetadataCache || !cssParser) return false;
+
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
   setupCacheDir();
 
@@ -889,127 +1230,295 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
+  tocNcxItem.clear();
+  tocNavItem.clear();
+  contentBasePath.clear();
+  cssFiles.clear();
+  cssDiscoveryComplete = true;
+  indexingMetadata = {};
+  indexingSkipLoadingCss = skipLoadingCss;
+  indexingReadState.reset();
+  indexingSourceIdentityJob.reset();
+  indexingCacheReloadActive = false;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  const uint32_t indexingStart = static_cast<uint32_t>(millis());
+  indexingStartedMs = static_cast<uint32_t>(millis());
+#else
+  indexingStartedMs = 0;
 #endif
 
-  // Begin building cache - stream entries to disk immediately
+  // Stream parser output to scratch files immediately. The final book.bin is
+  // not published until both passes have completed and been validated.
   if (!bookMetadataCache->beginWrite()) {
     LOG_ERR("EBP", "Could not begin writing cache");
     return false;
   }
-
-  // OPF Pass
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  const uint32_t opfStart = static_cast<uint32_t>(millis());
-#endif
-  BookMetadataCache::BookMetadata bookMetadata;
-  if (!bookMetadataCache->beginContentOpfPass()) {
-    LOG_ERR("EBP", "Could not begin writing content.opf pass");
-    return false;
-  }
-  if (!parseContentOpf(bookMetadata)) {
-    LOG_ERR("EBP", "Could not parse content.opf");
-    return false;
-  }
-  discoverCssFilesFromZip();
-  if (!bookMetadataCache->endContentOpfPass()) {
-    LOG_ERR("EBP", "Could not end writing content.opf pass");
-    return false;
-  }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  LOG_DBG("EBP", "OPF pass completed in %u ms", static_cast<unsigned>(static_cast<uint32_t>(millis()) - opfStart));
-#endif
-
-  // TOC Pass - try EPUB 3 nav first, fall back to NCX
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  const uint32_t tocStart = static_cast<uint32_t>(millis());
-#endif
-  if (!bookMetadataCache->beginTocPass()) {
-    LOG_ERR("EBP", "Could not begin writing toc pass");
-    return false;
-  }
-
-  bool tocParsed = false;
-
-  // Try EPUB 3 nav document first (preferred)
-  if (!tocNavItem.empty()) {
-    LOG_DBG("EBP", "Attempting to parse EPUB 3 nav document");
-    tocParsed = parseTocNavFile();
-  }
-
-  // Fall back to NCX if nav parsing failed or wasn't available
-  if (!tocParsed && !tocNcxItem.empty()) {
-    LOG_DBG("EBP", "Falling back to NCX TOC");
-    tocParsed = parseTocNcxFile();
-  }
-
-  if (!tocParsed) {
-    LOG_ERR("EBP", "Warning: Could not parse any TOC format");
-    // Continue anyway - book will work without TOC
-  }
-
-  if (!bookMetadataCache->endTocPass()) {
-    LOG_ERR("EBP", "Could not end writing toc pass");
-    return false;
-  }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  LOG_DBG("EBP", "TOC pass completed in %u ms", static_cast<unsigned>(static_cast<uint32_t>(millis()) - tocStart));
-#endif
-
-  // Close the cache files
-  if (!bookMetadataCache->endWrite()) {
-    LOG_ERR("EBP", "Could not end writing cache");
-    return false;
-  }
-
-  // Build final book.bin
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  const uint32_t buildStart = static_cast<uint32_t>(millis());
-#endif
-  if (!bookMetadataCache->buildBookBin(filepath, bookMetadata, sourceIdentitySnapshot)) {
-    LOG_ERR("EBP", "Could not update mappings and sizes");
-    return false;
-  }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  LOG_DBG("EBP", "buildBookBin completed in %u ms",
-          static_cast<unsigned>(static_cast<uint32_t>(millis()) - buildStart));
-  LOG_DBG("EBP", "Total indexing completed in %u ms",
-          static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingStart));
-#endif
-
-  if (!bookMetadataCache->cleanupTmpFiles()) {
-    LOG_DBG("EBP", "Could not cleanup tmp files - ignoring");
-  }
-
-  if (!prepareCssForLoad()) return false;
-
-  // ensureCssCache() reloads book.bin after temporarily lending its memory to
-  // CSS parsing. A style-free load still needs the normal first reload here.
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
-    bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
-    if (!bookMetadataCache) {
-      LOG_ERR("EBP", "Not enough memory to reload EPUB cache after indexing");
-      return false;
-    }
-  }
-  if (!bookMetadataCache->isLoaded() &&
-      bookMetadataCache->load(sourceIdentitySnapshot) != BookMetadataCache::LoadStatus::Loaded) {
-    LOG_ERR("EBP", "Failed to reload cache after writing");
-    return false;
-  }
-
-  if (!sourceStillMatchesSnapshot()) {
-    LOG_ERR("EBP", "EPUB changed while indexing");
-    return false;
-  }
-
-  LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-  debugLoadMetric.markSuccess();
-#endif
+  indexingPhase = IndexingPhase::Opf;
+  indexingPhaseStartedMs = static_cast<uint32_t>(millis());
   return true;
 }
+
+Epub::IndexStepResult Epub::stepIndexing() {
+  const auto fail = [this](const char* message) {
+    (void)message;
+    LOG_ERR("EBP", "%s", message);
+    cancelIndexing();
+    return IndexStepResult::Error;
+  };
+
+  switch (indexingPhase) {
+    case IndexingPhase::Idle:
+      return IndexStepResult::Error;
+
+    case IndexingPhase::Opf: {
+      constexpr char containerPath[] = "META-INF/container.xml";
+      if (!indexingReadState) {
+        if (!bookMetadataCache->beginContentOpfPass()) {
+          return fail("Could not begin writing content.opf pass");
+        }
+        size_t containerSize = 0;
+        if (!getItemSize(containerPath, &containerSize)) return fail("Could not size container.xml");
+
+        indexingReadState = makeUniqueNoThrow<IndexingReadState>();
+        if (!indexingReadState) return fail("Not enough memory for cooperative container parser");
+        indexingReadState->kind = IndexingReadState::Kind::Container;
+        indexingReadState->entryPath = containerPath;
+        indexingReadState->containerParser = makeUniqueNoThrow<ContainerParser>(containerSize);
+        if (!indexingReadState->containerParser || !indexingReadState->containerParser->setup() ||
+            indexingReadState->job.begin(filepath, containerPath, *indexingReadState->containerParser, 1024,
+                                         containerSize, true) != ZipStreamReadJob::BeginStatus::Started) {
+          return fail("Could not begin cooperative container.xml read");
+        }
+        return IndexStepResult::InProgress;
+      }
+
+      const ZipStreamReadJob::StepStatus readStatus = indexingReadState->job.step();
+      if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return IndexStepResult::InProgress;
+      if (readStatus == ZipStreamReadJob::StepStatus::Error) return fail("Could not stream EPUB metadata");
+
+      if (indexingReadState->kind == IndexingReadState::Kind::Container) {
+        if (!indexingReadState->containerParser || indexingReadState->containerParser->fullPath.empty()) {
+          return fail("Could not find valid rootfile in container.xml");
+        }
+        indexingReadState->entryPath = std::move(indexingReadState->containerParser->fullPath);
+        indexingReadState->containerParser.reset();
+        contentBasePath = indexingReadState->entryPath.substr(0, indexingReadState->entryPath.find_last_of('/') + 1);
+
+        size_t opfSize = 0;
+        if (!getItemSize(indexingReadState->entryPath, &opfSize)) return fail("Could not size content.opf");
+        indexingReadState->opfParser =
+            makeUniqueNoThrow<ContentOpfParser>(getCachePath(), getBasePath(), opfSize, bookMetadataCache.get());
+        if (!indexingReadState->opfParser || !indexingReadState->opfParser->setup() ||
+            indexingReadState->job.begin(filepath, indexingReadState->entryPath.c_str(), *indexingReadState->opfParser,
+                                         1024, opfSize, true) != ZipStreamReadJob::BeginStatus::Started) {
+          return fail("Could not begin cooperative content.opf read");
+        }
+        indexingReadState->kind = IndexingReadState::Kind::Opf;
+        return IndexStepResult::InProgress;
+      }
+
+      if (indexingReadState->kind != IndexingReadState::Kind::Opf || !indexingReadState->opfParser ||
+          !indexingReadState->opfParser->succeeded() ||
+          !finalizeContentOpf(*indexingReadState->opfParser, indexingMetadata)) {
+        return fail("Could not parse content.opf");
+      }
+      indexingReadState.reset();
+      discoverCssFilesFromZip();
+      if (!bookMetadataCache->endContentOpfPass()) return fail("Could not end writing content.opf pass");
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      LOG_DBG("EBP", "OPF pass completed in %u ms",
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingPhaseStartedMs));
+#endif
+      indexingPhase = IndexingPhase::Toc;
+      indexingPhaseStartedMs = static_cast<uint32_t>(millis());
+      return IndexStepResult::InProgress;
+    }
+
+    case IndexingPhase::Toc: {
+      const auto beginTocRead = [this](const bool nav) {
+        const std::string& item = nav ? tocNavItem : tocNcxItem;
+        if (item.empty()) return false;
+        size_t itemSize = 0;
+        if (!getItemSize(item, &itemSize)) return false;
+
+        indexingReadState = makeUniqueNoThrow<IndexingReadState>();
+        if (!indexingReadState) return false;
+        indexingReadState->entryPath = item;
+        Print* parser = nullptr;
+        indexingReadState->basePath = item.substr(0, item.find_last_of('/') + 1);
+        if (nav) {
+          indexingReadState->kind = IndexingReadState::Kind::TocNav;
+          indexingReadState->navParser =
+              makeUniqueNoThrow<TocNavParser>(indexingReadState->basePath, itemSize, bookMetadataCache.get());
+          if (!indexingReadState->navParser || !indexingReadState->navParser->setup()) return false;
+          parser = indexingReadState->navParser.get();
+        } else {
+          indexingReadState->kind = IndexingReadState::Kind::TocNcx;
+          indexingReadState->ncxParser =
+              makeUniqueNoThrow<TocNcxParser>(indexingReadState->basePath, itemSize, bookMetadataCache.get());
+          if (!indexingReadState->ncxParser || !indexingReadState->ncxParser->setup()) return false;
+          parser = indexingReadState->ncxParser.get();
+        }
+        if (indexingReadState->job.begin(filepath, item.c_str(), *parser, 1024, itemSize, true) !=
+            ZipStreamReadJob::BeginStatus::Started) {
+          indexingReadState.reset();
+          return false;
+        }
+        return true;
+      };
+      const auto finishTocPass = [this, &fail](const bool parsed) {
+        indexingReadState.reset();
+        if (!parsed) LOG_ERR("EBP", "Warning: Could not parse any TOC format");
+        if (!bookMetadataCache->endTocPass()) return fail("Could not end writing toc pass");
+        if (!bookMetadataCache->endWrite()) return fail("Could not end writing cache");
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+        LOG_DBG("EBP", "TOC pass completed in %u ms",
+                static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingPhaseStartedMs));
+#endif
+        indexingPhase = IndexingPhase::BuildBook;
+        indexingPhaseStartedMs = static_cast<uint32_t>(millis());
+        return IndexStepResult::InProgress;
+      };
+
+      if (!indexingReadState) {
+        if (!bookMetadataCache->beginTocPass()) return fail("Could not begin writing toc pass");
+        if (!tocNavItem.empty()) {
+          LOG_DBG("EBP", "Attempting to parse EPUB 3 nav document");
+          if (beginTocRead(true)) return IndexStepResult::InProgress;
+        }
+        if (!tocNcxItem.empty()) {
+          LOG_DBG("EBP", "Falling back to NCX TOC");
+          if (beginTocRead(false)) return IndexStepResult::InProgress;
+        }
+        return finishTocPass(false);
+      }
+
+      const IndexingReadState::Kind kind = indexingReadState->kind;
+      const ZipStreamReadJob::StepStatus readStatus = indexingReadState->job.step();
+      if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return IndexStepResult::InProgress;
+      if (readStatus == ZipStreamReadJob::StepStatus::Done) return finishTocPass(true);
+
+      indexingReadState.reset();
+      if (kind == IndexingReadState::Kind::TocNav && !tocNcxItem.empty()) {
+        LOG_DBG("EBP", "Falling back to NCX TOC");
+        if (beginTocRead(false)) return IndexStepResult::InProgress;
+      }
+      return finishTocPass(false);
+    }
+
+    case IndexingPhase::BuildBook: {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      const uint32_t started = static_cast<uint32_t>(millis());
+#endif
+      if (!bookMetadataCache->buildBookBin(filepath, indexingMetadata, sourceIdentitySnapshot)) {
+        return fail("Could not update mappings and sizes");
+      }
+      if (!bookMetadataCache->cleanupTmpFiles()) {
+        LOG_DBG("EBP", "Could not cleanup tmp files - ignoring");
+      }
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      LOG_DBG("EBP", "buildBookBin completed in %u ms",
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - started));
+#endif
+      indexingPhase = IndexingPhase::Css;
+      indexingPhaseStartedMs = static_cast<uint32_t>(millis());
+      return IndexStepResult::InProgress;
+    }
+
+    case IndexingPhase::Css:
+      if (!prepareCssForLoad(indexingSkipLoadingCss)) return fail("Could not prepare EPUB styles");
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      LOG_DBG("EBP", "CSS phase completed in %u ms",
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingPhaseStartedMs));
+#endif
+      indexingPhase = IndexingPhase::Reload;
+      indexingPhaseStartedMs = static_cast<uint32_t>(millis());
+      return IndexStepResult::InProgress;
+
+    case IndexingPhase::Reload: {
+      // CSS preparation reloads book.bin after temporarily lending its memory
+      // to parsing. A style-free load still needs the normal first reload here.
+      if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+        if (!indexingCacheReloadActive) {
+          bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+          if (!bookMetadataCache) return fail("Not enough memory to reload EPUB cache after indexing");
+          const BookMetadataCache::LoadStepResult result = bookMetadataCache->beginLoad(sourceIdentitySnapshot);
+          if (result == BookMetadataCache::LoadStepResult::Error) {
+            return fail("Failed to begin cache reload after writing");
+          }
+          indexingCacheReloadActive = result == BookMetadataCache::LoadStepResult::InProgress;
+          if (indexingCacheReloadActive) return IndexStepResult::InProgress;
+        } else {
+          const BookMetadataCache::LoadStepResult result = bookMetadataCache->stepLoad(8);
+          if (result == BookMetadataCache::LoadStepResult::InProgress) return IndexStepResult::InProgress;
+          indexingCacheReloadActive = false;
+          if (result == BookMetadataCache::LoadStepResult::Error) {
+            return fail("Failed to reload cache after writing");
+          }
+        }
+      }
+      if (!bookMetadataCache->isLoaded()) return fail("Failed to reload cache after writing");
+
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      LOG_DBG("EBP", "Cache reload completed in %u ms",
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingPhaseStartedMs));
+#endif
+      indexingSourceIdentityJob = makeUniqueNoThrow<ZipSourceIdentityJob>();
+      if (!indexingSourceIdentityJob || !indexingSourceIdentityJob->begin(filepath)) {
+        return fail("Could not begin final EPUB identity check");
+      }
+      indexingPhase = IndexingPhase::SourceCheck;
+      indexingPhaseStartedMs = static_cast<uint32_t>(millis());
+      return IndexStepResult::InProgress;
+    }
+
+    case IndexingPhase::SourceCheck: {
+      if (!indexingSourceIdentityJob) return fail("Final EPUB identity check is missing");
+      ZipFile::SourceIdentity currentIdentity;
+      const ZipSourceIdentityJob::StepStatus result = indexingSourceIdentityJob->step(16U * 1024U, currentIdentity);
+      if (result == ZipSourceIdentityJob::StepStatus::InProgress) return IndexStepResult::InProgress;
+      indexingSourceIdentityJob.reset();
+      if (result != ZipSourceIdentityJob::StepStatus::Done || currentIdentity != sourceIdentitySnapshot) {
+        return fail("EPUB changed while indexing");
+      }
+
+      cssParser->clear();
+      indexingPhase = IndexingPhase::Idle;
+      indexingReadState.reset();
+      indexingMetadata = {};
+      indexingSkipLoadingCss = false;
+      indexingCacheReloadActive = false;
+      LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      LOG_DBG("EBP", "Total cooperative indexing completed in %u ms",
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingStartedMs));
+#endif
+      indexingStartedMs = 0;
+      indexingPhaseStartedMs = 0;
+      return IndexStepResult::Loaded;
+    }
+  }
+
+  return fail("Invalid EPUB indexing state");
+}
+
+void Epub::cancelIndexing() {
+  if (!isIndexing()) return;
+  indexingReadState.reset();
+  if (indexingSourceIdentityJob) indexingSourceIdentityJob->cancel();
+  indexingSourceIdentityJob.reset();
+  if (bookMetadataCache) {
+    if (indexingCacheReloadActive) bookMetadataCache->cancelLoad();
+    bookMetadataCache->cancelWrite();
+  }
+  indexingPhase = IndexingPhase::Idle;
+  indexingMetadata = {};
+  indexingSkipLoadingCss = false;
+  indexingCacheReloadActive = false;
+  indexingStartedMs = 0;
+  indexingPhaseStartedMs = 0;
+}
+
+bool Epub::isIndexing() const { return indexingPhase != IndexingPhase::Idle; }
 
 bool Epub::clearCache() const {
   if (!Storage.exists(cachePath.c_str())) {
@@ -1370,9 +1879,7 @@ Epub::ThumbnailPreparationStatus Epub::beginThumbnailPreparation(const Thumbnail
   } else if (hasTransientMetadata) {
     metadata = &transientMetadata;
   } else {
-    BookMetadataCache::BookMetadata loaded;
-    if (!readCoreMetadata(loaded)) return ThumbnailPreparationStatus::Error;
-    metadata = &transientMetadata;
+    return ThumbnailPreparationStatus::NeedsCoreMetadata;
   }
   if (!metadata || metadata->coverItemHref.empty()) return ThumbnailPreparationStatus::NotNeeded;
 
@@ -1725,6 +2232,79 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
   const auto published =
       StagedFileTransaction::publish(finalPath.c_str(), stagingPath.c_str(), backupPath.c_str(), validateRasterFile);
   return published == StagedFileTransaction::Status::Published;
+}
+
+Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& itemHref, const std::string& finalPath) {
+  cancelImagePreparation();
+  const std::string_view finalPathView(finalPath);
+  if (itemHref.empty() || finalPath.empty() ||
+      (!FsHelpers::hasJpgExtension(finalPathView) && !FsHelpers::hasPngExtension(finalPathView))) {
+    return ImagePreparationStatus::Error;
+  }
+
+  const std::string backupPath = finalPath + ".bak";
+  const auto recovered = StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateRasterFile);
+  if (recovered == StagedFileTransaction::Status::IoError) return ImagePreparationStatus::Error;
+  if (validateRasterFile(finalPath.c_str(), nullptr)) return ImagePreparationStatus::NotNeeded;
+
+  imageStreamFinalPath = finalPath;
+  imageStreamStagingPath = finalPath + ".tmp";
+  if (Storage.exists(imageStreamStagingPath.c_str()) && !Storage.remove(imageStreamStagingPath.c_str())) {
+    imageStreamFinalPath.clear();
+    imageStreamStagingPath.clear();
+    return ImagePreparationStatus::Error;
+  }
+  if (!Storage.openFileForWrite("EBP", imageStreamStagingPath, imageStreamOutput)) {
+    imageStreamFinalPath.clear();
+    imageStreamStagingPath.clear();
+    return ImagePreparationStatus::Error;
+  }
+
+  imageStreamJob = std::unique_ptr<ZipStreamReadJob>(new (std::nothrow) ZipStreamReadJob());
+  constexpr size_t MAX_EXTRACTED_RASTER_BYTES = 16U * 1024U * 1024U;
+  const std::string sourcePath = FsHelpers::normalisePath(itemHref);
+  if (!imageStreamJob ||
+      imageStreamJob->begin(filepath, sourcePath.c_str(), imageStreamOutput, 4096, MAX_EXTRACTED_RASTER_BYTES, true) !=
+          ZipStreamReadJob::BeginStatus::Started) {
+    cancelImagePreparation();
+    return ImagePreparationStatus::Error;
+  }
+  return ImagePreparationStatus::InProgress;
+}
+
+Epub::ImagePreparationStatus Epub::stepImagePreparation() {
+  if (!imageStreamJob) return ImagePreparationStatus::Error;
+  const ZipStreamReadJob::StepStatus status = imageStreamJob->step();
+  if (status == ZipStreamReadJob::StepStatus::InProgress) return ImagePreparationStatus::InProgress;
+
+  imageStreamJob.reset();
+  const bool synced = status == ZipStreamReadJob::StepStatus::Done && imageStreamOutput.sync();
+  const bool closed = imageStreamOutput.close();
+  if (!synced || !closed || !validateRasterFile(imageStreamStagingPath.c_str(), nullptr)) {
+    Storage.remove(imageStreamStagingPath.c_str());
+    imageStreamFinalPath.clear();
+    imageStreamStagingPath.clear();
+    return ImagePreparationStatus::Error;
+  }
+
+  const std::string backupPath = imageStreamFinalPath + ".bak";
+  const auto published = StagedFileTransaction::publish(imageStreamFinalPath.c_str(), imageStreamStagingPath.c_str(),
+                                                        backupPath.c_str(), validateRasterFile);
+  imageStreamFinalPath.clear();
+  imageStreamStagingPath.clear();
+  return published == StagedFileTransaction::Status::Published ? ImagePreparationStatus::Ready
+                                                               : ImagePreparationStatus::Error;
+}
+
+void Epub::cancelImagePreparation() {
+  if (imageStreamJob) imageStreamJob->cancel();
+  imageStreamJob.reset();
+  if (imageStreamOutput) imageStreamOutput.close();
+  if (!imageStreamStagingPath.empty() && Storage.exists(imageStreamStagingPath.c_str())) {
+    Storage.remove(imageStreamStagingPath.c_str());
+  }
+  imageStreamFinalPath.clear();
+  imageStreamStagingPath.clear();
 }
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {

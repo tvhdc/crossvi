@@ -28,4 +28,13 @@ bool digestFile(const char* path, Digest& digest);
 Status publishAndVerify(const char* finalPath, const char* stagingPath, const char* backupPath,
                         const Digest& expectedDigest, Validator validator, void* context = nullptr);
 
+// Rotate a staging file into place while retaining the previous final as a
+// rollback candidate. The caller must validate the published bytes
+// cooperatively, then call commitPendingPublish(); cancellation or validation
+// failure must call rollbackPendingPublish().
+Status beginPendingPublish(const char* finalPath, const char* stagingPath, const char* backupPath,
+                           uint64_t expectedSize, Validator recoveryValidator, void* context = nullptr);
+bool commitPendingPublish(const char* backupPath);
+bool rollbackPendingPublish(const char* finalPath, const char* backupPath);
+
 }  // namespace StagedFileTransaction

@@ -1,10 +1,12 @@
 #pragma once
 
 #include <HalStorage.h>
+#include <StagedFileTransaction.h>
 
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,6 +27,8 @@ struct LibraryBookRecord {
   bool pinned = false;
 };
 
+class Epub;
+
 class LibraryCatalogStore final {
  public:
   static constexpr uint32_t MAX_BOOKS = 2048;
@@ -33,7 +37,7 @@ class LibraryCatalogStore final {
   static constexpr size_t MAX_TITLE_BYTES = 255;
   static constexpr size_t MAX_AUTHOR_BYTES = 255;
 
-  enum class Phase : uint8_t { Idle, Discovering, Enriching, Sorting, Ready, Error };
+  enum class Phase : uint8_t { Idle, Discovering, Enriching, Sorting, Ready, Error, Updating };
   enum class FindPathResult : uint8_t { Found, NotFound, IoError };
   enum class OrderPhase : uint8_t { Idle, Initializing, Merging, Publishing };
 
@@ -61,7 +65,8 @@ class LibraryCatalogStore final {
   }
   bool isReady() const { return phase_ == Phase::Ready; }
   bool isBuilding() const {
-    return phase_ == Phase::Discovering || phase_ == Phase::Enriching || phase_ == Phase::Sorting;
+    return phase_ == Phase::Discovering || phase_ == Phase::Enriching || phase_ == Phase::Sorting ||
+           phase_ == Phase::Updating;
   }
   bool isOrderBuilding() const { return orderPhase_ != OrderPhase::Idle; }
   bool isTruncated() const { return truncated_; }
@@ -131,7 +136,11 @@ class LibraryCatalogStore final {
     HalFile directory;
   };
 
+  enum class UpdateKind : uint8_t { None, Upsert, Delete };
+  enum class UpdateStage : uint8_t { Idle, Metadata, Locate, Copy, Publish, Verify };
+
   LibraryCatalogStore() = default;
+  ~LibraryCatalogStore();
 
   bool beginBuild();
   bool beginSourceValidation();
@@ -139,7 +148,13 @@ class LibraryCatalogStore final {
   void resetSourceValidation();
   bool applyDirtyPath(const std::string& path);
   bool applyDeletedPath(const std::string& path);
+  bool beginUpdateLocate();
+  void stepUpdate();
+  void resetUpdate(bool removeTemporary);
   void discoverOne();
+  bool beginEnrichment();
+  void enrichOne();
+  void resetEnrichment();
   bool finalizeBuild();
   bool appendRecord(const LibraryBookRecord& record);
   bool readRecord(const char* path, size_t index, LibraryBookRecord& record) const;
@@ -153,10 +168,19 @@ class LibraryCatalogStore final {
   void resetFinalize(bool removeTemporary);
 
   std::vector<DirectoryFrame> directories_;
+  HalFile workFile_;
+  uint32_t enrichmentIndex_ = 0;
+  LibraryBookRecord enrichmentRecord_;
+  std::unique_ptr<Epub> enrichmentEpub_;
   HalFile finalizeInput_;
   HalFile finalizeOutput_;
+  HalFile finalizeVerify_;
+  StagedFileTransaction::Digest finalizeDigest_;
+  StagedFileTransaction::Digest finalizeActualDigest_;
   uint32_t finalizeIndex_ = 0;
+  uint32_t finalizeVerifyIndex_ = 0;
   bool finalizeStarted_ = false;
+  bool finalizePublishPending_ = false;
   Phase phase_ = Phase::Idle;
   uint32_t count_ = 0;
   uint32_t generation_ = 0;
@@ -166,6 +190,22 @@ class LibraryCatalogStore final {
   HalFile sourceValidationFile_;
   uint32_t sourceValidationIndex_ = 0;
   bool sourcePathsValidated_ = false;
+
+  UpdateKind updateKind_ = UpdateKind::None;
+  UpdateStage updateStage_ = UpdateStage::Idle;
+  std::string updatePath_;
+  LibraryBookRecord updateRecord_;
+  std::unique_ptr<Epub> updateEpub_;
+  HalFile updateInput_;
+  HalFile updateOutput_;
+  uint32_t updateScanIndex_ = 0;
+  uint32_t updateCopyIndex_ = 0;
+  uint32_t updateExistingIndex_ = UINT32_MAX;
+  uint32_t updateTargetCount_ = 0;
+  StagedFileTransaction::Digest updateDigest_;
+  StagedFileTransaction::Digest updateActualDigest_;
+  uint32_t updateVerifyIndex_ = 0;
+  bool updatePublishPending_ = false;
 
   OrderPhase orderPhase_ = OrderPhase::Idle;
   HalFile orderInput_;

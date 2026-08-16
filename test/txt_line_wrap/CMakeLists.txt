@@ -5,6 +5,7 @@ add_executable(TxtLineWrapTest
 
 target_include_directories(TxtLineWrapTest PRIVATE
   ${REPO_ROOT}/src/activities/reader
+  ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
 )
 

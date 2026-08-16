@@ -7,61 +7,137 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <string_view>
 
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace {
+constexpr size_t SIBLING_SCAN_ENTRIES_PER_TICK = 8;
+constexpr size_t MAX_SIBLING_IMAGES = 256;
+constexpr size_t MAX_SIBLING_NAME_BYTES = 24U * 1024U;
+}  // namespace
+
 BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path)
     : Activity("BmpViewer", renderer, mappedInput), filePath(std::move(path)) {}
 
-void BmpViewerActivity::loadSiblingImages() {
+void BmpViewerActivity::beginSiblingImageScan() {
+  cancelSiblingImageScan();
+  siblingScanStarted = true;
   siblingImages.clear();
+  siblingNameBytes = 0;
   currentImageIndex = -1;
 
   if (filePath.empty()) return;
 
-  std::string dirPath = FsHelpers::extractFolderPath(filePath);
-  size_t lastSlash = filePath.find_last_of('/');
-  std::string fileName = (lastSlash != std::string::npos) ? filePath.substr(lastSlash + 1) : filePath;
+  const std::string dirPath = FsHelpers::extractFolderPath(filePath);
+  const size_t lastSlash = filePath.find_last_of('/');
+  const std::string fileName = (lastSlash != std::string::npos) ? filePath.substr(lastSlash + 1) : filePath;
+  const size_t currentNameBytes = fileName.size() + 1U;
+  if (fileName.empty() || currentNameBytes > MAX_SIBLING_NAME_BYTES) return;
 
-  auto dir = Storage.open(dirPath.c_str());
-  if (!dir || !dir.isDirectory()) {
-    if (dir) dir.close();
+  // Keep the already-visible image navigable even when a very large directory
+  // reaches a scan bound before its entry would otherwise be encountered.
+  siblingImages.push_back(fileName);
+  siblingNameBytes = currentNameBytes;
+
+  siblingDirectory = Storage.open(dirPath.c_str());
+  if (!siblingDirectory || !siblingDirectory.isDirectory()) {
+    finishSiblingImageScan();
     return;
   }
+  siblingDirectory.rewindDirectory();
+  siblingScanActive = true;
+}
 
-  char name[500];
-  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
-    if (!file.isDirectory()) {
-      file.getName(name, sizeof(name));
-      if (name[0] != '.') {
-        std::string fname(name);
-        if (fname.length() >= 4 && fname.substr(fname.length() - 4) == ".bmp") {
-          siblingImages.push_back(fname);
-        }
-      }
+bool BmpViewerActivity::stepSiblingImageScan(const size_t maxEntries) {
+  if (!siblingScanActive || !siblingDirectory || maxEntries == 0) return false;
+
+  for (size_t scanned = 0; scanned < maxEntries; ++scanned) {
+    HalFile file = siblingDirectory.openNextFile();
+    if (!file) {
+      finishSiblingImageScan();
+      return true;
     }
+
+    siblingNameBuffer.front() = '\0';
+    siblingNameBuffer.back() = '\0';
+    const size_t nameLength = file.getName(siblingNameBuffer.data(), siblingNameBuffer.size());
+    const bool isDirectory = file.isDirectory();
     file.close();
+    if (isDirectory || nameLength == 0 || nameLength >= siblingNameBuffer.size() || siblingNameBuffer.back() != '\0' ||
+        siblingNameBuffer.front() == '.') {
+      continue;
+    }
+
+    const std::string_view fileName{siblingNameBuffer.data()};
+    const size_t currentSlash = filePath.find_last_of('/');
+    const std::string_view currentName = currentSlash != std::string::npos
+                                             ? std::string_view(filePath).substr(currentSlash + 1)
+                                             : std::string_view(filePath);
+    if (!FsHelpers::hasBmpExtension(fileName) || fileName == currentName) continue;
+
+    const size_t storedNameBytes = fileName.size() + 1U;
+    if (siblingImages.size() >= MAX_SIBLING_IMAGES || storedNameBytes > MAX_SIBLING_NAME_BYTES - siblingNameBytes) {
+      finishSiblingImageScan();
+      return true;
+    }
+    std::string candidate(fileName);
+    const auto position = std::lower_bound(
+        siblingImages.begin(), siblingImages.end(), candidate,
+        [](const std::string& left, const std::string& right) { return FsHelpers::naturalLess(left, right); });
+    siblingImages.insert(position, std::move(candidate));
+    siblingNameBytes += storedNameBytes;
   }
-  dir.close();
+  return false;
+}
 
-  FsHelpers::sortFileList(siblingImages);
+void BmpViewerActivity::finishSiblingImageScan() {
+  if (siblingDirectory) siblingDirectory.close();
+  siblingScanActive = false;
 
+  const size_t lastSlash = filePath.find_last_of('/');
+  const std::string_view fileName =
+      lastSlash != std::string::npos ? std::string_view(filePath).substr(lastSlash + 1) : std::string_view(filePath);
   for (size_t i = 0; i < siblingImages.size(); ++i) {
     if (siblingImages[i] == fileName) {
       currentImageIndex = static_cast<int>(i);
       break;
     }
   }
+  navigationHintsPending = siblingImages.size() > 1 && currentImageIndex >= 0;
+}
+
+void BmpViewerActivity::cancelSiblingImageScan() {
+  if (siblingDirectory) siblingDirectory.close();
+  siblingScanActive = false;
+}
+
+void BmpViewerActivity::updateNavigationHints() {
+  if (!navigationHintsPending) return;
+  RenderLock lock(std::try_to_lock);
+  if (!lock.ownsLock()) return;
+  const bool hasPrevious = currentImageIndex > 0;
+  const bool hasNext = currentImageIndex >= 0 && currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER), hasPrevious ? "<" : "", hasNext ? ">" : "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  navigationHintsPending = false;
+}
+
+void BmpViewerActivity::selectSibling(const int index) {
+  if (index < 0 || index >= static_cast<int>(siblingImages.size())) return;
+  currentImageIndex = index;
+  std::string dirPath = FsHelpers::extractFolderPath(filePath);
+  if (!dirPath.empty() && dirPath.back() != '/') dirPath += "/";
+  filePath = dirPath + siblingImages[static_cast<size_t>(currentImageIndex)];
+  onEnter();
 }
 
 void BmpViewerActivity::onEnter() {
   Activity::onEnter();
-
-  if (siblingImages.empty() && !filePath.empty()) {
-    loadSiblingImages();
-  }
 
   HalFile file;
 
@@ -135,10 +211,13 @@ void BmpViewerActivity::onEnter() {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
+  activityManager.finishReaderOpenMetric("bmp", static_cast<uint32_t>(millis()));
+  if (!siblingScanStarted) beginSiblingImageScan();
 }
 
 void BmpViewerActivity::onExit() {
   Activity::onExit();
+  cancelSiblingImageScan();
   renderer.clearScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
@@ -193,11 +272,7 @@ void BmpViewerActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
       mappedInput.wasReleased(MappedInputManager::Button::Up)) {
     if (siblingImages.size() > 1 && currentImageIndex > 0) {
-      currentImageIndex--;
-      std::string dirPath = FsHelpers::extractFolderPath(filePath);
-      if (dirPath.back() != '/') dirPath += "/";
-      filePath = dirPath + siblingImages[currentImageIndex];
-      onEnter();
+      selectSibling(currentImageIndex - 1);
     }
     return;
   }
@@ -206,12 +281,17 @@ void BmpViewerActivity::loop() {
       mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     if (siblingImages.size() > 1 && currentImageIndex != -1 &&
         currentImageIndex < static_cast<int>(siblingImages.size()) - 1) {
-      currentImageIndex++;
-      std::string dirPath = FsHelpers::extractFolderPath(filePath);
-      if (dirPath.back() != '/') dirPath += "/";
-      filePath = dirPath + siblingImages[currentImageIndex];
-      onEnter();
+      selectSibling(currentImageIndex + 1);
     }
     return;
   }
+
+  const bool inputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                         mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                         mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                         mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                         mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                         mappedInput.isPressed(MappedInputManager::Button::Down);
+  if (!inputHeld && siblingScanActive) stepSiblingImageScan(SIBLING_SCAN_ENTRIES_PER_TICK);
+  if (!inputHeld) updateNavigationHints();
 }

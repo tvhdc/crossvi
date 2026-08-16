@@ -367,6 +367,7 @@ STR_CRASH_DESCRIPTION: "Laporan terperinci telah disimpan ke crash_report.txt. H
 STR_CRASH_REASON: "Penyebab kerusakan:"
 STR_CRASH_NO_REASON: "(Tidak ada alasan yang terekam)"
 STR_TILT_PAGE_TURN: "Miringkan untuk Ganti Halaman"
+STR_TILT_PAGE_TURN_REVERSED: "Miringkan untuk Ganti Halaman (terbalik)"
 STR_KB_HINT_MOVE_CURSOR: "Tekan KIRI atau KANAN untuk memindahkan kursor"
 STR_KB_HINT_RETURN_CURSOR: "Tekan KIRI untuk kembali ke posisi kursor"
 STR_KB_HINT_HIDE_PASSWORD: "Tahan KANAN lalu tekan [***] untuk menyembunyikan kata sandi"

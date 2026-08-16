@@ -1,5 +1,6 @@
 #include "Section.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <vector>
 
 #include "BoundedFileReader.h"
 #include "Epub/css/CssParser.h"
@@ -144,6 +146,34 @@ Section::Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRen
 // persists the pages already laid out as a partial .bin instead of discarding them
 // (no-op once a build has completed or never started).
 Section::~Section() { suspendBuild(); }
+
+bool Section::PageLut::ensureAppendCapacity() {
+  if (count < capacity) return true;
+  if (count >= UINT16_MAX) return false;
+
+  constexpr size_t INITIAL_CAPACITY = 64;
+  const size_t nextCapacity =
+      capacity == 0 ? INITIAL_CAPACITY : std::min(capacity * 2U, static_cast<size_t>(UINT16_MAX));
+  if (nextCapacity <= capacity || nextCapacity > SIZE_MAX / sizeof(PageLutEntry)) return false;
+
+  const size_t allocationBytes = nextCapacity * sizeof(PageLutEntry);
+  const MemoryBudget::Snapshot memory = MemoryBudget::snapshot();
+  if (allocationBytes > UINT32_MAX - MemoryBudget::TEXT_LAYOUT.freeHeap ||
+      memory.freeHeap < allocationBytes + MemoryBudget::TEXT_LAYOUT.freeHeap ||
+      !MemoryBudget::hasContiguousHeadroom(memory.maxAllocHeap, static_cast<uint32_t>(allocationBytes),
+                                           MemoryBudget::TEXT_LAYOUT.maxAllocHeap)) {
+    LOG_ERR("SCT", "Page LUT growth stopped at %zu entries (next=%zu bytes, free=%u, maxalloc=%u)", count,
+            allocationBytes, memory.freeHeap, memory.maxAllocHeap);
+    return false;
+  }
+
+  auto replacement = makeUniqueNoThrow<PageLutEntry[]>(nextCapacity);
+  if (!replacement) return false;
+  if (count > 0) std::copy_n(entries.get(), count, replacement.get());
+  entries = std::move(replacement);
+  capacity = nextCapacity;
+  return true;
+}
 
 uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   if (!file) {
@@ -417,7 +447,6 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   // even a window-only giant spine -- whose .bin never finalizes -- still caches its HTML, letting a
   // reopen skip the multi-second inflate. If htmlPath exists it is known-complete.
   const bool reusedHtml = Storage.exists(htmlPath.c_str());
-  bool htmlCached = reusedHtml;
   if (reusedHtml) {
     HalFile cachedHtml;
     if (!Storage.openFileForRead("SCT", htmlPath, cachedHtml) ||
@@ -431,57 +460,13 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
     LOG_DBG("SCT", "Reusing cached HTML %s", htmlPath.c_str());
   } else {
     Storage.mkdir(htmlDir.c_str());
-
-    // Retry logic for SD card timing issues
-    bool streamed = false;
-    bool outputLimitExceeded = false;
-    uint32_t fileSize = 0;
-    for (int attempt = 0; attempt < 3 && !streamed && !outputLimitExceeded; attempt++) {
-      if (attempt > 0) {
-        LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
-        delay(50);  // Brief delay before retry
-      }
-
-      // Remove any incomplete file from previous attempt before retrying
-      if (Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-      }
-
-      HalFile tmpHtml;
-      if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
-        continue;
-      }
-      // Larger chunks mean far fewer SD writes inflating the HTML; a 1KB chunk turned a 584KB
-      // single-spine novel into ~570 tiny writes (multi-second). 8KB keeps the transient buffers
-      // small while cutting the write count 8x.
-      streamed = epub->readItemContentsToStream(localPath, tmpHtml, 8192, false, MAX_CHAPTER_UNCOMPRESSED_BYTES,
-                                                &outputLimitExceeded);
-      fileSize = tmpHtml.size();
-      // Explicitly close() file before calling Storage.remove()
-      tmpHtml.close();
-
-      // If streaming failed, remove the incomplete file immediately
-      if (!streamed && Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-        LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
-      }
-    }
-
-    if (!streamed) {
-      LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
-      lastBuildStatus_ = outputLimitExceeded ? EpubBuildStatus::OutOfMemory : EpubBuildStatus::IoError;
+    const uint32_t cumulativeSize = epub->getCumulativeSpineItemSize(spineIndex);
+    const uint32_t previousCumulativeSize = spineIndex > 0 ? epub->getCumulativeSpineItemSize(spineIndex - 1) : 0;
+    if (cumulativeSize < previousCumulativeSize ||
+        cumulativeSize - previousCumulativeSize > MAX_CHAPTER_UNCOMPRESSED_BYTES) {
+      LOG_ERR("SCT", "Chapter exceeds the processing limit");
+      lastBuildStatus_ = EpubBuildStatus::OutOfMemory;
       return false;
-    }
-
-    LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
-
-    // Promote to the persistent HTML cache immediately -- the inflate is complete and the bytes are
-    // valid regardless of whether the layout build finishes, so reopening (even a window-only spine
-    // that never finalizes its .bin) skips re-inflation. If the rename fails we just parse the temp.
-    if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
-      htmlCached = true;
-    } else {
-      LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
     }
   }
 
@@ -504,15 +489,26 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
     return false;
   }
+  if (!ctx->lut.ensureAppendCapacity()) {
+    LOG_ERR("SCT", "OOM: initial page LUT");
+    lastBuildStatus_ = EpubBuildStatus::OutOfMemory;
+    file.close();
+    Storage.remove(binTmpPath().c_str());
+    if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
+    return false;
+  }
   // Allocate once per chapter build rather than once per page. Allocation
   // failure is harmless: Page::serialize falls back to direct writes.
   ctx->pageWriteBuffer = makeUniqueNoThrow<uint8_t[]>(BuildContext::PAGE_WRITE_BUFFER_BYTES);
-  // htmlCached == "htmlPath is the live cache" (reused, or just promoted). finalizeBuild/abandonBuild
-  // then leave the cached HTML alone; only an un-promoted temp (rename failed) is theirs to clean up.
-  ctx->reusedHtml = htmlCached;
+  // A cache miss starts a cooperative ZIP job after the build context owns all
+  // referenced strings and handles. buildSomeMore() advances one 8 KiB output
+  // chunk per call before beginning HTML parsing.
+  ctx->reusedHtml = reusedHtml;
   ctx->htmlPath = htmlPath;
   ctx->tmpHtmlPath = tmpHtmlPath;
-  ctx->parsePath = htmlCached ? htmlPath : tmpHtmlPath;
+  ctx->parsePath = reusedHtml ? htmlPath : tmpHtmlPath;
+  ctx->sourcePath = FsHelpers::normalisePath(localPath);
+  ctx->htmlExtractionPending = !reusedHtml;
 
   // Derive the content base directory and image cache path prefix for the parser
   const size_t lastSlash = localPath.find_last_of('/');
@@ -549,8 +545,17 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
       viewportWidth, viewportHeight, hyphenationEnabled, focusReadingEnabled, wordSpacing,
       [this, ctxPtr](std::unique_ptr<Page> page, const uint16_t paragraphIndex, const uint16_t listItemIndex,
                      const uint32_t visibleTextOffset) {
-        ctxPtr->lut.push_back(
-            {this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex, visibleTextOffset});
+        if (ctxPtr->callbackFailure != EpubBuildStatus::Ok) return;
+        if (!ctxPtr->lut.ensureAppendCapacity()) {
+          ctxPtr->callbackFailure = EpubBuildStatus::OutOfMemory;
+          return;
+        }
+        const uint32_t fileOffset = this->onPageComplete(std::move(page));
+        if (fileOffset == 0) {
+          ctxPtr->callbackFailure = EpubBuildStatus::IoError;
+          return;
+        }
+        ctxPtr->lut.pushBack({fileOffset, paragraphIndex, listItemIndex, visibleTextOffset});
       },
       embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, imageRendering, std::move(tocAnchors), popupFn,
       ctxPtr->cssParser, renderMode, forceParagraphIndents);
@@ -568,6 +573,16 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   build_ = std::move(ctx);
   MemoryBudget::logStage("SCT", "index_begin");
 
+  if (!build_->htmlExtractionPending && !beginParser()) {
+    abandonBuild();
+    return false;
+  }
+  return true;
+}
+
+bool Section::beginParser() {
+  if (!build_ || !build_->parser) return false;
+  if (build_->parserStarted) return true;
   if (!build_->parser->beginParse()) {
     LOG_ERR("SCT", "Failed to begin parse");
     lastBuildStatus_ =
@@ -575,16 +590,107 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
             ? EpubBuildStatus::OutOfMemory
             : (build_->parser->lastFailure() == ChapterParseFailure::IoError ? EpubBuildStatus::IoError
                                                                              : EpubBuildStatus::InvalidContent);
-    abandonBuild();
     return false;
   }
+  build_->parserStarted = true;
   build_->totalBytes = build_->parser->parseTotalBytes();
   return true;
 }
 
+Section::HtmlExtractionStep Section::stepHtmlExtraction() {
+  if (!build_ || !build_->htmlExtractionPending) return HtmlExtractionStep::Ready;
+
+  constexpr uint8_t MAX_ATTEMPTS = 3;
+  constexpr size_t CHUNK_BYTES = 8192;
+  if (!build_->htmlStreamActive) {
+    if (build_->htmlStreamAttempts >= MAX_ATTEMPTS) {
+      lastBuildStatus_ = EpubBuildStatus::IoError;
+      return HtmlExtractionStep::Error;
+    }
+    if (build_->htmlStreamAttempts > 0) {
+      LOG_DBG("SCT", "Retrying cooperative HTML stream (attempt %u)...", build_->htmlStreamAttempts + 1);
+      delay(50);
+    }
+    if (Storage.exists(build_->tmpHtmlPath.c_str())) Storage.remove(build_->tmpHtmlPath.c_str());
+    ++build_->htmlStreamAttempts;
+    if (!Storage.openFileForWrite("SCT", build_->tmpHtmlPath, build_->htmlStreamOutput) ||
+        build_->htmlStreamJob.begin(epub->getPath(), build_->sourcePath.c_str(), build_->htmlStreamOutput, CHUNK_BYTES,
+                                    MAX_CHAPTER_UNCOMPRESSED_BYTES, true) != ZipStreamReadJob::BeginStatus::Started) {
+      if (build_->htmlStreamOutput) build_->htmlStreamOutput.close();
+      Storage.remove(build_->tmpHtmlPath.c_str());
+      if (build_->htmlStreamAttempts >= MAX_ATTEMPTS) {
+        lastBuildStatus_ = EpubBuildStatus::IoError;
+        return HtmlExtractionStep::Error;
+      }
+      return HtmlExtractionStep::InProgress;
+    }
+    build_->htmlStreamActive = true;
+  }
+
+  const ZipStreamReadJob::StepStatus status = build_->htmlStreamJob.step();
+  if (status == ZipStreamReadJob::StepStatus::InProgress) return HtmlExtractionStep::InProgress;
+
+  build_->htmlStreamActive = false;
+  if (status == ZipStreamReadJob::StepStatus::Error) {
+    build_->htmlStreamJob.cancel();
+    if (build_->htmlStreamOutput) build_->htmlStreamOutput.close();
+    Storage.remove(build_->tmpHtmlPath.c_str());
+    if (build_->htmlStreamAttempts >= MAX_ATTEMPTS) {
+      lastBuildStatus_ = EpubBuildStatus::IoError;
+      return HtmlExtractionStep::Error;
+    }
+    return HtmlExtractionStep::InProgress;
+  }
+
+  const uint64_t fileSize = build_->htmlStreamOutput.fileSize64();
+  const bool synced = build_->htmlStreamOutput.sync();
+  const bool closed = build_->htmlStreamOutput.close();
+  if (!synced || !closed) {
+    Storage.remove(build_->tmpHtmlPath.c_str());
+    if (build_->htmlStreamAttempts >= MAX_ATTEMPTS) {
+      lastBuildStatus_ = EpubBuildStatus::IoError;
+      return HtmlExtractionStep::Error;
+    }
+    return HtmlExtractionStep::InProgress;
+  }
+
+  LOG_DBG("SCT", "Streamed temp HTML to %s (%llu bytes)", build_->tmpHtmlPath.c_str(),
+          static_cast<unsigned long long>(fileSize));
+  if (Storage.rename(build_->tmpHtmlPath.c_str(), build_->htmlPath.c_str())) {
+    build_->reusedHtml = true;
+    build_->parsePath = build_->htmlPath;
+  } else {
+    LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
+  }
+  build_->htmlExtractionPending = false;
+  return HtmlExtractionStep::Ready;
+}
+
 bool Section::buildSomeMore(const int maxPages) {
-  if (!build_ || !build_->parser) {
+  if (!build_) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
+    return false;
+  }
+  while (build_->htmlExtractionPending) {
+    const HtmlExtractionStep extraction = stepHtmlExtraction();
+    if (extraction == HtmlExtractionStep::Error) {
+      LOG_ERR("SCT", "Failed to stream chapter HTML after retries");
+      abandonBuild();
+      return false;
+    }
+    if (extraction == HtmlExtractionStep::InProgress) {
+      if (maxPages > 0) return true;
+      continue;
+    }
+    if (!beginParser()) {
+      abandonBuild();
+      return false;
+    }
+  }
+  if (!build_->parserStarted) {
+    LOG_ERR("SCT", "buildSomeMore with parser not started");
+    lastBuildStatus_ = EpubBuildStatus::InvalidContent;
+    abandonBuild();
     return false;
   }
   // Pace on pages laid out by THIS build, not pageCount: during a rebuild over a partial,
@@ -593,6 +699,12 @@ bool Section::buildSomeMore(const int maxPages) {
   const int startCount = builtPageCount_;
   for (;;) {
     const auto status = build_->parser->parseStep();
+    if (build_->callbackFailure != EpubBuildStatus::Ok) {
+      lastBuildStatus_ = build_->callbackFailure;
+      LOG_ERR("SCT", "Page table or page output failed during incremental build");
+      abandonBuild();
+      return false;
+    }
     if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
       LOG_ERR("SCT", "Parse error during incremental build");
       lastBuildStatus_ =
@@ -695,7 +807,8 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
   };
 
   const uint32_t lutOffset = file.position();
-  for (const auto& entry : build_->lut) {
+  for (size_t index = 0; index < build_->lut.size(); ++index) {
+    const auto& entry = build_->lut[index];
     if (entry.fileOffset == 0) {
       LOG_ERR("SCT", "Failed to write LUT due to invalid page positions");
       return failCommit();
@@ -731,18 +844,18 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
 
   const uint32_t paragraphLutOffset = file.position();
   serialization::writePod(file, static_cast<uint16_t>(build_->lut.size()));
-  for (const auto& entry : build_->lut) {
-    serialization::writePod(file, entry.paragraphIndex);
+  for (size_t index = 0; index < build_->lut.size(); ++index) {
+    serialization::writePod(file, build_->lut[index].paragraphIndex);
   }
 
   const uint32_t liLutFileOffset = static_cast<uint32_t>(file.position());
-  for (const auto& entry : build_->lut) {
-    serialization::writePod(file, entry.listItemIndex);
+  for (size_t index = 0; index < build_->lut.size(); ++index) {
+    serialization::writePod(file, build_->lut[index].listItemIndex);
   }
 
   const uint32_t visibleTextLutOffset = static_cast<uint32_t>(file.position());
-  for (const auto& entry : build_->lut) {
-    serialization::writePod(file, entry.visibleTextOffset);
+  for (size_t index = 0; index < build_->lut.size(); ++index) {
+    serialization::writePod(file, build_->lut[index].visibleTextOffset);
   }
 
   if (asPartial) {
@@ -803,6 +916,12 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
 bool Section::finalizeBuild() {
   // Flush the trailing page (emits the last page via the completePageFn into the LUT).
   build_->parser->finishParse();
+  if (build_->callbackFailure != EpubBuildStatus::Ok) {
+    lastBuildStatus_ = build_->callbackFailure;
+    LOG_ERR("SCT", "Page table or page output failed while finalizing build");
+    abandonBuild();
+    return false;
+  }
 
   if (!build_->reusedHtml) {
     // Parse succeeded: promote the freshly unzipped HTML to the persistent cache so future
@@ -841,7 +960,7 @@ void Section::suspendBuild() {
   const bool worthKeeping = builtPageCount_ > 0 && (!partial_ || builtPageCount_ > partialPageCount_);
 
   bool committed = false;
-  if (worthKeeping) {
+  if (worthKeeping && build_->parserStarted) {
     // Capture the parse watermark and commit before tearing the parser down (the anchor
     // map is read from it). The incomplete trailing page is intentionally not flushed:
     // only fully laid-out pages are persisted, and the rebuild re-derives the rest.
@@ -856,7 +975,9 @@ void Section::suspendBuild() {
     }
   }
 
-  if (build_->parser) build_->parser->abortParse();
+  build_->htmlStreamJob.cancel();
+  if (build_->htmlStreamOutput) build_->htmlStreamOutput.close();
+  if (build_->parser && build_->parserStarted) build_->parser->abortParse();
   if (build_->cssParser) build_->cssParser->clear();
   if (!committed && file) {
     // Explicit close() required before remove (member variable, O_RDWR handle).
@@ -874,7 +995,9 @@ void Section::suspendBuild() {
 
 void Section::abandonBuild() {
   if (!build_) return;
-  if (build_->parser) build_->parser->abortParse();
+  build_->htmlStreamJob.cancel();
+  if (build_->htmlStreamOutput) build_->htmlStreamOutput.close();
+  if (build_->parser && build_->parserStarted) build_->parser->abortParse();
   if (build_->cssParser) build_->cssParser->clear();
   if (file) {
     // Explicit close() required before remove (member variable, O_RDWR handle).

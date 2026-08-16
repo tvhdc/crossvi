@@ -1,6 +1,7 @@
 #pragma once
 
 #include <I18n.h>
+#include <RawSourceIdentity.h>
 
 #include <array>
 #include <cstdint>
@@ -21,6 +22,7 @@
 #include "util/PressReleaseLatch.h"
 
 class Epub;
+class Xtc;
 
 class RecentBooksActivity final : public Activity {
   enum class Tab : uint8_t { Recent = 0, All = 1 };
@@ -124,7 +126,10 @@ class RecentBooksActivity final : public Activity {
   uint8_t coverQueueShownMask = 0;
   uint32_t coverQueueLastInputAt = 0;
   std::unique_ptr<Epub> coverPreparationEpub;
+  std::unique_ptr<Xtc> coverPreparationXtc;
   std::string coverPreparationPath;
+  std::optional<RawSourceIdentityHandoff> preparedEpubSourceIdentity;
+  std::optional<RawSourceIdentityHandoff> preparedXtcSourceIdentity;
 
   size_t tabIndex() const { return static_cast<size_t>(tab); }
   bool allTab() const { return tab == Tab::All; }
@@ -169,6 +174,7 @@ class RecentBooksActivity final : public Activity {
   void rememberCurrentBook();
   void restoreRememberedBook(bool locateByPath = false);
   void captureReaderReturnContext(const LibraryBookRecord& book) const;
+  void openSelectedBook(const std::string& path);
   bool catalogLoading() const;
   int noticeHeight() const;
   Rect contentRect() const;

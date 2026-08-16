@@ -4,6 +4,7 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Serialization.h>
 
 #include <algorithm>
@@ -70,6 +71,11 @@ constexpr size_t MAX_SESSION_IMAGE_FAILURES = 16;
 uint64_t failedImageHashes[MAX_SESSION_IMAGE_FAILURES];
 size_t failedImageCount = 0;
 
+// Keep small image caches in RAM across the repeated BW/LSB/MSB page passes.
+// The budget is global, so a page with many images cannot multiply this cost.
+constexpr size_t MAX_RESIDENT_IMAGE_CACHE_BYTES = 24U * 1024U;
+size_t residentImageCacheBytes = 0;
+
 uint64_t imagePathHash(const std::string& path) {
   uint64_t hash = 14695981039346656037ull;
   for (const char c : path) {
@@ -92,11 +98,41 @@ void rememberImageFailure(const std::string& path) {
   failedImageHashes[failedImageCount++] = imagePathHash(path);
 }
 
+void renderCacheRow(DirectPixelWriter& writer, const uint8_t* rowBuffer, const int x, const int y, const int row,
+                    const int width) {
+  writer.beginRow(y + row);
+  int colStart = 0;
+  int colEnd = 0;
+  writer.bandColRange(x, width, colStart, colEnd);
+  for (int col = colStart; col < colEnd; ++col) {
+    const int byteIndex = col >> 2;
+    const int bitShift = 6 - (col & 3) * 2;
+    writer.writePixel(x + col, static_cast<uint8_t>((rowBuffer[byteIndex] >> bitShift) & 0x03U));
+  }
+}
+
+void renderResidentPixels(GfxRenderer& renderer, const uint8_t* pixels, const int x, const int y, const int width,
+                          const int height) {
+  const int bytesPerRow = (width + 3) / 4;
+  DirectPixelWriter writer;
+  writer.init(renderer);
+  for (int row = 0; row < height; ++row) {
+    renderCacheRow(writer, pixels + static_cast<size_t>(row) * bytesPerRow, x, y, row, width);
+  }
+}
+
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
-                     int expectedHeight, std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity) {
+                     int expectedHeight, std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity,
+                     std::unique_ptr<uint8_t[]>& residentPixels, size_t& residentPixelBytes, uint16_t& residentWidth,
+                     uint16_t& residentHeight) {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t cacheRenderStartedMs = static_cast<uint32_t>(millis());
 #endif
+  if (residentPixels && residentPixelBytes > 0 && residentWidth > 0 && residentHeight > 0) {
+    renderResidentPixels(renderer, residentPixels.get(), x, y, residentWidth, residentHeight);
+    return true;
+  }
+
   HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
     return false;
@@ -105,6 +141,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   uint16_t cachedWidth, cachedHeight;
   if (!readValidCacheHeader(cacheFile, expectedWidth, expectedHeight, cachedWidth, cachedHeight)) {
     LOG_ERR("IMG", "Invalid image cache: %s", cachePath.c_str());
+    cacheFile.close();
     return false;
   }
 
@@ -114,12 +151,38 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
   LOG_DBG("IMG", "Loading from cache: %s (%dx%d)", cachePath.c_str(), cachedWidth, cachedHeight);
 
+  const int bytesPerRow = (cachedWidth + 3) / 4;  // 2 bits per pixel, 4 pixels per byte
+  const size_t payloadBytes = static_cast<size_t>(bytesPerRow) * cachedHeight;
+  if (payloadBytes <= MAX_RESIDENT_IMAGE_CACHE_BYTES &&
+      payloadBytes <= MAX_RESIDENT_IMAGE_CACHE_BYTES - residentImageCacheBytes) {
+    auto candidate = makeUniqueNoThrow<uint8_t[]>(payloadBytes);
+    if (candidate) {
+      size_t bytesRead = 0;
+      while (bytesRead < payloadBytes) {
+        const size_t chunk = std::min<size_t>(4096, payloadBytes - bytesRead);
+        const int read = cacheFile.read(candidate.get() + bytesRead, chunk);
+        if (read != static_cast<int>(chunk)) break;
+        bytesRead += chunk;
+      }
+      const bool closed = cacheFile.close();
+      if (bytesRead != payloadBytes || !closed) return false;
+      residentImageCacheBytes += payloadBytes;
+      residentPixelBytes = payloadBytes;
+      residentWidth = cachedWidth;
+      residentHeight = cachedHeight;
+      residentPixels = std::move(candidate);
+      renderResidentPixels(renderer, residentPixels.get(), x, y, residentWidth, residentHeight);
+      LOG_DBG("IMG", "Resident cache render: %s bytes=%u", cachePath.c_str(),
+              static_cast<unsigned>(residentPixelBytes));
+      return true;
+    }
+  }
+
   // Read several rows per SD access. A full-page image is re-rendered on every
   // grayscale strip pass (~14x per page), and a one-row-per-read loop here means
   // cachedHeight (~728) tiny reads through the storage mutex + SdFat each time —
   // the dominant cost of displaying an image page. Batching rows into a ~4KB
   // buffer cuts that to ~20 reads per pass without holding the whole image.
-  const int bytesPerRow = (cachedWidth + 3) / 4;  // 2 bits per pixel, 4 pixels per byte
   int rowsPerRead = 4096 / bytesPerRow;
   if (rowsPerRead < 1) rowsPerRead = 1;
   if (rowsPerRead > cachedHeight) rowsPerRead = cachedHeight;
@@ -142,8 +205,8 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   }
   rowsPerRead = std::min(static_cast<int>(cachedHeight), static_cast<int>(readBufferCapacity / bytesPerRow));
 
-  DirectPixelWriter pw;
-  pw.init(renderer);
+  DirectPixelWriter writer;
+  writer.init(renderer);
 
   int rowsInBuffer = 0;
   int bufferRow = 0;
@@ -162,20 +225,10 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     const uint8_t* rowBuffer = readBuffer.get() + (size_t)bufferRow * bytesPerRow;
     bufferRow++;
 
-    const int destY = y + row;
-    pw.beginRow(destY);
-    // On a grayscale strip pass only a narrow column window of the image is in
-    // the active band; skip the rest instead of unpacking+clipping every pixel.
-    int colStart, colEnd;
-    pw.bandColRange(x, cachedWidth, colStart, colEnd);
-    for (int col = colStart; col < colEnd; col++) {
-      const int byteIdx = col >> 2;            // col / 4
-      const int bitShift = 6 - (col & 3) * 2;  // MSB first within byte
-      uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
-
-      pw.writePixel(x + col, pixelValue);
-    }
+    renderCacheRow(writer, rowBuffer, x, y, row, cachedWidth);
   }
+
+  const bool closed = cacheFile.close();
 
   LOG_DBG("IMG", "Cache render complete: %s elapsed_ms=%u rows_per_read=%d", cachePath.c_str(),
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
@@ -184,12 +237,19 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
           0U,
 #endif
           rowsPerRead);
-  return true;
+  return closed;
 }
 
 }  // namespace
 
+ImageBlock::~ImageBlock() {
+  if (residentPixelBytes == 0) return;
+  residentImageCacheBytes = residentPixelBytes <= residentImageCacheBytes ? residentImageCacheBytes - residentPixelBytes
+                                                                          : 0;
+}
+
 bool ImageBlock::hasValidCache() const {
+  if (residentPixels && residentPixelBytes > 0 && residentWidth > 0 && residentHeight > 0) return true;
   const auto& cachePath = getPixelCachePath();
   HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
@@ -261,7 +321,8 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
 
   // Try to render from cache first
   const std::string& cachePath = getPixelCachePath();
-  if (renderFromCache(renderer, cachePath, x, y, width, height, readBuffer, readBufferCapacity)) {
+  if (renderFromCache(renderer, cachePath, x, y, width, height, readBuffer, readBufferCapacity, residentPixels,
+                      residentPixelBytes, residentWidth, residentHeight)) {
     return;  // Successfully rendered from cache
   }
 

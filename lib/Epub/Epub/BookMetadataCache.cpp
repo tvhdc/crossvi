@@ -36,6 +36,7 @@ constexpr size_t BOOK_CACHE_MAX_METADATA_SIZE = 64 * 1024;
 // ESP32-C3 heap. This also prevents a corrupt LUT from turning a bounded read
 // into a large std::string allocation.
 constexpr size_t BOOK_CACHE_MAX_ENTRY_SIZE = 32 * 1024;
+constexpr size_t BOOK_CACHE_LUT_CHUNK_SIZE = 64;
 constexpr size_t BOOK_CACHE_MIN_FILE_SIZE =
     BOOK_CACHE_FIXED_HEADER_SIZE + BOOK_CACHE_MIN_METADATA_SIZE + sizeof(BOOK_CACHE_COMMIT_MARKER);
 
@@ -220,6 +221,33 @@ BookMetadataCache::TocEntry readTocEntryFrom(F& file) {
 }
 }  // namespace
 
+class BookMetadataCache::LoadState {
+ public:
+  size_t fileSize = 0;
+  size_t dataStart = 0;
+  size_t dataEnd = 0;
+  uint32_t entryCount = 0;
+  uint32_t nextEntry = 0;
+  uint32_t previousCumulativeSize = 0;
+  std::array<uint32_t, BOOK_CACHE_LUT_CHUNK_SIZE + 1> offsets;
+  size_t chunkCount = 0;
+  size_t chunkOffsetCount = 0;
+  size_t chunkCursor = 0;
+};
+
+BookMetadataCache::BookMetadataCache(std::string cachePath)
+    : cachePath(std::move(cachePath)),
+      lutOffset(0),
+      dataEndOffset(0),
+      loadedFileSize(0),
+      spineCount(0),
+      tocCount(0),
+      loaded(false),
+      buildMode(false),
+      lastLoadStatus(LoadStatus::Missing) {}
+
+BookMetadataCache::~BookMetadataCache() = default;
+
 /* ============= WRITING / BUILDING FUNCTIONS ================ */
 
 bool BookMetadataCache::beginWrite() {
@@ -324,6 +352,17 @@ bool BookMetadataCache::endWrite() {
   buildMode = false;
   LOG_DBG("BMC", "Wrote %d spine, %d TOC entries", spineCount, tocCount);
   return true;
+}
+
+void BookMetadataCache::cancelWrite() {
+  passOut.reset();
+  if (spineFile) spineFile.close();
+  if (tocFile) tocFile.close();
+  spineHrefIndex.clear();
+  spineHrefIndex.shrink_to_fit();
+  useSpineHrefIndex = false;
+  buildMode = false;
+  cleanupTmpFiles();
 }
 
 bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
@@ -664,7 +703,48 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
 
 /* ============= READING / LOADING FUNCTIONS ================ */
 
-BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdentity& expectedSourceIdentity) {
+BookMetadataCache::LoadStatus BookMetadataCache::failLoad(const LoadStatus status) {
+  loadState.reset();
+  bookFile.close();
+  loaded = false;
+  spineCumulativeCache.reset();
+  spineTocCache.reset();
+  dataEndOffset = 0;
+  loadedFileSize = 0;
+  lastLoadStatus = status;
+  return status;
+}
+
+BookMetadataCache::LoadStepResult BookMetadataCache::finishLoad() {
+  if (!loadState) return LoadStepResult::Error;
+
+  const size_t fileSize = loadState->fileSize;
+  const size_t dataEnd = loadState->dataEnd;
+  uint32_t commitMarker = 0;
+  if (bookFile.size() != fileSize || !bookFile.seek(fileSize - sizeof(commitMarker)) ||
+      !readPodExact(bookFile, commitMarker) || commitMarker != BOOK_CACHE_COMMIT_MARKER ||
+      !bookFile.seek(BOOK_CACHE_FIXED_HEADER_SIZE) || !consumeBoundedString(bookFile, lutOffset, &coreMetadata.title) ||
+      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.author) ||
+      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.language) ||
+      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.coverItemHref) ||
+      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.textReferenceHref) || bookFile.position() != lutOffset) {
+    coreMetadata = {};
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
+  }
+
+  dataEndOffset = dataEnd;
+  loadedFileSize = fileSize;
+  loadState.reset();
+  loaded = true;
+  lastLoadStatus = LoadStatus::Loaded;
+  LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
+  return LoadStepResult::Loaded;
+}
+
+BookMetadataCache::LoadStepResult BookMetadataCache::beginLoad(const ZipFile::SourceIdentity& expectedSourceIdentity) {
+  loadState.reset();
+  if (bookFile) bookFile.close();
   loaded = false;
   coreMetadata = {};
   spineCumulativeCache.reset();
@@ -678,75 +758,77 @@ BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdent
   const std::string path = cachePath + bookBinFile;
   if (!Storage.openFileForRead("BMC", path, bookFile)) {
     if (Storage.exists(path.c_str())) lastLoadStatus = LoadStatus::IoError;
-    return lastLoadStatus;
+    return LoadStepResult::Error;
   }
-
-  const auto fail = [this](const LoadStatus status) {
-    bookFile.close();
-    loaded = false;
-    spineCumulativeCache.reset();
-    spineTocCache.reset();
-    dataEndOffset = 0;
-    loadedFileSize = 0;
-    lastLoadStatus = status;
-    return status;
-  };
 
   const size_t fileSize = bookFile.size();
   if (fileSize < sizeof(BOOK_CACHE_VERSION)) {
     LOG_DBG("BMC", "Cache file is truncated");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   uint8_t version = 0;
-  if (!readPodExact(bookFile, version)) return fail(LoadStatus::Invalid);
+  if (!readPodExact(bookFile, version)) {
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
+  }
   if (version < BOOK_CACHE_VERSION) {
     LOG_DBG("BMC", "Legacy cache version: %d", version);
-    return fail(LoadStatus::LegacyVersion);
+    failLoad(LoadStatus::LegacyVersion);
+    return LoadStepResult::Error;
   }
   if (version > BOOK_CACHE_VERSION) {
     LOG_DBG("BMC", "Newer cache version: %d", version);
-    return fail(LoadStatus::NewerVersion);
+    failLoad(LoadStatus::NewerVersion);
+    return LoadStepResult::Error;
   }
 
   if (fileSize < BOOK_CACHE_MIN_FILE_SIZE) {
     LOG_DBG("BMC", "Cache file is truncated");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   uint32_t commitMarker = 0;
   if (!bookFile.seek(fileSize - sizeof(commitMarker)) || !readPodExact(bookFile, commitMarker) ||
       commitMarker != BOOK_CACHE_COMMIT_MARKER || !bookFile.seek(sizeof(version))) {
     LOG_DBG("BMC", "Cache commit marker is missing");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   if (!readPodExact(bookFile, lutOffset) || !readPodExact(bookFile, spineCount) || !readPodExact(bookFile, tocCount)) {
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   SourceIdentityCodec::Payload identityPayload{};
   uint32_t identityChecksum = 0;
   if (bookFile.read(identityPayload.data(), identityPayload.size()) != static_cast<int>(identityPayload.size()) ||
       !readPodExact(bookFile, identityChecksum)) {
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
   ZipFile::SourceIdentity storedIdentity;
   if (identityChecksum != SourceIdentityCodec::crc32(identityPayload.data(), identityPayload.size()) ||
       !SourceIdentityCodec::decodePayload(identityPayload.data(), identityPayload.size(), storedIdentity)) {
     LOG_ERR("BMC", "Cache source identity is corrupt");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   if (storedIdentity != expectedSourceIdentity) {
     LOG_ERR("BMC", "Backing EPUB no longer matches book cache");
-    return fail(LoadStatus::SourceMismatch);
+    failLoad(LoadStatus::SourceMismatch);
+    return LoadStepResult::Error;
   }
 
   const size_t minimumLutOffset = BOOK_CACHE_FIXED_HEADER_SIZE + BOOK_CACHE_MIN_METADATA_SIZE;
   if (lutOffset < minimumLutOffset || lutOffset - BOOK_CACHE_FIXED_HEADER_SIZE > BOOK_CACHE_MAX_METADATA_SIZE) {
     LOG_DBG("BMC", "Cache metadata bounds are invalid");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   const uint64_t lutSize = static_cast<uint64_t>(spineCount + tocCount) * sizeof(uint32_t);
@@ -754,7 +836,8 @@ BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdent
   const uint64_t dataStart = static_cast<uint64_t>(lutOffset) + lutSize;
   if (dataStart > dataEnd || dataEnd > UINT32_MAX) {
     LOG_DBG("BMC", "Cache LUT bounds are invalid");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   // Validate without allocating first. A corrupt length must never drive a
@@ -764,7 +847,8 @@ BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdent
       !consumeBoundedString(bookFile, lutOffset, nullptr) || !consumeBoundedString(bookFile, lutOffset, nullptr) ||
       bookFile.position() != lutOffset) {
     LOG_DBG("BMC", "Cache metadata is truncated or malformed");
-    return fail(LoadStatus::Invalid);
+    failLoad(LoadStatus::Invalid);
+    return LoadStepResult::Error;
   }
 
   const uint32_t entryCount = static_cast<uint32_t>(spineCount) + tocCount;
@@ -780,74 +864,105 @@ BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdent
   if (entryCount == 0) {
     if (dataStart != dataEnd) {
       LOG_DBG("BMC", "Cache has unreferenced entry data");
-      return fail(LoadStatus::Invalid);
+      failLoad(LoadStatus::Invalid);
+      return LoadStepResult::Error;
     }
-  } else {
-    // Validate LUT offsets in small sequential chunks. This avoids thousands
-    // of alternating LUT/data seeks for large anthologies while keeping RAM
-    // bounded to 260 bytes.
-    constexpr size_t LUT_CHUNK_SIZE = 64;
-    std::array<uint32_t, LUT_CHUNK_SIZE + 1> offsets;
-    uint32_t previousCumulativeSize = 0;
-    for (uint32_t base = 0; base < entryCount; base += LUT_CHUNK_SIZE) {
-      const size_t chunkCount = std::min<size_t>(LUT_CHUNK_SIZE, entryCount - base);
-      const bool hasNextOffset = base + chunkCount < entryCount;
-      const size_t offsetCount = chunkCount + (hasNextOffset ? 1 : 0);
+  }
+
+  loadState = makeUniqueNoThrow<LoadState>();
+  if (!loadState) {
+    LOG_ERR("BMC", "Not enough memory for cooperative cache validation");
+    failLoad(LoadStatus::IoError);
+    return LoadStepResult::Error;
+  }
+  loadState->fileSize = fileSize;
+  loadState->dataStart = static_cast<size_t>(dataStart);
+  loadState->dataEnd = static_cast<size_t>(dataEnd);
+  loadState->entryCount = entryCount;
+
+  if (entryCount == 0) return finishLoad();
+  return LoadStepResult::InProgress;
+}
+
+BookMetadataCache::LoadStepResult BookMetadataCache::stepLoad(const size_t maxEntries) {
+  if (!loadState) return loaded ? LoadStepResult::Loaded : LoadStepResult::Error;
+  if (maxEntries == 0) return LoadStepResult::InProgress;
+
+  size_t processed = 0;
+  while (processed < maxEntries && loadState->nextEntry < loadState->entryCount) {
+    if (loadState->chunkCursor >= loadState->chunkCount) {
+      const uint32_t base = loadState->nextEntry;
+      loadState->chunkCount = std::min<size_t>(BOOK_CACHE_LUT_CHUNK_SIZE, loadState->entryCount - loadState->nextEntry);
+      const bool hasNextOffset = base + loadState->chunkCount < loadState->entryCount;
+      loadState->chunkOffsetCount = loadState->chunkCount + (hasNextOffset ? 1 : 0);
+      loadState->chunkCursor = 0;
       const uint64_t lutPosition = static_cast<uint64_t>(lutOffset) + static_cast<uint64_t>(base) * sizeof(uint32_t);
       if (lutPosition > SIZE_MAX || !bookFile.seek(static_cast<size_t>(lutPosition)) ||
-          bookFile.read(offsets.data(), offsetCount * sizeof(uint32_t)) !=
-              static_cast<int>(offsetCount * sizeof(uint32_t))) {
+          bookFile.read(loadState->offsets.data(), loadState->chunkOffsetCount * sizeof(uint32_t)) !=
+              static_cast<int>(loadState->chunkOffsetCount * sizeof(uint32_t))) {
         LOG_DBG("BMC", "Cache entry LUT is malformed");
-        return fail(LoadStatus::Invalid);
-      }
-
-      for (size_t withinChunk = 0; withinChunk < chunkCount; ++withinChunk) {
-        const uint32_t index = base + withinChunk;
-        const uint32_t entryStart = offsets[withinChunk];
-        const uint32_t entryEnd =
-            withinChunk + 1 < offsetCount ? offsets[withinChunk + 1] : static_cast<uint32_t>(dataEnd);
-        if (!validEntryBounds(lutOffset, entryCount, static_cast<size_t>(dataEnd), entryStart, entryEnd) ||
-            (index == 0 && entryStart != dataStart) ||
-            (bookFile.position() != entryStart && !bookFile.seek(entryStart))) {
-          LOG_DBG("BMC", "Cache entry LUT is malformed");
-          return fail(LoadStatus::Invalid);
-        }
-
-        if (index < spineCount) {
-          uint32_t cumulativeSize = 0;
-          int16_t tocIndex = -1;
-          if (!inspectSpineEntry(bookFile, entryEnd, tocCount, &cumulativeSize, &tocIndex) ||
-              cumulativeSize < previousCumulativeSize) {
-            LOG_DBG("BMC", "Cache spine entry is malformed");
-            return fail(LoadStatus::Invalid);
-          }
-          if (spineCumulativeCache) {
-            spineCumulativeCache[index] = cumulativeSize;
-            spineTocCache[index] = tocIndex;
-          }
-          previousCumulativeSize = cumulativeSize;
-        } else if (!inspectTocEntry(bookFile, entryEnd, spineCount)) {
-          LOG_DBG("BMC", "Cache TOC entry is malformed");
-          return fail(LoadStatus::Invalid);
-        }
+        failLoad(LoadStatus::Invalid);
+        return LoadStepResult::Error;
       }
     }
+
+    const uint32_t index = loadState->nextEntry;
+    const size_t withinChunk = loadState->chunkCursor;
+    const uint32_t entryStart = loadState->offsets[withinChunk];
+    const uint32_t entryEnd = withinChunk + 1 < loadState->chunkOffsetCount ? loadState->offsets[withinChunk + 1]
+                                                                            : static_cast<uint32_t>(loadState->dataEnd);
+    if (!validEntryBounds(lutOffset, loadState->entryCount, loadState->dataEnd, entryStart, entryEnd) ||
+        (index == 0 && entryStart != loadState->dataStart) ||
+        (bookFile.position() != entryStart && !bookFile.seek(entryStart))) {
+      LOG_DBG("BMC", "Cache entry LUT is malformed");
+      failLoad(LoadStatus::Invalid);
+      return LoadStepResult::Error;
+    }
+
+    if (index < spineCount) {
+      uint32_t cumulativeSize = 0;
+      int16_t tocIndex = -1;
+      if (!inspectSpineEntry(bookFile, entryEnd, tocCount, &cumulativeSize, &tocIndex) ||
+          cumulativeSize < loadState->previousCumulativeSize) {
+        LOG_DBG("BMC", "Cache spine entry is malformed");
+        failLoad(LoadStatus::Invalid);
+        return LoadStepResult::Error;
+      }
+      if (spineCumulativeCache) {
+        spineCumulativeCache[index] = cumulativeSize;
+        spineTocCache[index] = tocIndex;
+      }
+      loadState->previousCumulativeSize = cumulativeSize;
+    } else if (!inspectTocEntry(bookFile, entryEnd, spineCount)) {
+      LOG_DBG("BMC", "Cache TOC entry is malformed");
+      failLoad(LoadStatus::Invalid);
+      return LoadStepResult::Error;
+    }
+
+    ++loadState->nextEntry;
+    ++loadState->chunkCursor;
+    ++processed;
   }
 
-  if (!bookFile.seek(BOOK_CACHE_FIXED_HEADER_SIZE) || !consumeBoundedString(bookFile, lutOffset, &coreMetadata.title) ||
-      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.author) ||
-      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.language) ||
-      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.coverItemHref) ||
-      !consumeBoundedString(bookFile, lutOffset, &coreMetadata.textReferenceHref) || bookFile.position() != lutOffset) {
-    coreMetadata = {};
-    return fail(LoadStatus::Invalid);
-  }
+  if (loadState->nextEntry < loadState->entryCount) return LoadStepResult::InProgress;
+  return finishLoad();
+}
 
-  dataEndOffset = static_cast<size_t>(dataEnd);
-  loadedFileSize = fileSize;
-  loaded = true;
-  lastLoadStatus = LoadStatus::Loaded;
-  LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
+void BookMetadataCache::cancelLoad() {
+  if (!loadState) return;
+  loadState.reset();
+  bookFile.close();
+  loaded = false;
+  coreMetadata = {};
+  spineCumulativeCache.reset();
+  spineTocCache.reset();
+  dataEndOffset = 0;
+  loadedFileSize = 0;
+}
+
+BookMetadataCache::LoadStatus BookMetadataCache::load(const ZipFile::SourceIdentity& expectedSourceIdentity) {
+  LoadStepResult result = beginLoad(expectedSourceIdentity);
+  while (result == LoadStepResult::InProgress) result = stepLoad(BOOK_CACHE_LUT_CHUNK_SIZE);
   return lastLoadStatus;
 }
 

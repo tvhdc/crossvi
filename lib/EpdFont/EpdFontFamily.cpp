@@ -32,6 +32,10 @@ int8_t EpdFontFamily::getKerning(const uint32_t leftCp, const uint32_t rightCp, 
   return getFont(style)->getKerning(leftCp, rightCp);
 }
 
+uint32_t EpdFontFamily::getLigature(const uint32_t leftCp, const uint32_t rightCp, const Style style) const {
+  return getFont(style)->getLigature(leftCp, rightCp);
+}
+
 uint32_t EpdFontFamily::applyLigatures(const uint32_t cp, const char*& text, const Style style) const {
   return getFont(style)->applyLigatures(cp, text);
 }

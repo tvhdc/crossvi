@@ -16,6 +16,8 @@
 #include "RenderLock.h"
 #include "util/ScreenshotInfo.h"
 
+struct RawSourceIdentityHandoff;
+
 class Activity {
   friend class ActivityManager;
 
@@ -33,7 +35,9 @@ class Activity {
   // Opt-in helper for screens where global navigation is safe.
   bool handleSafeGlobalShortcut(GlobalShortcut shortcut);
 
-  void openBookWithFeedback(const std::string& path, ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
+  void openBookWithFeedback(const std::string& path, ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default,
+                            bool completionStatsAlreadyRecovered = false,
+                            const RawSourceIdentityHandoff* preparedSourceIdentity = nullptr);
   bool renderBookLoadingOverlay();
   void showReaderExitFeedback();
   bool renderReaderExitOverlay();

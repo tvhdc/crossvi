@@ -5,6 +5,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
+#include <TiltPageTurnPolicy.h>
 
 #include <algorithm>
 #include <cstring>
@@ -478,8 +479,14 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
       // Insert after the short power button setting (end of Controls section)
       for (auto it = v.begin(); it != v.end(); ++it) {
         if (it->nameId == StrId::STR_SHORT_PWR_BTN) {
-          v.insert(it + 1, SettingInfo::Toggle(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn,
-                                               "tiltPageTurn", StrId::STR_CAT_CONTROLS));
+          v.insert(it + 1, SettingInfo::DynamicEnum(
+                               StrId::STR_TILT_PAGE_TURN,
+                               {StrId::STR_DISABLED, StrId::STR_TILT_PAGE_TURN, StrId::STR_TILT_PAGE_TURN_REVERSED},
+                               [] { return TiltPageTurnPolicy::settingOptionForMode(SETTINGS.tiltPageTurn); },
+                               [](const uint8_t value) {
+                                 SETTINGS.tiltPageTurn = TiltPageTurnPolicy::modeForSettingOption(value);
+                               },
+                               "tiltPageTurn", StrId::STR_CAT_CONTROLS));
           break;
         }
       }

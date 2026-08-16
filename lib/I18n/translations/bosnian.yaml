@@ -357,6 +357,7 @@ STR_CRASH_DESCRIPTION: "Detaljan izvještaj je sačuvan u crash_report.txt. Moli
 STR_CRASH_REASON: "Razlog pada:"
 STR_CRASH_NO_REASON: "(Razlog nije zabilježen)"
 STR_TILT_PAGE_TURN: "Okretanje stranice naginjanjem"
+STR_TILT_PAGE_TURN_REVERSED: "Okretanje stranice naginjanjem (obrnuto)"
 STR_KB_HINT_MOVE_CURSOR: "Pritisni LIJEVO ili DESNO za pomjeranje kursora"
 STR_KB_HINT_RETURN_CURSOR: "Pritisni LIJEVO za povratak na poziciju kursora"
 STR_KB_HINT_HIDE_PASSWORD: "Drži DESNO pa pritisni [***] za skrivanje lozinke"

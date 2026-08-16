@@ -79,17 +79,95 @@ class ZipStreamReadJob::Impl {
   size_t chunkSize = 0;
   size_t expectedSize = 0;
   size_t totalProduced = 0;
+  bool stored = false;
   std::unique_ptr<uint8_t[]> inputBuffer;
   std::unique_ptr<uint8_t[]> outputBuffer;
   ZipInflateCtx ctx;
   InflateStream inflate;
 };
 
+class ZipSourceIdentityJob::Impl {
+ public:
+  explicit Impl(std::string sourcePath) : path(std::move(sourcePath)), zip(path) {}
+  ~Impl() { zip.close(); }
+
+  std::string path;
+  ZipFile zip;
+  std::array<uint8_t, 512> buffer;
+  uint64_t expectedFileSize = 0;
+  uint64_t hash = FNV64_OFFSET_BASIS;
+  uint32_t remaining = 0;
+};
+
+ZipSourceIdentityJob::ZipSourceIdentityJob() = default;
+ZipSourceIdentityJob::~ZipSourceIdentityJob() = default;
+
+bool ZipSourceIdentityJob::begin(const std::string& zipPath) {
+  cancel();
+  if (zipPath.empty()) return false;
+
+  auto next = std::unique_ptr<Impl>(new (std::nothrow) Impl(zipPath));
+  if (!next || !next->zip.open() || !next->zip.loadZipDetails()) return false;
+
+  next->expectedFileSize = next->zip.file.fileSize64();
+  const uint64_t centralDirEnd =
+      static_cast<uint64_t>(next->zip.zipDetails.centralDirOffset) + next->zip.zipDetails.centralDirSize;
+  if (next->expectedFileSize == 0 || centralDirEnd > next->expectedFileSize ||
+      !next->zip.file.seek(next->zip.zipDetails.centralDirOffset)) {
+    return false;
+  }
+  next->remaining = next->zip.zipDetails.centralDirSize;
+  impl = std::move(next);
+  return true;
+}
+
+ZipSourceIdentityJob::StepStatus ZipSourceIdentityJob::step(const size_t maxBytes, ZipFile::SourceIdentity& identity,
+                                                            FileStamp* const fileStamp) {
+  identity = {};
+  if (fileStamp) *fileStamp = {};
+  if (!impl || maxBytes == 0) return StepStatus::Error;
+
+  size_t budget = std::min<size_t>(maxBytes, impl->remaining);
+  while (budget > 0) {
+    const size_t chunk = std::min({impl->buffer.size(), budget, static_cast<size_t>(impl->remaining)});
+    if (impl->zip.file.read(impl->buffer.data(), chunk) != static_cast<int>(chunk)) {
+      cancel();
+      return StepStatus::Error;
+    }
+    for (size_t i = 0; i < chunk; ++i) {
+      impl->hash ^= impl->buffer[i];
+      impl->hash *= FNV64_PRIME;
+    }
+    impl->remaining -= static_cast<uint32_t>(chunk);
+    budget -= chunk;
+  }
+
+  if (impl->remaining > 0) return StepStatus::InProgress;
+  if (impl->zip.file.fileSize64() != impl->expectedFileSize) {
+    cancel();
+    return StepStatus::Error;
+  }
+
+  identity.fileSize = impl->expectedFileSize;
+  identity.centralDirOffset = impl->zip.zipDetails.centralDirOffset;
+  identity.centralDirSize = impl->zip.zipDetails.centralDirSize;
+  identity.totalEntries = impl->zip.zipDetails.totalEntries;
+  identity.centralDirHash = impl->hash;
+  if (fileStamp) {
+    fileStamp->valid = impl->zip.file.getModifyDateTime(&fileStamp->modifyDate, &fileStamp->modifyTime);
+  }
+  cancel();
+  return StepStatus::Done;
+}
+
+void ZipSourceIdentityJob::cancel() { impl.reset(); }
+
 ZipStreamReadJob::ZipStreamReadJob() = default;
 ZipStreamReadJob::~ZipStreamReadJob() = default;
 
 ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath, const char* entry, Print& out,
-                                                      const size_t chunkSize, const size_t maxOutputSize) {
+                                                      const size_t chunkSize, const size_t maxOutputSize,
+                                                      const bool allowStored) {
   cancel();
   if (zipPath.empty() || !entry || entry[0] == '\0' || chunkSize == 0 || maxOutputSize == 0) {
     return BeginStatus::Error;
@@ -106,8 +184,9 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath
   const ZipFile::StoredEntryOpenStatus opened =
       zip.openValidatedEntry(entry, next->archive, fileOffset, compressedSize, uncompressedSize, method);
   if (opened != ZipFile::StoredEntryOpenStatus::Opened) return BeginStatus::Error;
-  if (method == ZIP_METHOD_STORED) return BeginStatus::NotApplicable;
-  if (method != ZIP_METHOD_DEFLATED || uncompressedSize == 0 || uncompressedSize > maxOutputSize) {
+  if (method == ZIP_METHOD_STORED && !allowStored) return BeginStatus::NotApplicable;
+  if (method == ZIP_METHOD_STORED && compressedSize != uncompressedSize) return BeginStatus::Error;
+  if ((method != ZIP_METHOD_STORED && method != ZIP_METHOD_DEFLATED) || uncompressedSize > maxOutputSize) {
     LOG_ERR("ZIP", "Cooperative entry is unsupported or too large (%u bytes, limit %zu)", uncompressedSize,
             maxOutputSize);
     return BeginStatus::Error;
@@ -117,10 +196,22 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath
     return BeginStatus::Error;
   }
 
-  next->inputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
   next->outputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
-  if (!next->inputBuffer || !next->outputBuffer) {
-    LOG_ERR("ZIP", "Failed to allocate cooperative stream buffers (%zu bytes each)", chunkSize);
+  if (!next->outputBuffer) {
+    LOG_ERR("ZIP", "Failed to allocate cooperative output buffer (%zu bytes)", chunkSize);
+    return BeginStatus::Error;
+  }
+
+  next->expectedSize = uncompressedSize;
+  if (method == ZIP_METHOD_STORED) {
+    next->stored = true;
+    impl = std::move(next);
+    return BeginStatus::Started;
+  }
+
+  next->inputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
+  if (!next->inputBuffer) {
+    LOG_ERR("ZIP", "Failed to allocate cooperative input buffer (%zu bytes)", chunkSize);
     return BeginStatus::Error;
   }
 
@@ -128,7 +219,6 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath
   next->ctx.fileRemaining = compressedSize;
   next->ctx.readBuf = next->inputBuffer.get();
   next->ctx.readBufSize = chunkSize;
-  next->expectedSize = uncompressedSize;
   if (!next->inflate.init(true)) {
     LOG_ERR("ZIP", "Failed to init cooperative inflate stream");
     return BeginStatus::Error;
@@ -140,6 +230,27 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath
 
 ZipStreamReadJob::StepStatus ZipStreamReadJob::step() {
   if (!impl) return StepStatus::Error;
+  if (impl->stored && impl->expectedSize == 0) {
+    cancel();
+    return StepStatus::Done;
+  }
+
+  if (impl->stored) {
+    const size_t remaining = impl->expectedSize - impl->totalProduced;
+    const size_t toRead = std::min(impl->chunkSize, remaining);
+    if (toRead == 0 || impl->archive.read(impl->outputBuffer.get(), toRead) != static_cast<int>(toRead) ||
+        impl->out->write(impl->outputBuffer.get(), toRead) != toRead) {
+      LOG_ERR("ZIP", "Cooperative stored-entry read failed");
+      cancel();
+      return StepStatus::Error;
+    }
+    impl->totalProduced += toRead;
+    if (impl->totalProduced == impl->expectedSize) {
+      cancel();
+      return StepStatus::Done;
+    }
+    return StepStatus::InProgress;
+  }
 
   size_t produced = 0;
   const InflateStream::Status status = impl->inflate.readAtMost(impl->outputBuffer.get(), impl->chunkSize, &produced);
@@ -406,36 +517,11 @@ bool ZipFile::loadZipDetails() {
 }
 
 bool ZipFile::getSourceIdentity(SourceIdentity& identity) {
-  identity = {};
-  const ScopedOpenClose zip{*this};
-  if (!zip || !loadZipDetails()) return false;
-
-  const uint64_t expectedFileSize = file.fileSize64();
-  const uint64_t centralDirEnd = static_cast<uint64_t>(zipDetails.centralDirOffset) + zipDetails.centralDirSize;
-  if (expectedFileSize == 0 || centralDirEnd > expectedFileSize || !file.seek(zipDetails.centralDirOffset)) {
-    return false;
-  }
-
-  std::array<uint8_t, 512> buffer;
-  uint64_t hash = FNV64_OFFSET_BASIS;
-  uint32_t remaining = zipDetails.centralDirSize;
-  while (remaining > 0) {
-    const size_t chunk = std::min<size_t>(buffer.size(), remaining);
-    if (file.read(buffer.data(), chunk) != static_cast<int>(chunk)) return false;
-    for (size_t i = 0; i < chunk; ++i) {
-      hash ^= buffer[i];
-      hash *= FNV64_PRIME;
-    }
-    remaining -= static_cast<uint32_t>(chunk);
-  }
-
-  if (file.fileSize64() != expectedFileSize) return false;
-  identity.fileSize = expectedFileSize;
-  identity.centralDirOffset = zipDetails.centralDirOffset;
-  identity.centralDirSize = zipDetails.centralDirSize;
-  identity.totalEntries = zipDetails.totalEntries;
-  identity.centralDirHash = hash;
-  return true;
+  ZipSourceIdentityJob job;
+  if (!job.begin(filePath)) return false;
+  ZipSourceIdentityJob::StepStatus status = ZipSourceIdentityJob::StepStatus::InProgress;
+  while (status == ZipSourceIdentityJob::StepStatus::InProgress) status = job.step(SIZE_MAX, identity);
+  return status == ZipSourceIdentityJob::StepStatus::Done;
 }
 
 bool ZipFile::open() {
@@ -491,8 +577,10 @@ ZipFile::StoredEntryOpenStatus ZipFile::openValidatedEntry(const char* filename,
   if (!loadFileStatSlim(filename, &fileStat)) {
     return file.getError() == 0 ? StoredEntryOpenStatus::Missing : StoredEntryOpenStatus::IoError;
   }
+  const bool emptyStored =
+      fileStat.method == ZIP_METHOD_STORED && fileStat.compressedSize == 0 && fileStat.uncompressedSize == 0;
   if ((fileStat.method != ZIP_METHOD_STORED && fileStat.method != ZIP_METHOD_DEFLATED) ||
-      fileStat.compressedSize == 0 || fileStat.uncompressedSize == 0 ||
+      (fileStat.compressedSize == 0 && !emptyStored) ||
       fileStat.compressedSize > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
       fileStat.localHeaderOffset == std::numeric_limits<uint32_t>::max()) {
     return StoredEntryOpenStatus::Invalid;

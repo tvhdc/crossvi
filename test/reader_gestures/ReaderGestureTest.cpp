@@ -135,6 +135,32 @@ TEST(ReaderRendering, UsesBoundedStripPathForSupportedDrivers) {
   EXPECT_EQ(renderer.cleanupGrayscaleCalls, 1);
 }
 
+TEST(ReaderRendering, ThirteenKiBStripBudgetCutsX3AndX4ToEightContentPasses) {
+  const auto contentPasses = [](const int widthBytes, const int height) {
+    const int rows = ReaderUtils::grayscaleStripRows(widthBytes, height);
+    EXPECT_GT(rows, 0);
+    EXPECT_LE(static_cast<size_t>(widthBytes) * rows, ReaderUtils::GRAYSCALE_STRIP_SCRATCH_BYTES);
+    return 2 * ((height + rows - 1) / rows);
+  };
+
+  EXPECT_EQ(contentPasses(800 / 8, 480), 8);
+  EXPECT_EQ(contentPasses(792 / 8, 528), 8);
+}
+
+TEST(ReaderRendering, ReusesCallerOwnedGrayscaleScratchAcrossPages) {
+  GfxRenderer renderer;
+  std::unique_ptr<uint8_t[]> scratch;
+  size_t capacity = 0;
+
+  ReaderUtils::renderAntiAliased(renderer, scratch, capacity, [] {});
+  uint8_t* const firstAllocation = scratch.get();
+  ASSERT_NE(firstAllocation, nullptr);
+  ReaderUtils::renderAntiAliased(renderer, scratch, capacity, [] {});
+
+  EXPECT_EQ(scratch.get(), firstAllocation);
+  EXPECT_LE(capacity, ReaderUtils::GRAYSCALE_STRIP_SCRATCH_BYTES);
+}
+
 TEST(ReaderGesture, ConsumesTheReleaseThatOpenedAReplacementActivity) {
   bool armed = true;
   EXPECT_TRUE(ReaderUtils::consumeInitialRelease(armed, false, true));
@@ -222,6 +248,16 @@ TEST(TiltPageTurnPolicy, MapsRightAndLeftModesAcrossOrientation) {
   EXPECT_TRUE(TiltPageTurnPolicy::shouldTurnNext(0.51f, TiltPageTurnPolicy::TRIGGER_THRESHOLD_G));
   EXPECT_FALSE(TiltPageTurnPolicy::shouldTurnNext(0.49f, TiltPageTurnPolicy::TRIGGER_THRESHOLD_G));
   EXPECT_FALSE(TiltPageTurnPolicy::shouldTurnNext(-0.51f, TiltPageTurnPolicy::TRIGGER_THRESHOLD_G));
+}
+
+TEST(TiltPageTurnPolicy, KeepsExistingDirectionSelectedAsReversed) {
+  EXPECT_EQ(TiltPageTurnPolicy::settingOptionForMode(0), 0);
+  EXPECT_EQ(TiltPageTurnPolicy::settingOptionForMode(1), 2);
+  EXPECT_EQ(TiltPageTurnPolicy::settingOptionForMode(2), 1);
+  EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(0), 0);
+  EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(1), 2);
+  EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(2), 1);
+  EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(99), 0);
 }
 
 TEST(TiltPageTurnPolicy, RequiresNeutralAndTwoDeliberateSamples) {

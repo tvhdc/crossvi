@@ -8,10 +8,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "FontCacheManager.h"
 #include "SdCardFont.h"
 #include "VietnameseFontContract.h"
 
@@ -160,6 +162,25 @@ TEST_F(CpFontValidationTest, AcceptsRegularOnlyAndFallsBackStyles) {
   EXPECT_EQ(font.resolveStyle(1), 0);
   EXPECT_EQ(font.resolveStyle(2), 0);
   EXPECT_EQ(font.resolveStyle(3), 0);
+}
+
+TEST_F(CpFontValidationTest, PrewarmManagerMergesTextForStylesThatFallBackToRegular) {
+  SdCardFont font;
+  ASSERT_TRUE(load(makeFont({0}, 'A', 'B'), &font));
+  const std::map<int, EpdFontFamily> builtinFonts;
+  const std::map<int, SdCardFont*> sdFonts = {{7, &font}};
+  FontCacheManager manager(builtinFonts, sdFonts);
+
+  {
+    auto scope = manager.createPrewarmScope();
+    manager.recordText("A", 7, EpdFontFamily::REGULAR);
+    manager.recordText("B", 7, EpdFontFamily::BOLD);
+    scope.endScanAndPrewarm();
+  }
+
+  ASSERT_NE(font.getEpdFont(EpdFontFamily::REGULAR), nullptr);
+  EXPECT_NE(font.getEpdFont(EpdFontFamily::REGULAR)->getGlyph('A'), nullptr);
+  EXPECT_NE(font.getEpdFont(EpdFontFamily::REGULAR)->getGlyph('B'), nullptr);
 }
 
 TEST_F(CpFontValidationTest, RejectsBadMagicAndNewerVersion) {

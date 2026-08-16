@@ -89,8 +89,13 @@ void RecentBooksStore::markReadOnlyForRecovery() {
 void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
                                const std::string& coverBmpPath) {
   if (!ensureLoaded()) return;
-  // Drop stale entries first so a new add can't evict a valid book in their stead.
-  pruneMissing();
+  if (!recentBooks.empty()) {
+    const RecentBook& current = recentBooks.front();
+    if (current.path == path && current.title == title && current.author == author &&
+        current.coverBmpPath == coverBmpPath) {
+      return;
+    }
+  }
 
   // Remove existing entry if present
   auto it =
@@ -206,17 +211,60 @@ bool RecentBooksStore::isPinned(const std::string& path) const {
   return std::find(pinnedPaths.begin(), pinnedPaths.end(), path) != pinnedPaths.end();
 }
 
-bool RecentBooksStore::isMissing(const RecentBook& book) { return !Storage.exists(book.path.c_str()); }
+RecentBooksStore::PruneStepResult RecentBooksStore::pruneMissingStep(size_t& recentIndex, size_t& pinnedIndex,
+                                                                     std::string* removedPath) {
+  if (!ensureLoaded()) return PruneStepResult::SaveFailed;
 
-bool RecentBooksStore::pruneMissing() {
-  if (!ensureLoaded()) return false;
-  const size_t before = recentBooks.size();
-  recentBooks.erase(std::remove_if(recentBooks.begin(), recentBooks.end(), &isMissing), recentBooks.end());
-  const size_t pinnedBefore = pinnedPaths.size();
-  pinnedPaths.erase(std::remove_if(pinnedPaths.begin(), pinnedPaths.end(),
-                                   [](const std::string& path) { return !Storage.exists(path.c_str()); }),
-                    pinnedPaths.end());
-  return recentBooks.size() != before || pinnedPaths.size() != pinnedBefore;
+  if (recentIndex < recentBooks.size()) {
+    const std::string path = recentBooks[recentIndex].path;
+    if (Storage.exists(path.c_str())) {
+      ++recentIndex;
+      return PruneStepResult::Pending;
+    }
+    if (!Storage.probeMedia()) return PruneStepResult::MediaUnavailable;
+
+    RecentBook removedBook = std::move(recentBooks[recentIndex]);
+    recentBooks.erase(recentBooks.begin() + recentIndex);
+    const auto pin = std::find(pinnedPaths.begin(), pinnedPaths.end(), path);
+    const size_t pinIndex = static_cast<size_t>(std::distance(pinnedPaths.begin(), pin));
+    std::string removedPin;
+    if (pin != pinnedPaths.end()) {
+      removedPin = std::move(*pin);
+      pinnedPaths.erase(pin);
+      if (pinIndex < pinnedIndex) --pinnedIndex;
+    }
+
+    if (!saveToFile()) {
+      recentBooks.insert(recentBooks.begin() + recentIndex, std::move(removedBook));
+      if (!removedPin.empty()) {
+        pinnedPaths.insert(pinnedPaths.begin() + pinIndex, std::move(removedPin));
+        if (pinIndex < pinnedIndex) ++pinnedIndex;
+      }
+      return PruneStepResult::SaveFailed;
+    }
+    if (removedPath) *removedPath = path;
+    return PruneStepResult::Removed;
+  }
+
+  if (pinnedIndex < pinnedPaths.size()) {
+    const std::string path = pinnedPaths[pinnedIndex];
+    if (Storage.exists(path.c_str())) {
+      ++pinnedIndex;
+      return PruneStepResult::Pending;
+    }
+    if (!Storage.probeMedia()) return PruneStepResult::MediaUnavailable;
+
+    std::string removedPin = std::move(pinnedPaths[pinnedIndex]);
+    pinnedPaths.erase(pinnedPaths.begin() + pinnedIndex);
+    if (!saveToFile()) {
+      pinnedPaths.insert(pinnedPaths.begin() + pinnedIndex, std::move(removedPin));
+      return PruneStepResult::SaveFailed;
+    }
+    if (removedPath) *removedPath = path;
+    return PruneStepResult::Removed;
+  }
+
+  return PruneStepResult::Complete;
 }
 
 RecentBook RecentBooksStore::getDataFromBook(std::string path) const {

@@ -593,6 +593,7 @@ STR_CRASH_DESCRIPTION: "Báo cáo chi tiết đã được lưu vào crash_repor
 STR_CRASH_REASON: "Lý do lỗi:"
 STR_CRASH_NO_REASON: "(Không ghi nhận lý do)"
 STR_TILT_PAGE_TURN: "Lật trang"
+STR_TILT_PAGE_TURN_REVERSED: "Lật trang (đảo ngược)"
 STR_TILT_RIGHT_NEXT: "Nghiêng phải để sang trang"
 STR_TILT_LEFT_NEXT: "Nghiêng trái để sang trang"
 STR_KB_HINT_MOVE_CURSOR: "Nhấn TRÁI hoặc PHẢI để di chuyển con trỏ"

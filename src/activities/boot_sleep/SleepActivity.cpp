@@ -1,6 +1,7 @@
 #include "SleepActivity.h"
 
 #include <Epub.h>
+#include <Epub/SourceIdentityStore.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
@@ -28,6 +29,9 @@
 #include "activities/reader/ReadingCalendarRenderer.h"
 #include "activities/reader/ReadingStatsPresentation.h"
 #include "activities/reader/ReadingStatsUtils.h"
+#include "activities/home/DashboardProgress.h"
+#include "activities/reader/ProgressFile.h"
+#include "activities/reader/ProgressFileCodec.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/DefaultSleepScreens.h"
@@ -85,9 +89,12 @@ void drawCalendarWeekdays(const GfxRenderer& renderer, const ReadingCalendarGrid
 struct SleepBookSummary {
   std::string title;
   std::string author;
+  std::string chapter;
   std::string readingTime;
   std::string sessions;
   std::string pagesTurned;
+  ReadingStatsMetric progress = ReadingStatsMetric::unavailable();
+  bool progressBelowOnePercent = false;
   bool available = false;
 };
 
@@ -140,6 +147,120 @@ std::string formatSleepMetric(const ReadingStatsMetric& metric, const bool durat
   return tr(STR_STATS_UNAVAILABLE);
 }
 
+std::string formatSleepProgress(const SleepBookSummary& summary) {
+  if (summary.progress.state != ReadingStatsMetricState::Known &&
+      summary.progress.state != ReadingStatsMetricState::Estimated) {
+    return formatSleepMetric(summary.progress, false);
+  }
+  const char* prefix = summary.progress.state == ReadingStatsMetricState::Estimated ? "~" : "";
+  if (summary.progressBelowOnePercent) return std::string(prefix) + "<1%";
+  return std::string(prefix) + std::to_string(std::min<uint32_t>(summary.progress.value, 100)) + "%";
+}
+
+void setSleepProgress(SleepBookSummary& summary, const uint8_t percent, const bool estimated = false,
+                      const bool belowOnePercent = false) {
+  summary.progress = estimated ? ReadingStatsMetric::estimated(percent) : ReadingStatsMetric::known(percent);
+  summary.progressBelowOnePercent = belowOnePercent;
+}
+
+bool hasTrustedSourceIdentity(const std::string& cachePath, const ZipFile::SourceIdentity& current) {
+  ZipFile::SourceIdentity stored;
+  const SourceIdentityStore::LoadStatus status = SourceIdentityStore::load(cachePath, stored);
+  return (status == SourceIdentityStore::LoadStatus::Primary || status == SourceIdentityStore::LoadStatus::Backup ||
+          status == SourceIdentityStore::LoadStatus::Temp) &&
+         stored == current;
+}
+
+void loadEpubSleepPosition(const RecentBook& recent, SleepBookSummary& summary) {
+  Epub book(recent.path, "/.crosspoint");
+  if (book.inspectCache() != BookMetadataCache::LoadStatus::Loaded) return;
+
+  std::array<uint8_t, ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> bytes{};
+  const ProgressFile::EpubBounds bounds{static_cast<uint32_t>(book.getSpineItemsCount())};
+  const ProgressFile::CandidateValidator validator{ProgressFile::validateEpubBounds, &bounds};
+  const ProgressFile::LoadResult loaded =
+      ProgressFile::loadEpub(book.getCachePath(), bytes.data(), bytes.size(), validator);
+  if (!loaded) {
+    if (loaded.source == ProgressFile::LoadSource::Missing) summary.progress = ReadingStatsMetric::noData();
+    return;
+  }
+
+  const uint16_t spineIndex = static_cast<uint16_t>(bytes[0]) | static_cast<uint16_t>(bytes[1]) << 8;
+  const int tocIndex = book.getTocIndexForSpineIndex(spineIndex);
+  if (tocIndex >= 0) summary.chapter = book.getTocItem(tocIndex).title;
+
+  DashboardProgress::Position position;
+  if (!DashboardProgress::decode(bytes.data(), loaded.size, position)) return;
+  const float chapterProgress = static_cast<float>(position.pageNumber + 1U) / position.pageCount;
+  float bookProgress = 0.0F;
+  uint8_t percent = 0;
+  if (book.calculateProgressChecked(position.spineIndex, chapterProgress, bookProgress) &&
+      DashboardProgress::toPercent(bookProgress, percent)) {
+    setSleepProgress(summary, percent, false, bookProgress > 0.0F && percent == 0);
+  }
+}
+
+void loadXtcSleepPosition(const RecentBook& recent, SleepBookSummary& summary) {
+  Xtc book(recent.path, "/.crosspoint");
+  ZipFile::SourceIdentity identity;
+  if (!book.load() || !book.getSourceIdentity(identity) || !hasTrustedSourceIdentity(book.getCachePath(), identity)) {
+    return;
+  }
+
+  uint8_t bytes[4]{};
+  const ProgressFile::PageBounds bounds{book.getPageCount()};
+  const ProgressFile::CandidateValidator validator{ProgressFile::validatePageBounds, &bounds};
+  const ProgressFile::LoadResult loaded = ProgressFile::loadPage(book.getCachePath(), bytes, sizeof(bytes), validator);
+  if (!loaded) {
+    if (loaded.source == ProgressFile::LoadSource::Missing) summary.progress = ReadingStatsMetric::noData();
+    return;
+  }
+
+  const uint32_t page = ProgressFileCodec::decodeU32(bytes);
+  setSleepProgress(summary, book.calculateProgress(page));
+  if (!book.hasChapters()) return;
+  const auto& chapters = book.getChapters();
+  const auto chapter = std::find_if(chapters.begin(), chapters.end(), [page](const xtc::ChapterInfo& entry) {
+    return page >= entry.startPage && page <= entry.endPage;
+  });
+  if (chapter != chapters.end()) summary.chapter = chapter->name;
+}
+
+void loadTxtSleepPosition(const RecentBook& recent, SleepBookSummary& summary) {
+  Txt book(recent.path, "/.crosspoint");
+  ZipFile::SourceIdentity identity;
+  if (!book.load() || !book.getSourceIdentity(identity) || !hasTrustedSourceIdentity(book.getCachePath(), identity) ||
+      book.getFileSize() == 0 || book.getFileSize() > UINT32_MAX) {
+    return;
+  }
+
+  uint8_t bytes[ProgressFileCodec::TXT_V2_SIZE]{};
+  const ProgressFile::TxtBounds bounds{static_cast<uint32_t>(book.getFileSize()), 0};
+  const ProgressFile::CandidateValidator validator{ProgressFile::validateTxtBounds, &bounds};
+  const ProgressFile::LoadResult loaded = ProgressFile::loadTxt(book.getCachePath(), bytes, sizeof(bytes), validator);
+  if (!loaded) {
+    if (loaded.source == ProgressFile::LoadSource::Missing) summary.progress = ReadingStatsMetric::noData();
+    return;
+  }
+
+  uint32_t byteOffset = 0;
+  if (ProgressFileCodec::decodeTxt(bytes, loaded.size, byteOffset) != ProgressFileCodec::TxtDecodeStatus::Ok) return;
+  const uint32_t percent =
+      static_cast<uint32_t>(static_cast<uint64_t>(byteOffset) * 100U / book.getFileSize());
+  setSleepProgress(summary, static_cast<uint8_t>(std::min<uint32_t>(percent, 100)), true,
+                   byteOffset > 0 && percent == 0);
+}
+
+void loadSleepBookPosition(const RecentBook& recent, SleepBookSummary& summary) {
+  if (FsHelpers::hasEpubExtension(recent.path)) {
+    loadEpubSleepPosition(recent, summary);
+  } else if (FsHelpers::hasXtcExtension(recent.path)) {
+    loadXtcSleepPosition(recent, summary);
+  } else if (FsHelpers::hasTxtExtension(recent.path) || FsHelpers::hasMarkdownExtension(recent.path)) {
+    loadTxtSleepPosition(recent, summary);
+  }
+}
+
 SleepBookSummary loadSleepBookSummary() {
   SleepBookSummary summary;
   const std::string& path = APP_STATE.openEpubPath;
@@ -157,6 +278,8 @@ SleepBookSummary loadSleepBookSummary() {
   summary.available = !summary.title.empty();
   if (!summary.available) return summary;
 
+  loadSleepBookPosition(recent, summary);
+
   BookReadingStats stats;
   if (!loadTrustedBookReadingStats(recent, stats)) {
     summary.readingTime = tr(STR_STATS_UNAVAILABLE);
@@ -164,6 +287,7 @@ SleepBookSummary loadSleepBookSummary() {
     summary.pagesTurned = tr(STR_STATS_UNAVAILABLE);
     return summary;
   }
+  if (stats.isCompleted && !stats.completionUnavailable) setSleepProgress(summary, 100);
   summary.readingTime =
       formatSleepMetric(stats.readingTimeUnavailable ? ReadingStatsMetric::noData()
                                                      : ReadingStatsMetric::known(stats.totalReadingSeconds),
@@ -185,18 +309,26 @@ Rect drawSleepBookStatsOverlay(const GfxRenderer& renderer) {
   constexpr int leftPadding = 18;
   constexpr int rightPadding = 14;
   constexpr int titleAuthorGap = 8;
-  constexpr int authorStatsGap = 12;
+  constexpr int authorChapterGap = 8;
+  constexpr int detailsGap = 10;
+  constexpr int progressBarHeight = 10;
+  constexpr int progressStatsGap = 12;
   constexpr int statsHeight = 76;
   constexpr int bottomPadding = 11;
   const int cardWidth = renderer.getScreenWidth() - cardMargin * 2;
   const int contentWidth = cardWidth - leftPadding - rightPadding;
   const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int authorLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int detailsLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   const auto titleLines =
       renderer.wrappedText(UI_12_FONT_ID, summary.title.c_str(), contentWidth, 2, EpdFontFamily::BOLD);
   const int titleBlockHeight = titleLineHeight * static_cast<int>(titleLines.size());
   const int authorYInCard = topPadding + titleBlockHeight + titleAuthorGap;
-  const int statsTopInCard = authorYInCard + authorLineHeight + authorStatsGap;
+  const int chapterYInCard = authorYInCard + authorLineHeight + authorChapterGap;
+  const int progressYInCard = summary.chapter.empty() ? authorYInCard + authorLineHeight + detailsGap
+                                                      : chapterYInCard + detailsLineHeight + detailsGap;
+  const int progressBarYInCard = progressYInCard + detailsLineHeight + 4;
+  const int statsTopInCard = progressBarYInCard + progressBarHeight + progressStatsGap;
   const int cardHeight = statsTopInCard + 1 + statsHeight + bottomPadding;
   const Rect card{cardMargin, renderer.getScreenHeight() - cardMargin - cardHeight, cardWidth, cardHeight};
 
@@ -214,6 +346,28 @@ Rect drawSleepBookStatsOverlay(const GfxRenderer& renderer) {
   y = card.y + authorYInCard;
   const std::string author = renderer.truncatedText(UI_10_FONT_ID, summary.author.c_str(), contentWidth);
   renderer.drawText(UI_10_FONT_ID, contentX, y, author.c_str());
+
+  if (!summary.chapter.empty()) {
+    const std::string chapterLabel = std::string(tr(STR_CHAPTER_PREFIX)) + summary.chapter;
+    const std::string chapter = renderer.truncatedText(UI_10_FONT_ID, chapterLabel.c_str(), contentWidth);
+    renderer.drawText(UI_10_FONT_ID, contentX, card.y + chapterYInCard, chapter.c_str());
+  }
+
+  const std::string progressValue = formatSleepProgress(summary);
+  renderer.drawText(UI_10_FONT_ID, contentX, card.y + progressYInCard, tr(STR_STATS_PROGRESS), true,
+                    EpdFontFamily::BOLD);
+  const int progressValueWidth = renderer.getTextWidth(UI_10_FONT_ID, progressValue.c_str());
+  renderer.drawText(UI_10_FONT_ID, contentX + std::max(0, contentWidth - progressValueWidth),
+                    card.y + progressYInCard, progressValue.c_str());
+  const int progressBarY = card.y + progressBarYInCard;
+  renderer.drawRoundedRect(contentX, progressBarY, contentWidth, progressBarHeight, 1, 3, true);
+  if (summary.progress.state == ReadingStatsMetricState::Known ||
+      summary.progress.state == ReadingStatsMetricState::Estimated) {
+    const int fillWidth = DashboardProgress::fillWidth(contentWidth, static_cast<uint8_t>(summary.progress.value));
+    if (fillWidth > 0) {
+      renderer.fillRoundedRect(contentX + 2, progressBarY + 2, fillWidth, progressBarHeight - 4, 1, Color::Black);
+    }
+  }
 
   const int statsTop = card.y + statsTopInCard;
   renderer.drawLine(contentX, statsTop, contentX + contentWidth - 1, statsTop);

@@ -1,6 +1,9 @@
 #pragma once
 
+#include <ZipFile.h>
+
 #include <cstdint>
+#include <optional>
 #include <string>
 
 enum class BookPathMoveResult : uint8_t {
@@ -35,9 +38,17 @@ BookFilePublishResult publishStagedBookFile(const std::string& stagingPath, cons
 // staging file. suffix must include its leading dot.
 std::string hiddenBookFileSibling(const std::string& bookPath, const char* suffix);
 
+// A prepared raw-file identity must not cross an in-progress replacement,
+// even when recovery removes the transaction files before the reader opens.
+bool hasBookFileReplacementArtifacts(const std::string& bookPath);
+
 // Repairs the small power-loss windows around staging -> final publication.
-// Reader calls this before checking whether an EPUB's final path exists.
-bool recoverInterruptedBookFileReplacement(const std::string& bookPath);
+// Reader calls this before checking whether an EPUB's final path exists. When
+// requested, returns the EPUB identity already verified during recovery so the
+// reader does not scan the same central directory again.
+bool recoverInterruptedBookFileReplacement(const std::string& bookPath,
+                                           std::optional<ZipFile::SourceIdentity>* verifiedEpubIdentity = nullptr,
+                                           bool completionTransactionResolved = false);
 
 // Transaction files are internal even when the user enables ordinary hidden
 // files; browsers and book scanners must never expose them for mutation.

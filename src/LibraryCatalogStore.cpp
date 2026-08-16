@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -89,7 +90,8 @@ struct OrderWorkEntry {
   uint32_t addedTimestamp;
   uint16_t pathLength;
   char pathPrefix[64];
-  char value[LibraryCatalogStore::MAX_TITLE_BYTES + 1];
+  char foldedValue[BOOK_SEARCH_QUERY_BYTES + 1];
+  uint8_t valueEmpty;
 };
 
 #pragma pack(pop)
@@ -285,7 +287,7 @@ bool readRecordAt(HalFile& file, const size_t index, LibraryBookRecord& record) 
 }
 
 size_t orderWorkEntrySize(const uint8_t sortMode) {
-  return sortMode == CrossPointSettings::LIBRARY_SORT_DATE_ADDED_DESC ? offsetof(OrderWorkEntry, value)
+  return sortMode == CrossPointSettings::LIBRARY_SORT_DATE_ADDED_DESC ? offsetof(OrderWorkEntry, foldedValue)
                                                                       : sizeof(OrderWorkEntry);
 }
 
@@ -299,18 +301,34 @@ bool makeOrderWorkEntry(const LibraryBookRecord& record, const size_t index, con
   entry.addedTimestamp = record.addedTimestamp;
   entry.pathLength = static_cast<uint16_t>(record.path.size());
   std::memcpy(entry.pathPrefix, record.path.data(), std::min(record.path.size(), sizeof(entry.pathPrefix)));
+  const std::string* value = nullptr;
   if (sortMode == CrossPointSettings::LIBRARY_SORT_TITLE_ASC) {
-    return copyString(record.title, entry.value, sizeof(entry.value));
+    value = &record.title;
+  } else if (sortMode == CrossPointSettings::LIBRARY_SORT_AUTHOR_ASC) {
+    value = &record.author;
+  } else {
+    return sortMode == CrossPointSettings::LIBRARY_SORT_DATE_ADDED_DESC;
   }
-  if (sortMode == CrossPointSettings::LIBRARY_SORT_AUTHOR_ASC) {
-    return copyString(record.author, entry.value, sizeof(entry.value));
-  }
-  return sortMode == CrossPointSettings::LIBRARY_SORT_DATE_ADDED_DESC;
+  entry.valueEmpty = value->empty();
+  const std::string folded = makeFoldedBookSearchKey(*value);
+  return copyString(folded, entry.foldedValue, sizeof(entry.foldedValue));
 }
 
 bool readOrderWorkEntryAt(HalFile& file, const size_t position, const uint8_t sortMode, OrderWorkEntry& entry) {
   const size_t entrySize = orderWorkEntrySize(sortMode);
   return file.seek64(static_cast<uint64_t>(position) * entrySize) && exactRead(file, &entry, entrySize);
+}
+
+uint16_t orderWorkIndex(const OrderWorkEntry& entry) {
+  uint16_t index = 0;
+  std::memcpy(&index, reinterpret_cast<const uint8_t*>(&entry) + offsetof(OrderWorkEntry, index), sizeof(index));
+  return index;
+}
+
+bool readDiskStringAt(HalFile& catalog, const uint16_t index, const size_t fieldOffset, char* value,
+                      const size_t fieldSize) {
+  const uint64_t offset = sizeof(DiskHeader) + static_cast<uint64_t>(index) * sizeof(DiskRecord) + fieldOffset;
+  return catalog.seek64(offset) && exactRead(catalog, value, fieldSize) && std::memchr(value, '\0', fieldSize);
 }
 
 bool orderPathLess(const OrderWorkEntry& first, const OrderWorkEntry& second, HalFile& catalog, bool& less) {
@@ -338,12 +356,36 @@ bool orderPathLess(const OrderWorkEntry& first, const OrderWorkEntry& second, Ha
   // Only paths sharing the full 64-byte prefix need a catalog lookup. This is
   // rare for normal root/Books layouts and preserves the previous exact tie
   // break without retaining every full path in RAM or the work files.
-  LibraryBookRecord firstRecord;
-  LibraryBookRecord secondRecord;
-  if (!readRecordAt(catalog, first.index, firstRecord) || !readRecordAt(catalog, second.index, secondRecord)) {
+  std::array<char, LibraryCatalogStore::MAX_PATH_BYTES + 1> firstPath{};
+  std::array<char, LibraryCatalogStore::MAX_PATH_BYTES + 1> secondPath{};
+  if (!readDiskStringAt(catalog, orderWorkIndex(first), offsetof(DiskRecord, path), firstPath.data(),
+                        firstPath.size()) ||
+      !readDiskStringAt(catalog, orderWorkIndex(second), offsetof(DiskRecord, path), secondPath.data(),
+                        secondPath.size())) {
     return false;
   }
-  less = firstRecord.path < secondRecord.path;
+  less = std::strcmp(firstPath.data(), secondPath.data()) < 0;
+  return true;
+}
+
+bool orderOriginalValueLess(const OrderWorkEntry& first, const OrderWorkEntry& second, const uint8_t sortMode,
+                            HalFile& catalog, bool& different, bool& less) {
+  constexpr size_t MAX_VALUE_BYTES =
+      std::max(LibraryCatalogStore::MAX_TITLE_BYTES, LibraryCatalogStore::MAX_AUTHOR_BYTES);
+  std::array<char, MAX_VALUE_BYTES + 1> firstValue{};
+  std::array<char, MAX_VALUE_BYTES + 1> secondValue{};
+  const size_t fieldOffset = sortMode == CrossPointSettings::LIBRARY_SORT_TITLE_ASC ? offsetof(DiskRecord, title)
+                                                                                    : offsetof(DiskRecord, author);
+  const size_t fieldSize = sortMode == CrossPointSettings::LIBRARY_SORT_TITLE_ASC
+                               ? LibraryCatalogStore::MAX_TITLE_BYTES + 1
+                               : LibraryCatalogStore::MAX_AUTHOR_BYTES + 1;
+  if (!readDiskStringAt(catalog, orderWorkIndex(first), fieldOffset, firstValue.data(), fieldSize) ||
+      !readDiskStringAt(catalog, orderWorkIndex(second), fieldOffset, secondValue.data(), fieldSize)) {
+    return false;
+  }
+  const int order = std::strcmp(firstValue.data(), secondValue.data());
+  different = order != 0;
+  less = order < 0;
   return true;
 }
 
@@ -351,23 +393,20 @@ bool orderWorkEntryLess(const OrderWorkEntry& first, const OrderWorkEntry& secon
                         HalFile& catalog, bool& less) {
   if (sortMode == CrossPointSettings::LIBRARY_SORT_TITLE_ASC ||
       sortMode == CrossPointSettings::LIBRARY_SORT_AUTHOR_ASC) {
-    const bool firstEmpty = first.value[0] == '\0';
-    const bool secondEmpty = second.value[0] == '\0';
+    const bool firstEmpty = first.valueEmpty != 0;
+    const bool secondEmpty = second.valueEmpty != 0;
     if (sortMode == CrossPointSettings::LIBRARY_SORT_AUTHOR_ASC && firstEmpty != secondEmpty) {
       less = !firstEmpty;
       return true;
     }
-    const std::string firstKey = makeFoldedBookSearchKey(first.value);
-    const std::string secondKey = makeFoldedBookSearchKey(second.value);
-    if (firstKey != secondKey) {
-      less = firstKey < secondKey;
+    const int foldedOrder = std::strcmp(first.foldedValue, second.foldedValue);
+    if (foldedOrder != 0) {
+      less = foldedOrder < 0;
       return true;
     }
-    const int originalOrder = std::strcmp(first.value, second.value);
-    if (originalOrder != 0) {
-      less = originalOrder < 0;
-      return true;
-    }
+    bool originalDifferent = false;
+    if (!orderOriginalValueLess(first, second, sortMode, catalog, originalDifferent, less)) return false;
+    if (originalDifferent) return true;
   } else {
     const bool firstMissing = first.addedTimestamp == 0;
     const bool secondMissing = second.addedTimestamp == 0;
@@ -383,16 +422,19 @@ bool orderWorkEntryLess(const OrderWorkEntry& first, const OrderWorkEntry& secon
   return orderPathLess(first, second, catalog, less);
 }
 
+bool validCatalogHeader(const DiskHeader& header, const uint64_t fileSize) {
+  return std::memcmp(header.magic, MAGIC.data(), MAGIC.size()) == 0 && header.version == VERSION &&
+         header.recordSize == sizeof(DiskRecord) && header.count <= LibraryCatalogStore::MAX_BOOKS &&
+         header.phase == static_cast<uint8_t>(LibraryCatalogStore::Phase::Ready) &&
+         header.crc == structureCrc(header) &&
+         fileSize == sizeof(DiskHeader) + static_cast<uint64_t>(header.count) * sizeof(DiskRecord);
+}
+
 bool validateCatalog(const char* path, void*) {
   HalFile file;
   if (!Storage.openFileForRead("LIB", path, file)) return false;
   DiskHeader header{};
-  bool valid = exactRead(file, &header, sizeof(header)) && std::memcmp(header.magic, MAGIC.data(), MAGIC.size()) == 0 &&
-               header.version == VERSION && header.recordSize == sizeof(DiskRecord) &&
-               header.count <= LibraryCatalogStore::MAX_BOOKS &&
-               header.phase == static_cast<uint8_t>(LibraryCatalogStore::Phase::Ready) &&
-               header.crc == structureCrc(header) &&
-               file.fileSize64() == sizeof(DiskHeader) + static_cast<uint64_t>(header.count) * sizeof(DiskRecord);
+  bool valid = exactRead(file, &header, sizeof(header)) && validCatalogHeader(header, file.fileSize64());
   for (uint32_t index = 0; valid && index < header.count; ++index) {
     DiskRecord disk;
     LibraryBookRecord record;
@@ -417,10 +459,11 @@ void enrichRecord(LibraryBookRecord& record) {
   }
   if (record.format != LibraryBookFormat::Xtc && record.format != LibraryBookFormat::Xtch) return;
   Xtc xtc(record.path, "/.crosspoint");
-  if (!xtc.load()) return;
-  std::string title = xtc.getTitle();
+  std::string title;
+  std::string author;
+  if (!xtc.readCoreMetadata(title, author)) return;
   if (!title.empty()) record.title = std::move(title);
-  record.author = xtc.getAuthor();
+  record.author = std::move(author);
   record.coverBmpPath = xtc.getThumbBmpPath();
 }
 }  // namespace
@@ -430,8 +473,11 @@ LibraryCatalogStore& LibraryCatalogStore::getInstance() {
   return instance;
 }
 
+LibraryCatalogStore::~LibraryCatalogStore() = default;
+
 const char* LibraryCatalogStore::activePath() const {
-  return phase_ == Phase::Discovering || phase_ == Phase::Sorting ? WORK_PATH : CATALOG_PATH;
+  const bool enrichingWork = phase_ == Phase::Enriching && !sourceValidationFile_;
+  return phase_ == Phase::Discovering || enrichingWork || phase_ == Phase::Sorting ? WORK_PATH : CATALOG_PATH;
 }
 
 bool LibraryCatalogStore::loadHeader(const char* path, const bool requireReady) {
@@ -522,6 +568,8 @@ void LibraryCatalogStore::resetSourceValidation() {
 
 bool LibraryCatalogStore::restorePreviousCatalog() {
   resetSourceValidation();
+  resetEnrichment();
+  resetUpdate(true);
   resetFinalize(true);
   for (auto& frame : directories_) frame.directory.close();
   directories_.clear();
@@ -539,13 +587,11 @@ bool LibraryCatalogStore::beginBuild() {
   lastBuildFailed_ = false;
   Storage.ensureDirectoryExists("/.crosspoint");
   Storage.remove(TEMP_PATH);
-  HalFile work;
-  if (!Storage.openFileForWrite("LIB", WORK_PATH, work)) {
+  if (!Storage.openFileForWrite("LIB", WORK_PATH, workFile_)) {
     lastBuildFailed_ = true;
     restorePreviousCatalog();
     return false;
   }
-  work.close();
   count_ = 0;
   truncated_ = false;
   phase_ = Phase::Discovering;
@@ -579,143 +625,235 @@ bool LibraryCatalogStore::applyDirtyPath(const std::string& path) {
   const uint32_t addedTimestamp = readTimestamp(source);
   const bool sourceClosed = source.close();
   if (!sourceClosed) return false;
-  size_t existingIndex = 0;
-  const FindPathResult existing = findPath(path, count_, existingIndex);
-  if (existing == FindPathResult::IoError) return false;
-  const bool replacing = existing == FindPathResult::Found;
-  if (!replacing && count_ >= MAX_BOOKS) return false;
-
-  LibraryBookRecord updated{path, fallbackTitle(path), "", "", format, sourceSize, addedTimestamp};
+  resetUpdate(true);
+  updateKind_ = UpdateKind::Upsert;
+  updatePath_ = path;
+  updateRecord_ = {path, fallbackTitle(path), "", "", format, sourceSize, addedTimestamp};
   const auto& recents = RECENT_BOOKS.getBooks();
   const auto recent =
       std::find_if(recents.begin(), recents.end(), [&path](const RecentBook& book) { return book.path == path; });
   if (recent != recents.end()) {
-    if (!recent->title.empty()) updated.title = recent->title;
-    updated.author = recent->author;
-    updated.coverBmpPath = recent->coverBmpPath;
+    if (!recent->title.empty()) updateRecord_.title = recent->title;
+    updateRecord_.author = recent->author;
+    updateRecord_.coverBmpPath = recent->coverBmpPath;
   }
-  enrichRecord(updated);
-
-  Storage.remove(TEMP_PATH);
-  HalFile input;
-  HalFile output;
-  if (!Storage.openFileForRead("LIB", CATALOG_PATH, input) || !Storage.openFileForWrite("LIB", TEMP_PATH, output)) {
-    input.close();
-    output.close();
-    Storage.remove(TEMP_PATH);
-    return false;
-  }
-
-  DiskHeader header{};
-  header = {};
-  std::memcpy(header.magic, MAGIC.data(), MAGIC.size());
-  header.version = VERSION;
-  header.recordSize = sizeof(DiskRecord);
-  header.count = replacing ? count_ : count_ + 1;
-  header.generation = generation_ + 1;
-  header.phase = static_cast<uint8_t>(Phase::Ready);
-  header.truncated = truncated_;
-  header.crc = structureCrc(header);
-  bool success = exactWrite(output, &header, sizeof(header));
-  bool replaced = false;
-  for (size_t index = 0; success && index < count_; ++index) {
-    LibraryBookRecord record;
-    if (!readRecordAt(input, index, record)) {
-      success = false;
-      break;
+  phase_ = Phase::Updating;
+  if (format == LibraryBookFormat::Epub) {
+    updateEpub_.reset(new (std::nothrow) Epub(path, "/.crosspoint"));
+    if (updateEpub_ && updateEpub_->beginCoreMetadataRead()) {
+      updateStage_ = UpdateStage::Metadata;
+      return true;
     }
-    if (replacing && record.path == path) {
-      record = updated;
-      replaced = true;
-    }
-    DiskRecord disk{};
-    success = toDisk(record, disk) && exactWrite(output, &disk, sizeof(disk));
+    updateEpub_.reset();
+  } else if (format == LibraryBookFormat::Xtc || format == LibraryBookFormat::Xtch) {
+    enrichRecord(updateRecord_);
   }
-  if (success && !replacing) {
-    DiskRecord disk{};
-    success = toDisk(updated, disk) && exactWrite(output, &disk, sizeof(disk));
-  }
-  success = success && (!replacing || replaced);
-  const bool synced = success && output.sync();
-  const bool outputClosed = output.close();
-  const bool inputClosed = input.close();
-  success = success && synced && outputClosed && inputClosed && validateCatalog(TEMP_PATH, nullptr) &&
-            StagedFileTransaction::publish(CATALOG_PATH, TEMP_PATH, BACKUP_PATH, validateCatalog) ==
-                StagedFileTransaction::Status::Published;
-  if (!success) {
-    Storage.remove(TEMP_PATH);
-    return false;
-  }
-
-  count_ = header.count;
-  generation_ = header.generation;
-  phase_ = Phase::Ready;
-  Storage.remove(ORDER_PATH);
-  Storage.remove(DIRTY_PATH);
-  return true;
+  return beginUpdateLocate();
 }
 
 bool LibraryCatalogStore::applyDeletedPath(const std::string& path) {
-  size_t existingIndex = 0;
-  const FindPathResult existing = findPath(path, count_, existingIndex);
-  if (existing == FindPathResult::IoError) return false;
-  if (existing == FindPathResult::NotFound) {
-    Storage.remove(DIRTY_PATH);
-    return true;
-  }
-  if (count_ == 0) return false;
+  resetUpdate(true);
+  updateKind_ = UpdateKind::Delete;
+  updatePath_ = path;
+  phase_ = Phase::Updating;
+  return beginUpdateLocate();
+}
 
-  Storage.remove(TEMP_PATH);
-  HalFile input;
-  HalFile output;
-  if (!Storage.openFileForRead("LIB", CATALOG_PATH, input) || !Storage.openFileForWrite("LIB", TEMP_PATH, output)) {
-    input.close();
-    output.close();
-    Storage.remove(TEMP_PATH);
-    return false;
-  }
-
-  DiskHeader header{};
-  std::memcpy(header.magic, MAGIC.data(), MAGIC.size());
-  header.version = VERSION;
-  header.recordSize = sizeof(DiskRecord);
-  header.count = count_ - 1;
-  header.generation = generation_ + 1;
-  header.phase = static_cast<uint8_t>(Phase::Ready);
-  header.truncated = truncated_;
-  header.crc = structureCrc(header);
-  bool success = exactWrite(output, &header, sizeof(header));
-  for (size_t index = 0; success && index < count_; ++index) {
-    if (index == existingIndex) continue;
-    LibraryBookRecord record;
-    success = readRecordAt(input, index, record);
-    if (success) {
-      DiskRecord disk{};
-      success = toDisk(record, disk) && exactWrite(output, &disk, sizeof(disk));
-    }
-  }
-  const bool synced = success && output.sync();
-  const bool outputClosed = output.close();
-  const bool inputClosed = input.close();
-  success = success && synced && outputClosed && inputClosed && validateCatalog(TEMP_PATH, nullptr) &&
-            StagedFileTransaction::publish(CATALOG_PATH, TEMP_PATH, BACKUP_PATH, validateCatalog) ==
-                StagedFileTransaction::Status::Published;
-  if (!success) {
-    Storage.remove(TEMP_PATH);
-    return false;
-  }
-
-  count_ = header.count;
-  generation_ = header.generation;
-  phase_ = Phase::Ready;
-  Storage.remove(ORDER_PATH);
-  Storage.remove(DIRTY_PATH);
+bool LibraryCatalogStore::beginUpdateLocate() {
+  if (!Storage.openFileForRead("LIB", CATALOG_PATH, updateInput_)) return false;
+  updateScanIndex_ = 0;
+  updateExistingIndex_ = UINT32_MAX;
+  updateStage_ = UpdateStage::Locate;
+  phase_ = Phase::Updating;
   return true;
+}
+
+void LibraryCatalogStore::stepUpdate() {
+  const auto rebuild = [this]() {
+    resetUpdate(true);
+    if (!beginBuild()) phase_ = Phase::Error;
+  };
+  if (updateStage_ == UpdateStage::Metadata) {
+    BookMetadataCache::BookMetadata metadata;
+    const Epub::CoreMetadataStepResult result = updateEpub_->stepCoreMetadataRead(metadata);
+    if (result == Epub::CoreMetadataStepResult::InProgress) return;
+    if (result == Epub::CoreMetadataStepResult::Loaded) {
+      if (!metadata.title.empty()) updateRecord_.title = metadata.title;
+      updateRecord_.author = metadata.author;
+      updateRecord_.coverBmpPath = metadata.coverItemHref.empty() ? std::string{} : updateEpub_->getThumbBmpPath();
+    }
+    updateEpub_.reset();
+    if (!beginUpdateLocate()) rebuild();
+    return;
+  }
+
+  if (updateStage_ == UpdateStage::Locate) {
+    if (updateScanIndex_ < count_) {
+      LibraryBookRecord record;
+      if (!readRecordAt(updateInput_, updateScanIndex_, record)) {
+        rebuild();
+        return;
+      }
+      if (record.path == updatePath_) updateExistingIndex_ = updateScanIndex_;
+      ++updateScanIndex_;
+      return;
+    }
+    if (updateKind_ == UpdateKind::Delete && updateExistingIndex_ == UINT32_MAX) {
+      resetUpdate(true);
+      Storage.remove(DIRTY_PATH);
+      sourcePathsValidated_ = true;
+      phase_ = Phase::Ready;
+      return;
+    }
+    if (updateKind_ == UpdateKind::Upsert && updateExistingIndex_ == UINT32_MAX && count_ >= MAX_BOOKS) {
+      rebuild();
+      return;
+    }
+    updateTargetCount_ = count_;
+    if (updateKind_ == UpdateKind::Delete) {
+      --updateTargetCount_;
+    } else if (updateExistingIndex_ == UINT32_MAX) {
+      ++updateTargetCount_;
+    }
+    Storage.remove(TEMP_PATH);
+    if (!updateInput_.seekSet(0) || !Storage.openFileForWrite("LIB", TEMP_PATH, updateOutput_)) {
+      rebuild();
+      return;
+    }
+    DiskHeader header{};
+    std::memcpy(header.magic, MAGIC.data(), MAGIC.size());
+    header.version = VERSION;
+    header.recordSize = sizeof(DiskRecord);
+    header.count = updateTargetCount_;
+    header.generation = generation_ + 1;
+    header.phase = static_cast<uint8_t>(Phase::Ready);
+    header.truncated = truncated_;
+    header.crc = structureCrc(header);
+    updateDigest_ = {};
+    if (!exactWrite(updateOutput_, &header, sizeof(header))) {
+      rebuild();
+      return;
+    }
+    StagedFileTransaction::updateDigest(updateDigest_, reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+    updateCopyIndex_ = 0;
+    updateStage_ = UpdateStage::Copy;
+    return;
+  }
+
+  if (updateStage_ == UpdateStage::Copy) {
+    if (updateCopyIndex_ < count_) {
+      LibraryBookRecord record;
+      if (!readRecordAt(updateInput_, updateCopyIndex_, record)) {
+        rebuild();
+        return;
+      }
+      const bool target = updateCopyIndex_ == updateExistingIndex_;
+      if (target && updateKind_ == UpdateKind::Upsert) record = updateRecord_;
+      if (!(target && updateKind_ == UpdateKind::Delete)) {
+        DiskRecord disk{};
+        if (!toDisk(record, disk) || !exactWrite(updateOutput_, &disk, sizeof(disk))) {
+          rebuild();
+          return;
+        }
+        StagedFileTransaction::updateDigest(updateDigest_, reinterpret_cast<const uint8_t*>(&disk), sizeof(disk));
+      }
+      ++updateCopyIndex_;
+      return;
+    }
+    if (updateKind_ == UpdateKind::Upsert && updateExistingIndex_ == UINT32_MAX) {
+      DiskRecord disk{};
+      if (!toDisk(updateRecord_, disk) || !exactWrite(updateOutput_, &disk, sizeof(disk))) {
+        rebuild();
+        return;
+      }
+      StagedFileTransaction::updateDigest(updateDigest_, reinterpret_cast<const uint8_t*>(&disk), sizeof(disk));
+    }
+    updateStage_ = UpdateStage::Publish;
+    return;
+  }
+
+  if (updateStage_ == UpdateStage::Publish) {
+    const bool durable = updateOutput_.sync() && updateOutput_.close() && updateInput_.close();
+    const bool rotated = durable && StagedFileTransaction::beginPendingPublish(CATALOG_PATH, TEMP_PATH, BACKUP_PATH,
+                                                                               updateDigest_.size, validateCatalog) ==
+                                        StagedFileTransaction::Status::Published;
+    if (!rotated) {
+      rebuild();
+      return;
+    }
+    updatePublishPending_ = true;
+    DiskHeader header{};
+    if (!Storage.openFileForRead("LIB", CATALOG_PATH, updateInput_) ||
+        !exactRead(updateInput_, &header, sizeof(header)) || !validCatalogHeader(header, updateInput_.fileSize64()) ||
+        header.count != updateTargetCount_ || header.generation != generation_ + 1) {
+      rebuild();
+      return;
+    }
+    updateActualDigest_ = {};
+    StagedFileTransaction::updateDigest(updateActualDigest_, reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+    updateVerifyIndex_ = 0;
+    updateStage_ = UpdateStage::Verify;
+    return;
+  }
+
+  if (updateStage_ == UpdateStage::Verify) {
+    if (updateVerifyIndex_ < updateTargetCount_) {
+      DiskRecord disk{};
+      LibraryBookRecord record;
+      if (!exactRead(updateInput_, &disk, sizeof(disk)) || !fromDisk(disk, record)) {
+        rebuild();
+        return;
+      }
+      StagedFileTransaction::updateDigest(updateActualDigest_, reinterpret_cast<const uint8_t*>(&disk), sizeof(disk));
+      ++updateVerifyIndex_;
+      return;
+    }
+    const bool verified = updateInput_.close() && updateActualDigest_ == updateDigest_ &&
+                          StagedFileTransaction::commitPendingPublish(BACKUP_PATH);
+    if (!verified) {
+      rebuild();
+      return;
+    }
+    updatePublishPending_ = false;
+    count_ = updateTargetCount_;
+    ++generation_;
+    resetUpdate(false);
+    Storage.remove(ORDER_PATH);
+    Storage.remove(DIRTY_PATH);
+    sourcePathsValidated_ = true;
+    phase_ = Phase::Ready;
+    return;
+  }
+
+  rebuild();
+}
+
+void LibraryCatalogStore::resetUpdate(const bool removeTemporary) {
+  if (updateEpub_) updateEpub_->cancelCoreMetadataRead();
+  updateEpub_.reset();
+  if (updateInput_) updateInput_.close();
+  if (updateOutput_) updateOutput_.close();
+  if (updatePublishPending_) StagedFileTransaction::rollbackPendingPublish(CATALOG_PATH, BACKUP_PATH);
+  updateKind_ = UpdateKind::None;
+  updateStage_ = UpdateStage::Idle;
+  updatePath_.clear();
+  updateRecord_ = {};
+  updateScanIndex_ = 0;
+  updateCopyIndex_ = 0;
+  updateExistingIndex_ = UINT32_MAX;
+  updateTargetCount_ = 0;
+  updateDigest_ = {};
+  updateActualDigest_ = {};
+  updateVerifyIndex_ = 0;
+  updatePublishPending_ = false;
+  if (removeTemporary) Storage.remove(TEMP_PATH);
 }
 
 void LibraryCatalogStore::cancel() {
   const bool wasBuilding = isBuilding();
   resetSourceValidation();
+  resetEnrichment();
+  resetUpdate(true);
   resetOrderBuild(true);
   resetFinalize(true);
   for (auto& frame : directories_) frame.directory.close();
@@ -732,9 +870,15 @@ void LibraryCatalogStore::step() {
   if (phase_ == Phase::Discovering) {
     discoverOne();
   } else if (phase_ == Phase::Enriching) {
-    validateOneSource();
+    if (sourceValidationFile_) {
+      validateOneSource();
+    } else {
+      enrichOne();
+    }
   } else if (phase_ == Phase::Sorting) {
     if (!finalizeBuild()) phase_ = Phase::Error;
+  } else if (phase_ == Phase::Updating) {
+    stepUpdate();
   }
   if (phase_ == Phase::Error) {
     lastBuildFailed_ = true;
@@ -749,8 +893,7 @@ void LibraryCatalogStore::step() {
 
 void LibraryCatalogStore::discoverOne() {
   if (directories_.empty()) {
-    phase_ = Phase::Sorting;
-    if (!writeWorkHeader(phase_)) phase_ = Phase::Error;
+    if (!beginEnrichment()) phase_ = Phase::Error;
     return;
   }
   auto& frame = directories_.back();
@@ -819,11 +962,114 @@ void LibraryCatalogStore::discoverOne() {
     record.author = recent->author;
     record.coverBmpPath = recent->coverBmpPath;
   }
-  enrichRecord(record);
   if (!appendRecord(record)) phase_ = Phase::Error;
 }
 
+bool LibraryCatalogStore::beginEnrichment() {
+  enrichmentIndex_ = 0;
+  enrichmentRecord_ = {};
+  enrichmentEpub_.reset();
+  phase_ = Phase::Enriching;
+  return writeWorkHeader(phase_);
+}
+
+void LibraryCatalogStore::enrichOne() {
+  const auto advance = [this]() {
+    enrichmentEpub_.reset();
+    enrichmentRecord_ = {};
+    ++enrichmentIndex_;
+  };
+  const auto writeRecord = [this](const LibraryBookRecord& record) {
+    DiskRecord disk{};
+    const uint64_t offset = sizeof(DiskHeader) + static_cast<uint64_t>(enrichmentIndex_) * sizeof(DiskRecord);
+    return toDisk(record, disk) && workFile_ && workFile_.seek64(offset) && exactWrite(workFile_, &disk, sizeof(disk));
+  };
+
+  if (enrichmentEpub_) {
+    BookMetadataCache::BookMetadata metadata;
+    const Epub::CoreMetadataStepResult result = enrichmentEpub_->stepCoreMetadataRead(metadata);
+    if (result == Epub::CoreMetadataStepResult::InProgress) return;
+    if (result == Epub::CoreMetadataStepResult::Loaded) {
+      if (!metadata.title.empty()) enrichmentRecord_.title = metadata.title;
+      enrichmentRecord_.author = metadata.author;
+      enrichmentRecord_.coverBmpPath =
+          metadata.coverItemHref.empty() ? std::string{} : enrichmentEpub_->getThumbBmpPath();
+      if (!writeRecord(enrichmentRecord_)) {
+        phase_ = Phase::Error;
+        return;
+      }
+    }
+    // A metadata probe failure is non-fatal: the fallback filename and recent
+    // metadata discovered earlier remain a usable catalog record.
+    advance();
+    return;
+  }
+
+  if (enrichmentIndex_ >= count_) {
+    phase_ = Phase::Sorting;
+    if (!writeWorkHeader(phase_) || !workFile_.sync() || !workFile_.close()) phase_ = Phase::Error;
+    return;
+  }
+
+  LibraryBookRecord record;
+  if (!workFile_ || !readRecordAt(workFile_, enrichmentIndex_, record)) {
+    phase_ = Phase::Error;
+    return;
+  }
+  if (record.format == LibraryBookFormat::Epub) {
+    enrichmentRecord_ = std::move(record);
+    enrichmentEpub_.reset(new (std::nothrow) Epub(enrichmentRecord_.path, "/.crosspoint"));
+    if (enrichmentEpub_ && enrichmentEpub_->beginCoreMetadataRead()) return;
+    advance();
+    return;
+  }
+
+  if (record.format == LibraryBookFormat::Xtc || record.format == LibraryBookFormat::Xtch) {
+    enrichRecord(record);
+    if (!writeRecord(record)) {
+      phase_ = Phase::Error;
+      return;
+    }
+  }
+  advance();
+}
+
+void LibraryCatalogStore::resetEnrichment() {
+  if (enrichmentEpub_) enrichmentEpub_->cancelCoreMetadataRead();
+  enrichmentEpub_.reset();
+  enrichmentRecord_ = {};
+  enrichmentIndex_ = 0;
+  if (workFile_) workFile_.close();
+}
+
 bool LibraryCatalogStore::finalizeBuild() {
+  if (finalizePublishPending_) {
+    if (finalizeVerifyIndex_ < count_) {
+      DiskRecord disk{};
+      LibraryBookRecord record;
+      if (!exactRead(finalizeVerify_, &disk, sizeof(disk)) || !fromDisk(disk, record)) {
+        resetFinalize(true);
+        return false;
+      }
+      StagedFileTransaction::updateDigest(finalizeActualDigest_, reinterpret_cast<const uint8_t*>(&disk), sizeof(disk));
+      ++finalizeVerifyIndex_;
+      return true;
+    }
+    const bool verified = finalizeVerify_.close() && finalizeActualDigest_ == finalizeDigest_ &&
+                          StagedFileTransaction::commitPendingPublish(BACKUP_PATH);
+    if (!verified) {
+      resetFinalize(true);
+      return false;
+    }
+    finalizePublishPending_ = false;
+    resetFinalize(false);
+    Storage.remove(WORK_PATH);
+    Storage.remove(ORDER_PATH);
+    Storage.remove(DIRTY_PATH);
+    sourcePathsValidated_ = true;
+    return loadHeader(CATALOG_PATH, true);
+  }
+
   if (!finalizeStarted_) {
     if (!Storage.openFileForRead("LIB", WORK_PATH, finalizeInput_) ||
         !Storage.openFileForWrite("LIB", TEMP_PATH, finalizeOutput_)) {
@@ -839,10 +1085,12 @@ bool LibraryCatalogStore::finalizeBuild() {
     header.phase = static_cast<uint8_t>(Phase::Ready);
     header.truncated = truncated_;
     header.crc = structureCrc(header);
+    finalizeDigest_ = {};
     if (!exactWrite(finalizeOutput_, &header, sizeof(header))) {
       resetFinalize(true);
       return false;
     }
+    StagedFileTransaction::updateDigest(finalizeDigest_, reinterpret_cast<const uint8_t*>(&header), sizeof(header));
     finalizeIndex_ = 0;
     finalizeStarted_ = true;
   }
@@ -858,6 +1106,7 @@ bool LibraryCatalogStore::finalizeBuild() {
       resetFinalize(true);
       return false;
     }
+    StagedFileTransaction::updateDigest(finalizeDigest_, reinterpret_cast<const uint8_t*>(&disk), sizeof(disk));
     ++finalizeIndex_;
     return true;
   }
@@ -868,30 +1117,50 @@ bool LibraryCatalogStore::finalizeBuild() {
   const bool durable = synced && outputClosed && inputClosed;
   finalizeStarted_ = false;
   finalizeIndex_ = 0;
-  if (!durable || !validateCatalog(TEMP_PATH, nullptr) ||
-      StagedFileTransaction::publish(CATALOG_PATH, TEMP_PATH, BACKUP_PATH, validateCatalog) !=
-          StagedFileTransaction::Status::Published) {
-    Storage.remove(TEMP_PATH);
+  if (!durable ||
+      StagedFileTransaction::beginPendingPublish(CATALOG_PATH, TEMP_PATH, BACKUP_PATH, finalizeDigest_.size,
+                                                 validateCatalog) != StagedFileTransaction::Status::Published) {
+    resetFinalize(true);
     return false;
   }
-  Storage.remove(WORK_PATH);
-  Storage.remove(ORDER_PATH);
-  Storage.remove(DIRTY_PATH);
-  sourcePathsValidated_ = true;
-  return loadHeader(CATALOG_PATH, true);
+  finalizePublishPending_ = true;
+  DiskHeader header{};
+  if (!Storage.openFileForRead("LIB", CATALOG_PATH, finalizeVerify_) ||
+      !exactRead(finalizeVerify_, &header, sizeof(header)) ||
+      !validCatalogHeader(header, finalizeVerify_.fileSize64()) || header.count != count_ ||
+      header.generation != generation_) {
+    resetFinalize(true);
+    return false;
+  }
+  finalizeActualDigest_ = {};
+  StagedFileTransaction::updateDigest(finalizeActualDigest_, reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+  finalizeVerifyIndex_ = 0;
+  return true;
 }
 
 void LibraryCatalogStore::resetFinalize(const bool removeTemporary) {
   if (finalizeInput_) finalizeInput_.close();
   if (finalizeOutput_) finalizeOutput_.close();
+  if (finalizeVerify_) finalizeVerify_.close();
+  if (finalizePublishPending_) StagedFileTransaction::rollbackPendingPublish(CATALOG_PATH, BACKUP_PATH);
   finalizeIndex_ = 0;
+  finalizeVerifyIndex_ = 0;
   finalizeStarted_ = false;
+  finalizePublishPending_ = false;
+  finalizeDigest_ = {};
+  finalizeActualDigest_ = {};
   if (removeTemporary) Storage.remove(TEMP_PATH);
 }
 
 bool LibraryCatalogStore::writeWorkHeader(const Phase phase) {
-  HalFile file = Storage.open(WORK_PATH, O_RDWR);
-  if (!file || !file.seekSet(0)) return false;
+  HalFile reopened;
+  HalFile* file = &workFile_;
+  const bool closeAfterWrite = !workFile_;
+  if (closeAfterWrite) {
+    reopened = Storage.open(WORK_PATH, O_RDWR);
+    file = &reopened;
+  }
+  if (!*file || !file->seekSet(0)) return false;
   DiskHeader header{};
   std::memcpy(header.magic, MAGIC.data(), MAGIC.size());
   header.version = VERSION;
@@ -901,23 +1170,21 @@ bool LibraryCatalogStore::writeWorkHeader(const Phase phase) {
   header.phase = static_cast<uint8_t>(phase);
   header.truncated = truncated_;
   header.crc = structureCrc(header);
-  const bool success = exactWrite(file, &header, sizeof(header));
-  file.flush();
-  const bool closed = file.close();
-  return success && closed;
+  const bool success = exactWrite(*file, &header, sizeof(header));
+  if (!closeAfterWrite) return success;
+  file->flush();
+  return file->close() && success;
 }
 
 bool LibraryCatalogStore::appendRecord(const LibraryBookRecord& record) {
-  HalFile file = Storage.open(WORK_PATH, O_RDWR);
   const uint64_t offset = sizeof(DiskHeader) + static_cast<uint64_t>(count_) * sizeof(DiskRecord);
-  if (!file || !file.seek64(offset)) return false;
+  if (!workFile_ || !workFile_.seek64(offset)) return false;
   DiskRecord disk{};
-  bool written = toDisk(record, disk) && exactWrite(file, &disk, sizeof(disk));
+  bool written = toDisk(record, disk) && exactWrite(workFile_, &disk, sizeof(disk));
 
-  // Publish the new count through the same handle. Reopening library.work for
-  // every header update doubled the FAT open/close work for every discovered
-  // book. A failed header write leaves count_ unchanged, so the uncommitted
-  // record is safely overwritten by the next attempt.
+  // Publish the new count through the same long-lived work handle. The work
+  // file is not a committed catalog and is synced only at phase boundaries;
+  // this avoids an open/close/fsync cycle for every discovered book.
   DiskHeader header{};
   std::memcpy(header.magic, MAGIC.data(), MAGIC.size());
   header.version = VERSION;
@@ -927,10 +1194,8 @@ bool LibraryCatalogStore::appendRecord(const LibraryBookRecord& record) {
   header.phase = static_cast<uint8_t>(phase_);
   header.truncated = truncated_;
   header.crc = structureCrc(header);
-  written = written && file.seekSet(0) && exactWrite(file, &header, sizeof(header));
-  file.flush();
-  const bool closed = file.close();
-  if (!written || !closed) return false;
+  written = written && workFile_.seekSet(0) && exactWrite(workFile_, &header, sizeof(header));
+  if (!written) return false;
   ++count_;
   return true;
 }

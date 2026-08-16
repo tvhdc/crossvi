@@ -364,9 +364,9 @@ class CrossPointSettings {
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
-  // The UI exposes a simple off/on switch. Value 2 is retained for settings
-  // written by older firmware and is interpreted as CrossPoint's inverted
-  // gyro direction.
+  // Keep the historic numeric directions stable across CrossPoint/CrossInk
+  // settings. The three-choice UI maps these values to normal/reversed labels
+  // without rewriting the user's current physical direction.
   enum TILT_PAGE_TURN {
     TILT_OFF = 0,
     TILT_ON = 1,

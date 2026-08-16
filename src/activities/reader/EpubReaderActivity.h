@@ -12,6 +12,7 @@
 #include "EpubReaderMenuActivity.h"
 #include "GlobalReadingStats.h"
 #include "PerBookReaderSettings.h"
+#include "ProgressFile.h"
 #include "ProgressMapper.h"
 #include "ReaderUtils.h"
 #include "ReadingSessionTracker.h"
@@ -93,8 +94,13 @@ class EpubReaderActivity final : public Activity {
   unsigned long externalCssWarningTime = 0UL;
   bool pendingCacheClearError = false;
   bool skipStartupRecentUpdate = false;
+  bool deferredOpenStatePending = true;
+  bool deferredOpenStateReady = false;
+  uint32_t deferredGlobalPageTurns = 0;
   std::atomic<bool> safeModePromptRequested{false};
   std::atomic<bool> pendingSafeModeFailureNotice{false};
+  // 0 = none; otherwise static_cast<uint8_t>(EpubBuildStatus) + 1.
+  std::atomic<uint8_t> pendingBackgroundBuildFailure{0};
   std::atomic<bool> pendingSafeModePersistence{false};
   bool pendingSafeModeEnabledNotice = false;
 
@@ -105,6 +111,16 @@ class EpubReaderActivity final : public Activity {
   bool deferredCoverStarted = false;
   bool deferredCoverFinished = false;
   Epub::ThumbnailPreparationStatus deferredCoverStatus = Epub::ThumbnailPreparationStatus::NotNeeded;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  uint32_t deferredCoverStartedMs = 0;
+#endif
+  // At most one page ahead is scanned. One raster is streamed at a time, so
+  // idle preparation has fixed memory and I/O bounds.
+  int imagePrefetchSpine = -1;
+  int imagePrefetchPage = -1;
+  size_t imagePrefetchElement = 0;
+  bool imagePrefetchPageComplete = false;
+  bool readerOpenStagesPending = true;
 
   ClippingStore clippingStore;
   enum class ClippingNotice : uint8_t {
@@ -144,6 +160,7 @@ class EpubReaderActivity final : public Activity {
 
   BookReadingStats bookReadingStats;
   GlobalReadingStats globalReadingStats;
+  bool completionStatsWritableAtOpen = true;
   // Read trust and write permission are deliberately separate. A pending
   // transaction can make valid statistics read-only; corrupt/newer files are
   // neither writable nor safe to present as real zeroes.
@@ -190,11 +207,14 @@ class EpubReaderActivity final : public Activity {
   uint16_t buildViewportWidth = 0;
   uint16_t buildViewportHeight = 0;
   // Set when the lazy extension start failed, so loop() doesn't retry (and log) every
-  // tick; the blocking extension in render() remains the fallback past the watermark.
+  // tick. A requested page can still make one controlled retry from render().
   bool partialRebuildStartFailed = false;
+  bool sectionLandingPending = false;
+  bool sectionRenderWaiting = false;
+  uint32_t sectionPrepareStartedMs = 0;
 
   // Reused by every grayscale page once pagination is stable. Keeping one
-  // bounded 8 KiB strip avoids malloc/free churn and heap fragmentation across
+  // bounded 13 KiB strip avoids malloc/free churn and heap fragmentation across
   // page turns; active indexing releases it before parser allocations.
   std::unique_ptr<uint8_t[]> grayscaleStripScratch;
   size_t grayscaleStripScratchSize = 0;
@@ -226,6 +246,7 @@ class EpubReaderActivity final : public Activity {
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
   int lastSavedPageCount = -1;
+  ProgressFile::WriteSession progressWriteSession;
 
   bool renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft, uint32_t* pageFingerprintOut);
@@ -267,6 +288,9 @@ class EpubReaderActivity final : public Activity {
   // Restore the cached content position after a settings change re-paginates a chapter.
   // Falls back to the old page ratio only when the visible page has no stable text anchor.
   bool applyDeferredReposition();
+  bool sectionLandingReady() const;
+  bool requestedSectionPageReady() const;
+  void finishSectionLanding();
   void rememberCurrentContentOffset();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
@@ -309,8 +333,11 @@ class EpubReaderActivity final : public Activity {
 
   void signalReadingPageVisible();
   void signalReadingPageHidden();
+  void finishDeferredOpenState();
   void consumeReadingViewSignal();
   void pumpDeferredCoverPreparation();
+  bool pumpImagePreparation();
+  void cancelImagePreparation();
   void stopReadingPage(bool forwardPageTurn, uint32_t nowMs);
   void recordReadingSample(const ReadingSessionSample& sample);
   void commitReadingSession();
@@ -324,8 +351,8 @@ class EpubReaderActivity final : public Activity {
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub,
-                              PerBookReaderSettings globalReaderSettings, PerBookReaderSettings bookReaderSettings,
-                              bool bookSettingsWritable,
+                              bool completionStatsWritableAtOpen, PerBookReaderSettings globalReaderSettings,
+                              PerBookReaderSettings bookReaderSettings, bool bookSettingsWritable,
                               std::optional<ClippingJumpResult> initialClippingJump = std::nullopt,
                               std::optional<ProgressChangeResult> initialBookmarkJump = std::nullopt,
                               int initialRefreshCountdown = 0, bool deferCoverPreparation = false,
@@ -339,7 +366,8 @@ class EpubReaderActivity final : public Activity {
         skipStartupRecentUpdate(skipStartupRecentUpdate),
         deferredCoverRequested(deferCoverPreparation),
         initialClippingJump(std::move(initialClippingJump)),
-        initialBookmarkJump(std::move(initialBookmarkJump)) {}
+        initialBookmarkJump(std::move(initialBookmarkJump)),
+        completionStatsWritableAtOpen(completionStatsWritableAtOpen) {}
   void onEnter() override;
   void onExit() override;
   void onPause() override;
@@ -350,12 +378,14 @@ class EpubReaderActivity final : public Activity {
   // the five-page window is full, normal loop delay saves power until the
   // reader advances and opens more work for the builder.
   bool skipLoopDelay() override {
-    const bool building =
-        section && section->isBuilding() &&
-        (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
-        !buildHeapPaused;
+    const bool requiredBuild = sectionLandingPending || sectionRenderWaiting;
+    const bool building = section && section->isBuilding() &&
+                          (requiredBuild || section->isPartial() ||
+                           static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+                          (requiredBuild || !buildHeapPaused);
     const bool preparingCover = deferredCoverRequested && deferredCoverFirstPageVisible && !deferredCoverFinished;
-    return building || preparingCover;
+    const bool preparingImage = epub && epub->imagePreparationActive();
+    return building || preparingImage || preparingCover;
   }
   bool isReaderActivity() const override { return true; }
   bool handleForcedRefresh() override {

@@ -593,6 +593,7 @@ STR_CRASH_DESCRIPTION: "A detailed report was saved to crash_report.txt. Please 
 STR_CRASH_REASON: "Crash reason:"
 STR_CRASH_NO_REASON: "(No reason was recorded)"
 STR_TILT_PAGE_TURN: "Tilt Page Turn"
+STR_TILT_PAGE_TURN_REVERSED: "Tilt Page Turn (Reversed)"
 STR_TILT_RIGHT_NEXT: "Tilt right for next page"
 STR_TILT_LEFT_NEXT: "Tilt left for next page"
 STR_KB_HINT_MOVE_CURSOR: "Press LEFT or RIGHT to move cursor"

@@ -56,6 +56,8 @@ void persistMissingBookFontFallback(const std::string& cachePath,
 
 }  // namespace
 
+ReaderActivity::~ReaderActivity() = default;
+
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
 bool ReaderActivity::isTxtFile(const std::string& path) {
@@ -109,18 +111,12 @@ void ReaderActivity::validateInitialBookmarkJump(const BookmarkEntry::PositionKi
 
 std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookReaderSettings& globalSettings,
                                                PerBookReaderSettings& bookSettings, bool& settingsWritable,
-                                               bool& deferCoverPreparation) {
+                                               bool& deferCoverPreparation,
+                                               const ZipFile::SourceIdentity& verifiedEpubIdentity,
+                                               BookMetadataCache::LoadStepResult& cacheStepResult) {
   deferCoverPreparation = false;
-  if (!recoverInterruptedBookFileReplacement(path)) {
-    LOG_ERR("READER", "Could not recover interrupted EPUB replacement: %s", path.c_str());
-    return nullptr;
-  }
-  if (!Storage.exists(path.c_str())) {
-    LOG_ERR("READER", "File does not exist: %s", path.c_str());
-    return nullptr;
-  }
-
-  auto epub = makeUniqueNoThrow<Epub>(path, "/.crosspoint");
+  const auto createEpub = [&]() { return makeUniqueNoThrow<Epub>(path, "/.crosspoint", verifiedEpubIdentity); };
+  auto epub = createEpub();
   if (!epub) {
     LOG_ERR("READER", "Failed to allocate EPUB object");
     return nullptr;
@@ -136,7 +132,8 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
     return nullptr;
   }
 
-  Epub::SourceBindingStatus bindingStatus = epub->inspectSourceBinding();
+  uint32_t stageStartedMs = static_cast<uint32_t>(millis());
+  Epub::SourceBindingStatus bindingStatus = epub->inspectSourceBindingForLoad();
   if (bindingStatus == Epub::SourceBindingStatus::Mismatch) {
     const std::string staleCachePath = epub->getCachePath();
     // Quarantine all old path-keyed state before the new EPUB can inherit it.
@@ -146,7 +143,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
       LOG_ERR("READER", "Could not quarantine stale state for replaced EPUB: %s", path.c_str());
       return nullptr;
     }
-    epub = makeUniqueNoThrow<Epub>(path, "/.crosspoint");
+    epub = createEpub();
     if (!epub) return nullptr;
     bindingStatus = Epub::SourceBindingStatus::Missing;
   } else if (bindingStatus == Epub::SourceBindingStatus::NewerVersion ||
@@ -163,10 +160,13 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
     // before this first adoption is fundamentally unknowable.
     LOG_DBG("READER", "Adopting source identity for legacy EPUB state: %s", path.c_str());
   }
-  if (!epub->bindCurrentSource() || epub->inspectSourceBinding() != Epub::SourceBindingStatus::Match) {
-    LOG_ERR("READER", "Could not persist EPUB source identity: %s", path.c_str());
-    return nullptr;
+  if (bindingStatus != Epub::SourceBindingStatus::Match) {
+    if (!epub->bindCurrentSource() || epub->inspectSourceBindingForLoad() != Epub::SourceBindingStatus::Match) {
+      LOG_ERR("READER", "Could not persist EPUB source identity: %s", path.c_str());
+      return nullptr;
+    }
   }
+  activityManager.reportReaderOpenStage("epub", "source_binding", stageStartedMs);
 
   // CrossInk's legacy file remains authoritative and immutable. Migration is
   // best-effort after source identity is proven; any failure only falls back
@@ -198,12 +198,8 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
       break;
   }
 
-  const BookMetadataCache::LoadStatus cacheStatus = epub->inspectCache();
-  if (cacheStatus == BookMetadataCache::LoadStatus::NewerVersion ||
-      cacheStatus == BookMetadataCache::LoadStatus::IoError) {
-    LOG_ERR("READER", "EPUB cache cannot be handled safely (status %u)", static_cast<unsigned>(cacheStatus));
-    return nullptr;
-  }
+  openingEpubCacheStartedMs = static_cast<uint32_t>(millis());
+  cacheStepResult = epub->beginCacheInspection();
 
   const auto settingsStatus = PerBookReaderSettingsStore::load(epub->getCachePath(), bookSettings);
   settingsWritable = settingsStatus != PerBookReaderSettingsStore::LoadStatus::NEWER_VERSION &&
@@ -226,110 +222,212 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, PerBookR
   const bool needsCarousel =
       !skipCoverCacheBuild && CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout);
   deferCoverPreparation = needsShared || needsCarousel;
-  const auto showLoadingPhase = [&](const StrId message) {
-    // Replace rather than overlay the preceding phase. The old popup can be
-    // narrower, so merely drawing a new one leaves stale text on e-ink.
-    allowFastInitialRefresh = false;
-    renderer.clearScreen();
-    GUI.drawPopup(renderer, I18N.get(message));
-  };
-
-  // Missing, legacy, or malformed derived metadata is rebuilt below. Show the
-  // indexing popup for all of those cases, not only a physically missing file.
-  const bool uncached = cacheStatus != BookMetadataCache::LoadStatus::Loaded;
-  if (uncached) {
-    showLoadingPhase(StrId::STR_INDEXING);
-  }
-  bool loaded;
-  {
-    // Lend the framebuffer's 48 KB to the container parse (expat + spine/TOC
-    // build). The popup just displayed stays on the panel; whichever reader
-    // activity follows redraws the full screen anyway.
-    std::optional<GfxRenderer::FrameBufferLoan> loan;
-    if (uncached) loan.emplace(renderer);
-    loaded = epub->load(true, SETTINGS.epubSafeMode != 0 || SETTINGS.embeddedStyle == 0);
-  }
-  if (loaded) {
-    return epub;
-  }
-
-  LOG_ERR("READER", "Failed to load epub");
-  applyReaderSettings(globalSettings);
-  sdFontSystem.releaseLoadedFont(renderer);
-  return nullptr;
+  return epub;
 }
 
-std::unique_ptr<Xtc> ReaderActivity::loadXtc(const std::string& path) {
-  if (!recoverInterruptedBookFileReplacement(path)) {
+bool ReaderActivity::beginEpubLoad(const std::string& path) {
+  openingEpubIdentityJob.reset();
+  openingEpubIdentityStartedMs = 0;
+  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
+  const bool matchingPreparedIdentity = preparedSourceIdentity && preparedSourceIdentity->valid &&
+                                        !preparedSourceIdentity->identity.isRawFile() &&
+                                        preparedSourceIdentity->path == path;
+  const bool replacementArtifactWasPresent = matchingPreparedIdentity && hasBookFileReplacementArtifacts(path);
+  std::optional<ZipFile::SourceIdentity> recoveredIdentity;
+  const uint32_t recoveryStartedMs = static_cast<uint32_t>(millis());
+  if (!recoverInterruptedBookFileReplacement(path, &recoveredIdentity, completionStatsWritableAtOpen)) {
+    LOG_ERR("READER", "Could not recover interrupted EPUB replacement: %s", path.c_str());
+    return false;
+  }
+  activityManager.reportReaderOpenStage("epub", "replacement_recovery", recoveryStartedMs);
+  if (!Storage.exists(path.c_str())) {
+    LOG_ERR("READER", "File does not exist: %s", path.c_str());
+    return false;
+  }
+  if (recoveredIdentity) return finishEpubLoad(*recoveredIdentity);
+
+  if (matchingPreparedIdentity && !replacementArtifactWasPresent && !hasBookFileReplacementArtifacts(path) &&
+      Storage.probeMedia()) {
+    HalFile preparedFile;
+    const bool sameDirectoryEntry = Storage.openFileForRead("READER", path, preparedFile) &&
+                                    preparedSourceIdentity->matchesOpenFile(path, preparedFile);
+    preparedFile.close();
+    if (sameDirectoryEntry) return finishEpubLoad(preparedSourceIdentity->identity);
+  }
+
+  openingEpubIdentityJob = makeUniqueNoThrow<ZipSourceIdentityJob>();
+  openingEpubIdentityStartedMs = static_cast<uint32_t>(millis());
+  if (!openingEpubIdentityJob || !openingEpubIdentityJob->begin(path)) {
+    openingEpubIdentityJob.reset();
+    LOG_ERR("READER", "Could not begin EPUB source fingerprint: %s", path.c_str());
+    return false;
+  }
+  return true;
+}
+
+bool ReaderActivity::finishEpubLoad(const ZipFile::SourceIdentity& verifiedEpubIdentity) {
+  openingSettingsWritable = true;
+  openingEpubDeferCoverPreparation = false;
+  BookMetadataCache::LoadStepResult cacheStepResult = BookMetadataCache::LoadStepResult::Error;
+  const uint32_t prepareStartedMs = static_cast<uint32_t>(millis());
+  auto epub = loadEpub(initialBookPath, openingGlobalSettings, openingBookSettings, openingSettingsWritable,
+                       openingEpubDeferCoverPreparation, verifiedEpubIdentity, cacheStepResult);
+  activityManager.reportReaderOpenStage("epub", "reader_prepare", prepareStartedMs);
+  if (!epub) return false;
+
+  openingEpub = std::move(epub);
+  openingEpubExpectedIdentity = verifiedEpubIdentity;
+  openingEpubCacheInspection = cacheStepResult == BookMetadataCache::LoadStepResult::InProgress;
+  if (openingEpubCacheInspection) return true;
+  if (finishEpubCacheInspection(cacheStepResult)) return true;
+
+  openingEpub.reset();
+  applyReaderSettings(openingGlobalSettings);
+  sdFontSystem.releaseLoadedFont(renderer);
+  return false;
+}
+
+bool ReaderActivity::finishEpubCacheInspection(const BookMetadataCache::LoadStepResult result) {
+  openingEpubCacheInspection = false;
+  activityManager.reportReaderOpenStage("epub", "book_cache_inspect", openingEpubCacheStartedMs);
+  openingEpubCacheStartedMs = 0;
+  if (!openingEpub) return false;
+
+  const BookMetadataCache::LoadStatus cacheStatus = openingEpub->getCacheLoadStatus();
+  if (result == BookMetadataCache::LoadStepResult::Error &&
+      (cacheStatus == BookMetadataCache::LoadStatus::NewerVersion ||
+       cacheStatus == BookMetadataCache::LoadStatus::IoError)) {
+    LOG_ERR("READER", "EPUB cache cannot be handled safely (status %u)", static_cast<unsigned>(cacheStatus));
+    return false;
+  }
+
+  if (result == BookMetadataCache::LoadStepResult::Loaded) {
+    const uint32_t metadataStartedMs = static_cast<uint32_t>(millis());
+    const bool loaded =
+        openingEpub->loadForCooperativeSourceCheck(true, SETTINGS.epubSafeMode != 0 || SETTINGS.embeddedStyle == 0);
+    activityManager.reportReaderOpenStage("epub", "metadata_load", metadataStartedMs);
+    if (!loaded) {
+      LOG_ERR("READER", "Failed to load cached EPUB metadata");
+      return false;
+    }
+
+    openingEpubIdentityJob = makeUniqueNoThrow<ZipSourceIdentityJob>();
+    openingEpubIdentityStartedMs = static_cast<uint32_t>(millis());
+    if (!openingEpubIdentityJob || !openingEpubIdentityJob->begin(initialBookPath)) {
+      openingEpubIdentityJob.reset();
+      return false;
+    }
+    openingEpubFinalIdentityCheck = true;
+    return true;
+  }
+
+  // Missing, legacy, stale, or malformed derived metadata is rebuilt. Replace
+  // the preceding popup because it may be narrower and leave stale e-ink text.
+  allowFastInitialRefresh = false;
+  renderer.clearScreen();
+  GUI.drawPopup(renderer, I18N.get(StrId::STR_INDEXING));
+  // Keep the indexing scratch loan alive across main-loop steps. The popup
+  // remains on the panel and the framebuffer is restored before a transition.
+  openingEpubFrameBufferLoan.emplace(renderer);
+  openingEpubIndexStartedMs = static_cast<uint32_t>(millis());
+  if (openingEpub->beginIndexing(SETTINGS.epubSafeMode != 0 || SETTINGS.embeddedStyle == 0)) return true;
+
+  activityManager.reportReaderOpenStage("epub", "cold_index", openingEpubIndexStartedMs);
+  openingEpubIndexStartedMs = 0;
+  openingEpubFrameBufferLoan.reset();
+  LOG_ERR("READER", "Failed to begin EPUB indexing");
+  return false;
+}
+
+bool ReaderActivity::beginXtcLoad(const std::string& path) {
+  openingXtc.reset();
+  openingXtcStartedMs = static_cast<uint32_t>(millis());
+  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
+  const bool matchingPreparedIdentity = preparedSourceIdentity && preparedSourceIdentity->path == path;
+  const bool replacementArtifactWasPresent = matchingPreparedIdentity && hasBookFileReplacementArtifacts(path);
+  if (!recoverInterruptedBookFileReplacement(path, nullptr, completionStatsWritableAtOpen)) {
     LOG_ERR("READER", "Could not recover interrupted XTC replacement: %s", path.c_str());
-    return nullptr;
+    return false;
   }
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
-    return nullptr;
+    return false;
   }
 
-  auto xtc = makeUniqueNoThrow<Xtc>(path, "/.crosspoint");
-  if (!xtc) {
+  openingXtc = makeUniqueNoThrow<Xtc>(path, "/.crosspoint");
+  if (!openingXtc) {
     LOG_ERR("READER", "Failed to allocate XTC object");
-    return nullptr;
+    return false;
   }
-  if (!recoverBookCacheUserState(xtc->getCachePath(), path)) {
-    LOG_ERR("READER", "Could not recover staged XTC state: %s", xtc->getCachePath().c_str());
-    return nullptr;
+  if (!recoverBookCacheUserState(openingXtc->getCachePath(), path)) {
+    LOG_ERR("READER", "Could not recover staged XTC state: %s", openingXtc->getCachePath().c_str());
+    openingXtc.reset();
+    return false;
   }
-  if (!xtc->load()) {
-    LOG_ERR("READER", "Failed to load XTC");
-    return nullptr;
+  const RawSourceIdentityHandoff* reusableIdentity = nullptr;
+  if (matchingPreparedIdentity && !replacementArtifactWasPresent && !hasBookFileReplacementArtifacts(path) &&
+      Storage.probeMedia()) {
+    reusableIdentity = &*preparedSourceIdentity;
   }
+  if (!openingXtc->beginLoad(reusableIdentity)) {
+    LOG_ERR("READER", "Failed to begin XTC load");
+    openingXtc.reset();
+    return false;
+  }
+  return true;
+}
 
+bool ReaderActivity::finishXtcLoad(bool& deferCoverPreparation) {
+  deferCoverPreparation = false;
+  if (!openingXtc || !openingXtc->isLoaded()) return false;
   ZipFile::SourceIdentity currentIdentity;
-  if (!xtc->getSourceIdentity(currentIdentity)) {
-    LOG_ERR("READER", "Could not identify XTC source: %s", path.c_str());
-    return nullptr;
+  if (!openingXtc->getSourceIdentity(currentIdentity)) {
+    LOG_ERR("READER", "Could not identify XTC source: %s", initialBookPath.c_str());
+    return false;
   }
 
   ZipFile::SourceIdentity storedIdentity;
-  const SourceIdentityStore::LoadStatus identityStatus = SourceIdentityStore::load(xtc->getCachePath(), storedIdentity);
+  const SourceIdentityStore::LoadStatus identityStatus =
+      SourceIdentityStore::load(openingXtc->getCachePath(), storedIdentity);
+  const bool identityAlreadyPrimary =
+      identityStatus == SourceIdentityStore::LoadStatus::Primary && storedIdentity == currentIdentity;
   switch (identityStatus) {
     case SourceIdentityStore::LoadStatus::Primary:
     case SourceIdentityStore::LoadStatus::Backup:
     case SourceIdentityStore::LoadStatus::Temp:
       if (storedIdentity != currentIdentity) {
-        const std::string staleCachePath = xtc->getCachePath();
-        xtc.reset();
-        if (!resetBookUserStateAfterReplacement(path) || Storage.exists(staleCachePath.c_str())) {
-          LOG_ERR("READER", "Could not quarantine stale XTC state: %s", path.c_str());
-          return nullptr;
-        }
-        xtc = makeUniqueNoThrow<Xtc>(path, "/.crosspoint");
-        if (!xtc || !xtc->load() || !xtc->getSourceIdentity(currentIdentity)) {
-          LOG_ERR("READER", "Could not reload replacement XTC: %s", path.c_str());
-          return nullptr;
+        const std::string staleCachePath = openingXtc->getCachePath();
+        if (!resetBookUserStateAfterReplacement(initialBookPath) || Storage.exists(staleCachePath.c_str())) {
+          LOG_ERR("READER", "Could not quarantine stale XTC state: %s", initialBookPath.c_str());
+          return false;
         }
       }
       break;
     case SourceIdentityStore::LoadStatus::Missing:
-      LOG_DBG("READER", "Adopting source identity for legacy XTC state: %s", path.c_str());
+      LOG_DBG("READER", "Adopting source identity for legacy XTC state: %s", initialBookPath.c_str());
       break;
     case SourceIdentityStore::LoadStatus::NewerVersion:
     case SourceIdentityStore::LoadStatus::Invalid:
     case SourceIdentityStore::LoadStatus::IoError:
       LOG_ERR("READER", "XTC source identity cannot be handled safely (status %u)",
               static_cast<unsigned>(identityStatus));
-      return nullptr;
+      return false;
   }
 
-  const SourceIdentityStore::SaveStatus saved = SourceIdentityStore::save(xtc->getCachePath(), currentIdentity);
-  if (saved != SourceIdentityStore::SaveStatus::Saved && saved != SourceIdentityStore::SaveStatus::Unchanged) {
-    LOG_ERR("READER", "Could not persist XTC source identity: %s", path.c_str());
-    return nullptr;
-  }
-  ZipFile::SourceIdentity verifiedIdentity;
-  if (SourceIdentityStore::load(xtc->getCachePath(), verifiedIdentity) != SourceIdentityStore::LoadStatus::Primary ||
-      verifiedIdentity != currentIdentity) {
-    LOG_ERR("READER", "Could not verify XTC source identity: %s", path.c_str());
-    return nullptr;
+  if (!identityAlreadyPrimary) {
+    const SourceIdentityStore::SaveStatus saved =
+        SourceIdentityStore::save(openingXtc->getCachePath(), currentIdentity);
+    if (saved != SourceIdentityStore::SaveStatus::Saved && saved != SourceIdentityStore::SaveStatus::Unchanged) {
+      LOG_ERR("READER", "Could not persist XTC source identity: %s", initialBookPath.c_str());
+      return false;
+    }
+    ZipFile::SourceIdentity verifiedIdentity;
+    if (SourceIdentityStore::load(openingXtc->getCachePath(), verifiedIdentity) !=
+            SourceIdentityStore::LoadStatus::Primary ||
+        verifiedIdentity != currentIdentity) {
+      LOG_ERR("READER", "Could not verify XTC source identity: %s", initialBookPath.c_str());
+      return false;
+    }
   }
 
   const bool skipCoverCacheBuild = skipDerivedCoverCacheBuild();
@@ -337,119 +435,266 @@ std::unique_ptr<Xtc> ReaderActivity::loadXtc(const std::string& path) {
       !skipCoverCacheBuild && CrossPointSettings::needsSharedCoverThumbnail(SETTINGS.homeLayout, SETTINGS.libraryView);
   const bool needsCarousel =
       !skipCoverCacheBuild && CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout);
-  if (needsShared || needsCarousel) {
-    const bool x3 = renderer.getDisplayHeight() == 528;
-    const int carouselWidth = x3 ? Epub::CAROUSEL_THUMB_WIDTH : Epub::CAROUSEL_X4_THUMB_WIDTH;
-    const int carouselHeight = x3 ? Epub::CAROUSEL_THUMB_HEIGHT : Epub::CAROUSEL_X4_THUMB_HEIGHT;
-    const bool cacheMissing = !Storage.exists(xtc->getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT).c_str()) ||
-                              !Storage.exists(xtc->getThumbBmpPath(carouselHeight).c_str());
-    if (cacheMissing) {
-      allowFastInitialRefresh = false;
-      renderer.clearScreen();
-      GUI.drawPopup(renderer, tr(STR_CREATING_COVER));
-    }
-    if (!xtc->generateThumbBmpPair(carouselWidth, carouselHeight)) {
-      LOG_ERR("READER", "Could not prepare every requested XTC cover cache: %s", path.c_str());
-    }
-  }
-  return xtc;
+  deferCoverPreparation = needsShared || needsCarousel;
+  return true;
 }
 
-std::unique_ptr<Txt> ReaderActivity::loadTxt(const std::string& path, PerBookReaderSettings& globalSettings,
-                                             PerBookReaderSettings& bookSettings, bool& settingsWritable) {
-  if (!recoverInterruptedBookFileReplacement(path)) {
+bool ReaderActivity::beginTxtLoad(const std::string& path) {
+  openingTxt.reset();
+  openingTxtStartedMs = static_cast<uint32_t>(millis());
+  std::optional<RawSourceIdentityHandoff> preparedSourceIdentity = std::move(openingPreparedSourceIdentity);
+  const bool matchingPreparedIdentity = preparedSourceIdentity && preparedSourceIdentity->path == path;
+  const bool replacementArtifactWasPresent = matchingPreparedIdentity && hasBookFileReplacementArtifacts(path);
+  if (!recoverInterruptedBookFileReplacement(path, nullptr, completionStatsWritableAtOpen)) {
     LOG_ERR("READER", "Could not recover interrupted text replacement: %s", path.c_str());
-    return nullptr;
+    return false;
   }
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
-    return nullptr;
+    return false;
   }
 
-  auto txt = makeUniqueNoThrow<Txt>(path, "/.crosspoint");
-  if (!txt) {
+  openingTxt = makeUniqueNoThrow<Txt>(path, "/.crosspoint");
+  if (!openingTxt) {
     LOG_ERR("READER", "Failed to allocate TXT object");
-    return nullptr;
+    return false;
   }
-  globalSettings = captureReaderSettings();
-  bookSettings = globalSettings;
-  if (!recoverBookCacheUserState(txt->getCachePath(), path)) {
-    LOG_ERR("READER", "Could not recover staged TXT state: %s", txt->getCachePath().c_str());
-    return nullptr;
+  openingGlobalSettings = captureReaderSettings();
+  openingBookSettings = openingGlobalSettings;
+  if (!recoverBookCacheUserState(openingTxt->getCachePath(), path)) {
+    LOG_ERR("READER", "Could not recover staged TXT state: %s", openingTxt->getCachePath().c_str());
+    openingTxt.reset();
+    return false;
   }
-  if (!txt->load()) {
-    LOG_ERR("READER", "Failed to load TXT");
-    return nullptr;
+  const RawSourceIdentityHandoff* reusableIdentity = nullptr;
+  if (matchingPreparedIdentity && !replacementArtifactWasPresent && !hasBookFileReplacementArtifacts(path) &&
+      Storage.probeMedia()) {
+    reusableIdentity = &*preparedSourceIdentity;
   }
+  if (!openingTxt->beginLoad(reusableIdentity)) {
+    LOG_ERR("READER", "Failed to begin TXT load");
+    openingTxt.reset();
+    return false;
+  }
+  return true;
+}
 
+bool ReaderActivity::finishTxtLoad() {
+  if (!openingTxt) return false;
   ZipFile::SourceIdentity currentIdentity;
-  if (!txt->getSourceIdentity(currentIdentity)) {
-    LOG_ERR("READER", "Could not identify TXT source: %s", path.c_str());
-    return nullptr;
+  if (!openingTxt->getSourceIdentity(currentIdentity)) {
+    LOG_ERR("READER", "Could not identify TXT source: %s", initialBookPath.c_str());
+    return false;
   }
 
   ZipFile::SourceIdentity storedIdentity;
-  SourceIdentityStore::LoadStatus identityStatus = SourceIdentityStore::load(txt->getCachePath(), storedIdentity);
+  SourceIdentityStore::LoadStatus identityStatus =
+      SourceIdentityStore::load(openingTxt->getCachePath(), storedIdentity);
+  const bool identityAlreadyPrimary =
+      identityStatus == SourceIdentityStore::LoadStatus::Primary && storedIdentity == currentIdentity;
   switch (identityStatus) {
     case SourceIdentityStore::LoadStatus::Primary:
     case SourceIdentityStore::LoadStatus::Backup:
     case SourceIdentityStore::LoadStatus::Temp:
       if (storedIdentity != currentIdentity) {
-        const std::string staleCachePath = txt->getCachePath();
-        txt.reset();
+        const std::string staleCachePath = openingTxt->getCachePath();
         // The path now contains different bytes. Quarantine every path-keyed
         // state file before the replacement can inherit progress/statistics.
-        if (!resetBookUserStateAfterReplacement(path) || Storage.exists(staleCachePath.c_str())) {
-          LOG_ERR("READER", "Could not quarantine stale TXT state: %s", path.c_str());
-          return nullptr;
-        }
-        txt = makeUniqueNoThrow<Txt>(path, "/.crosspoint");
-        if (!txt || !txt->load() || !txt->getSourceIdentity(currentIdentity)) {
-          LOG_ERR("READER", "Could not reload replacement TXT: %s", path.c_str());
-          return nullptr;
+        if (!resetBookUserStateAfterReplacement(initialBookPath) || Storage.exists(staleCachePath.c_str())) {
+          LOG_ERR("READER", "Could not quarantine stale TXT state: %s", initialBookPath.c_str());
+          return false;
         }
       }
       break;
     case SourceIdentityStore::LoadStatus::Missing:
       // One-time adoption for caches created before TXT source bindings. A
       // replacement made before this first upgraded open is unknowable.
-      LOG_DBG("READER", "Adopting source identity for legacy TXT state: %s", path.c_str());
+      LOG_DBG("READER", "Adopting source identity for legacy TXT state: %s", initialBookPath.c_str());
       break;
     case SourceIdentityStore::LoadStatus::NewerVersion:
     case SourceIdentityStore::LoadStatus::Invalid:
     case SourceIdentityStore::LoadStatus::IoError:
       LOG_ERR("READER", "TXT source identity cannot be handled safely (status %u)",
               static_cast<unsigned>(identityStatus));
-      return nullptr;
+      return false;
   }
 
-  const SourceIdentityStore::SaveStatus saved = SourceIdentityStore::save(txt->getCachePath(), currentIdentity);
-  if (saved != SourceIdentityStore::SaveStatus::Saved && saved != SourceIdentityStore::SaveStatus::Unchanged) {
-    LOG_ERR("READER", "Could not persist TXT source identity: %s", path.c_str());
-    return nullptr;
-  }
-  ZipFile::SourceIdentity verifiedIdentity;
-  if (SourceIdentityStore::load(txt->getCachePath(), verifiedIdentity) != SourceIdentityStore::LoadStatus::Primary ||
-      verifiedIdentity != currentIdentity) {
-    LOG_ERR("READER", "Could not verify TXT source identity: %s", path.c_str());
-    return nullptr;
+  if (!identityAlreadyPrimary) {
+    const SourceIdentityStore::SaveStatus saved =
+        SourceIdentityStore::save(openingTxt->getCachePath(), currentIdentity);
+    if (saved != SourceIdentityStore::SaveStatus::Saved && saved != SourceIdentityStore::SaveStatus::Unchanged) {
+      LOG_ERR("READER", "Could not persist TXT source identity: %s", initialBookPath.c_str());
+      return false;
+    }
+    ZipFile::SourceIdentity verifiedIdentity;
+    if (SourceIdentityStore::load(openingTxt->getCachePath(), verifiedIdentity) !=
+            SourceIdentityStore::LoadStatus::Primary ||
+        verifiedIdentity != currentIdentity) {
+      LOG_ERR("READER", "Could not verify TXT source identity: %s", initialBookPath.c_str());
+      return false;
+    }
   }
 
   const PerBookReaderSettingsStore::LoadStatus settingsStatus =
-      PerBookReaderSettingsStore::load(txt->getCachePath(), bookSettings);
-  settingsWritable = settingsStatus == PerBookReaderSettingsStore::LoadStatus::LOADED ||
-                     settingsStatus == PerBookReaderSettingsStore::LoadStatus::LOADED_BACKUP ||
-                     settingsStatus == PerBookReaderSettingsStore::LoadStatus::LOADED_TEMP ||
-                     settingsStatus == PerBookReaderSettingsStore::LoadStatus::MISSING;
+      PerBookReaderSettingsStore::load(openingTxt->getCachePath(), openingBookSettings);
+  openingSettingsWritable = settingsStatus == PerBookReaderSettingsStore::LoadStatus::LOADED ||
+                            settingsStatus == PerBookReaderSettingsStore::LoadStatus::LOADED_BACKUP ||
+                            settingsStatus == PerBookReaderSettingsStore::LoadStatus::LOADED_TEMP ||
+                            settingsStatus == PerBookReaderSettingsStore::LoadStatus::MISSING;
   if (settingsStatus != PerBookReaderSettingsStore::LoadStatus::LOADED &&
       settingsStatus != PerBookReaderSettingsStore::LoadStatus::LOADED_BACKUP &&
       settingsStatus != PerBookReaderSettingsStore::LoadStatus::LOADED_TEMP) {
-    bookSettings = globalSettings;
+    openingBookSettings = openingGlobalSettings;
   }
-  applyReaderSettings(bookSettings.hasReaderOverrides ? bookSettings : globalSettings);
+  applyReaderSettings(openingBookSettings.hasReaderOverrides ? openingBookSettings : openingGlobalSettings);
   sdFontSystem.ensureLoaded(renderer, false);
-  persistMissingBookFontFallback(txt->getCachePath(), settingsStatus, settingsWritable, bookSettings);
-  return txt;
+  persistMissingBookFontFallback(openingTxt->getCachePath(), settingsStatus, openingSettingsWritable,
+                                 openingBookSettings);
+  return true;
+}
+
+void ReaderActivity::cancelCooperativeOpen() {
+  if (openingXtc) openingXtc->cancelLoad();
+  if (openingTxt) openingTxt->cancelLoad();
+  if (openingEpub) {
+    openingEpub->cancelCacheInspection();
+    openingEpub->cancelIndexing();
+  }
+  if (openingEpubIdentityJob) openingEpubIdentityJob->cancel();
+  openingXtc.reset();
+  openingTxt.reset();
+  openingEpub.reset();
+  openingEpubIdentityJob.reset();
+  openingEpubCacheInspection = false;
+  openingEpubCacheStartedMs = 0;
+  openingEpubIndexStartedMs = 0;
+  openingEpubFinalIdentityCheck = false;
+  openingXtcStartedMs = 0;
+  openingTxtStartedMs = 0;
+  openingEpubFrameBufferLoan.reset();
+}
+
+void ReaderActivity::pumpCooperativeOpen() {
+  constexpr size_t RECORDS_PER_STEP = 4;
+  constexpr size_t CACHE_ENTRIES_PER_STEP = 8;
+  constexpr size_t FINGERPRINT_BYTES_PER_STEP = 16U * 1024U;
+
+  if (!openingXtc && !openingTxt && !openingEpubIdentityJob && !openingEpub) return;
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    const bool restoreEpubSettings = openingEpub != nullptr;
+    cancelCooperativeOpen();
+    if (restoreEpubSettings) {
+      applyReaderSettings(openingGlobalSettings);
+      sdFontSystem.releaseLoadedFont(renderer);
+    }
+    onGoBack();
+    return;
+  }
+
+  if (openingEpubIdentityJob) {
+    ZipFile::SourceIdentity identity;
+    const ZipSourceIdentityJob::StepStatus result = openingEpubIdentityJob->step(FINGERPRINT_BYTES_PER_STEP, identity);
+    if (result == ZipSourceIdentityJob::StepStatus::InProgress) return;
+    openingEpubIdentityJob.reset();
+    const bool finalIdentityCheck = openingEpubFinalIdentityCheck;
+    activityManager.reportReaderOpenStage("epub", finalIdentityCheck ? "source_identity_final" : "source_identity",
+                                          openingEpubIdentityStartedMs);
+    openingEpubIdentityStartedMs = 0;
+    if (finalIdentityCheck) {
+      openingEpubFinalIdentityCheck = false;
+      if (result != ZipSourceIdentityJob::StepStatus::Done || identity != openingEpubExpectedIdentity || !openingEpub) {
+        openingEpub.reset();
+        applyReaderSettings(openingGlobalSettings);
+        sdFontSystem.releaseLoadedFont(renderer);
+        onGoBack();
+        return;
+      }
+      validateInitialBookmarkJump(BookmarkEntry::PositionKind::Epub);
+      onGoToEpubReader(std::move(openingEpub), std::move(openingGlobalSettings), std::move(openingBookSettings),
+                       openingSettingsWritable, openingEpubDeferCoverPreparation);
+      return;
+    }
+    if (result == ZipSourceIdentityJob::StepStatus::Error || !finishEpubLoad(identity)) {
+      onGoBack();
+    }
+    return;
+  }
+
+  if (openingEpub) {
+    if (openingEpubCacheInspection) {
+      const BookMetadataCache::LoadStepResult result = openingEpub->stepCacheInspection(CACHE_ENTRIES_PER_STEP);
+      if (result == BookMetadataCache::LoadStepResult::InProgress) return;
+      if (!finishEpubCacheInspection(result)) {
+        openingEpub.reset();
+        applyReaderSettings(openingGlobalSettings);
+        sdFontSystem.releaseLoadedFont(renderer);
+        onGoBack();
+      }
+      return;
+    }
+
+    const Epub::IndexStepResult result = openingEpub->stepIndexing();
+    if (result == Epub::IndexStepResult::InProgress) return;
+    activityManager.reportReaderOpenStage("epub", "cold_index", openingEpubIndexStartedMs);
+    openingEpubIndexStartedMs = 0;
+
+    // No drawing or activity transition is safe while the framebuffer backs
+    // indexing scratch memory.
+    openingEpubFrameBufferLoan.reset();
+    if (result == Epub::IndexStepResult::Error) {
+      openingEpub.reset();
+      applyReaderSettings(openingGlobalSettings);
+      sdFontSystem.releaseLoadedFont(renderer);
+      onGoBack();
+      return;
+    }
+
+    validateInitialBookmarkJump(BookmarkEntry::PositionKind::Epub);
+    onGoToEpubReader(std::move(openingEpub), std::move(openingGlobalSettings), std::move(openingBookSettings),
+                     openingSettingsWritable, openingEpubDeferCoverPreparation);
+    return;
+  }
+
+  if (openingXtc) {
+    const Xtc::LoadStepResult result = openingXtc->stepLoad(RECORDS_PER_STEP, FINGERPRINT_BYTES_PER_STEP);
+    if (result == Xtc::LoadStepResult::InProgress) return;
+    if (result == Xtc::LoadStepResult::Error) {
+      activityManager.reportReaderOpenStage("xtc", "source_metadata", openingXtcStartedMs);
+      openingXtcStartedMs = 0;
+      openingXtc.reset();
+      onGoBack();
+      return;
+    }
+
+    bool deferCoverPreparation = false;
+    const bool loaded = finishXtcLoad(deferCoverPreparation);
+    activityManager.reportReaderOpenStage("xtc", "source_metadata", openingXtcStartedMs);
+    openingXtcStartedMs = 0;
+    if (!loaded) {
+      openingXtc.reset();
+      onGoBack();
+      return;
+    }
+    validateInitialBookmarkJump(BookmarkEntry::PositionKind::FixedLayout);
+    onGoToXtcReader(std::move(openingXtc), deferCoverPreparation);
+    return;
+  }
+
+  if (openingTxt) {
+    const Txt::LoadStepResult result = openingTxt->stepLoad(FINGERPRINT_BYTES_PER_STEP);
+    if (result == Txt::LoadStepResult::InProgress) return;
+    const bool loaded = result != Txt::LoadStepResult::Error && finishTxtLoad();
+    activityManager.reportReaderOpenStage("text", "source_settings", openingTxtStartedMs);
+    openingTxtStartedMs = 0;
+    if (!loaded) {
+      openingTxt.reset();
+      onGoBack();
+      return;
+    }
+    validateInitialBookmarkJump(BookmarkEntry::PositionKind::Text);
+    onGoToTxtReader(std::move(openingTxt), std::move(openingGlobalSettings), std::move(openingBookSettings),
+                    openingSettingsWritable);
+  }
 }
 
 void ReaderActivity::goToLibrary(const std::string& fromBookPath) {
@@ -466,22 +711,23 @@ void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub, PerBookReaderS
   std::optional<ProgressChangeResult> bookmarkJump;
   if (initialBookmarkJump) bookmarkJump = std::move(initialBookmarkJump->progress);
   activityManager.replaceActivity(std::make_unique<EpubReaderActivity>(
-      renderer, mappedInput, std::move(epub), std::move(globalSettings), std::move(bookSettings), settingsWritable,
-      std::move(initialClippingJump), std::move(bookmarkJump), initialRefreshCountdown(), deferCoverPreparation,
-      allowFastInitialRefresh));
+      renderer, mappedInput, std::move(epub), completionStatsWritableAtOpen, std::move(globalSettings),
+      std::move(bookSettings), settingsWritable, std::move(initialClippingJump), std::move(bookmarkJump),
+      initialRefreshCountdown(), deferCoverPreparation, allowFastInitialRefresh));
 }
 
 void ReaderActivity::onGoToBmpViewer(const std::string& path) {
   activityManager.replaceActivity(std::make_unique<BmpViewerActivity>(renderer, mappedInput, path));
 }
 
-void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {
+void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc, const bool deferCoverPreparation) {
   const auto xtcPath = xtc->getPath();
   currentBookPath = xtcPath;
   std::optional<uint32_t> bookmarkPage;
   if (initialBookmarkJump && initialBookmarkJump->hasFixedPage) bookmarkPage = initialBookmarkJump->page;
   activityManager.replaceActivity(std::make_unique<XtcReaderActivity>(
-      renderer, mappedInput, std::move(xtc), bookmarkPage, initialRefreshCountdown(), allowFastInitialRefresh));
+      renderer, mappedInput, std::move(xtc), completionStatsWritableAtOpen, bookmarkPage, initialRefreshCountdown(),
+      deferCoverPreparation, allowFastInitialRefresh));
 }
 
 void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt, PerBookReaderSettings globalSettings,
@@ -491,22 +737,29 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt, PerBookReaderSett
   std::optional<ProgressChangeResult> bookmarkJump;
   if (initialBookmarkJump) bookmarkJump = std::move(initialBookmarkJump->progress);
   activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(
-      renderer, mappedInput, std::move(txt), std::move(globalSettings), std::move(bookSettings), settingsWritable,
-      std::move(initialClippingJump), std::move(bookmarkJump), initialRefreshCountdown(), allowFastInitialRefresh));
+      renderer, mappedInput, std::move(txt), completionStatsWritableAtOpen, std::move(globalSettings),
+      std::move(bookSettings), settingsWritable, std::move(initialClippingJump), std::move(bookmarkJump),
+      initialRefreshCountdown(), allowFastInitialRefresh));
 }
 
 void ReaderActivity::onEnter() {
   Activity::onEnter();
 
-  // Direct resume can enter Reader before Home gets a chance to finish a
-  // power-interrupted completion transaction. Recover first so the book-file
-  // move/delete guard does not reject an otherwise healthy book open.
-  if (ReadingStatsCompletionTransaction::recoverPending() ==
-      ReadingStatsCompletionTransaction::RecoveryResult::Blocked) {
+  // Direct resume can enter Reader before Home. A normal Home open reuses the
+  // successful recovery performed moments earlier instead of rereading both
+  // marker candidates.
+  if (!completionStatsAlreadyRecovered) {
+    const ReadingStatsCompletionTransaction::RecoveryResult completionRecovery =
+        ReadingStatsCompletionTransaction::recoverPending();
+    completionStatsWritableAtOpen = completionRecovery != ReadingStatsCompletionTransaction::RecoveryResult::Blocked;
+  }
+  completionStatsAlreadyRecovered = false;
+  if (!completionStatsWritableAtOpen) {
     LOG_ERR("READER", "Pending reading-statistics transaction remains blocked");
   }
 
   if (initialBookPath.empty()) {
+    activityManager.cancelReaderOpenMetric("browse_without_book");
     goToLibrary();  // Start from root when entering via Browse
     return;
   }
@@ -540,41 +793,26 @@ void ReaderActivity::onEnter() {
     onGoToBmpViewer(initialBookPath);
   } else if (isXtcFile(initialBookPath)) {
     sdFontSystem.releaseLoadedFont(renderer);
-    auto xtc = loadXtc(initialBookPath);
-    if (!xtc) {
+    if (!beginXtcLoad(initialBookPath)) {
       onGoBack();
       return;
     }
-    validateInitialBookmarkJump(BookmarkEntry::PositionKind::FixedLayout);
-    onGoToXtcReader(std::move(xtc));
   } else if (isTxtFile(initialBookPath)) {
-    PerBookReaderSettings globalSettings;
-    PerBookReaderSettings bookSettings;
-    bool settingsWritable = true;
-    auto txt = loadTxt(initialBookPath, globalSettings, bookSettings, settingsWritable);
-    if (!txt) {
+    if (!beginTxtLoad(initialBookPath)) {
       onGoBack();
       return;
     }
-    validateInitialBookmarkJump(BookmarkEntry::PositionKind::Text);
-    onGoToTxtReader(std::move(txt), std::move(globalSettings), std::move(bookSettings), settingsWritable);
   } else {
-    PerBookReaderSettings globalSettings;
-    PerBookReaderSettings bookSettings;
-    bool settingsWritable = true;
-    bool deferCoverPreparation = false;
-    auto epub = loadEpub(initialBookPath, globalSettings, bookSettings, settingsWritable, deferCoverPreparation);
-    if (!epub) {
+    if (!beginEpubLoad(initialBookPath)) {
       onGoBack();
-      return;
     }
-    validateInitialBookmarkJump(BookmarkEntry::PositionKind::Epub);
-    onGoToEpubReader(std::move(epub), std::move(globalSettings), std::move(bookSettings), settingsWritable,
-                     deferCoverPreparation);
   }
 }
 
+void ReaderActivity::loop() { pumpCooperativeOpen(); }
+
 void ReaderActivity::onGoBack() {
+  activityManager.cancelReaderOpenMetric("reader_open_failed_or_cancelled");
   if (activityManager.hasYourBooksReturnContext() || activityManager.hasSavedClippingsReturnContext()) {
     activityManager.returnFromReaderOrHome();
   } else {

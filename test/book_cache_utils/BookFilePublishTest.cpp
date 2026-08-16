@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,21 @@ class BookFilePublishTest : public testing::TestWithParam<const char*> {
     Storage.addDirectory(BookmarkUtil::getBookmarksDir());
   }
 };
+
+TEST(BookFileReplacementArtifactsTest, DetectsPendingAndBackupSiblings) {
+  constexpr char bookPath[] = "/books/story.xtc";
+  Storage.reset();
+  Storage.addDirectory("/books");
+  EXPECT_FALSE(hasBookFileReplacementArtifacts(bookPath));
+
+  const std::string pendingPath = hiddenBookFileSibling(bookPath, ".crossvi-replace.pending");
+  Storage.setFile(pendingPath, {0x01});
+  EXPECT_TRUE(hasBookFileReplacementArtifacts(bookPath));
+
+  ASSERT_TRUE(Storage.remove(pendingPath));
+  Storage.setFile(hiddenBookFileSibling(bookPath, ".crossvi-replace.bak"), {0x02});
+  EXPECT_TRUE(hasBookFileReplacementArtifacts(bookPath));
+}
 
 TEST(BookFilePublishTextValidationTest, RejectedTxtOrMarkdownCannotReplaceBookOrMutateState) {
   for (const char* extension : {".txt", ".md"}) {
@@ -201,6 +217,18 @@ TEST(BookFilePublishEpubRecoveryTest, MarkerlessBackupCollisionIsPreservedAndFai
   EXPECT_FALSE(recoverInterruptedBookFileReplacement(bookPath));
   EXPECT_EQ(Storage.file(bookPath), currentBook);
   EXPECT_EQ(Storage.file(oldBookPath), collision);
+}
+
+TEST(BookFilePublishEpubRecoveryTest, OrdinaryOpenDefersIdentityScanToTheReader) {
+  Storage.reset();
+  Storage.addDirectory("/books");
+  Storage.addDirectory("/.crosspoint");
+  const std::string bookPath = "/books/story.epub";
+  Storage.setFile(bookPath, std::vector<unsigned char>{'E', 'P', 'U', 'B'});
+
+  std::optional<ZipFile::SourceIdentity> recoveredIdentity;
+  ASSERT_TRUE(recoverInterruptedBookFileReplacement(bookPath, &recoveredIdentity));
+  EXPECT_FALSE(recoveredIdentity.has_value());
 }
 
 TEST(BookFilePublishEpubRecoveryTest, OwnedBackupIsDeletedBeforePendingMarker) {

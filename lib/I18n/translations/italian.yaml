@@ -331,6 +331,7 @@ STR_CRASH_DESCRIPTION: "Un rapporto dettagliato è stato salvato in crash_report
 STR_CRASH_REASON: "Causa dell'errore:"
 STR_CRASH_NO_REASON: "(Nessuna causa registrata)"
 STR_TILT_PAGE_TURN: "Inclina per cambio pagina"
+STR_TILT_PAGE_TURN_REVERSED: "Inclina per cambio pagina (invertito)"
 STR_KB_HINT_MOVE_CURSOR: "SINISTRA o DESTRA per spostare il cursore"
 STR_KB_HINT_RETURN_CURSOR: "SINISTRA per tornare alla posizione del cursore"
 STR_KB_HINT_HIDE_PASSWORD: "Prima DESTRA e poi [***] per nascondere la password"

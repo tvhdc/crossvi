@@ -11,7 +11,8 @@ namespace EpubReaderUtils {
 
 // Persists reader progress for an EPUB to its cache directory. Returns true on success.
 inline bool saveProgress(const Epub& epub, int spineIndex, int pageNumber, int pageCount,
-                         std::optional<uint32_t> visibleTextOffset = std::nullopt) {
+                         std::optional<uint32_t> visibleTextOffset = std::nullopt,
+                         ProgressFile::WriteSession* writeSession = nullptr) {
   if (spineIndex < 0 || spineIndex > 0xFFFF || pageNumber < 0 || pageNumber > 0xFFFF || pageCount < 0 ||
       pageCount > 0xFFFF) {
     LOG_ERR("ERS", "Progress values out of range: spine=%d page=%d count=%d", spineIndex, pageNumber, pageCount);
@@ -35,7 +36,9 @@ inline bool saveProgress(const Epub& epub, int spineIndex, int pageNumber, int p
   const int spineCount = epub.getSpineItemsCount();
   const ProgressFile::EpubBounds bounds{spineCount > 0 ? static_cast<uint32_t>(spineCount) : 0};
   const ProgressFile::CandidateValidator validator{ProgressFile::validateEpubBounds, &bounds};
-  if (!ProgressFile::writeEpubAtomic(epub.getCachePath(), data, dataSize, validator)) {
+  const bool saved = writeSession ? writeSession->writeEpubAtomic(epub.getCachePath(), data, dataSize, validator)
+                                  : ProgressFile::writeEpubAtomic(epub.getCachePath(), data, dataSize, validator);
+  if (!saved) {
     return false;
   }
   LOG_DBG("ERS", "Progress saved: spine=%d offset=%u page=%d", spineIndex, visibleTextOffset.value_or(0), pageNumber);

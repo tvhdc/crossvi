@@ -5,6 +5,7 @@
 #include <FsHelpers.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
+#include <RawSourceIdentity.h>
 #include <StagedFileTransaction.h>
 
 #include <algorithm>
@@ -14,19 +15,6 @@
 namespace {
 constexpr size_t IDENTITY_CHUNK_SIZE = 2048;
 constexpr size_t IDENTITY_YIELD_BYTES = 64U * 1024U;
-constexpr uint64_t FNV64_OFFSET_BASIS = 14695981039346656037ULL;
-constexpr uint64_t FNV64_PRIME = 1099511628211ULL;
-
-void updateRawIdentity(const uint8_t* data, const size_t length, uint32_t& crc, uint64_t& fnv) {
-  for (size_t index = 0; index < length; ++index) {
-    crc ^= data[index];
-    for (uint8_t bit = 0; bit < 8; ++bit) {
-      crc = (crc >> 1U) ^ (0xEDB88320U & (0U - (crc & 1U)));
-    }
-    fnv ^= data[index];
-    fnv *= FNV64_PRIME;
-  }
-}
 }  // namespace
 
 Txt::Txt(std::string path, std::string cacheBasePath)
@@ -37,60 +25,120 @@ Txt::Txt(std::string path, std::string cacheBasePath)
 }
 
 bool Txt::load() {
-  if (loaded) {
-    return true;
+  if (!beginLoad()) return false;
+  while (true) {
+    const LoadStepResult result = stepLoad(IDENTITY_YIELD_BYTES);
+    if (result == LoadStepResult::Loaded) return true;
+    if (result == LoadStepResult::Error) return false;
+    yield();
   }
+}
 
-  HalFile file;
-  if (!Storage.openFileForRead("TXT", filepath, file)) {
+bool Txt::beginLoad(const RawSourceIdentityHandoff* const preparedIdentity) {
+  if (loaded) return true;
+  cancelLoad();
+
+  if (!Storage.openFileForRead("TXT", filepath, loadFile)) {
     LOG_ERR("TXT", "File does not exist or cannot be opened: %s", filepath.c_str());
     return false;
   }
 
-  const uint64_t expectedSize = file.fileSize64();
-  if (expectedSize > std::numeric_limits<size_t>::max() || expectedSize > std::numeric_limits<uint32_t>::max()) {
+  loadExpectedSize = loadFile.fileSize64();
+  if (loadExpectedSize > std::numeric_limits<size_t>::max() ||
+      loadExpectedSize > std::numeric_limits<uint32_t>::max()) {
     LOG_ERR("TXT", "TXT file is too large for this build: %s", filepath.c_str());
-    file.close();
+    loadFile.close();
+    loadExpectedSize = 0;
     return false;
   }
 
-  std::array<uint8_t, IDENTITY_CHUNK_SIZE> buffer;
-  uint64_t totalRead = 0;
-  size_t bytesSinceYield = 0;
-  uint32_t crc = UINT32_MAX;
-  uint64_t fnv = FNV64_OFFSET_BASIS;
-  while (totalRead < expectedSize) {
-    const size_t wanted = static_cast<size_t>(std::min<uint64_t>(buffer.size(), expectedSize - totalRead));
-    const int bytesRead = file.read(buffer.data(), wanted);
-    if (bytesRead <= 0 || static_cast<size_t>(bytesRead) > wanted) {
-      LOG_ERR("TXT", "Failed to fingerprint complete file: %s", filepath.c_str());
-      file.close();
+  if (preparedIdentity && preparedIdentity->matchesOpenFile(filepath, loadFile)) {
+    const bool closed = loadFile.close();
+    if (!closed) {
+      cancelLoad();
       return false;
     }
-    updateRawIdentity(buffer.data(), static_cast<size_t>(bytesRead), crc, fnv);
-    totalRead += static_cast<size_t>(bytesRead);
-    bytesSinceYield += static_cast<size_t>(bytesRead);
-    if (bytesSinceYield >= IDENTITY_YIELD_BYTES) {
-      yield();
-      bytesSinceYield = 0;
-    }
+    fileSize = static_cast<size_t>(loadExpectedSize);
+    sourceIdentity = preparedIdentity->identity;
+    sourceIdentityHandoff = *preparedIdentity;
+    loadExpectedSize = 0;
+    loaded = true;
+    LOG_DBG("TXTM", "identity_reused bytes=%zu", fileSize);
+    return true;
   }
+
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  loadStartedMs = static_cast<uint32_t>(millis());
+  loadStartFreeHeap = ESP.getFreeHeap();
+#endif
+
+  loadBytesRead = 0;
+  loadFingerprint = {};
+  loadInProgress = true;
+  return true;
+}
+
+Txt::LoadStepResult Txt::stepLoad(const size_t maxBytes) {
+  if (loaded) return LoadStepResult::Loaded;
+  if (!loadInProgress || maxBytes == 0) return LoadStepResult::Error;
+
+  std::array<uint8_t, IDENTITY_CHUNK_SIZE> buffer;
+  size_t bytesThisStep = 0;
+  while (loadBytesRead < loadExpectedSize && bytesThisStep < maxBytes) {
+    const size_t wanted = static_cast<size_t>(
+        std::min<uint64_t>({buffer.size(), loadExpectedSize - loadBytesRead, maxBytes - bytesThisStep}));
+    const int bytesRead = loadFile.read(buffer.data(), wanted);
+    if (bytesRead <= 0 || static_cast<size_t>(bytesRead) > wanted) {
+      LOG_ERR("TXT", "Failed to fingerprint complete file: %s", filepath.c_str());
+      cancelLoad();
+      return LoadStepResult::Error;
+    }
+    loadFingerprint.update(buffer.data(), static_cast<size_t>(bytesRead));
+    loadBytesRead += static_cast<size_t>(bytesRead);
+    bytesThisStep += static_cast<size_t>(bytesRead);
+  }
+  if (loadBytesRead < loadExpectedSize) return LoadStepResult::InProgress;
 
   // Reject an append/truncation observed during the scan. A writer must not
   // bind path-keyed progress or statistics to a prefix of a changing file.
-  const bool sizeStayedStable = file.fileSize64() == expectedSize;
-  const bool closed = file.close();
-  if (totalRead != expectedSize || !sizeStayedStable || !closed) {
+  const bool sizeStayedStable = loadFile.fileSize64() == loadExpectedSize;
+  const ZipFile::SourceIdentity completedIdentity = loadFingerprint.finish(loadExpectedSize);
+  RawSourceIdentityHandoff completedHandoff;
+  const bool handoffCaptured = sizeStayedStable && completedHandoff.capture(filepath, loadFile, completedIdentity);
+  const bool closed = loadFile.close();
+  if (loadBytesRead != loadExpectedSize || !sizeStayedStable || !closed) {
     LOG_ERR("TXT", "TXT changed or became unreadable while fingerprinting: %s", filepath.c_str());
-    return false;
+    cancelLoad();
+    return LoadStepResult::Error;
   }
 
-  fileSize = static_cast<size_t>(expectedSize);
-  sourceIdentity = ZipFile::SourceIdentity::forRawFile(expectedSize, ~crc, fnv);
+  fileSize = static_cast<size_t>(loadExpectedSize);
+  sourceIdentity = completedIdentity;
+  sourceIdentityHandoff = handoffCaptured ? std::move(completedHandoff) : RawSourceIdentityHandoff{};
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  LOG_DBG("TXTM", "identity bytes=%llu elapsed_ms=%u heap_delta=%ld free_heap=%u max_alloc=%u min_free_heap=%u",
+          static_cast<unsigned long long>(loadExpectedSize),
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - loadStartedMs),
+          static_cast<long>(static_cast<int32_t>(loadStartFreeHeap) - static_cast<int32_t>(freeHeap)),
+          static_cast<unsigned>(freeHeap), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+          static_cast<unsigned>(ESP.getMinFreeHeap()));
+#endif
+
+  loadInProgress = false;
   loaded = true;
   LOG_DBG("TXT", "Loaded TXT file: %s (%zu bytes)", filepath.c_str(), fileSize);
-  return true;
+  return LoadStepResult::Loaded;
+}
+
+void Txt::cancelLoad() {
+  if (loadFile.isOpen()) loadFile.close();
+  loadInProgress = false;
+  loadExpectedSize = 0;
+  loadBytesRead = 0;
+  loadFingerprint = {};
+  if (!loaded) sourceIdentityHandoff = {};
 }
 
 std::string Txt::getTitle() const {

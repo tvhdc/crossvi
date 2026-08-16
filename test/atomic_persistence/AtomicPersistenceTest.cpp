@@ -341,6 +341,35 @@ TEST_F(AtomicPersistenceTest, StreamVerifiedFontIsReadOnceAfterPublishAndKeepsAt
   EXPECT_EQ(Storage.file(FONT), uploaded);
 }
 
+TEST_F(AtomicPersistenceTest, PendingPublishRetainsBackupUntilCooperativeVerificationCommits) {
+  const auto uploaded = fontBytes(2);
+  Storage.setFile(FONT, fontBytes(1));
+  Storage.setFile(FONT_TEMP, uploaded);
+
+  EXPECT_EQ(
+      StagedFileTransaction::beginPendingPublish(FONT, FONT_TEMP, FONT_BACKUP, uploaded.size(), readableFontValidator),
+      StagedFileTransaction::Status::Published);
+  EXPECT_EQ(Storage.file(FONT), uploaded);
+  ASSERT_TRUE(Storage.exists(FONT_BACKUP));
+  EXPECT_EQ(Storage.file(FONT_BACKUP).back(), 1);
+
+  EXPECT_TRUE(StagedFileTransaction::commitPendingPublish(FONT_BACKUP));
+  EXPECT_FALSE(Storage.exists(FONT_BACKUP));
+  EXPECT_EQ(Storage.file(FONT), uploaded);
+}
+
+TEST_F(AtomicPersistenceTest, CancelledPendingPublishRestoresPreviousFile) {
+  Storage.setFile(FONT, fontBytes(1));
+  Storage.setFile(FONT_TEMP, fontBytes(2));
+  ASSERT_EQ(StagedFileTransaction::beginPendingPublish(FONT, FONT_TEMP, FONT_BACKUP, fontBytes(2).size(),
+                                                       readableFontValidator),
+            StagedFileTransaction::Status::Published);
+
+  EXPECT_TRUE(StagedFileTransaction::rollbackPendingPublish(FONT, FONT_BACKUP));
+  EXPECT_EQ(Storage.file(FONT).back(), 1);
+  EXPECT_FALSE(Storage.exists(FONT_BACKUP));
+}
+
 TEST_F(AtomicPersistenceTest, InterruptedFontPublishRecoversBackup) {
   Storage.setFile(FONT_BACKUP, fontBytes(1));
   EXPECT_EQ(StagedFileTransaction::recover(FONT, FONT_BACKUP, fontValidator), StagedFileTransaction::Status::Recovered);

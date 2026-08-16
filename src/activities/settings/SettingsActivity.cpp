@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <HalTiltSensor.h>
 #include <Logging.h>
+#include <TiltPageTurnPolicy.h>
 #include <Version.h>
 
 #include <algorithm>
@@ -75,11 +76,9 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_POWER_BUTTON, SettingAction::PowerButtonSettings));
   if (halTiltSensor.isAvailable()) {
     controlsSettings.push_back(SettingInfo::DynamicEnum(
-        StrId::STR_TILT_SENSOR, {StrId::STR_DISABLED, StrId::STR_TILT_PAGE_TURN},
-        [] { return SETTINGS.tiltPageTurn == CrossPointSettings::TILT_OFF ? uint8_t{0} : uint8_t{1}; },
-        [](const uint8_t value) {
-          SETTINGS.tiltPageTurn = value == 0 ? CrossPointSettings::TILT_OFF : CrossPointSettings::TILT_ON;
-        }));
+        StrId::STR_TILT_SENSOR, {StrId::STR_DISABLED, StrId::STR_TILT_PAGE_TURN, StrId::STR_TILT_PAGE_TURN_REVERSED},
+        [] { return TiltPageTurnPolicy::settingOptionForMode(SETTINGS.tiltPageTurn); },
+        [](const uint8_t value) { SETTINGS.tiltPageTurn = TiltPageTurnPolicy::modeForSettingOption(value); }));
   }
   controlsSettings.push_back(SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
 
@@ -362,7 +361,6 @@ void SettingsActivity::toggleCurrentSetting() {
         releaseSettingsLists();
         startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput),
                                [this](const ActivityResult&) {
-                                 SETTINGS.saveToFile();
                                  rebuildSettingsLists();
                                });
         break;

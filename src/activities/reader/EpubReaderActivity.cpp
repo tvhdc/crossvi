@@ -284,6 +284,7 @@ void EpubReaderActivity::onEnter() {
   if (!epub) {
     return;
   }
+  const uint32_t readerStateStartedMs = static_cast<uint32_t>(millis());
 
   // Keep an EPUB readable when optional publisher CSS is unsupported or the
   // SD read fails, but never make that lower-fidelity fallback invisible.
@@ -297,6 +298,7 @@ void EpubReaderActivity::onEnter() {
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
   epub->setupCacheDir();
+  progressWriteSession.invalidate();
 
   const ClippingStore::LoadResult clippingLoad =
       clippingStore.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor());
@@ -304,23 +306,18 @@ void EpubReaderActivity::onEnter() {
     LOG_ERR("ERS", "Clipping store unavailable (status %u)", static_cast<unsigned>(clippingLoad));
   }
 
-  const ReadingStatsCompletionTransaction::RecoveryResult completionRecovery =
-      ReadingStatsCompletionTransaction::recoverPending();
-  const bool completionStatsWritable = completionRecovery != ReadingStatsCompletionTransaction::RecoveryResult::Blocked;
-
   BookReadingStats::LoadStatus bookStatsStatus = BookReadingStats::LoadStatus::Missing;
   bookReadingStats = BookReadingStats::load(epub->getCachePath(), &bookStatsStatus);
   bookReadingStatsTrusted = BookReadingStats::isTrustedLoadStatus(bookStatsStatus);
-  bookReadingStatsWritable =
-      completionStatsWritable && bookReadingStatsTrusted && BookReadingStats::canPublish(epub->getCachePath());
-  GlobalReadingStats::LoadStatus globalStatsStatus = GlobalReadingStats::LoadStatus::Missing;
-  globalReadingStats = GlobalReadingStats::load(&globalStatsStatus);
-  globalReadingStatsTrusted = GlobalReadingStats::isTrustedLoadStatus(globalStatsStatus);
-  // load() already performed the root-level future-version/protection scan.
-  // Every actual save and completion transaction revalidates immediately
-  // before publication, so repeating the whole /.crosspoint scan here adds
-  // library-size-dependent latency without creating a safety boundary.
-  globalReadingStatsWritable = completionStatsWritable && globalReadingStatsTrusted;
+  // Every actual save revalidates protected siblings immediately before
+  // publication. Avoid repeating the cache scan on the first-page path.
+  bookReadingStatsWritable = completionStatsWritableAtOpen && bookReadingStatsTrusted;
+  globalReadingStats = {};
+  globalReadingStatsTrusted = false;
+  globalReadingStatsWritable = false;
+  deferredOpenStatePending = true;
+  deferredOpenStateReady = false;
+  deferredGlobalPageTurns = 0;
   readingSessionTracker = ReadingSessionTracker{};
   sessionReadingSeconds = 0;
   pendingBookReadingSpans = {};
@@ -338,7 +335,9 @@ void EpubReaderActivity::onEnter() {
   const uint8_t configuredAutoPageTurnSeconds =
       bookReaderSettings.hasAutoPageTurnInterval ? bookReaderSettings.autoPageTurnSeconds : 0;
   applyAutoPageTurnRuntime(configuredAutoPageTurnSeconds, bookReaderSettings.autoPageTurnStartsOnOpen);
+  activityManager.reportReaderOpenStage("epub", "reader_state", readerStateStartedMs);
 
+  const uint32_t progressStartedMs = static_cast<uint32_t>(millis());
   uint8_t data[ProgressFile::EPUB_CONTENT_ANCHORED_PROGRESS_SIZE]{};
   const int spineCount = epub->getSpineItemsCount();
   const ProgressFile::EpubBounds progressBounds{spineCount > 0 ? static_cast<uint32_t>(spineCount) : 0};
@@ -403,15 +402,21 @@ void EpubReaderActivity::onEnter() {
     }
     initialBookmarkJump.reset();
   }
+  activityManager.reportReaderOpenStage("epub", "progress", progressStartedMs);
 
-  // Save current epub as last opened epub and add to recent books
-  APP_STATE.openEpubPath = epub->getPath();
-  APP_STATE.saveToFile();
-  if (!skipStartupRecentUpdate) {
-    RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+  // Persist the crash/resume target before rendering. Global statistics and
+  // Recent Books are secondary state and finish after the first page reaches
+  // the panel, so a large /.crosspoint directory cannot delay first paint.
+  const uint32_t catalogStartedMs = static_cast<uint32_t>(millis());
+  if (APP_STATE.openEpubPath != epub->getPath()) {
+    APP_STATE.openEpubPath = epub->getPath();
+    APP_STATE.saveToFile();
   }
+  activityManager.reportReaderOpenStage("epub", "catalog_recent", catalogStartedMs);
 
+  const uint32_t bookmarksStartedMs = static_cast<uint32_t>(millis());
   loadCachedBookmarks();
+  activityManager.reportReaderOpenStage("epub", "bookmarks", bookmarksStartedMs);
 
   // Trigger first update
   requestUpdate();
@@ -426,6 +431,7 @@ void EpubReaderActivity::onExit() {
   Activity::onExit();
 
   releaseGrayscaleStripScratch();
+  cancelImagePreparation();
 
   // Clear the non-owning lazy-image callback before releasing the Epub.
   ImageBlock::setExtractor(nullptr, nullptr);
@@ -470,6 +476,7 @@ void EpubReaderActivity::onExit() {
 
 void EpubReaderActivity::onPause() {
   clearBlockingFeedback();
+  cancelImagePreparation();
   consumeReadingViewSignal();
   stopReadingPage(false, static_cast<uint32_t>(millis()));
   // Menus, sync, statistics, and other reader children use UI fonts. Return
@@ -492,7 +499,9 @@ void EpubReaderActivity::onResume() {
 }
 
 void EpubReaderActivity::signalReadingPageVisible() {
-  pendingReadingViewAtMs.store(static_cast<uint32_t>(millis()), std::memory_order_relaxed);
+  const uint32_t visibleAtMs = static_cast<uint32_t>(millis());
+  activityManager.finishReaderOpenMetric("epub", visibleAtMs);
+  pendingReadingViewAtMs.store(visibleAtMs, std::memory_order_relaxed);
   pendingReadingViewSignal.store(1, std::memory_order_release);
 }
 
@@ -501,12 +510,37 @@ void EpubReaderActivity::signalReadingPageHidden() {
   pendingReadingViewSignal.store(-1, std::memory_order_release);
 }
 
+void EpubReaderActivity::finishDeferredOpenState() {
+  if (!deferredOpenStatePending || !deferredOpenStateReady) return;
+  deferredOpenStatePending = false;
+
+  const uint32_t statsStartedMs = static_cast<uint32_t>(millis());
+  GlobalReadingStats::LoadStatus globalStatsStatus = GlobalReadingStats::LoadStatus::Missing;
+  globalReadingStats = GlobalReadingStats::load(&globalStatsStatus);
+  globalReadingStatsTrusted = GlobalReadingStats::isTrustedLoadStatus(globalStatsStatus);
+  globalReadingStatsWritable = completionStatsWritableAtOpen && globalReadingStatsTrusted;
+  if (globalReadingStatsWritable && deferredGlobalPageTurns > 0) {
+    globalReadingStats.totalPagesTurned =
+        addReadingStatsSaturated(globalReadingStats.totalPagesTurned, deferredGlobalPageTurns);
+    globalReadingStatsDirty = true;
+  }
+  deferredGlobalPageTurns = 0;
+  const uint32_t recentStartedMs = static_cast<uint32_t>(millis());
+  if (!skipStartupRecentUpdate) {
+    RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+  }
+  LOG_DBG("ROPM", "post_visible format=epub stats_ms=%u recent_ms=%u",
+          static_cast<unsigned>(recentStartedMs - statsStartedMs),
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - recentStartedMs));
+}
+
 void EpubReaderActivity::consumeReadingViewSignal() {
   const int8_t signal = pendingReadingViewSignal.exchange(0, std::memory_order_acq_rel);
   if (signal == 0) return;
 
   const uint32_t eventAtMs = pendingReadingViewAtMs.load(std::memory_order_relaxed);
   if (signal > 0) {
+    deferredOpenStateReady = true;
     deferredCoverFirstPageVisible = true;
     if (readingSessionTracker.pageVisible(eventAtMs)) {
       ReadingStatsDateTime localStart;
@@ -536,6 +570,9 @@ void EpubReaderActivity::pumpDeferredCoverPreparation() {
   }
 
   if (!deferredCoverStarted) {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    deferredCoverStartedMs = static_cast<uint32_t>(millis());
+#endif
     deferredCoverStatus = epub->beginThumbnailPreparation(request);
     deferredCoverStarted = true;
   } else if (deferredCoverStatus == Epub::ThumbnailPreparationStatus::InProgress) {
@@ -558,6 +595,77 @@ void EpubReaderActivity::pumpDeferredCoverPreparation() {
     LOG_ERR("ERS", "Deferred cover source preparation failed");
   }
   deferredCoverFinished = true;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  LOG_DBG("ROPM", "post_visible format=epub name=cover elapsed_ms=%u",
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - deferredCoverStartedMs));
+#endif
+}
+
+void EpubReaderActivity::cancelImagePreparation() {
+  if (epub) epub->cancelImagePreparation();
+  imagePrefetchSpine = -1;
+  imagePrefetchPage = -1;
+  imagePrefetchElement = 0;
+  imagePrefetchPageComplete = false;
+}
+
+bool EpubReaderActivity::pumpImagePreparation() {
+  if (!epub || !deferredCoverFirstPageVisible || SETTINGS.imageRendering != CrossPointSettings::IMAGES_DISPLAY) {
+    if (epub && epub->imagePreparationActive()) cancelImagePreparation();
+    return false;
+  }
+
+  RenderLock lock(std::try_to_lock);
+  if (!lock.ownsLock()) return true;
+  if (!section || currentSpineIndex < 0 || currentSpineIndex >= epub->getSpineItemsCount()) {
+    if (epub->imagePreparationActive()) cancelImagePreparation();
+    return false;
+  }
+
+  const int targetPage = section->currentPage + 1;
+  if (targetPage < 0 || targetPage >= static_cast<int>(section->pageCount)) {
+    if (epub->imagePreparationActive()) cancelImagePreparation();
+    imagePrefetchSpine = -1;
+    imagePrefetchPage = -1;
+    imagePrefetchElement = 0;
+    imagePrefetchPageComplete = false;
+    return false;
+  }
+
+  if (imagePrefetchSpine != currentSpineIndex || imagePrefetchPage != targetPage) {
+    cancelImagePreparation();
+    imagePrefetchSpine = currentSpineIndex;
+    imagePrefetchPage = targetPage;
+  }
+  if (imagePrefetchPageComplete) return false;
+
+  if (epub->imagePreparationActive()) {
+    const auto status = epub->stepImagePreparation();
+    if (status == Epub::ImagePreparationStatus::Error) {
+      LOG_ERR("ERS", "Could not pre-extract an image for page %d", targetPage);
+    }
+    return true;
+  }
+
+  auto page = section->loadPage(targetPage);
+  if (!page) {
+    // Prefetch is optional. A permanently unreadable derived page must not be
+    // retried on every idle loop or starve deferred cover work.
+    imagePrefetchPageComplete = true;
+    return false;
+  }
+  std::string sourcePath;
+  std::string imagePath;
+  if (!page->nextMissingImage(imagePrefetchElement, sourcePath, imagePath)) {
+    imagePrefetchPageComplete = true;
+    return false;
+  }
+
+  const auto status = epub->beginImagePreparation(sourcePath, imagePath);
+  if (status == Epub::ImagePreparationStatus::Error) {
+    LOG_ERR("ERS", "Could not begin image preparation for page %d", targetPage);
+  }
+  return true;
 }
 
 void EpubReaderActivity::recordReadingSample(const ReadingSessionSample& sample) {
@@ -574,6 +682,8 @@ void EpubReaderActivity::recordReadingSample(const ReadingSessionSample& sample)
   if (globalReadingStatsWritable) {
     globalReadingStats.totalPagesTurned = addReadingStatsSaturated(globalReadingStats.totalPagesTurned, 1);
     globalReadingStatsDirty = true;
+  } else if (deferredOpenStatePending) {
+    deferredGlobalPageTurns = addReadingStatsSaturated(deferredGlobalPageTurns, 1);
   }
 }
 
@@ -632,6 +742,7 @@ void EpubReaderActivity::commitReadingSession() {
   if (readingSessionCommitted) return;
   consumeReadingViewSignal();
   stopReadingPage(false, static_cast<uint32_t>(millis()));
+  finishDeferredOpenState();
   readingSessionCommitted = true;
 
   // Match CrossInk v1.4.0: ten active seconds contribute reading time, while a
@@ -700,6 +811,7 @@ void EpubReaderActivity::saveReadingStats() {
 
 void EpubReaderActivity::markBookCompleted() {
   if (!epub || bookReadingStats.isCompleted || completionAttemptBlocked) return;
+  finishDeferredOpenState();
   const auto reportFailure = [this]() {
     completionAttemptBlocked = true;
     pendingStatsCompletionError = true;
@@ -818,6 +930,7 @@ void EpubReaderActivity::loop() {
     finish();
     return;
   }
+  const bool inputEdge = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
 
   if (safeModePromptRequested.exchange(false, std::memory_order_acq_rel)) {
     startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_EPUB_SAFE_MODE),
@@ -865,8 +978,8 @@ void EpubReaderActivity::loop() {
           stopReadingPage(false, static_cast<uint32_t>(millis()));
           return;
         }
-        // Not fatal: the partial keeps serving its pages; crossing the watermark falls back to
-        // the blocking extension in render(). Don't retry every tick.
+        // Not fatal: the partial keeps serving its pages. A requested page can make one
+        // controlled retry from render(); don't retry every idle tick.
         partialRebuildStartFailed = true;
         LOG_ERR("ERS", "Failed to start deferred partial extension build");
       } else {
@@ -888,39 +1001,49 @@ void EpubReaderActivity::loop() {
   // watermark re-parses the whole chapter synchronously. Keep ticking until it finalizes.
   {
     RenderLock lock(std::try_to_lock);
-    if (lock.ownsLock() && section && section->isBuilding() &&
-        (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
-        buildTickHeapGate()) {
+    if (lock.ownsLock()) {
+      const bool requiredBuild = sectionLandingPending || sectionRenderWaiting;
+      const bool withinBuildWindow =
+          section && (requiredBuild || section->isPartial() ||
+                      static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
+      if (requiredBuild) buildHeapPaused = false;
+      if (section && section->isBuilding() && withinBuildWindow && (requiredBuild || buildTickHeapGate())) {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      const uint16_t debugPagesBefore = section->debugBuiltPageCount();
+        const uint16_t debugPagesBefore = section->debugBuiltPageCount();
 #endif
-      releaseGrayscaleStripScratch();
-      if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)) {
-        LOG_ERR("ERS", "Background section build failed");
-        const EpubBuildStatus failure = section->lastBuildStatus();
-        stopReadingPage(false, static_cast<uint32_t>(millis()));
-        section.reset();
-        if (queueSafeModePromptIfEligible(failure)) return;
-        requestUpdate();
-      } else {
+        releaseGrayscaleStripScratch();
+        if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)) {
+          LOG_ERR("ERS", "Background section build failed");
+          const EpubBuildStatus failure = section->lastBuildStatus();
+          stopReadingPage(false, static_cast<uint32_t>(millis()));
+          section.reset();
+          sectionLandingPending = false;
+          sectionRenderWaiting = false;
+          sectionPrepareStartedMs = 0;
+          if (queueSafeModePromptIfEligible(failure)) return;
+          pendingBackgroundBuildFailure.store(static_cast<uint8_t>(failure) + 1U, std::memory_order_release);
+          requestUpdate();
+        } else {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-        debugRecordSectionBuild(debugPagesBefore, true);
+          debugRecordSectionBuild(debugPagesBefore, true);
 #endif
-        if (section->isBuildComplete()) {
-          // Finalization can happen entirely in the background while the visible
-          // page stays unchanged. Persist the now-exact total here; otherwise an
-          // immediate Home action can leave progress.bin carrying the earlier
-          // estimate and Dashboard correctly refuses to display it.
-          const bool repositioned = applyDeferredReposition();
-          const int exactPageCount = section->pageCount;
-          if (saveProgress(currentSpineIndex, section->currentPage, exactPageCount)) {
-            lastSavedSpineIndex = currentSpineIndex;
-            lastSavedPage = section->currentPage;
-            lastSavedPageCount = exactPageCount;
-          } else {
-            pendingSyncSaveError = true;
+          if (sectionRenderWaiting && requestedSectionPageReady()) requestUpdate();
+          if (section->isBuildComplete() && !sectionLandingPending) {
+            // Finalization can happen entirely in the background while the visible
+            // page stays unchanged. Persist the now-exact total here; otherwise an
+            // immediate Home action can leave progress.bin carrying the earlier
+            // estimate and Dashboard correctly refuses to display it.
+            const bool repositioned = applyDeferredReposition();
+            const int exactPageCount = section->pageCount;
+            if (saveProgress(currentSpineIndex, section->currentPage, exactPageCount)) {
+              lastSavedSpineIndex = currentSpineIndex;
+              lastSavedPage = section->currentPage;
+              lastSavedPageCount = exactPageCount;
+            } else {
+              pendingSyncSaveError = true;
+            }
+            if (repositioned || pendingSyncSaveError) requestUpdate();
           }
-          if (repositioned || pendingSyncSaveError) requestUpdate();
         }
       }
     }
@@ -1117,9 +1240,19 @@ void EpubReaderActivity::loop() {
   const bool nextTriggered = pageGesture.next;
   const bool longPress = pageGesture.longPress;
   if (!prevTriggered && !nextTriggered) {
-    // Input handling above always wins. Cover extraction advances at most one
-    // bounded chunk per idle loop after the first page has reached the panel.
-    pumpDeferredCoverPreparation();
+    const bool readerInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                                 mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                                 mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                                 mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                                 mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                                 mappedInput.isPressed(MappedInputManager::Button::PageForward);
+    if (!inputEdge && !readerInputHeld) {
+      // Secondary state performs its bounded publication only after the first
+      // page is visible and input is idle. Upcoming page images take one
+      // bounded ZIP chunk before optional cover work gets the idle slice.
+      finishDeferredOpenState();
+      if (!pumpImagePreparation()) pumpDeferredCoverPreparation();
+    }
     return;
   }
 
@@ -1466,6 +1599,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             requestUpdate();
             break;
           }
+          progressWriteSession.invalidate();
           rememberCurrentContentOffset();
           cachedSpineIndex = backupSpine;
           nextPageNumber = backupPage;
@@ -1802,6 +1936,7 @@ void EpubReaderActivity::openReadingStats() {
   // redraw after returning starts a fresh interval.
   consumeReadingViewSignal();
   stopReadingPage(false, static_cast<uint32_t>(millis()));
+  finishDeferredOpenState();
   const bool hasFreshTimeEstimate = refreshEstimatedTimeLeft();
   const bool previewCurrentSession = !readingSessionCommitted;
   BookReadingStats displayBookStats = bookReadingStats;
@@ -2303,6 +2438,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   stopReadingPage(isForwardTurn, static_cast<uint32_t>(millis()));
   {
     RenderLock lock(*this);
+    cancelImagePreparation();
     coverSkipDirection = isForwardTurn ? CoverSkipDirection::Forward : CoverSkipDirection::Backward;
     coverSkipHops = 0;
 
@@ -2423,8 +2559,70 @@ bool EpubReaderActivity::skipCoverPageIfNeeded(const Page& page) {
   return true;
 }
 
+bool EpubReaderActivity::sectionLandingReady() const {
+  if (!section) return false;
+  if (pendingPercentJump) return section->isBuildComplete();
+  if (!pendingAnchor.empty()) return section->findAnchor(pendingAnchor).has_value() || section->isBuildComplete();
+  if (pendingBookmarkSourceOffset.has_value() ||
+      (cachedContentSourceOffset.has_value() && currentSpineIndex == cachedSpineIndex)) {
+    return section->sourceOffsetTargetPage().has_value() || section->isBuildComplete();
+  }
+  if (cachedVisibleTextOffset.has_value() && currentSpineIndex == cachedSpineIndex) {
+    return section->getPageForVisibleTextOffset(*cachedVisibleTextOffset).has_value() || section->isBuildComplete();
+  }
+  const int target = pendingPageJump.has_value() ? *pendingPageJump : std::max(0, nextPageNumber);
+  return target < static_cast<int>(section->pageCount) || section->isBuildComplete();
+}
+
+bool EpubReaderActivity::requestedSectionPageReady() const {
+  if (!section) return false;
+  if (sectionLandingPending) return sectionLandingReady();
+  return section->currentPage < static_cast<int>(section->pageCount) || section->isBuildComplete();
+}
+
+void EpubReaderActivity::finishSectionLanding() {
+  if (!section || !sectionLandingPending) return;
+  sectionLandingPending = false;
+  sectionRenderWaiting = false;
+
+  if (pendingPageJump.has_value()) {
+    section->currentPage = *pendingPageJump;
+    pendingPageJump.reset();
+  } else {
+    section->currentPage = std::max(0, nextPageNumber);
+  }
+
+  if (pendingBookmarkSourceOffset.has_value()) {
+    if (const auto contentPage = section->sourceOffsetTargetPage()) section->currentPage = *contentPage;
+    pendingBookmarkSourceOffset.reset();
+    section->clearSourceOffsetTarget();
+  }
+
+  if (!pendingAnchor.empty()) {
+    const auto page = section->findAnchor(pendingAnchor);
+    if (page) {
+      section->currentPage = *page;
+      LOG_DBG("ERS", "Resolved anchor '%s' to page %d", pendingAnchor.c_str(), *page);
+    } else {
+      LOG_DBG("ERS", "Anchor '%s' not found in section %d", pendingAnchor.c_str(), currentSpineIndex);
+    }
+    pendingAnchor.clear();
+  }
+
+  if (pendingPercentJump && section->pageCount > 0) {
+    int newPage = static_cast<int>(pendingSpineProgress * static_cast<float>(section->pageCount));
+    section->currentPage = std::min(newPage, static_cast<int>(section->pageCount) - 1);
+    pendingPercentJump = false;
+  }
+  if (readerOpenStagesPending) {
+    activityManager.reportReaderOpenStage("epub", "section_prepare", sectionPrepareStartedMs);
+  }
+  sectionPrepareStartedMs = 0;
+}
+
 // TODO: Failure handling
 void EpubReaderActivity::render(RenderLock&& lock) {
+  cancelImagePreparation();
   if (renderReaderExitOverlay()) return;
   if (renderBlockingFeedbackOverlay()) return;
   if (!epub) {
@@ -2524,6 +2722,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   };
   const auto handleBuildFailure = [this, &showBuildError](const EpubBuildStatus failure) {
     section.reset();
+    sectionLandingPending = false;
+    sectionRenderWaiting = false;
+    sectionPrepareStartedMs = 0;
     if (queueSafeModePromptIfEligible(failure)) {
       signalReadingPageHidden();
       return;
@@ -2534,6 +2735,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 
   if (pendingSafeModeFailureNotice.exchange(false, std::memory_order_acq_rel)) {
     showBuildError(false);
+    return;
+  }
+  const uint8_t backgroundFailure = pendingBackgroundBuildFailure.exchange(0, std::memory_order_acq_rel);
+  if (backgroundFailure != 0) {
+    const auto failure = static_cast<EpubBuildStatus>(backgroundFailure - 1U);
+    pendingSafeModePersistence.store(false, std::memory_order_release);
+    showBuildError(failure == EpubBuildStatus::OutOfMemory && SETTINGS.epubSafeMode != 0);
     return;
   }
 
@@ -2589,7 +2797,26 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   buildViewportWidth = viewportWidth;
   buildViewportHeight = viewportHeight;
 
+  if (!section && (sectionLandingPending || sectionRenderWaiting)) {
+    sectionLandingPending = false;
+    sectionRenderWaiting = false;
+    sectionPrepareStartedMs = 0;
+  }
+  if (sectionLandingPending) {
+    if (!sectionLandingReady()) {
+      sectionRenderWaiting = true;
+      return;
+    }
+    finishSectionLanding();
+  }
+  if (sectionRenderWaiting) {
+    if (!requestedSectionPageReady()) return;
+    sectionRenderWaiting = false;
+  }
+
   if (!section) {
+    sectionPrepareStartedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
+    sectionRenderWaiting = false;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     // A chapter boundary arms this before the old Section is released, so its
     // suspension cost is included. Other open/reflow paths begin timing here.
@@ -2616,6 +2843,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // pages are deterministic) and finalizes, so the partial machinery retires itself.
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t sectionCacheStartedMs = static_cast<uint32_t>(millis());
+#else
+    const uint32_t sectionCacheStartedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
 #endif
     const bool cacheLoaded = section->loadSectionFile(
         SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
@@ -2627,6 +2856,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             static_cast<unsigned>(static_cast<uint32_t>(millis()) - sectionCacheStartedMs), cacheLoaded ? 1U : 0U,
             section->isPartial() ? 1U : 0U, static_cast<unsigned>(section->pageCount));
 #endif
+    if (readerOpenStagesPending) {
+      activityManager.reportReaderOpenStage("epub", "section_cache", sectionCacheStartedMs);
+    }
     if (cacheLoaded) {
       // Matching render params means identical pagination, so the saved page number is valid
       // as-is: consume any pending settings-change reposition. Without this, a chapter total
@@ -2670,37 +2902,58 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         LOG_DBG("ERS", "Cache not found, building...");
       }
 
-      // Only a percent jump needs the whole chapter up front (percent -> page needs the final page
-      // count). Explicit pages and fragment anchors build incrementally until their landing page is
-      // available. A settings-change reposition follows the same bounded path, stopping as soon as
-      // the old page's canonical text offset appears in the new pagination; image-only pages retain
-      // the proportional fallback after the final page count is known.
-      const bool needsFullBuild = pendingPercentJump;
-      if (needsFullBuild) {
-        renderer.clearScreen();
-        GUI.drawPopup(renderer, tr(STR_INDEXING));
-        // The popup's own refresh is a plain FAST, so force the page that replaces it onto the HALF
-        // ghost-cleanup path -- otherwise the "INDEXING" text ghosts under the rendered page.
-        pagesUntilFullRefresh = 1;
-        // No popup redraws while the framebuffer is lent to the build below;
-        // the panel holds the popup displayed above (e-ink is persistent).
-        const auto popupFn = [this]() {
-          if (renderer.hasFrameBuffer()) GUI.drawPopup(renderer, tr(STR_INDEXING));
-        };
-        // Lend the framebuffer's 48 KB to the blocking full build; restored
-        // (white) at scope exit, and the page render below redraws everything.
+      const int target = pendingPageJump.has_value() ? *pendingPageJump : std::max(0, nextPageNumber);
+      const bool anchorJump = !pendingAnchor.empty();
+
+      // Landing well inside a partial is already serviceable. Avoid restarting a full
+      // chapter re-layout until loop() sees the reader approach the saved watermark.
+      const bool partialCoversLanding =
+          section->isPartial() && !pendingPercentJump && !contentReposition &&
+          (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
+                      : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount));
+      if (partialCoversLanding) {
+        LOG_DBG("ERS", "Partial covers target %d of %d; deferring extension build", target, section->pageCount);
+      } else {
+        const size_t spineBytes = epub->getCumulativeSpineItemSize(currentSpineIndex) -
+                                  (currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0);
+        const bool willExtractHtml = !section->hasHtmlCache();
+        bool showPopup = pendingPercentJump;
+        if (anchorJump) {
+          showPopup = !section->findAnchor(pendingAnchor).has_value() && spineBytes > BUILD_POPUP_BYTE_THRESHOLD;
+        } else if (!pendingPercentJump) {
+          const bool targetAvailable = target < static_cast<int>(section->pageCount);
+          showPopup = !targetAvailable && ((spineBytes > BUILD_POPUP_BYTE_THRESHOLD && willExtractHtml) ||
+                                           target > BUILD_POPUP_PAGE_THRESHOLD);
+        }
+        if (showPopup) {
+          renderer.clearScreen();
+          GUI.drawPopup(renderer, tr(STR_INDEXING));
+          // HALF-clear the popup when the page replaces it, else "INDEXING" ghosts under the page.
+          pagesUntilFullRefresh = 1;
+        }
+
+        // Give the first extraction/layout slice the framebuffer's memory, then return it before
+        // rendering. Further slices run from loop(), keeping this render callback bounded.
+        releaseGrayscaleStripScratch();
         GfxRenderer::FrameBufferLoan loan(renderer);
+        if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+                                 SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
+                                 viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
+                                 SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
+                                 activeEpubRenderMode(), SETTINGS.forceParagraphIndents != 0)) {
+          LOG_ERR("ERS", "Failed to start section build");
+          const EpubBuildStatus failure = section->lastBuildStatus();
+          loan.end();
+          handleBuildFailure(failure);
+          return;
+        }
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
         const uint16_t debugPagesBefore = section->debugBuiltPageCount();
 #endif
-        if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                        SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                        viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
-                                        SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
-                                        activeEpubRenderMode(), SETTINGS.forceParagraphIndents != 0, popupFn)) {
-          LOG_ERR("ERS", "Failed to persist page data to SD");
+        if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
+          LOG_ERR("ERS", "Failed during initial section build slice");
           const EpubBuildStatus failure = section->lastBuildStatus();
-          loan.end();  // restore before anything draws
+          loan.end();
           handleBuildFailure(failure);
           return;
         }
@@ -2708,212 +2961,50 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         debugRecordSectionBuild(debugPagesBefore, false);
 #endif
         loan.end();
-      } else {
-        // Lay out just enough to show the landing page; loop() builds the rest behind it. Show the
-        // indexing popup up front only when the build will actually be slow: a large spine (its
-        // whole HTML must be inflated before page 1 can lay out -- the giant single-spine case), or
-        // a deep resume/jump that must lay out many pages to reach the landing page. Tiny sections
-        // build in a blink and stay popup-free.
-        const int target = pendingPageJump.has_value() ? *pendingPageJump : (nextPageNumber < 0 ? 0 : nextPageNumber);
-        const bool anchorJump = !pendingAnchor.empty();
-
-        // Landing well inside a partial: the page (or anchor, via the on-disk map) is already
-        // servable, so don't restart the extension build now -- it re-lays out the WHOLE chapter
-        // from page 0 (minutes of background CPU + SD writes on a giant spine), pure waste when
-        // the reader never nears the watermark this session. loop() starts it lazily once the
-        // reader is within PARTIAL_REBUILD_START_MARGIN pages of the watermark.
-        if (section->isPartial() && !contentReposition &&
-            (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
-                        : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount))) {
-          LOG_DBG("ERS", "Partial covers target %d of %d; deferring extension build", target, section->pageCount);
-        } else {
-          const size_t spineBytes =
-              epub->getCumulativeSpineItemSize(currentSpineIndex) -
-              (currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0);
-          // Popup only when the build will actually be slow: a big spine whose HTML still needs
-          // inflating (the multi-second cost), or a deep page target. A reopen with cached HTML builds
-          // fast, so no popup -- that's what made an already-indexed book look like it was reindexing.
-          // A partial cache that already covers the target page shows it instantly: never popup.
-          const bool willInflate = !section->hasHtmlCache();
-          bool showPopup;
-          if (anchorJump) {
-            // An anchor jump's cost is bounded by the anchor's page, not `target`. An anchor already
-            // in the on-disk map (partial or finalized cache) lands instantly: no popup. Otherwise it
-            // lies beyond the indexed watermark and the build may lay out the whole spine to find it,
-            // so gate on spine size alone -- laying out a big spine takes seconds even with cached
-            // HTML. Ordinary chapter-top TOC jumps resolve on page 0 and stay popup-free.
-            showPopup = !section->findAnchor(pendingAnchor).has_value() && spineBytes > BUILD_POPUP_BYTE_THRESHOLD;
-          } else {
-            const bool targetAvailable = target < static_cast<int>(section->pageCount);
-            showPopup = !targetAvailable && ((spineBytes > BUILD_POPUP_BYTE_THRESHOLD && willInflate) ||
-                                             target > BUILD_POPUP_PAGE_THRESHOLD);
-          }
-          if (showPopup) {
-            renderer.clearScreen();
-            GUI.drawPopup(renderer, tr(STR_INDEXING));
-            // HALF-clear the popup when the page replaces it, else "INDEXING" ghosts under the page.
-            pagesUntilFullRefresh = 1;
-          }
-          // Lend the framebuffer's 48 KB to the blocking pre-render burst
-          // (startBuild inflates the whole spine HTML — the memory peak). The
-          // background buildSomeMore chunks in loop() do NOT get the loan: they
-          // deliberately interleave with page renders. Restored before render.
-          releaseGrayscaleStripScratch();
-          GfxRenderer::FrameBufferLoan loan(renderer);
-          if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                   viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
-                                   SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
-                                   activeEpubRenderMode(), SETTINGS.forceParagraphIndents != 0)) {
-            LOG_ERR("ERS", "Failed to start section build");
-            const EpubBuildStatus failure = section->lastBuildStatus();
-            loan.end();  // restore before anything draws (showBuildError renders a popup)
-            handleBuildFailure(failure);
-            return;
-          }
-          const auto contentTargetReady = [&]() {
-            if (sourceReposition) return section->sourceOffsetTargetPage().has_value();
-            if (visibleReposition) {
-              return section->getPageForVisibleTextOffset(*cachedVisibleTextOffset).has_value();
-            }
-            return false;
-          };
-          while (!section->isBuildComplete() &&
-                 (anchorJump          ? !section->findAnchor(pendingAnchor)
-                  : contentReposition ? !contentTargetReady()
-                                      : static_cast<int>(section->pageCount) <= target)) {
-            // Anchor jump: build until the anchor's page is laid out (usually page 0), checking a
-            // partial's on-disk anchor map too so an already-indexed anchor resolves immediately.
-            // Otherwise: build until the target page exists. loop() builds the rest behind it.
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-            const uint16_t debugPagesBefore = section->debugBuiltPageCount();
-#endif
-            releaseGrayscaleStripScratch();
-            if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
-              LOG_ERR("ERS", "Failed during incremental section build");
-              const EpubBuildStatus failure = section->lastBuildStatus();
-              loan.end();  // restore before anything draws (showBuildError renders a popup)
-              handleBuildFailure(failure);
-              return;
-            }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-            debugRecordSectionBuild(debugPagesBefore, false);
-#endif
-          }
-          loan.end();
-        }
       }
     } else {
       LOG_DBG("ERS", "Cache found, skipping build...");
     }
 
-    if (pendingPageJump.has_value()) {
-      section->currentPage = *pendingPageJump;
-      pendingPageJump.reset();
-    } else {
-      section->currentPage = nextPageNumber;
-      if (section->currentPage < 0) {
-        section->currentPage = 0;
-      }
-    }
-
-    if (pendingBookmarkSourceOffset.has_value()) {
-      if (const auto contentPage = section->sourceOffsetTargetPage()) section->currentPage = *contentPage;
-      pendingBookmarkSourceOffset.reset();
-      section->clearSourceOffsetTarget();
-    }
-
-    if (!pendingAnchor.empty()) {
-      // Resolve from the pages laid out so far and/or the on-disk map (finalized or partial).
-      const auto page = section->findAnchor(pendingAnchor);
-      if (page) {
-        section->currentPage = *page;
-        LOG_DBG("ERS", "Resolved anchor '%s' to page %d", pendingAnchor.c_str(), *page);
-      } else {
-        LOG_DBG("ERS", "Anchor '%s' not found in section %d", pendingAnchor.c_str(), currentSpineIndex);
-      }
-      pendingAnchor.clear();
-    }
-
-    if (pendingPercentJump && section->pageCount > 0) {
-      // Apply the pending percent jump now that we know the new section's page count.
-      int newPage = static_cast<int>(pendingSpineProgress * static_cast<float>(section->pageCount));
-      if (newPage >= section->pageCount) {
-        newPage = section->pageCount - 1;
-      }
-      section->currentPage = newPage;
-      pendingPercentJump = false;
-    }
-  }
-
-  // Extend the build to the requested page if needed (for partials and in-progress builds).
-  // This runs every render, so it covers both the first page and any forward turn that gets
-  // ahead of the background builder; pages already built do no work here.
-  //
-  // Crossing a partial's watermark before the extension rebuild has caught up means a
-  // synchronous wait spanning the remaining prefix re-layout -- potentially tens of
-  // seconds on a giant spine. Show the indexing popup so it isn't a silent freeze
-  // (the page that replaces it takes the HALF ghost-cleanup path). Ordinary window
-  // catch-ups on a non-partial build are a page or two and stay popup-free.
-  if (section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount)) {
-    GUI.drawPopup(renderer, tr(STR_INDEXING));
-    pagesUntilFullRefresh = 1;
-  }
-  while (section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount)) {
-    // Start a build to extend a partial toward the requested page.
-    releaseGrayscaleStripScratch();
-    if (!section->isBuilding() &&
-        !section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                             SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
-                             SETTINGS.hyphenationEnabled, activeEmbeddedStyle(), SETTINGS.imageRendering,
-                             SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing, activeEpubRenderMode(),
-                             SETTINGS.forceParagraphIndents != 0)) {
-      LOG_ERR("ERS", "Failed to start partial extension build");
-      const EpubBuildStatus failure = section->lastBuildStatus();
-      handleBuildFailure(failure);
+    sectionLandingPending = true;
+    if (!sectionLandingReady()) {
+      sectionRenderWaiting = true;
       return;
     }
-    // Extend until either the target page exists or the build completes.
-    while (!section->isBuildComplete() && section->currentPage >= static_cast<int>(section->pageCount)) {
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      const uint16_t debugPagesBefore = section->debugBuiltPageCount();
-#endif
-      releaseGrayscaleStripScratch();
-      if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
-        LOG_ERR("ERS", "Failed during incremental section build");
-        const EpubBuildStatus failure = section->lastBuildStatus();
-        handleBuildFailure(failure);
-        return;
-      }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      debugRecordSectionBuild(debugPagesBefore, false);
-#endif
-    }
+    finishSectionLanding();
   }
-  // For an in-progress incremental build, make sure the page we're about to show has been laid out.
-  if (section->isBuilding()) {
-    while (!section->isBuildComplete() && section->currentPage >= static_cast<int>(section->pageCount)) {
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      const uint16_t debugPagesBefore = section->debugBuiltPageCount();
-#endif
+
+  // Never wait inside render() for pagination to catch up. The panel keeps the
+  // previous page (or the explicit indexing popup for a partial watermark) while
+  // loop() advances the build in bounded slices and requests a render when ready.
+  if (section->currentPage >= static_cast<int>(section->pageCount) && !section->isBuildComplete()) {
+    if (section->isPartial()) {
+      GUI.drawPopup(renderer, tr(STR_INDEXING));
+      pagesUntilFullRefresh = 1;
+    }
+    if (!section->isBuilding()) {
       releaseGrayscaleStripScratch();
-      if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
-        LOG_ERR("ERS", "Failed during incremental section build");
+      if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+                               SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
+                               viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
+                               SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.wordSpacing,
+                               activeEpubRenderMode(), SETTINGS.forceParagraphIndents != 0)) {
+        LOG_ERR("ERS", "Failed to start requested-page section build");
         const EpubBuildStatus failure = section->lastBuildStatus();
         handleBuildFailure(failure);
         return;
       }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      debugRecordSectionBuild(debugPagesBefore, false);
-#endif
+      partialRebuildStartFailed = false;
     }
+    sectionRenderWaiting = true;
+    return;
   }
 
   // The requested page is now as built as it will get. If it still lands past the end,
   // clamp to the last real page: the UINT16_MAX "last page" sentinel from backward chapter
   // navigation, an explicit jump beyond a finished chapter, or a stale saved position.
   // Guarded on !isBuilding() because a still-building section's pageCount is only the current
-  // watermark (not the final count) and has already been driven far enough by the loops above.
+  // watermark (not the final count). A missing page returned above and is still building.
   if (!section->isBuilding() && section->pageCount > 0 &&
       section->currentPage >= static_cast<int>(section->pageCount)) {
     section->currentPage = section->pageCount - 1;
@@ -2958,12 +3049,17 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // otherwise the on-disk file (finalized section, or a partial from a previous session).
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t pageLoadStartedMs = static_cast<uint32_t>(millis());
+#else
+    const uint32_t pageLoadStartedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
 #endif
     auto p = section->loadPage(section->currentPage);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     LOG_DBG("ERTM", "page_load spine=%d page=%d elapsed_ms=%u ok=%u", currentSpineIndex, section->currentPage,
             static_cast<unsigned>(static_cast<uint32_t>(millis()) - pageLoadStartedMs), p ? 1U : 0U);
 #endif
+    if (readerOpenStagesPending) {
+      activityManager.reportReaderOpenStage("epub", "page_load", pageLoadStartedMs);
+    }
     if (!p) {
       // A clipping jump is a read-only, exact operation. Do not rebuild or
       // clear its target cache after a failed read: restore the original
@@ -3046,9 +3142,15 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t renderStartedMs = static_cast<uint32_t>(millis());
+#else
+    const uint32_t renderStartedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
 #endif
     clippingHighlightsTruncated = renderContents(std::move(p), orientedMarginTop, orientedMarginRight,
                                                  orientedMarginBottom, orientedMarginLeft, &renderedPageFingerprint);
+    if (readerOpenStagesPending) {
+      activityManager.reportReaderOpenStage("epub", "render_display", renderStartedMs);
+      readerOpenStagesPending = false;
+    }
     signalReadingPageVisible();
     if (pendingSafeModePersistence.exchange(false, std::memory_order_acq_rel)) {
       if (persistBookReaderSettings()) {
@@ -3150,7 +3252,16 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   if (section && spineIndex == currentSpineIndex && currentPage >= 0 && currentPage < section->pageCount) {
     offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
   }
-  return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, offset);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  const uint32_t startedMs = static_cast<uint32_t>(millis());
+#endif
+  const bool saved =
+      EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, offset, &progressWriteSession);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  LOG_DBG("ERS", "progress_save_ms=%u ok=%d", static_cast<unsigned>(static_cast<uint32_t>(millis()) - startedMs),
+          saved ? 1 : 0);
+#endif
+  return saved;
 }
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
@@ -3286,24 +3397,26 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // cost stays close to one render. Both text (drawPixel) and images
   // (DirectPixelWriter) honor the active strip target.
   if (needsAnyGrayscale && supportsGrayscale) {
-    constexpr int STRIP_ROWS = 80;
     const int gh = renderer.getDisplayHeight();
     const int gwBytes = renderer.getDisplayWidthBytes();
+    const int stripRows = ReaderUtils::grayscaleStripRows(gwBytes, gh);
+    if (stripRows <= 0) return clippingHighlights.truncated;
 
-    const size_t requiredScratch = static_cast<size_t>(gwBytes) * STRIP_ROWS;
+    const size_t requiredScratch = static_cast<size_t>(gwBytes) * stripRows;
     if (grayscaleStripScratchSize < requiredScratch) {
       grayscaleStripScratch = makeUniqueNoThrow<uint8_t[]>(requiredScratch);
       grayscaleStripScratchSize = grayscaleStripScratch ? requiredScratch : 0;
     }
     uint8_t* const scratch = grayscaleStripScratch.get();
     if (!scratch) {
-      LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);
+      LOG_ERR("ERS", "OOM: grayscale strip scratch (%u bytes); skipping AA this page",
+              static_cast<unsigned>(requiredScratch));
     } else {
       // Bands may be streamed in any order: X4 windows each via setRamArea, X3
       // via PTL.
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      for (int y = 0; y < gh; y += STRIP_ROWS) {
-        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+      for (int y = 0; y < gh; y += stripRows) {
+        const int rows = (gh - y < stripRows) ? (gh - y) : stripRows;
         renderer.beginStripTarget(scratch, y, rows);
         renderer.clearScreen(0x00);
         renderGrayscalePass();
@@ -3314,8 +3427,8 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       // MSB plane.
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      for (int y = 0; y < gh; y += STRIP_ROWS) {
-        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+      for (int y = 0; y < gh; y += stripRows) {
+        const int rows = (gh - y < stripRows) ? (gh - y) : stripRows;
         renderer.beginStripTarget(scratch, y, rows);
         renderer.clearScreen(0x00);
         renderGrayscalePass();

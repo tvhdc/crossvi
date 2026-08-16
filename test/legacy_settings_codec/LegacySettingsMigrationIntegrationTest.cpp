@@ -161,6 +161,24 @@ TEST(SettingsJsonIntegration, PersistsAndValidatesOutsideReaderDateTimeOrder) {
   EXPECT_EQ(SETTINGS.outsideReaderDateTimeOrder, CrossPointSettings::OUTSIDE_READER_DATE_THEN_TIME);
 }
 
+TEST(SettingsJsonIntegration, PreservesHistoricTiltDirectionAndRejectsInvalidModes) {
+  resetFakes();
+  SETTINGS.tiltPageTurn = CrossPointSettings::TILT_ON;
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.tiltPageTurn = CrossPointSettings::TILT_OFF;
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.tiltPageTurn, CrossPointSettings::TILT_ON);
+  EXPECT_FALSE(needsResave);
+
+  SETTINGS.tiltPageTurn = CrossPointSettings::TILT_INVERTED;
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"tiltPageTurn":99})", &needsResave));
+  EXPECT_EQ(SETTINGS.tiltPageTurn, CrossPointSettings::TILT_OFF);
+  EXPECT_TRUE(needsResave);
+}
+
 TEST(SettingsJsonIntegration, PersistsAndValidatesVocabularySettings) {
   resetFakes();
   SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_30;

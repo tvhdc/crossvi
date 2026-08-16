@@ -253,20 +253,53 @@ void ActivityManager::goToBrowser() {
 }
 
 void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh,
-                                 const ReaderOpenOrigin openOrigin) {
-  replaceActivity(
-      std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), allowFastInitialRefresh, openOrigin));
+                                 const ReaderOpenOrigin openOrigin, const bool completionStatsAlreadyRecovered,
+                                 const bool readerOpenMetricAlreadyStarted,
+                                 const RawSourceIdentityHandoff* const preparedSourceIdentity) {
+  if (!readerOpenMetricAlreadyStarted) beginReaderOpenMetric();
+  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), allowFastInitialRefresh,
+                                                   openOrigin, completionStatsAlreadyRecovered,
+                                                   preparedSourceIdentity));
 }
 
 void ActivityManager::goToReader(std::string path, ClippingJumpResult clippingJump, const ReaderOpenOrigin openOrigin) {
+  beginReaderOpenMetric();
   replaceActivity(
       std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), std::move(clippingJump), openOrigin));
 }
 
 void ActivityManager::goToReader(std::string path, SavedBookmarkJumpResult bookmarkJump,
                                  const ReaderOpenOrigin openOrigin) {
+  beginReaderOpenMetric();
   replaceActivity(
       std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), std::move(bookmarkJump), openOrigin));
+}
+
+void ActivityManager::beginReaderOpenMetric() {
+  readerOpenStartedMs.store(static_cast<uint32_t>(millis()), std::memory_order_relaxed);
+  readerOpenMetricActive.store(true, std::memory_order_release);
+}
+
+void ActivityManager::reportReaderOpenStage(const char* const format, const char* const stage,
+                                            const uint32_t stageStartedMs) const {
+  if (!readerOpenMetricActive.load(std::memory_order_acquire)) return;
+  const uint32_t now = static_cast<uint32_t>(millis());
+  const uint32_t openStarted = readerOpenStartedMs.load(std::memory_order_relaxed);
+  LOG_DBG("ROPM", "stage format=%s name=%s elapsed_ms=%u total_ms=%u", format, stage,
+          static_cast<unsigned>(now - stageStartedMs), static_cast<unsigned>(now - openStarted));
+}
+
+void ActivityManager::finishReaderOpenMetric(const char* const format, const uint32_t visibleAtMs) {
+  if (!readerOpenMetricActive.exchange(false, std::memory_order_acq_rel)) return;
+  const uint32_t openStarted = readerOpenStartedMs.load(std::memory_order_relaxed);
+  LOG_DBG("ROPM", "first_visible format=%s total_ms=%u", format, static_cast<unsigned>(visibleAtMs - openStarted));
+}
+
+void ActivityManager::cancelReaderOpenMetric(const char* const reason) {
+  if (!readerOpenMetricActive.exchange(false, std::memory_order_acq_rel)) return;
+  const uint32_t now = static_cast<uint32_t>(millis());
+  const uint32_t openStarted = readerOpenStartedMs.load(std::memory_order_relaxed);
+  LOG_DBG("ROPM", "cancel reason=%s total_ms=%u", reason, static_cast<unsigned>(now - openStarted));
 }
 
 void ActivityManager::goToSleep() {

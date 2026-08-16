@@ -1,7 +1,9 @@
 #include "SectionCacheValidator.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
 
 #include "EpubRenderMode.h"
 
@@ -9,6 +11,44 @@ namespace {
 
 // Version 33 adds the optional EPUB source href to serialized image blocks.
 constexpr uint8_t IMAGE_SOURCE_PATH_VERSION = 33;
+
+// Section headers and LUTs contain many adjacent scalar fields. Read them
+// through one small allocation-free window so validation does not turn every
+// field into a separate SD read call.
+class ReadAheadInput final : public SectionCacheValidation::Input {
+ public:
+  explicit ReadAheadInput(SectionCacheValidation::Input& input) : input_(input) {}
+
+  uint64_t size() const override { return input_.size(); }
+
+  bool readAt(const uint64_t offset, void* destination, const size_t length) override {
+    if ((!destination && length != 0) || offset > size() || length > size() - offset) return false;
+    if (length == 0) return true;
+    if (offset >= windowOffset_ && offset - windowOffset_ <= windowSize_ &&
+        length <= windowSize_ - static_cast<size_t>(offset - windowOffset_)) {
+      memcpy(destination, window_.data() + static_cast<size_t>(offset - windowOffset_), length);
+      return true;
+    }
+    if (length > window_.size()) return input_.readAt(offset, destination, length);
+
+    windowOffset_ = offset;
+    windowSize_ = static_cast<size_t>(std::min<uint64_t>(window_.size(), size() - windowOffset_));
+    if (!input_.readAt(windowOffset_, window_.data(), windowSize_)) {
+      windowSize_ = 0;
+      return false;
+    }
+    const size_t withinWindow = static_cast<size_t>(offset - windowOffset_);
+    if (length > windowSize_ - withinWindow) return false;
+    memcpy(destination, window_.data() + withinWindow, length);
+    return true;
+  }
+
+ private:
+  SectionCacheValidation::Input& input_;
+  std::array<uint8_t, 128> window_{};
+  uint64_t windowOffset_ = 0;
+  size_t windowSize_ = 0;
+};
 
 template <typename T>
 bool readPod(SectionCacheValidation::Input& input, const uint64_t offset, T& value) {
@@ -345,26 +385,26 @@ bool pageBounds(Input& input, const Layout& layout, const uint16_t page, uint64_
   if (input.size() != layout.fileSize || page >= layout.pageCount) return false;
   const uint64_t entryOffset =
       static_cast<uint64_t>(layout.pageLutOffset) + static_cast<uint64_t>(page) * sizeof(uint32_t);
-  uint32_t pageBegin = 0;
-  uint32_t pageEnd = layout.pageLutOffset;
-  if (!readPod(input, entryOffset, pageBegin) ||
-      (page + 1U < layout.pageCount && !readPod(input, entryOffset + sizeof(uint32_t), pageEnd)) ||
-      pageBegin < layout.headerSize || pageBegin >= pageEnd || pageEnd > layout.pageLutOffset) {
+  uint32_t positions[2] = {0, layout.pageLutOffset};
+  const size_t positionCount = page + 1U < layout.pageCount ? 2U : 1U;
+  if (!input.readAt(entryOffset, positions, positionCount * sizeof(uint32_t)) || positions[0] < layout.headerSize ||
+      positions[0] >= positions[1] || positions[1] > layout.pageLutOffset) {
     return false;
   }
-  begin = pageBegin;
-  end = pageEnd;
+  begin = positions[0];
+  end = positions[1];
   return true;
 }
 
 bool validate(Input& input, const uint64_t headerSize, const uint8_t finalizedVersion, const uint8_t partialVersion,
               Layout& layout) {
+  ReadAheadInput bufferedInput(input);
   layout = {};
   layout.headerSize = headerSize;
-  layout.fileSize = input.size();
+  layout.fileSize = bufferedInput.size();
   if (finalizedVersion == partialVersion ||
-      !validateHeader(input, headerSize, finalizedVersion, partialVersion, layout) ||
-      !validateTables(input, headerSize, layout, true)) {
+      !validateHeader(bufferedInput, headerSize, finalizedVersion, partialVersion, layout) ||
+      !validateTables(bufferedInput, headerSize, layout, true)) {
     layout = {};
     return false;
   }
@@ -378,7 +418,7 @@ bool validate(Input& input, const uint64_t headerSize, const uint8_t finalizedVe
     const size_t positionsToRead = pagesInChunk + (hasFollowingPage ? 1U : 0U);
     const uint64_t lutReadOffset =
         static_cast<uint64_t>(layout.pageLutOffset) + static_cast<uint64_t>(firstPage) * sizeof(uint32_t);
-    if (!input.readAt(lutReadOffset, positions, positionsToRead * sizeof(uint32_t))) {
+    if (!bufferedInput.readAt(lutReadOffset, positions, positionsToRead * sizeof(uint32_t))) {
       layout = {};
       return false;
     }
@@ -387,7 +427,8 @@ bool validate(Input& input, const uint64_t headerSize, const uint8_t finalizedVe
       const uint64_t pageBegin = positions[index];
       const uint64_t pageEnd = index + 1U < positionsToRead ? positions[index + 1U] : layout.pageLutOffset;
       if (pageBegin < headerSize || pageBegin >= pageEnd || pageEnd > layout.pageLutOffset ||
-          (page == 0 && pageBegin != headerSize) || !validatePage(input, pageBegin, pageEnd, finalizedVersion)) {
+          (page == 0 && pageBegin != headerSize) ||
+          !validatePage(bufferedInput, pageBegin, pageEnd, finalizedVersion)) {
         layout = {};
         return false;
       }
@@ -398,12 +439,13 @@ bool validate(Input& input, const uint64_t headerSize, const uint8_t finalizedVe
 
 bool validateStructure(Input& input, const uint64_t headerSize, const uint8_t finalizedVersion,
                        const uint8_t partialVersion, Layout& layout) {
+  ReadAheadInput bufferedInput(input);
   layout = {};
   layout.headerSize = headerSize;
-  layout.fileSize = input.size();
+  layout.fileSize = bufferedInput.size();
   if (finalizedVersion == partialVersion ||
-      !validateHeader(input, headerSize, finalizedVersion, partialVersion, layout) ||
-      !validateTables(input, headerSize, layout, false) || !validatePageLut(input, layout)) {
+      !validateHeader(bufferedInput, headerSize, finalizedVersion, partialVersion, layout) ||
+      !validateTables(bufferedInput, headerSize, layout, false) || !validatePageLut(bufferedInput, layout)) {
     layout = {};
     return false;
   }

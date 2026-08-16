@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Print.h>
+#include <RawSourceIdentity.h>
 #include <ZipFile.h>
 
 #include <cstdint>
@@ -11,6 +12,8 @@
 
 #include "Epub/BookMetadataCache.h"
 #include "Epub/css/CssParser.h"
+
+class ContentOpfParser;
 
 class Epub {
   // the ncx file (EPUB 2)
@@ -37,6 +40,11 @@ class Epub {
   // that changed while the EPUB was being opened or indexed.
   mutable ZipFile::SourceIdentity sourceIdentitySnapshot{};
   mutable bool hasSourceIdentitySnapshot = false;
+  RawSourceIdentityHandoff sourceIdentityHandoff{};
+  // Reader replacement recovery can supply both the source snapshot and proof
+  // that the sidecar transaction was already reconciled.
+  mutable bool sourceReplacementRecoveryDone = false;
+  bool sourceBindingPreparedForLoad = false;
   bool externalCssUnavailable = false;
   BookMetadataCache::BookMetadata transientMetadata;
   bool hasTransientMetadata = false;
@@ -51,6 +59,13 @@ class Epub {
   mutable std::string coverSourcePath;
   std::unique_ptr<ZipStreamReadJob> coverStreamJob;
   HalFile coverStreamOutput;
+  // Page-image extraction is prepared in bounded chunks while the reader is
+  // idle. The final raster is published only after the complete ZIP entry has
+  // been synced and validated.
+  std::unique_ptr<ZipStreamReadJob> imageStreamJob;
+  HalFile imageStreamOutput;
+  std::string imageStreamFinalPath;
+  std::string imageStreamStagingPath;
 
   struct CoverSource {
     HalFile file;
@@ -63,22 +78,33 @@ class Epub {
   bool sourceStillMatchesSnapshot() const;
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true);
+  bool finalizeContentOpf(ContentOpfParser& parser, BookMetadataCache::BookMetadata& bookMetadata,
+                          bool resolveGuideCover = true);
+  void resolveGuideCover(const std::string& guidePath, const uint8_t* contents, size_t size,
+                         BookMetadataCache::BookMetadata& bookMetadata);
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
   void discoverCssFilesFromZip();
   bool parseCssFiles() const;
   bool prepareCssCache(bool verifySourceAtEntry);
+  bool prepareCssForLoad(bool skipLoadingCss);
+  bool beginColdIndexing(bool skipLoadingCss);
+  bool loadImpl(bool buildIfMissing, bool skipLoadingCss, bool verifySourceAtReturn);
   bool openCoverSource(const std::string& coverImageHref, bool jpeg, CoverSource& source) const;
   void clearCoverSource() const;
   bool generateThumbBmp(int width, int height, bool crop) const;
 
  public:
   enum class SourceBindingStatus : uint8_t { Match, Missing, Mismatch, NewerVersion, Invalid, IoError };
+  enum class IndexStepResult : uint8_t { InProgress, Loaded, Error };
+  enum class CoreMetadataStepResult : uint8_t { InProgress, Loaded, Error };
   enum class ThumbnailMode : uint8_t { EmbeddedOnly, EmbeddedThenCover };
   enum class ThumbnailStatus : uint8_t { Ready, NoCover, Missing, Invalid, IoError };
+  enum class ImagePreparationStatus : uint8_t { NotNeeded, InProgress, Ready, Error };
   enum class ThumbnailPreparationStatus : uint8_t {
     NotNeeded,
     InProgress,
+    NeedsCoreMetadata,
     NeedsSynchronousGeneration,
     Ready,
     Error,
@@ -102,24 +128,43 @@ class Epub {
   static const char* sharedThumbnailEntry();
   static const char* carouselThumbnailEntry(int width, int height);
 
-  explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
-    // create a cache key based on the filepath
-    cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
-  }
-  ~Epub() {
-    cancelThumbnailPreparation();
-    clearCoverSource();
-  }
+  explicit Epub(std::string filepath, const std::string& cacheDir);
+  // Reuse an identity verified for this exact path by replacement recovery.
+  // Loading/indexing still rechecks the source before returning derived data.
+  Epub(std::string filepath, const std::string& cacheDir, const ZipFile::SourceIdentity& verifiedSourceIdentity);
+  ~Epub();
   std::string& getBasePath() { return contentBasePath; }
   // Read-only preflight used before loading path-keyed user state. A source
   // mismatch means a different EPUB now occupies this path.
   BookMetadataCache::LoadStatus inspectCache();
+  BookMetadataCache::LoadStepResult beginCacheInspection();
+  BookMetadataCache::LoadStepResult stepCacheInspection(size_t maxEntries);
+  void cancelCacheInspection();
+  BookMetadataCache::LoadStatus getCacheLoadStatus() const;
   // Stream only container.xml and content.opf for library presentation. This
   // does not build spine/TOC/CSS/page caches or bind path-keyed user state.
   bool readCoreMetadata(BookMetadataCache::BookMetadata& metadata);
+  bool beginCoreMetadataRead();
+  CoreMetadataStepResult stepCoreMetadataRead(BookMetadataCache::BookMetadata& metadata);
+  void cancelCoreMetadataRead();
+  bool isReadingCoreMetadata() const;
+  bool hasPreparedCoreMetadata() const;
+  bool getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const;
   SourceBindingStatus inspectSourceBinding() const;
+  // Produces a one-shot proof consumed by the next load/indexing attempt. The
+  // final source identity check still runs before derived data is returned.
+  SourceBindingStatus inspectSourceBindingForLoad();
   bool bindCurrentSource() const;
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
+  // ReaderActivity uses this only after a cooperative source fingerprint and
+  // must compare a second cooperative fingerprint before exposing the book.
+  bool loadForCooperativeSourceCheck(bool buildIfMissing = true, bool skipLoadingCss = false);
+  // Cold metadata indexing is split at durable pass boundaries so the reader
+  // can process Back between steps. Existing synchronous callers keep using load().
+  bool beginIndexing(bool skipLoadingCss = false);
+  IndexStepResult stepIndexing();
+  void cancelIndexing();
+  bool isIndexing() const;
   // Ensure the external stylesheet cache exists and passes a complete read-back.
   // Safe to call repeatedly; already-valid caches leave section caches untouched.
   bool ensureCssCache();
@@ -163,6 +208,12 @@ class Epub {
   ThumbnailPreparationStatus stepThumbnailPreparation();
   void cancelThumbnailPreparation();
   bool thumbnailPreparationActive() const { return coverStreamJob != nullptr; }
+  // Pre-extract one page raster outside render(). Each step produces at most a
+  // 4 KiB output chunk; cancellation removes only the unpublished scratch file.
+  ImagePreparationStatus beginImagePreparation(const std::string& itemHref, const std::string& finalPath);
+  ImagePreparationStatus stepImagePreparation();
+  void cancelImagePreparation();
+  bool imagePreparationActive() const { return imageStreamJob != nullptr; }
   // Extract a supported raster item into the derived cache without exposing a
   // partially written final file. Existing valid output is reused.
   bool extractItemToFileAtomically(const std::string& itemHref, const std::string& finalPath) const;
@@ -186,6 +237,21 @@ class Epub {
   int resolveHrefToSpineIndex(const std::string& href, int sourceSpineIndex = -1) const;
 
  private:
+  enum class IndexingPhase : uint8_t { Idle, Opf, Toc, BuildBook, Css, Reload, SourceCheck };
+
+  class IndexingReadState;
+  class CoreMetadataReadState;
+
+  IndexingPhase indexingPhase = IndexingPhase::Idle;
+  std::unique_ptr<IndexingReadState> indexingReadState;
+  std::unique_ptr<ZipSourceIdentityJob> indexingSourceIdentityJob;
+  BookMetadataCache::BookMetadata indexingMetadata;
+  bool indexingSkipLoadingCss = false;
+  bool indexingCacheReloadActive = false;
+  uint32_t indexingStartedMs = 0;
+  uint32_t indexingPhaseStartedMs = 0;
+  std::unique_ptr<CoreMetadataReadState> coreMetadataReadState;
+
   static constexpr ThumbnailRequest allThumbnailVariants(ThumbnailRequest request) {
     if (request.shared || request.carousel) request.shared = request.carousel = true;
     return request;

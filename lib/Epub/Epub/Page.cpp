@@ -208,6 +208,7 @@ std::unique_ptr<Page> Page::deserialize(BoundedFileReader& reader) {
     LOG_ERR("PGE", "Deserialization failed: invalid element count %u", count);
     return nullptr;
   }
+  page->elements.reserve(count);
 
   for (uint16_t i = 0; i < count; i++) {
     uint8_t tag = 0;

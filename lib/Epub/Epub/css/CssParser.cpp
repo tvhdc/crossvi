@@ -968,14 +968,18 @@ bool CssParser::saveToCache() const {
   return true;
 }
 
-bool CssParser::loadFromCache() {
+bool CssParser::validateCache() { return readCache(false); }
+
+bool CssParser::loadFromCache() { return readCache(true); }
+
+bool CssParser::readCache(const bool materializeRules) {
   if (cachePath.empty()) return false;
 
   const std::string canonicalPath = cachePath + rulesCache;
   HalFile file;
   if (!Storage.openFileForRead("CSS", canonicalPath, file)) return false;
 
-  clear();
+  if (materializeRules) clear();
   uint16_t decodedRuleCount = 0;
   uint32_t crc = UINT32_MAX;
   bool insufficientMemory = false;
@@ -995,13 +999,13 @@ bool CssParser::loadFromCache() {
     }
     if (!readPayload(&decodedRuleCount, sizeof(decodedRuleCount)) || decodedRuleCount > MAX_RULES) return false;
 
-    if (decodedRuleCount > 0 &&
+    if (materializeRules && decodedRuleCount > 0 &&
         !MemoryBudget::hasHeadroom(ESP.getFreeHeap(), ESP.getMaxAllocHeap(), MemoryBudget::CSS_RULE_GROWTH)) {
       LOG_ERR("CSS", "Not enough memory to load %u cached CSS rules", decodedRuleCount);
       insufficientMemory = true;
       return false;
     }
-    rulesBySelector_.reserve(decodedRuleCount);
+    if (materializeRules) rulesBySelector_.reserve(decodedRuleCount);
     constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
     constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
     constexpr size_t CSS_FIXED_STYLE_BYTES =
@@ -1015,8 +1019,19 @@ bool CssParser::loadFromCache() {
       const int selectorBytesAvailable = file.available();
       if (selectorBytesAvailable < 0 || static_cast<size_t>(selectorBytesAvailable) < selectorLen) return false;
 
-      std::string selector(selectorLen, '\0');
-      if (!readPayload(selector.data(), selector.size())) return false;
+      std::string selector;
+      if (materializeRules) {
+        selector.resize(selectorLen);
+        if (!readPayload(selector.data(), selector.size())) return false;
+      } else {
+        std::array<uint8_t, 64> selectorChunk{};
+        size_t remaining = selectorLen;
+        while (remaining > 0) {
+          const size_t chunkSize = std::min(remaining, selectorChunk.size());
+          if (!readPayload(selectorChunk.data(), chunkSize)) return false;
+          remaining -= chunkSize;
+        }
+      }
       const int styleBytesAvailable = file.available();
       if (styleBytesAvailable < 0 ||
           static_cast<size_t>(styleBytesAvailable) < CSS_FIXED_STYLE_BYTES + sizeof(uint32_t)) {
@@ -1092,7 +1107,7 @@ bool CssParser::loadFromCache() {
       style.defined.verticalAlign = (definedBits & 1U << 17U) != 0;
       style.defined.fontVariantCaps = (definedBits & 1U << 18U) != 0;
 
-      if (!rulesBySelector_.emplace(std::move(selector), style).second) return false;
+      if (materializeRules && !rulesBySelector_.emplace(std::move(selector), style).second) return false;
     }
 
     if (file.available() != static_cast<int>(sizeof(uint32_t))) return false;
@@ -1104,13 +1119,13 @@ bool CssParser::loadFromCache() {
   const bool decoded = decode();
   const bool closed = file.close();
   if (!decoded || !closed) {
-    clear();
+    if (materializeRules) clear();
     // A valid cache rejected only because RAM is currently low must remain
     // available for the next load. Corrupt or unreadable caches are removed.
     if (!insufficientMemory && Storage.exists(canonicalPath.c_str())) Storage.remove(canonicalPath.c_str());
     return false;
   }
 
-  LOG_DBG("CSS", "Loaded %u rules from cache", decodedRuleCount);
+  LOG_DBG("CSS", "%s %u rules from cache", materializeRules ? "Loaded" : "Validated", decodedRuleCount);
   return true;
 }

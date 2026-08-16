@@ -22,6 +22,9 @@ constexpr unsigned long GO_HOME_MS = 1000;
 constexpr unsigned long BOOK_ACTION_LONG_PRESS_MS = 500;
 constexpr unsigned long POPUP_DURATION_MS = 1500;
 constexpr size_t NAME_BUFFER_SIZE = 500;
+constexpr size_t FILE_SCAN_ENTRIES_PER_TICK = 8;
+constexpr size_t MAX_FILE_ENTRIES = 256;
+constexpr size_t MAX_FILE_NAME_BYTES = 24U * 1024U;
 
 bool isPinnableBookPath(const std::string_view path) {
   return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) || FsHelpers::hasTxtExtension(path) ||
@@ -29,49 +32,114 @@ bool isPinnableBookPath(const std::string_view path) {
 }
 }  // namespace
 
-void FileBrowserActivity::loadFiles() {
+void FileBrowserActivity::cancelFileLoad() {
+  if (fileLoadDirectory) fileLoadDirectory.close();
+  filesLoading = false;
+  fileLoadFrameRendered = false;
+  fileLoadBackPending = false;
+  fileLoadBackHeldMs = 0;
+  pendingSelectionName.clear();
+  pendingSelectionIndex = static_cast<size_t>(-1);
+}
+
+void FileBrowserActivity::loadFiles(std::string selectionName, const size_t selectionIndex) {
+  cancelFileLoad();
   clearSearch();
   files.clear();
+  filesTruncated = false;
+  fileNameBytes = 0;
+  pendingSelectionName = std::move(selectionName);
+  pendingSelectionIndex = selectionIndex;
+  selectorIndex = 0;
 
-  auto root = Storage.open(basepath.c_str());
-  if (!root || !root.isDirectory()) {
+  fileLoadDirectory = Storage.open(basepath.c_str());
+  if (!fileLoadDirectory || !fileLoadDirectory.isDirectory()) {
+    if (fileLoadDirectory) fileLoadDirectory.close();
+    requestUpdate();
     return;
   }
 
-  root.rewindDirectory();
+  fileLoadDirectory.rewindDirectory();
 
   if (!fileNameBuffer) {
     LOG_ERR("FileBrowser", "fileNameBuffer not allocated");
-    root.close();
+    fileLoadDirectory.close();
+    requestUpdate();
     return;
   }
 
-  for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-    file.getName(fileNameBuffer.get(), NAME_BUFFER_SIZE);
+  filesLoading = true;
+  requestUpdate();
+}
+
+void FileBrowserActivity::finishFileLoad() {
+  if (fileLoadDirectory) fileLoadDirectory.close();
+  FsHelpers::sortFileList(files);
+  filesLoading = false;
+  fileLoadFrameRendered = false;
+
+  if (!pendingSelectionName.empty()) {
+    selectorIndex = findEntry(pendingSelectionName);
+  } else if (pendingSelectionIndex != static_cast<size_t>(-1)) {
+    const size_t count = visibleItemCount();
+    selectorIndex = count == 0 ? 0 : std::min(pendingSelectionIndex, count - 1);
+  } else {
+    selectorIndex = mode == Mode::Books && !files.empty() ? 1 : 0;
+  }
+  pendingSelectionName.clear();
+  pendingSelectionIndex = static_cast<size_t>(-1);
+}
+
+bool FileBrowserActivity::stepFileLoad(const size_t maxEntries) {
+  if (!filesLoading || !fileLoadDirectory || maxEntries == 0) return false;
+
+  for (size_t scanned = 0; scanned < maxEntries; ++scanned) {
+    HalFile file = fileLoadDirectory.openNextFile();
+    if (!file) {
+      const uint8_t error = fileLoadDirectory.getError();
+      if (error != 0) LOG_ERR("FileBrowser", "Directory scan failed with SD error %u", error);
+      finishFileLoad();
+      return true;
+    }
+
+    fileNameBuffer[0] = '\0';
+    const size_t nameLength = file.getName(fileNameBuffer.get(), NAME_BUFFER_SIZE);
+    const bool isDirectory = file.isDirectory();
+    file.close();
+    if (nameLength == 0 || nameLength >= NAME_BUFFER_SIZE || fileNameBuffer[NAME_BUFFER_SIZE - 1] != '\0') continue;
+
     if (isBookFileTransactionArtifact(fileNameBuffer.get()) ||
         (!SETTINGS.showHiddenFiles && fileNameBuffer[0] == '.') ||
         strcmp(fileNameBuffer.get(), "System Volume Information") == 0) {
       continue;
     }
 
-    if (file.isDirectory()) {
-      files.emplace_back(std::string(fileNameBuffer.get()) + "/");
-    } else {
-      std::string_view filename{fileNameBuffer.get()};
-      if (mode == Mode::PickFirmware) {
-        // Firmware picker: only show .bin files.
-        if (FsHelpers::checkFileExtension(filename, ".bin")) {
-          files.emplace_back(filename);
-        }
-      } else if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-                 FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
-                 FsHelpers::hasBmpExtension(filename)) {
-        files.emplace_back(filename);
-      }
+    const std::string_view filename{fileNameBuffer.get()};
+    bool supported = isDirectory;
+    if (!isDirectory && mode == Mode::PickFirmware) {
+      supported = FsHelpers::checkFileExtension(filename, ".bin");
+    } else if (!isDirectory) {
+      supported = FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
+                  FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
+                  FsHelpers::hasBmpExtension(filename);
     }
+    if (!supported) continue;
+
+    const size_t storedNameBytes = filename.size() + (isDirectory ? 1U : 0U) + 1U;
+    if (files.size() >= MAX_FILE_ENTRIES || storedNameBytes > MAX_FILE_NAME_BYTES - fileNameBytes) {
+      filesTruncated = true;
+      finishFileLoad();
+      return true;
+    }
+
+    if (isDirectory) {
+      files.emplace_back(std::string(filename) + "/");
+    } else {
+      files.emplace_back(filename);
+    }
+    fileNameBytes += storedNameBytes;
   }
-  root.close();
-  FsHelpers::sortFileList(files);
+  return false;
 }
 
 void FileBrowserActivity::clearSearch(const bool preserveQuery) {
@@ -82,6 +150,7 @@ void FileBrowserActivity::clearSearch(const bool preserveQuery) {
 }
 
 size_t FileBrowserActivity::visibleItemCount() const {
+  if (filesLoading) return 0;
   if (mode != Mode::Books) return files.size();
   return searchActive ? searchResults.size() : files.size() + 1;
 }
@@ -168,27 +237,25 @@ void FileBrowserActivity::onEnter() {
   if (!root) {
     basepath = "/";
     loadFiles();
-    if (mode == Mode::Books && !files.empty()) selectorIndex = 1;
   } else if (!root.isDirectory()) {
     lockLongPressBack = mappedInput.isPressed(MappedInputManager::Button::Back);
 
     const std::string oldPath = basepath;
+    root.close();
     basepath = FsHelpers::extractFolderPath(basepath);
-    loadFiles();
 
     const auto pos = oldPath.find_last_of('/');
     const std::string fileName = oldPath.substr(pos + 1);
-    selectorIndex = findEntry(fileName);
+    loadFiles(fileName);
   } else {
+    root.close();
     loadFiles();
-    if (mode == Mode::Books && !files.empty()) selectorIndex = 1;
   }
-
-  requestUpdate();
 }
 
 void FileBrowserActivity::onExit() {
   Activity::onExit();
+  cancelFileLoad();
   files.clear();
   fileNameBuffer.reset();
 }
@@ -287,10 +354,7 @@ void FileBrowserActivity::promptDelete(const std::string& fullPath, const std::s
       LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
       return;
     }
-    loadFiles();
-    const size_t count = visibleItemCount();
-    selectorIndex = count == 0 ? 0 : std::min(selectorIndex, count - 1);
-    requestUpdate(true);
+    loadFiles({}, selectorIndex);
   };
 
   startActivityForResult(
@@ -344,6 +408,50 @@ void FileBrowserActivity::loop() {
     return;
   }
 
+  if (filesLoading) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      fileLoadBackPending = true;
+      fileLoadBackHeldMs = mappedInput.getHeldTime(MappedInputManager::Button::Back);
+    }
+
+    RenderLock lock(std::try_to_lock);
+    if (!lock.ownsLock()) return;
+
+    if (fileLoadBackPending) {
+      const unsigned long heldMs = fileLoadBackHeldMs;
+      fileLoadBackPending = false;
+      fileLoadBackHeldMs = 0;
+      if (lockLongPressBack) {
+        lockLongPressBack = false;
+        return;
+      }
+      cancelFileLoad();
+      if (mode == Mode::Books && heldMs >= GO_HOME_MS && basepath != "/") {
+        basepath = "/";
+        loadFiles();
+      } else if (basepath != "/") {
+        const std::string oldPath = basepath;
+        basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
+        if (basepath.empty()) basepath = "/";
+        const auto pos = oldPath.find_last_of('/');
+        loadFiles(oldPath.substr(pos + 1) + "/");
+      } else if (mode == Mode::PickFirmware) {
+        ActivityResult result;
+        result.isCancelled = true;
+        setResult(std::move(result));
+        finish();
+      } else {
+        onGoHome();
+      }
+      return;
+    }
+
+    if (!fileLoadFrameRendered) return;
+    const bool completed = stepFileLoad(FILE_SCAN_ENTRIES_PER_TICK);
+    if (completed) requestUpdate();
+    return;
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     confirmPressSeen = true;
     confirmLongHandled = false;
@@ -372,8 +480,6 @@ void FileBrowserActivity::loop() {
       !lockLongPressBack) {
     basepath = "/";
     loadFiles();
-    selectorIndex = files.empty() ? 0 : 1;
-    requestUpdate();
     return;
   }
 
@@ -428,8 +534,6 @@ void FileBrowserActivity::loop() {
     if (isDirectory) {
       basepath += entry.substr(0, entry.length() - 1);
       loadFiles();
-      selectorIndex = files.empty() ? 0 : 1;
-      requestUpdate();
     } else {
       onSelectBook(basepath + entry);
     }
@@ -450,13 +554,10 @@ void FileBrowserActivity::loop() {
 
         basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
         if (basepath.empty()) basepath = "/";
-        loadFiles();
 
         const auto pos = oldPath.find_last_of('/');
         const std::string dirName = oldPath.substr(pos + 1) + "/";
-        selectorIndex = findEntry(dirName);
-
-        requestUpdate();
+        loadFiles(dirName);
       } else if (mode == Mode::PickFirmware) {
         // Firmware picker at root: cancel back to caller instead of going home.
         ActivityResult res;
@@ -530,6 +631,7 @@ void FileBrowserActivity::render(RenderLock&&) {
   } else {
     folderName = basepath == "/" ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1);
   }
+  if (filesTruncated) folderName += " (" + std::to_string(files.size()) + "+)";
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
 
   const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
@@ -538,7 +640,9 @@ void FileBrowserActivity::render(RenderLock&&) {
   const int contentHeight =
       pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing - pathReserved;
   const size_t itemCount = visibleItemCount();
-  if (itemCount == 0) {
+  if (filesLoading) {
+    renderer.drawCenteredText(UI_10_FONT_ID, contentTop + contentHeight / 2, tr(STR_LOADING));
+  } else if (itemCount == 0) {
     const char* emptyMsg = searchActive
                                ? tr(STR_NO_SEARCH_RESULTS)
                                : ((mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND));
@@ -615,6 +719,7 @@ void FileBrowserActivity::render(RenderLock&&) {
   } else {
     renderer.displayBuffer();
   }
+  if (filesLoading) fileLoadFrameRendered = true;
 }
 
 size_t FileBrowserActivity::findEntry(const std::string& name) const {

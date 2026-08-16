@@ -3,7 +3,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "Epub.h"
 #include "Epub/EpubRenderMode.h"
@@ -42,6 +41,20 @@ class Section {
     uint16_t listItemIndex;
     uint32_t visibleTextOffset;
   };
+  struct PageLut {
+    std::unique_ptr<PageLutEntry[]> entries;
+    size_t count = 0;
+    size_t capacity = 0;
+
+    bool ensureAppendCapacity();
+    void pushBack(const PageLutEntry entry) { entries[count++] = entry; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+    PageLutEntry& operator[](const size_t index) { return entries[index]; }
+    const PageLutEntry& operator[](const size_t index) const { return entries[index]; }
+    PageLutEntry& back() { return entries[count - 1]; }
+    const PageLutEntry& back() const { return entries[count - 1]; }
+  };
   // Held only while an incremental build is in progress (see startBuild). Carries the
   // live parser plus the strings it references (the parser stores them by reference)
   // and the in-RAM page-offset table.
@@ -49,13 +62,21 @@ class Section {
     static constexpr size_t PAGE_WRITE_BUFFER_BYTES = 1024;
     std::unique_ptr<ChapterHtmlSlimParser> parser;
     std::unique_ptr<uint8_t[]> pageWriteBuffer;
-    std::vector<PageLutEntry> lut;
+    PageLut lut;
+    ZipStreamReadJob htmlStreamJob;
+    HalFile htmlStreamOutput;
     std::string parsePath;
+    std::string sourcePath;
     std::string contentBase;
     std::string imageBasePath;
     std::string htmlPath;
     std::string tmpHtmlPath;
     bool reusedHtml = false;
+    bool htmlExtractionPending = false;
+    bool htmlStreamActive = false;
+    bool parserStarted = false;
+    EpubBuildStatus callbackFailure = EpubBuildStatus::Ok;
+    uint8_t htmlStreamAttempts = 0;
     CssParser* cssParser = nullptr;
     // HTML byte progress, for estimating the section's total page count while it's still building.
     uint32_t bytesConsumed = 0;
@@ -84,6 +105,9 @@ class Section {
   SectionCacheValidation::Layout cacheLayout_{};
   bool cacheLayoutValid_ = false;
   bool finalizeBuild();
+  bool beginParser();
+  enum class HtmlExtractionStep : uint8_t { InProgress, Ready, Error };
+  HtmlExtractionStep stepHtmlExtraction();
   // Write the LUTs/anchor map (and, for a partial, the watermark trailer), patch the
   // header, stamp the version byte, and swap the tmp .bin over filePath.
   bool commitBuildFile(uint8_t version, uint32_t bytesConsumed, uint32_t totalBytes);

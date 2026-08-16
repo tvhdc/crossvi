@@ -358,6 +358,7 @@ STR_CRASH_DESCRIPTION: "Um relatório detalhado foi guardado em crash_report.txt
 STR_CRASH_REASON: "Motivo da falha:"
 STR_CRASH_NO_REASON: "(Nenhum motivo foi registado)"
 STR_TILT_PAGE_TURN: "Virar página por inclinação"
+STR_TILT_PAGE_TURN_REVERSED: "Virar página por inclinação (invertido)"
 STR_KB_HINT_MOVE_CURSOR: "Prima ESQUERDA ou DIREITA para mover o cursor"
 STR_KB_HINT_RETURN_CURSOR: "Prima ESQUERDA para regressar à posição do cursor"
 STR_KB_HINT_HIDE_PASSWORD: "Mantenha premido DIREITA e depois prima [***] para ocultar a palavra-passe"

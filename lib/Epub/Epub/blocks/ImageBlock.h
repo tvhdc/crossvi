@@ -15,7 +15,7 @@ class ImageBlock final : public Block {
  public:
   ImageBlock(const std::string& imagePath, int16_t width, int16_t height);
   ImageBlock(const std::string& imagePath, const std::string& sourcePath, int16_t width, int16_t height);
-  ~ImageBlock() override = default;
+  ~ImageBlock() override;
 
   const std::string& getImagePath() const { return imagePath; }
   const std::string& getSourcePath() const { return sourcePath; }
@@ -43,6 +43,10 @@ class ImageBlock final : public Block {
   std::string imagePath;
   std::string sourcePath;
   mutable std::string pixelCachePath;
+  std::unique_ptr<uint8_t[]> residentPixels;
+  size_t residentPixelBytes = 0;
+  uint16_t residentWidth = 0;
+  uint16_t residentHeight = 0;
   int16_t width;
   int16_t height;
 

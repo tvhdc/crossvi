@@ -298,6 +298,7 @@ STR_FMT_TITLE: "Назва"
 STR_AUTO_TURN_ENABLED: "Аўтаперагортванне: "
 STR_AUTO_TURN_PAGES_PER_MIN: "Аўтаперагортванне (старонак за хвіліну)"
 STR_TILT_PAGE_TURN: "Перагортванне нахілам"
+STR_TILT_PAGE_TURN_REVERSED: "Перагортванне нахілам (наадварот)"
 STR_ADD_HIDDEN_NETWORK: "Дадаць схаваную сетку..."
 STR_ENTER_WIFI_SSID: "Увядзіце назву сеткі (SSID)"
 

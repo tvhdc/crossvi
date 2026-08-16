@@ -22,23 +22,30 @@
  * Interface is designed to be similar to Epub class for easy integration.
  */
 class Xtc {
+  class ThumbnailPairJob;
+
   std::string filepath;
   std::string cachePath;
   std::unique_ptr<xtc::XtcParser> parser;
+  std::unique_ptr<ThumbnailPairJob> thumbnailPairJob;
   bool loaded;
 
  public:
-  explicit Xtc(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)), loaded(false) {
-    // Create cache key based on filepath (same as Epub)
-    cachePath = cacheDir + "/xtc_" + std::to_string(std::hash<std::string>{}(this->filepath));
-  }
-  ~Xtc() = default;
+  enum class LoadStepResult : uint8_t { InProgress, Loaded, Error };
+  enum class ThumbnailPreparationStatus : uint8_t { NeedsSource, InProgress, Ready, Error };
+
+  explicit Xtc(std::string filepath, const std::string& cacheDir);
+  ~Xtc();
 
   /**
    * Load XTC file
    * @return true on success
    */
   bool load();
+  bool beginLoad(const RawSourceIdentityHandoff* preparedIdentity = nullptr);
+  LoadStepResult stepLoad(size_t maxRecords, size_t maxFingerprintBytes);
+  void cancelLoad();
+  bool isLoadInProgress() const { return parser && !loaded; }
 
   /**
    * Clear cached data
@@ -56,6 +63,7 @@ class Xtc {
   const std::string& getPath() const { return filepath; }
 
   // Metadata
+  bool readCoreMetadata(std::string& title, std::string& author) const;
   std::string getTitle() const;
   std::string getAuthor() const;
   bool hasChapters() const;
@@ -73,7 +81,11 @@ class Xtc {
   bool generateThumbBmp(int width, int height, bool crop) const;
   // Builds the shared Library thumbnail and this device's Home carousel
   // thumbnail from one first-page read. Existing valid siblings are retained.
-  bool generateThumbBmpPair(int carouselWidth, int carouselHeight) const;
+  bool generateThumbBmpPair(int carouselWidth, int carouselHeight);
+  ThumbnailPreparationStatus beginThumbnailPreparation(int carouselWidth, int carouselHeight);
+  ThumbnailPreparationStatus stepThumbnailPreparation(size_t maxSourceBytes = 1024, size_t maxOutputRows = 16);
+  void cancelThumbnailPreparation();
+  bool thumbnailPreparationActive() const { return thumbnailPairJob != nullptr; }
 
   // Page access
   uint32_t getPageCount() const;
@@ -81,6 +93,7 @@ class Xtc {
   uint16_t getPageHeight() const;
   uint8_t getBitDepth() const;  // 1 = XTC (1-bit), 2 = XTCH (2-bit)
   bool getSourceIdentity(ZipFile::SourceIdentity& identity) const;
+  bool getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const;
 
   /**
    * Load page bitmap data
@@ -101,6 +114,10 @@ class Xtc {
   xtc::XtcError loadPageStreaming(uint32_t pageIndex,
                                   std::function<void(const uint8_t* data, size_t size, size_t offset)> callback,
                                   size_t chunkSize = 1024) const;
+
+  xtc::XtcError loadXthPlanePairs(
+      uint32_t pageIndex, std::function<void(uint8_t* bit0, uint8_t* bit1, size_t size, size_t planeOffset)> callback,
+      size_t chunkSize = 1024) const;
 
   // Progress calculation
   uint8_t calculateProgress(uint32_t currentPage) const;

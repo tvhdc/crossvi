@@ -34,6 +34,7 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
 
  public:
   enum class PinResult : uint8_t { Pinned, Unpinned, LimitReached, InvalidPath, SaveFailed };
+  enum class PruneStepResult : uint8_t { Pending, Complete, Removed, MediaUnavailable, SaveFailed };
 
   static const char* getFilePath() { return "/.crosspoint/recent.json"; }
   void toJson(JsonDocument& doc) const;
@@ -68,12 +69,9 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
   }
   static constexpr size_t getMaxPinnedBooks() { return MAX_PINNED_BOOKS; }
 
-  // True if the book's backing file is no longer present on the SD card.
-  static bool isMissing(const RecentBook& book);
-
-  // Remove entries whose backing file is no longer on the SD card.
-  // Returns true if any entry was removed. Does not persist — caller decides.
-  bool pruneMissing();
+  // Check at most one recent/pinned path, removing it durably when missing.
+  // Cursors stay on a removed entry because the following item shifts into it.
+  PruneStepResult pruneMissingStep(size_t& recentIndex, size_t& pinnedIndex, std::string* removedPath = nullptr);
 
   // Get the list of recent books (most recent first)
   const std::vector<RecentBook>& getBooks() const {

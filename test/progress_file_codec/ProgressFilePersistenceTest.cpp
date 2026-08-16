@@ -475,3 +475,90 @@ TEST(ProgressFilePersistence, TxtBoundsRejectOffsetAtOrPastEnd) {
   EXPECT_FALSE(ProgressFile::writeTxtAtomic(CACHE_PATH, invalid, validator));
   EXPECT_FALSE(Storage.exists(PRIMARY));
 }
+
+TEST(ProgressFilePersistence, SessionWriteSkipsRepeatedRecoveryCandidateReads) {
+  Storage.reset();
+  const auto previous = pageBytes(1);
+  const auto first = pageBytes(2);
+  const auto second = pageBytes(3);
+  Storage.setFile(PRIMARY, bytes(previous));
+  ProgressFile::WriteSession session;
+
+  ASSERT_TRUE(session.writeAtomic(CACHE_PATH, first.data(), first.size()));
+  const size_t firstReadCount = Storage.openReadCallCount();
+  EXPECT_EQ(firstReadCount, 5u);
+
+  ASSERT_TRUE(session.writeAtomic(CACHE_PATH, second.data(), second.size()));
+  const size_t secondReadCount = Storage.openReadCallCount() - firstReadCount;
+  EXPECT_EQ(secondReadCount, 3u);
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(second));
+  EXPECT_EQ(Storage.file(BACKUP), bytes(first));
+  EXPECT_FALSE(Storage.exists(TEMP));
+}
+
+TEST(ProgressFilePersistence, SessionWriteFallsBackWhenPrimaryChangesOutsideSession) {
+  Storage.reset();
+  const auto previous = pageBytes(1);
+  const auto first = pageBytes(2);
+  const auto replacement = pageBytes(20);
+  const auto second = pageBytes(3);
+  const ProgressFile::PageBounds bounds{10};
+  const ProgressFile::CandidateValidator validator{ProgressFile::validatePageBounds, &bounds};
+  Storage.setFile(PRIMARY, bytes(previous));
+  ProgressFile::WriteSession session;
+  ASSERT_TRUE(session.writeAtomic(CACHE_PATH, first.data(), first.size(), validator));
+
+  Storage.setFile(PRIMARY, bytes(replacement));
+  ASSERT_TRUE(session.writeAtomic(CACHE_PATH, second.data(), second.size(), validator));
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(second));
+  EXPECT_EQ(Storage.file(BACKUP), bytes(previous));
+  EXPECT_FALSE(Storage.exists(TEMP));
+}
+
+TEST(ProgressFilePersistence, TxtSessionRefusesNewerVersionInRecoverySibling) {
+  for (const char* sibling : {BACKUP, TEMP}) {
+    SCOPED_TRACE(sibling);
+    Storage.reset();
+    const ProgressFile::TxtBounds bounds{1000, 10};
+    const ProgressFile::CandidateValidator validator{ProgressFile::validateTxtBounds, &bounds};
+    const auto previous = txtOffsetBytes(50);
+    uint8_t first[ProgressFileCodec::TXT_V2_SIZE];
+    uint8_t second[ProgressFileCodec::TXT_V2_SIZE];
+    ProgressFileCodec::encodeTxtOffset(100, first);
+    ProgressFileCodec::encodeTxtOffset(200, second);
+    Storage.setFile(PRIMARY, bytes(previous));
+    ProgressFile::WriteSession session;
+    ASSERT_TRUE(session.writeTxtAtomic(CACHE_PATH, first, validator));
+
+    auto newer = txtOffsetBytes(150);
+    newer[1] = ProgressFileCodec::TXT_VERSION + 1;
+    Storage.setFile(sibling, bytes(newer));
+    EXPECT_FALSE(session.writeTxtAtomic(CACHE_PATH, second, validator));
+    EXPECT_EQ(Storage.file(PRIMARY), std::vector<uint8_t>(std::begin(first), std::end(first)));
+    EXPECT_EQ(Storage.file(sibling), bytes(newer));
+  }
+}
+
+TEST(ProgressFilePersistence, FailedSessionWriteInvalidatesFastPath) {
+  Storage.reset();
+  const auto previous = pageBytes(1);
+  const auto first = pageBytes(2);
+  const auto failed = pageBytes(3);
+  const auto retried = pageBytes(4);
+  Storage.setFile(PRIMARY, bytes(previous));
+  ProgressFile::WriteSession session;
+  ASSERT_TRUE(session.writeAtomic(CACHE_PATH, first.data(), first.size()));
+
+  Storage.resetFaultInjection();
+  Storage.shortWriteOnce();
+  EXPECT_FALSE(session.writeAtomic(CACHE_PATH, failed.data(), failed.size()));
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(first));
+  EXPECT_FALSE(Storage.exists(TEMP));
+
+  Storage.resetFaultInjection();
+  ASSERT_TRUE(session.writeAtomic(CACHE_PATH, retried.data(), retried.size()));
+  EXPECT_EQ(Storage.openReadCallCount(), 5u);
+  EXPECT_EQ(Storage.file(PRIMARY), bytes(retried));
+  EXPECT_EQ(Storage.file(BACKUP), bytes(first));
+  EXPECT_FALSE(Storage.exists(TEMP));
+}

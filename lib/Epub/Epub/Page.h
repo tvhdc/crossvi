@@ -117,6 +117,22 @@ class Page {
     });
   }
 
+  // Returns one lazy raster that has not yet been extracted. The caller owns
+  // elementIndex so repeated idle ticks can scan a page without retaining the
+  // deserialized Page or an unbounded candidate list.
+  bool nextMissingImage(size_t& elementIndex, std::string& sourcePath, std::string& imagePath) const {
+    while (elementIndex < elements.size()) {
+      const auto& element = elements[elementIndex++];
+      if (element->getTag() != TAG_PageImage) continue;
+      const auto& image = static_cast<const PageImage&>(*element).getImageBlock();
+      if (image.getSourcePath().empty() || image.imageExists()) continue;
+      sourcePath = image.getSourcePath();
+      imagePath = image.getImagePath();
+      return true;
+    }
+    return false;
+  }
+
   // Used only for the optional EPUB opening-page skip. A page with no text,
   // rule or footnote and one image is safe to classify from serialized
   // metadata, before any image is extracted or decoded.

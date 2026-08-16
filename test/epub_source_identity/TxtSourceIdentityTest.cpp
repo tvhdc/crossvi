@@ -83,6 +83,79 @@ TEST_F(TxtSourceIdentityTest, StreamsCompleteFileIntoRawCrcAndFnvIdentity) {
   EXPECT_LE(Storage.maxRead(), 2048u);
 }
 
+TEST_F(TxtSourceIdentityTest, CooperativeFingerprintDoesBoundedWorkAndCanResume) {
+  Storage.setFile(BOOK_PATH, std::vector<uint8_t>(5000, 0xA5U));
+  Txt txt(BOOK_PATH, "/.crosspoint");
+
+  ASSERT_TRUE(txt.beginLoad());
+  EXPECT_EQ(txt.stepLoad(1000), Txt::LoadStepResult::InProgress);
+  EXPECT_TRUE(txt.isLoadInProgress());
+  EXPECT_LE(Storage.maxRead(), 1000U);
+
+  while (txt.stepLoad(1000) == Txt::LoadStepResult::InProgress) {
+  }
+  EXPECT_FALSE(txt.isLoadInProgress());
+  ZipFile::SourceIdentity identity;
+  EXPECT_TRUE(txt.getSourceIdentity(identity));
+  EXPECT_EQ(identity.fileSize, 5000U);
+}
+
+TEST_F(TxtSourceIdentityTest, CooperativeFingerprintCancellationPublishesNoIdentity) {
+  Storage.setFile(BOOK_PATH, std::vector<uint8_t>(5000, 0x5AU));
+  Txt txt(BOOK_PATH, "/.crosspoint");
+
+  ASSERT_TRUE(txt.beginLoad());
+  ASSERT_EQ(txt.stepLoad(1000), Txt::LoadStepResult::InProgress);
+  txt.cancelLoad();
+  ZipFile::SourceIdentity identity;
+  EXPECT_FALSE(txt.getSourceIdentity(identity));
+  EXPECT_FALSE(txt.isLoadInProgress());
+  EXPECT_TRUE(txt.load());
+  EXPECT_TRUE(txt.getSourceIdentity(identity));
+}
+
+TEST_F(TxtSourceIdentityTest, PreparedIdentitySkipsASecondFullFingerprint) {
+  Storage.setFile(BOOK_PATH, std::vector<uint8_t>(5000, 0x5AU));
+  Txt prepared(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(prepared.load());
+  RawSourceIdentityHandoff handoff;
+  ASSERT_TRUE(prepared.getSourceIdentityHandoff(handoff));
+
+  Storage.resetIoCounters();
+  Txt reopened(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(reopened.beginLoad(&handoff));
+  EXPECT_TRUE(reopened.isLoaded());
+  EXPECT_FALSE(reopened.isLoadInProgress());
+  EXPECT_EQ(Storage.readCalls(), 0U);
+  EXPECT_EQ(Storage.openReadAttemptsFor(BOOK_PATH), 1U);
+
+  ZipFile::SourceIdentity identity;
+  ASSERT_TRUE(reopened.getSourceIdentity(identity));
+  EXPECT_EQ(identity, handoff.identity);
+}
+
+TEST_F(TxtSourceIdentityTest, PreparedIdentityFallsBackAfterSameSizeSourceReplacement) {
+  Storage.setFile(BOOK_PATH, bytes("abc"));
+  Txt prepared(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(prepared.load());
+  RawSourceIdentityHandoff handoff;
+  ASSERT_TRUE(prepared.getSourceIdentityHandoff(handoff));
+
+  Storage.setFile(BOOK_PATH, bytes("abd"));
+  Storage.resetIoCounters();
+  Txt reopened(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(reopened.beginLoad(&handoff));
+  EXPECT_FALSE(reopened.isLoaded());
+  while (reopened.stepLoad(1024) == Txt::LoadStepResult::InProgress) {
+  }
+  EXPECT_GT(Storage.readCalls(), 0U);
+
+  ZipFile::SourceIdentity replacementIdentity;
+  ASSERT_TRUE(reopened.getSourceIdentity(replacementIdentity));
+  EXPECT_NE(replacementIdentity, handoff.identity);
+  EXPECT_EQ(replacementIdentity.fileSize, handoff.identity.fileSize);
+}
+
 TEST_F(TxtSourceIdentityTest, ReusesAnOpenHandleForIndexedContentReads) {
   Storage.setFile(BOOK_PATH, bytes("0123456789"));
   Txt txt(BOOK_PATH, "/.crosspoint");

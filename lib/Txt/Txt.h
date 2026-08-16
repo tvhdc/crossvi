@@ -1,6 +1,7 @@
 #pragma once
 
 #include <HalStorage.h>
+#include <RawSourceIdentity.h>
 #include <ZipFile.h>
 
 #include <memory>
@@ -13,11 +14,29 @@ class Txt {
   bool loaded = false;
   size_t fileSize = 0;
   ZipFile::SourceIdentity sourceIdentity{};
+  RawSourceIdentityHandoff sourceIdentityHandoff{};
+  HalFile loadFile;
+  uint64_t loadExpectedSize = 0;
+  uint64_t loadBytesRead = 0;
+  RawSourceIdentityAccumulator loadFingerprint;
+  bool loadInProgress = false;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  uint32_t loadStartedMs = 0;
+  uint32_t loadStartFreeHeap = 0;
+#endif
 
  public:
+  enum class LoadStepResult : uint8_t { InProgress, Loaded, Error };
+
   explicit Txt(std::string path, std::string cacheBasePath);
+  ~Txt() { cancelLoad(); }
 
   bool load();
+  bool beginLoad(const RawSourceIdentityHandoff* preparedIdentity = nullptr);
+  LoadStepResult stepLoad(size_t maxBytes);
+  void cancelLoad();
+  [[nodiscard]] bool isLoadInProgress() const { return loadInProgress; }
+  [[nodiscard]] bool isLoaded() const { return loaded; }
   [[nodiscard]] const std::string& getPath() const { return filepath; }
   [[nodiscard]] const std::string& getCachePath() const { return cachePath; }
   [[nodiscard]] std::string getTitle() const;
@@ -25,6 +44,11 @@ class Txt {
   [[nodiscard]] bool getSourceIdentity(ZipFile::SourceIdentity& identity) const {
     if (!loaded || !sourceIdentity.isRawFile()) return false;
     identity = sourceIdentity;
+    return true;
+  }
+  [[nodiscard]] bool getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const {
+    if (!loaded || !sourceIdentityHandoff.valid || sourceIdentityHandoff.identity != sourceIdentity) return false;
+    handoff = sourceIdentityHandoff;
     return true;
   }
 

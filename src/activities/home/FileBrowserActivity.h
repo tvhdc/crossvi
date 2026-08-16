@@ -1,5 +1,7 @@
 #pragma once
 
+#include <HalStorage.h>
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -40,6 +42,15 @@ class FileBrowserActivity final : public Activity {
   std::string basepath = "/";
   std::vector<std::string> files;
   std::unique_ptr<char[]> fileNameBuffer;
+  HalFile fileLoadDirectory;
+  bool filesLoading = false;
+  bool fileLoadFrameRendered = false;
+  bool filesTruncated = false;
+  bool fileLoadBackPending = false;
+  unsigned long fileLoadBackHeldMs = 0;
+  size_t fileNameBytes = 0;
+  std::string pendingSelectionName;
+  size_t pendingSelectionIndex = static_cast<size_t>(-1);
   OptionPopup optionPopup;
 
   bool searchActive = false;
@@ -50,7 +61,10 @@ class FileBrowserActivity final : public Activity {
   unsigned long popupTime = 0;
 
   // Data loading
-  void loadFiles();
+  void loadFiles(std::string selectionName = {}, size_t selectionIndex = static_cast<size_t>(-1));
+  bool stepFileLoad(size_t maxEntries);
+  void finishFileLoad();
+  void cancelFileLoad();
   size_t findEntry(const std::string& name) const;
   size_t visibleItemCount() const;
   bool isSearchRow(size_t index) const;
@@ -69,6 +83,7 @@ class FileBrowserActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool skipLoopDelay() override { return filesLoading; }
   bool handleGlobalShortcut(GlobalShortcut shortcut) override {
     return mode == Mode::Books && !optionPopup.isActive() && handleSafeGlobalShortcut(shortcut);
   }

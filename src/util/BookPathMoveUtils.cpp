@@ -301,6 +301,11 @@ std::string hiddenBookFileSibling(const std::string& bookPath, const char* suffi
   return path;
 }
 
+bool hasBookFileReplacementArtifacts(const std::string& bookPath) {
+  return Storage.exists(hiddenBookFileSibling(bookPath, REPLACEMENT_PENDING_SUFFIX).c_str()) ||
+         Storage.exists(hiddenBookFileSibling(bookPath, REPLACED_BOOK_SUFFIX).c_str());
+}
+
 bool isBookFileTransactionArtifact(const char* fileName) {
   if (!fileName) return false;
   const std::string_view name(fileName);
@@ -318,8 +323,11 @@ bool canDeleteOrRelocateBookFile(const std::string& bookPath) {
          ReadingStatsCompletionTransaction::canRelocateOrDeleteBookCache(bookCachePath(bookPath));
 }
 
-bool recoverInterruptedBookFileReplacement(const std::string& bookPath) {
-  if (!canDeleteOrRelocateBookFile(bookPath)) return false;
+bool recoverInterruptedBookFileReplacement(const std::string& bookPath,
+                                           std::optional<ZipFile::SourceIdentity>* verifiedEpubIdentity,
+                                           const bool completionTransactionResolved) {
+  if (verifiedEpubIdentity) verifiedEpubIdentity->reset();
+  if (!completionTransactionResolved && !canDeleteOrRelocateBookFile(bookPath)) return false;
   const std::string oldBookPath = hiddenBookFileSibling(bookPath, REPLACED_BOOK_SUFFIX);
   const std::string pendingPath = hiddenBookFileSibling(bookPath, REPLACEMENT_PENDING_SUFFIX);
   const bool pending = Storage.exists(pendingPath.c_str());
@@ -358,6 +366,25 @@ bool recoverInterruptedBookFileReplacement(const std::string& bookPath) {
     return false;
   }
 
+  // The ordinary open has no physical replacement transaction to reconcile.
+  // Leave archive fingerprinting to the reader's cooperative open path unless
+  // the source-identity sidecar itself carries an interrupted barrier.
+  if (!pending && !oldExists && finalExists) {
+    ZipFile::SourceIdentity storedIdentity;
+    const SourceIdentityStore::LoadStatus identityStatus =
+        SourceIdentityStore::load(bookCachePath(bookPath), storedIdentity);
+    if (identityStatus == SourceIdentityStore::LoadStatus::Missing ||
+        (identityStatus == SourceIdentityStore::LoadStatus::Primary &&
+         !SourceIdentityStore::isReplacementBarrier(storedIdentity))) {
+      return true;
+    }
+    if (identityStatus == SourceIdentityStore::LoadStatus::NewerVersion ||
+        identityStatus == SourceIdentityStore::LoadStatus::Invalid ||
+        identityStatus == SourceIdentityStore::LoadStatus::IoError) {
+      return false;
+    }
+  }
+
   if (!finalExists) {
     if (!oldExists) return !pending || Storage.remove(pendingPath.c_str());
     if (!Storage.rename(oldBookPath.c_str(), bookPath.c_str())) return false;
@@ -369,7 +396,9 @@ bool recoverInterruptedBookFileReplacement(const std::string& bookPath) {
         recovered != SourceIdentityStore::RecoverReplacementStatus::NotPrepared) {
       return false;
     }
-    return Storage.remove(pendingPath.c_str());
+    if (!Storage.remove(pendingPath.c_str())) return false;
+    if (verifiedEpubIdentity) *verifiedEpubIdentity = restoredIdentity;
+    return true;
   }
 
   ZipFile::SourceIdentity current;
@@ -387,7 +416,9 @@ bool recoverInterruptedBookFileReplacement(const std::string& bookPath) {
         recovered != SourceIdentityStore::RecoverReplacementStatus::NotPrepared) {
       return false;
     }
-    return Storage.remove(pendingPath.c_str());
+    if (!Storage.remove(pendingPath.c_str())) return false;
+    if (verifiedEpubIdentity) *verifiedEpubIdentity = oldIdentity;
+    return true;
   }
   const std::string cachePath = bookCachePath(bookPath);
   switch (SourceIdentityStore::recoverReplacement(cachePath, current)) {
@@ -406,7 +437,9 @@ bool recoverInterruptedBookFileReplacement(const std::string& bookPath) {
     LOG_ERR("BookMove", "Could not remove published-book backup: %s", oldBookPath.c_str());
     return false;
   }
-  return !pending || Storage.remove(pendingPath.c_str());
+  if (pending && !Storage.remove(pendingPath.c_str())) return false;
+  if (verifiedEpubIdentity) *verifiedEpubIdentity = current;
+  return true;
 }
 
 BookFilePublishResult publishStagedBookFile(const std::string& stagingPath, const std::string& bookPath) {

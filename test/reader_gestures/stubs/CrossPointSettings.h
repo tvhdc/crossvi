@@ -6,7 +6,7 @@ class CrossPointSettings {
  public:
   enum ORIENTATION { PORTRAIT = 0, LANDSCAPE_CW = 1, INVERTED = 2, LANDSCAPE_CCW = 3 };
   enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2 };
-  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_ON = 1 };
+  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_ON = 1, TILT_INVERTED = 2, TILT_PAGE_TURN_COUNT };
   enum LONG_PRESS_BUTTON_BEHAVIOR { OFF = 0, CHAPTER_SKIP = 1, ORIENTATION_CHANGE = 2 };
 
   uint8_t longPressButtonBehavior = OFF;

@@ -97,4 +97,31 @@ TEST_F(PixelCacheIntegrationTest, CacheWithinOnePixelToleranceRendersWithoutDeco
   EXPECT_EQ(renderer.fillRectCalls, 0);
 }
 
+TEST_F(PixelCacheIntegrationTest, SmallPixelCacheStaysResidentAcrossRepeatedPagePasses) {
+  Storage.setFile("/image.pxc", cacheBytes(64, 64, 64U * 64U / 4U));
+  ImageBlock block("/image.png", 64, 64);
+  Storage.resetIoCounters();
+
+  block.render(renderer, 0, 0);
+  block.render(renderer, 0, 0);
+
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(Storage.openReadAttemptsFor("/image.pxc"), 1U);
+  EXPECT_EQ(Storage.readCalls(), 3U);
+  EXPECT_LE(Storage.maxRead(), 4096U);
+}
+
+TEST_F(PixelCacheIntegrationTest, LargePixelCacheKeepsFourKiBStreamingFallback) {
+  Storage.setFile("/image.pxc", cacheBytes(400, 400, 400U * 400U / 4U));
+  ImageBlock block("/image.png", 400, 400);
+  Storage.resetIoCounters();
+
+  block.render(renderer, 0, 0);
+  block.render(renderer, 0, 0);
+
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(Storage.openReadAttemptsFor("/image.pxc"), 2U);
+  EXPECT_LE(Storage.maxRead(), 4096U);
+}
+
 }  // namespace

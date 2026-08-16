@@ -25,6 +25,7 @@ inline PrepareReplacementStatus prepareReplacement(const std::string&, const Zip
 inline RecoverReplacementStatus recoverReplacement(const std::string&, const ZipFile::SourceIdentity&) {
   return RecoverReplacementStatus::NotPrepared;
 }
+inline bool isReplacementBarrier(const ZipFile::SourceIdentity&) { return false; }
 inline bool cancelReplacement(const std::string&) { return true; }
 
 }  // namespace SourceIdentityStore

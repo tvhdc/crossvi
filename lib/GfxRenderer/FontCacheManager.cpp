@@ -5,9 +5,36 @@
 #include <SdCardFont.h>
 #include <Utf8.h>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 
 #include "SmallCaps.h"
+
+namespace {
+
+constexpr size_t MAX_SCAN_TEXT_BYTES_PER_STYLE = 2048;
+
+size_t utf8EncodedSize(const uint32_t codepoint) {
+  if (codepoint <= 0x7FU) return 1;
+  if (codepoint <= 0x7FFU) return 2;
+  if (codepoint <= 0xFFFFU) return 3;
+  return 4;
+}
+
+void appendBoundedText(std::string& destination, const char* text) {
+  if (!text || !*text || destination.size() >= MAX_SCAN_TEXT_BYTES_PER_STYLE) return;
+  if (destination.capacity() < MAX_SCAN_TEXT_BYTES_PER_STYLE) destination.reserve(MAX_SCAN_TEXT_BYTES_PER_STYLE);
+
+  const size_t textLength = strlen(text);
+  size_t appendLength = std::min(textLength, MAX_SCAN_TEXT_BYTES_PER_STYLE - destination.size());
+  if (appendLength < textLength) {
+    while (appendLength > 0 && (static_cast<uint8_t>(text[appendLength]) & 0xC0U) == 0x80U) --appendLength;
+  }
+  destination.append(text, appendLength);
+}
+
+}  // namespace
 
 FontCacheManager::FontCacheManager(const std::map<int, EpdFontFamily>& fontMap,
                                    const std::map<int, SdCardFont*>& sdCardFonts)
@@ -83,23 +110,22 @@ void FontCacheManager::resetStats() {
 bool FontCacheManager::isScanning() const { return scanMode_ == ScanMode::Scanning; }
 
 void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style) {
+  if (!text || !*text) return;
+  const uint8_t baseStyle = static_cast<uint8_t>(style) & 0x03U;
+  std::string& scanText = scanTextByStyle_[baseStyle];
+  if (scanText.capacity() < MAX_SCAN_TEXT_BYTES_PER_STYLE) scanText.reserve(MAX_SCAN_TEXT_BYTES_PER_STYLE);
+
   if ((style & EpdFontFamily::SMALL_CAPS) != 0) {
     const auto* cursor = reinterpret_cast<const uint8_t*>(text);
     while (const uint32_t cp = utf8NextCodepoint(&cursor)) {
-      utf8AppendCodepoint(isSyntheticSmallCapsLowercase(cp) ? syntheticSmallCapsUppercase(cp) : cp, scanText_);
+      const uint32_t renderedCp = isSyntheticSmallCapsLowercase(cp) ? syntheticSmallCapsUppercase(cp) : cp;
+      if (utf8EncodedSize(renderedCp) > MAX_SCAN_TEXT_BYTES_PER_STYLE - scanText.size()) break;
+      utf8AppendCodepoint(renderedCp, scanText);
     }
   } else {
-    scanText_ += text;
+    appendBoundedText(scanText, text);
   }
-  if (scanFontId_ < 0) scanFontId_ = fontId;
-  const uint8_t baseStyle = static_cast<uint8_t>(style) & 0x03;
-  const unsigned char* p = reinterpret_cast<const unsigned char*>(text);
-  uint32_t cpCount = 0;
-  while (*p) {
-    if ((*p & 0xC0) != 0x80) cpCount++;
-    p++;
-  }
-  scanStyleCounts_[baseStyle] += cpCount;
+  if (scanFontId_ == 0) scanFontId_ = fontId;
 }
 
 // --- PrewarmScope implementation ---
@@ -108,33 +134,50 @@ FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manage
   manager_->scanMode_ = ScanMode::Scanning;
   manager_->releasePageCache();
   manager_->resetStats();
-  manager_->scanText_.clear();
-  manager_->scanText_.reserve(2048);  // Pre-allocate to avoid heap fragmentation from repeated concat
-  memset(manager_->scanStyleCounts_, 0, sizeof(manager_->scanStyleCounts_));
-  manager_->scanFontId_ = -1;
+  for (auto& text : manager_->scanTextByStyle_) text.clear();
+  manager_->scanFontId_ = 0;
 }
 
 void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
   manager_->scanMode_ = ScanMode::None;
-  if (manager_->scanText_.empty()) return;
+  if (manager_->scanFontId_ == 0) return;
 
-  // Build style bitmask from all styles that appeared during the scan
-  uint8_t styleMask = 0;
-  for (uint8_t i = 0; i < 4; i++) {
-    if (manager_->scanStyleCounts_[i] > 0) styleMask |= (1 << i);
+  const auto sdFont = manager_->sdCardFonts_.find(manager_->scanFontId_);
+  if (sdFont != manager_->sdCardFonts_.end()) {
+    // Multiple requested styles can resolve to one physical SD-font style.
+    // Merge only those fallback groups so a later prewarm does not replace
+    // glyphs prepared by an earlier call for the same physical style.
+    std::array<int8_t, 4> ownerByResolvedStyle = {-1, -1, -1, -1};
+    for (uint8_t requestedStyle = 0; requestedStyle < 4; ++requestedStyle) {
+      if (manager_->scanTextByStyle_[requestedStyle].empty()) continue;
+      const uint8_t resolvedStyle = sdFont->second->resolveStyle(requestedStyle);
+      int8_t& owner = ownerByResolvedStyle[resolvedStyle];
+      if (owner < 0) {
+        owner = static_cast<int8_t>(requestedStyle);
+      } else {
+        appendBoundedText(manager_->scanTextByStyle_[owner], manager_->scanTextByStyle_[requestedStyle].c_str());
+      }
+    }
+    for (uint8_t resolvedStyle = 0; resolvedStyle < 4; ++resolvedStyle) {
+      const int8_t owner = ownerByResolvedStyle[resolvedStyle];
+      if (owner < 0) continue;
+      manager_->prewarmCache(manager_->scanFontId_, manager_->scanTextByStyle_[owner].c_str(),
+                             static_cast<uint8_t>(1U << resolvedStyle));
+    }
+  } else {
+    for (uint8_t style = 0; style < 4; ++style) {
+      if (manager_->scanTextByStyle_[style].empty()) continue;
+      manager_->prewarmCache(manager_->scanFontId_, manager_->scanTextByStyle_[style].c_str(),
+                             static_cast<uint8_t>(1U << style));
+    }
   }
-  if (styleMask == 0) styleMask = 1;  // default to regular
-
-  manager_->prewarmCache(manager_->scanFontId_, manager_->scanText_.c_str(), styleMask);
-
-  // Free scan string memory
-  manager_->scanText_.clear();
-  manager_->scanText_.shrink_to_fit();
+  for (auto& text : manager_->scanTextByStyle_) text.clear();
+  manager_->scanFontId_ = 0;
 }
 
 FontCacheManager::PrewarmScope::~PrewarmScope() {
   if (active_) {
-    endScanAndPrewarm();  // no-op if already called (scanText_ is empty)
+    endScanAndPrewarm();  // no-op if already called (scan text is empty)
     manager_->releasePageCache();
   }
 }

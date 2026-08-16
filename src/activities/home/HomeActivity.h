@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "./FileBrowserActivity.h"
@@ -10,6 +11,9 @@
 
 struct RecentBook;
 struct Rect;
+class Epub;
+class Xtc;
+class Txt;
 
 class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
@@ -17,11 +21,17 @@ class HomeActivity final : public Activity {
   int carouselBookIndex = 0;
   bool firstRenderDone = false;
   bool mediaAvailable = false;
+  bool completionStatsAlreadyRecovered = false;
   bool hasOpdsServers = false;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
   bool coverPreparationAttempted = false;
+  bool bookSummaryPending = false;
+  bool recentPrunePending = false;
   uint32_t coverPreparationLastInputAt = 0;
+  size_t recentPruneIndex = 0;
+  size_t pinnedPruneIndex = 0;
+  int recentBookLimit = 0;
   // Home can be entered while Back is still held (e.g. leaving Settings with
   // Back): ignore that stale release until a fresh press is seen here.
   bool backPressSeen = false;
@@ -35,6 +45,9 @@ class HomeActivity final : public Activity {
   int coverRectW = 0;
   int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
+  std::unique_ptr<Epub> preparedEpub;
+  std::unique_ptr<Xtc> preparedXtc;
+  std::unique_ptr<Txt> preparedTxt;
   HomeBookSummary bookSummary;
   const HomeMenuItem initialMenuItem;
 
@@ -52,6 +65,10 @@ class HomeActivity final : public Activity {
   void onReadingStatsOpen();
   bool hasReadingStatsShortcut() const;
   bool loadRecentNonEpubReadingStats();
+  enum class SourcePreparationResult : uint8_t { NotNeeded, InProgress, Ready, Failed };
+  SourcePreparationResult stepPreparedEpub(const std::string& path);
+  SourcePreparationResult stepPreparedXtc(const std::string& path);
+  SourcePreparationResult stepRecentNonEpubSummarySource();
 
   int getMenuItemCount() const;
   bool usesRecentListLayout() const;
@@ -64,11 +81,12 @@ class HomeActivity final : public Activity {
   void freeCoverBuffer();     // Free the stored cover buffer
   void loadRecentBooks(int maxBooks);
   void loadBookSummary();
+  void processRecentBooksMaintenance();
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                        HomeMenuItem initialMenuItemValue = HomeMenuItem::NONE)
-      : Activity("Home", renderer, mappedInput), initialMenuItem(initialMenuItemValue) {}
+                        HomeMenuItem initialMenuItemValue = HomeMenuItem::NONE);
+  ~HomeActivity() override;
   void onEnter() override;
   void onExit() override;
   void loop() override;

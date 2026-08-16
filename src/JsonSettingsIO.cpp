@@ -117,6 +117,9 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["libraryGrid"] = s.libraryGrid;
   doc["libraryGridLayoutVersion"] = LibraryGridModel::LAYOUT_VERSION;
   doc["homeLayoutVersion"] = CrossPointSettings::HOME_LAYOUT_VERSION;
+  // The UI remaps the two historic tilt directions into a user-facing
+  // normal/reversed order, so this dynamic setting is persisted explicitly.
+  doc["tiltPageTurn"] = s.tiltPageTurn;
 
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   doc["frontButtonBack"] = s.frontButtonBack;
@@ -313,6 +316,12 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   const int storedScreenMargin = doc["screenMargin"] | static_cast<int>(s.screenMargin);
   s.screenMargin = ReaderScreenMargin::closestValue(storedScreenMargin);
   if (!doc["screenMargin"].isNull() && storedScreenMargin != s.screenMargin && needsResave) *needsResave = true;
+
+  // Tilt page turning is also a dynamic enum. Preserve its historic stored
+  // values so upgrading changes only the label, never the physical direction.
+  const uint8_t storedTiltPageTurn = doc["tiltPageTurn"] | s.tiltPageTurn;
+  s.tiltPageTurn = clamp(storedTiltPageTurn, CrossPointSettings::TILT_PAGE_TURN_COUNT, CrossPointSettings::TILT_OFF);
+  if (!doc["tiltPageTurn"].isNull() && storedTiltPageTurn != s.tiltPageTurn && needsResave) *needsResave = true;
 
   // Keep old settings readable without exposing their redundant choices.
   // Quick Resume is now a separate switch, and Cover + Custom now uses the

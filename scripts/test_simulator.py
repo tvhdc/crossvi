@@ -326,7 +326,7 @@ def run_typography_case(
     log = completed.stdout + completed.stderr
     if f"Entering activity: {expected_activity}" not in log:
         raise AssertionError(f"{device.upper()} did not open the {book_format.upper()} typography fixture:\n{log}")
-    missed = [int(value) for value in re.findall(r"\((\d+) missed\)", log)]
+    missed = [int(value) for value in re.findall(r"(\d+) missed\)", log)]
     # Built-ins report explicit prewarm counts. SD fonts prewarm through their
     # bounded on-demand cache and do not emit the same summary line.
     if (sd_font_family is None and not missed) or any(missed):
@@ -359,8 +359,8 @@ def smoke_vietnamese_typography(device: str) -> None:
 
     txt_nfc, txt_nfc_log = run_typography_case(device, "txt", "NFC")
     txt_nfd, txt_nfd_log = run_typography_case(device, "txt", "NFD")
-    txt_nfc_pages = re.search(r"Built page index: (\d+) pages", txt_nfc_log)
-    txt_nfd_pages = re.search(r"Built page index: (\d+) pages", txt_nfd_log)
+    txt_nfc_pages = re.search(r"Built page index: (\d+)(?: known)? pages", txt_nfc_log)
+    txt_nfd_pages = re.search(r"Built page index: (\d+)(?: known)? pages", txt_nfd_log)
     if not txt_nfc_pages or not txt_nfd_pages or txt_nfc_pages.group(1) != txt_nfd_pages.group(1):
         raise AssertionError(f"{device.upper()} TXT NFC/NFD pagination differs")
     if not any(pixel < 255 for pixel in txt_nfc) or not any(pixel < 255 for pixel in txt_nfd):
@@ -1079,8 +1079,8 @@ def smoke_your_books_press_edges(device: str) -> None:
             "SDL_VIDEODRIVER": "dummy",
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_INPUT_SCRIPT": (
-                "1200:DOWN,1700:DOWN,2300:CONFIRM,3500:DOWN,3650:DOWN,"
-                "3800:DOWN,5200:CONFIRM"
+                "1200:DOWN,1700:DOWN,2300:CONFIRM,3500:DOWN,3700:DOWN,"
+                "3900:DOWN,5200:CONFIRM"
             ),
             "CROSSVI_SIM_EXIT_AFTER_MS": "8500",
         }
@@ -1972,7 +1972,7 @@ def smoke_screen_margin_settings(device: str) -> None:
     enter_margin_picker = (
         "700:DOWN,900:DOWN,1100:DOWN,1300:DOWN,1500:DOWN,1700:CONFIRM,"
         "2300:CONFIRM,2600:DOWN,2900:CONFIRM,3300:CONFIRM,3600:CONFIRM,"
-        "3900:DOWN,4200:DOWN,4500:DOWN,4800:CONFIRM"
+        "4500:DOWN,4800:CONFIRM"
     )
 
     def run_case(name: str, actions: str, exit_after_ms: int) -> str:
@@ -2084,13 +2084,13 @@ def smoke_font_size_settings(device: str) -> None:
         json.dumps({"uiTheme": 5, "language": "VI", "fontSize": 1}) + "\n", encoding="utf-8"
     )
 
-    # Home -> Settings -> Reader -> Font size. Preview Large then cancel,
-    # reopen, confirm Large, leave Settings and verify the persisted value.
+    # Home -> Settings -> Text Settings -> Size. Apply Small, then Large,
+    # capture both inline preview states and verify the persisted value.
     events = (
         "800:DOWN,1050:DOWN,1300:DOWN,1550:DOWN,1800:DOWN,2400:CONFIRM,"
         "3100:CONFIRM,3400:DOWN,3800:CONFIRM,4300:CONFIRM,4700:DOWN,5100:CONFIRM,"
-        "5600:SCREENSHOT,6000:DOWN,6400:SCREENSHOT,6800:BACK,"
-        "7500:CONFIRM,7900:DOWN,8300:CONFIRM,9000:BACK,9400:BACK"
+        "5600:SCREENSHOT,6000:DOWN,6400:DOWN,7200:CONFIRM,7700:SCREENSHOT,"
+        "8200:BACK,8700:BACK"
     )
     environment = os.environ.copy()
     environment.update(
@@ -2099,22 +2099,25 @@ def smoke_font_size_settings(device: str) -> None:
             "CROSSVI_SIM_SD": str(sd),
             "CROSSVI_SIM_SCREENSHOT_DIR": str(shots),
             "CROSSVI_SIM_INPUT_SCRIPT": events,
-            "CROSSVI_SIM_EXIT_AFTER_MS": "10000",
+            "CROSSVI_SIM_EXIT_AFTER_MS": "9400",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
     completed = run([str(binary)], env=environment, capture_output=True, timeout=15)
     log = completed.stdout + completed.stderr
-    if log.count("Entering activity: FontSizeSelect") != 2:
-        raise AssertionError(f"{device.upper()} did not complete both font-size picker flows:\n{log}")
+    if "Entering activity: TextSettings" not in log or "Entering activity: FontSizeSelect" in log:
+        raise AssertionError(f"{device.upper()} did not keep the font-size flow inside Text Settings:\n{log}")
     if "Outside range" in log or "page buffer slots full" in log:
         raise AssertionError(f"{device.upper()} font-size preview leaked drawing/cache state:\n{log}")
     saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
     if saved.get("fontSize") != 2:
         raise AssertionError(f"{device.upper()} did not persist the confirmed Large font size")
     if len(list(shots.glob("*.bmp"))) != 2:
-        raise AssertionError(f"{device.upper()} font-size picker did not render both preview states")
-    print(f"{device.upper()}: font-size preview/cancel/confirm/persist smoke passed")
+        raise AssertionError(f"{device.upper()} inline font-size list did not render both preview states")
+    frames = sorted(shots.glob("*.framebuffer.bin"))
+    if frames[0].read_bytes() == frames[1].read_bytes():
+        raise AssertionError(f"{device.upper()} inline font-size preview did not change")
+    print(f"{device.upper()}: inline font-size preview/confirm/persist smoke passed")
 
 
 def smoke_extended_sd_font_sizes(device: str, family_dir: Path) -> None:
@@ -2450,12 +2453,20 @@ def smoke_missing_sd_font_fallback(device: str) -> None:
         {
             "SDL_VIDEODRIVER": "dummy",
             "CROSSVI_SIM_SD": str(sd),
-            "CROSSVI_SIM_EXIT_AFTER_MS": "1600",
+            # Missing SD selections are repaired lazily when a font-owning
+            # screen opens, keeping registry/file work off the boot path.
+            "CROSSVI_SIM_INPUT_SCRIPT": (
+                "800:DOWN,1050:DOWN,1300:DOWN,1550:DOWN,1800:DOWN,2400:CONFIRM,"
+                "3100:CONFIRM,3400:DOWN,3800:CONFIRM,4600:BACK"
+            ),
+            "CROSSVI_SIM_EXIT_AFTER_MS": "5200",
         }
     )
     binary = ROOT / ".pio" / "build" / f"simulator_{device}" / "program"
     completed = run([str(binary)], env=environment, capture_output=True, timeout=10)
     log = completed.stdout + completed.stderr
+    if "Entering activity: TextSettings" not in log:
+        raise AssertionError(f"{device.upper()} did not reach Text Settings for lazy font repair:\n{log}")
     saved = json.loads((control / "settings.json").read_text(encoding="utf-8"))
     if saved.get("fontSize") != 3 or saved.get("sdFontFamilyName", ""):
         raise AssertionError(f"{device.upper()} did not persist the safe built-in 18 pt fallback:\n{log}")

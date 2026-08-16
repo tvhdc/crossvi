@@ -109,6 +109,12 @@ class CssParser {
   bool saveToCache() const;
 
   /**
+   * Validate the cache stream without allocating or retaining a rule map.
+   * Invalid caches are removed using the same policy as loadFromCache().
+   */
+  bool validateCache();
+
+  /**
    * Load CSS rules from a cache file.
    * Clears any existing rules before loading.
    * @return true if cache was loaded successfully
@@ -165,4 +171,5 @@ class CssParser {
   static CssTextDecoration interpretDecoration(std::string_view val);
   /** Returns true only when a numeric length was parsed (e.g. 2em, 50%). False for auto/inherit/initial. */
   static bool tryInterpretLength(std::string_view val, CssLength& out);
+  bool readCache(bool materializeRules);
 };

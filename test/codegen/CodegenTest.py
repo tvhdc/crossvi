@@ -128,6 +128,13 @@ class CodegenTest(unittest.TestCase):
         ]
         self.assertIn("drawSleepBookStatsOverlay(renderer)", bitmap)
         self.assertLess(bitmap.index("drawSleepBookStatsOverlay(renderer)"), bitmap.index("displayStrongSleepFrame();"))
+        summary = sleep[sleep.index("struct SleepBookSummary") : sleep.index("Rect drawSleepBookStatsOverlay")]
+        self.assertIn("std::string chapter;", summary)
+        self.assertIn("loadSleepBookPosition(recent, summary);", summary)
+        self.assertIn("STR_CHAPTER_PREFIX", sleep)
+        self.assertIn("STR_STATS_PROGRESS", sleep)
+        self.assertIn("DashboardProgress::fillWidth", sleep)
+        self.assertIn("summary.chapter.empty()", sleep)
         modes = sleep[sleep.index("switch (SETTINGS.sleepScreen)") : sleep.index("void SleepActivity::renderReadingCalendarSleepScreen")]
         self.assertIn("SLEEP_SCREEN_MODE::COVER_STATS", modes)
         self.assertIn("renderCoverSleepScreen(true)", modes)
@@ -474,6 +481,356 @@ class CodegenTest(unittest.TestCase):
         completion = navigation.index("markBookCompleted()")
         self.assertLess(navigation.index("stopReadingPage(false", advance), completion)
 
+    def test_txt_finishes_partial_index_in_bounded_background_ticks(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        loop = reader[reader.index("void TxtReaderActivity::loop()") : reader.index("bool TxtReaderActivity::handleReaderShortcut")]
+        requested = reader[reader.index("void TxtReaderActivity::processRequestedPageIndex") :
+                           reader.index("void TxtReaderActivity::processBackgroundPageIndex")]
+        background = reader[reader.index("void TxtReaderActivity::processBackgroundPageIndex") :
+                            reader.index("bool TxtReaderActivity::buildPageIndexUntil")]
+        render = reader[reader.index("void TxtReaderActivity::render(RenderLock&&)") :]
+        render = render[: render.index("void TxtReaderActivity::renderCurrentPage")]
+
+        self.assertIn("RenderLock lock(std::try_to_lock);", background)
+        self.assertIn("buildPageIndexUntil(targetOffset, BACKGROUND_INDEX_PAGES_PER_TICK)", requested)
+        self.assertIn("processRequestedPageIndex()", loop)
+        self.assertIn("buildPageIndexBatch(BACKGROUND_INDEX_PAGES_PER_TICK)", background)
+        self.assertIn("processBackgroundPageIndex()", loop)
+        self.assertNotIn("completePageIndex()", render)
+        self.assertIn("pageIndexComplete", background)
+
+    def test_txt_initial_resume_jump_and_clipping_never_run_an_unbounded_index_scan(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        initialize = reader[reader.index("void TxtReaderActivity::initializeReader") :
+                            reader.index("void TxtReaderActivity::finishReaderInitialization")]
+        clipping = reader[reader.index("void TxtReaderActivity::openClippingSelection") :
+                          reader.index("void TxtReaderActivity::openIndexedClippingSelection")]
+        jump = reader[reader.index("void TxtReaderActivity::jumpToByteOffset") :
+                      reader.index("void TxtReaderActivity::applyIndexedByteOffset")]
+
+        for operation in (initialize, clipping, jump):
+            self.assertNotIn("buildPageIndexUntil(", operation)
+        self.assertNotIn("completePageIndex()", reader)
+        self.assertIn("PageIndexWork::Initial", initialize)
+        self.assertIn("PageIndexWork::CompleteForClipping", clipping)
+        self.assertIn("PageIndexWork::Jump", jump)
+
+    def test_txt_reuses_page_io_and_only_indexes_when_input_is_idle(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
+        loop = reader[reader.index("void TxtReaderActivity::loop()") :
+                      reader.index("bool TxtReaderActivity::handleReaderShortcut")]
+        session = reader[reader.index("bool TxtReaderActivity::ensureContentReadSession") :
+                         reader.index("bool TxtReaderActivity::buildPageIndexUntil")]
+        load = reader[reader.index("bool TxtReaderActivity::loadPageAtOffset(size_t offset") :
+                      reader.index("bool TxtReaderActivity::loadPageAtOffsetWithScratch")]
+
+        self.assertIn("HalFile contentFile;", header)
+        self.assertIn("std::unique_ptr<uint8_t[]> pageScratch;", header)
+        self.assertIn("if (!contentFile.isOpen()", session)
+        self.assertIn("pageScratchSize < CHUNK_SIZE + 1", session)
+        self.assertIn("if (!inputEdge && !readerInputHeld) {", loop)
+        self.assertIn("finishDeferredOpenState();", loop)
+        self.assertIn("processBackgroundPageIndex();", loop)
+        self.assertNotIn("makeUniqueNoThrow", load)
+        self.assertNotIn("HalFile contentFile", load)
+
+    def test_txt_long_builtin_lines_use_single_pass_shaped_wrap(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        wrap = (REPO_ROOT / "src/activities/reader/TxtLineWrap.h").read_text(encoding="utf-8")
+
+        self.assertIn("findLargestFittingShapedLineBreak", reader)
+        self.assertIn("!renderer.isSdCardFont(cachedFontId)", reader)
+        self.assertIn("widthBeforeCurrent", wrap)
+        self.assertIn("largestFittingSpace", wrap)
+
+    def test_epub_page_deserialize_reserves_validated_element_count(self):
+        page = (REPO_ROOT / "lib/Epub/Epub/Page.cpp").read_text(encoding="utf-8")
+        deserialize = page[page.index("std::unique_ptr<Page> Page::deserialize") :]
+        validation = deserialize.index("count > SectionCacheValidation::MAX_PAGE_ELEMENTS")
+        reserve = deserialize.index("page->elements.reserve(count);")
+        loop = deserialize.index("for (uint16_t i = 0; i < count; i++)")
+
+        self.assertLess(validation, reserve)
+        self.assertLess(reserve, loop)
+
+    def test_home_defers_all_book_summaries_until_after_first_frame(self):
+        home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        on_enter = home[home.index("void HomeActivity::onEnter()") : home.index("void HomeActivity::onExit()")]
+        loop = home[home.index("void HomeActivity::loop()") : home.index("void HomeActivity::render(RenderLock&&)")]
+
+        self.assertNotIn("loadRecentNonEpubReadingStats()", on_enter)
+        self.assertNotIn("loadBookSummary()", on_enter)
+        self.assertIn("bookSummaryPending", on_enter)
+        self.assertIn("firstRenderDone", loop)
+        self.assertIn("!homeInputHeld", loop)
+        self.assertIn("loadRecentNonEpubReadingStats()", loop)
+        self.assertIn("loadBookSummary()", loop)
+
+    def test_home_reuses_verified_xtc_for_deferred_cover_generation(self):
+        home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        stats = home[home.index("bool HomeActivity::loadRecentNonEpubReadingStats") :]
+        loop = home[home.index("void HomeActivity::loop()") : home.index("void HomeActivity::render(RenderLock&&)")]
+        selection = home[home.index("void HomeActivity::onSelectBook") :
+                         home.index("void HomeActivity::onFileBrowserOpen")]
+        preparation = home[
+            home.index("HomeActivity::SourcePreparationResult HomeActivity::stepPreparedXtc") :
+            home.index("HomeActivity::SourcePreparationResult HomeActivity::stepRecentNonEpubSummarySource")
+        ]
+
+        self.assertIn("preparedXtc->stepLoad(XTC_RECORDS_PER_STEP, SOURCE_FINGERPRINT_BYTES_PER_STEP)", preparation)
+        self.assertIn("preparedXtc->getSourceIdentity(currentIdentity)", stats)
+        self.assertIn("stepPreparedXtc(path)", loop)
+        self.assertIn("preparedXtc->beginThumbnailPreparation", loop)
+        self.assertIn("preparedXtc->stepThumbnailPreparation(1024, 8)", loop)
+        self.assertIn("preparedXtc->getSourceIdentityHandoff(preparedIdentity)", selection)
+        self.assertIn("preparedTxt->getSourceIdentityHandoff(preparedIdentity)", selection)
+        self.assertNotIn("xtc->load()", loop)
+
+    def test_library_hands_only_the_selected_prepared_xtc_identity_to_reader(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        queue = recent[recent.index("void RecentBooksActivity::processCoverQueue") :
+                       recent.index("int RecentBooksActivity::noticeHeight")]
+        opening = recent[recent.index("void RecentBooksActivity::openSelectedBook") :
+                         recent.index("void RecentBooksActivity::restoreRememberedBook")]
+
+        self.assertIn("offset == coverQueueSelected", queue)
+        self.assertIn("xtc.getSourceIdentityHandoff(preparedIdentity)", queue)
+        self.assertIn("xtc.stepThumbnailPreparation(1024, 8)", queue)
+        self.assertIn("preparedXtcSourceIdentity->path == path", opening)
+        self.assertIn("openBookWithFeedback(path, ReaderOpenOrigin::Default, false, reusableIdentity)", opening)
+
+    def test_file_browser_scans_cooperatively_with_explicit_bounds(self):
+        browser = (REPO_ROOT / "src/activities/home/FileBrowserActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/home/FileBrowserActivity.h").read_text(encoding="utf-8")
+        on_enter = browser[browser.index("void FileBrowserActivity::onEnter()") : browser.index("void FileBrowserActivity::onExit()")]
+        loop = browser[browser.index("void FileBrowserActivity::loop()") : browser.index("std::string getFileName")]
+
+        self.assertIn("MAX_FILE_ENTRIES", browser)
+        self.assertIn("MAX_FILE_NAME_BYTES", browser)
+        self.assertIn("stepFileLoad(FILE_SCAN_ENTRIES_PER_TICK)", loop)
+        self.assertIn("filesLoading", header)
+        self.assertIn("filesTruncated", header)
+        self.assertNotIn("for (auto file = root.openNextFile()", on_enter)
+
+    def test_bmp_viewer_displays_before_bounded_cooperative_sibling_scan(self):
+        viewer = (REPO_ROOT / "src/activities/util/BmpViewerActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/util/BmpViewerActivity.h").read_text(encoding="utf-8")
+        on_enter = viewer[viewer.index("void BmpViewerActivity::onEnter()") :
+                          viewer.index("void BmpViewerActivity::onExit()")]
+        step = viewer[viewer.index("bool BmpViewerActivity::stepSiblingImageScan") :
+                      viewer.index("void BmpViewerActivity::finishSiblingImageScan")]
+        loop = viewer[viewer.index("void BmpViewerActivity::loop()") :]
+
+        self.assertNotIn("openNextFile", on_enter)
+        self.assertLess(on_enter.index("renderer.displayBuffer"), on_enter.index("beginSiblingImageScan()"))
+        self.assertLess(on_enter.index("finishReaderOpenMetric"), on_enter.index("beginSiblingImageScan()"))
+        self.assertIn("scanned < maxEntries", step)
+        self.assertIn("MAX_SIBLING_IMAGES", step)
+        self.assertIn("MAX_SIBLING_NAME_BYTES", step)
+        self.assertIn("std::lower_bound", step)
+        self.assertNotIn("sortFileList", viewer)
+        self.assertIn("stepSiblingImageScan(SIBLING_SCAN_ENTRIES_PER_TICK)", loop)
+        self.assertIn("return siblingScanActive || navigationHintsPending", header)
+
+    def test_text_settings_only_retries_failed_saves_at_navigation_boundaries(self):
+        text_settings = (REPO_ROOT / "src/activities/settings/TextSettingsActivity.cpp").read_text(encoding="utf-8")
+        settings = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
+        persist = text_settings[text_settings.index("void TextSettingsActivity::persistSettings()") :
+                                text_settings.index("void TextSettingsActivity::rebuildFontOptions()")]
+        loop = text_settings[text_settings.index("void TextSettingsActivity::loop()") :
+                             text_settings.index("void TextSettingsActivity::invalidatePreviewLocked()")]
+        text_action = settings[settings.index("case SettingAction::TextSettings:") :
+                               settings.index("case SettingAction::SleepSettings:")]
+
+        self.assertIn("settingsSavePending_ = !SETTINGS.saveToFile()", persist)
+        self.assertIn("if (settingsSavePending_) persistSettings();", loop)
+        self.assertNotIn("SETTINGS.saveToFile()", loop)
+        self.assertNotIn("SETTINGS.saveToFile()", text_action)
+
+    def test_xtc_thumbnail_pair_advances_source_and_output_in_bounded_steps(self):
+        xtc = (REPO_ROOT / "lib/Xtc/Xtc.cpp").read_text(encoding="utf-8")
+        pair = xtc[xtc.index("class Xtc::ThumbnailPairJob") : xtc.index("Xtc::Xtc(std::string path")]
+
+        self.assertIn("MAX_THUMBNAIL_SOURCE_CHUNK", pair)
+        self.assertIn("sourceFile.read(firstChunk.data(), wanted)", pair)
+        self.assertIn("secondPlaneFile.read(secondChunk.data(), wanted)", pair)
+        self.assertIn("writeOutputRows(maxOutputRows)", pair)
+        self.assertNotIn("malloc(bitmapSize)", pair)
+
+    def test_x3_xtc_reader_streams_without_a_full_page_buffer(self):
+        activity = (REPO_ROOT / "src/activities/reader/XtcReaderActivity.cpp").read_text(encoding="utf-8")
+        one_bit = activity[activity.index("if (nativeX4Portrait)") : activity.index("bool XtcReaderActivity::saveProgress")]
+
+        self.assertIn("book->loadPageStreaming", one_bit)
+        self.assertIn("sourceRowBytes * 8U", one_bit)
+        self.assertNotIn("book->loadPage(page", one_bit)
+        self.assertNotIn("malloc(pageBufferSize)", one_bit)
+
+    def test_reader_open_reuses_verified_primary_source_identity(self):
+        reader = (REPO_ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
+        epub = reader[reader.index("std::unique_ptr<Epub> ReaderActivity::loadEpub") :
+                      reader.index("bool ReaderActivity::beginXtcLoad")]
+        begin_epub = reader[reader.index("bool ReaderActivity::beginEpubLoad") :
+                            reader.index("bool ReaderActivity::finishEpubLoad")]
+        xtc = reader[reader.index("bool ReaderActivity::finishXtcLoad") :
+                     reader.index("bool ReaderActivity::beginTxtLoad")]
+        begin_xtc = reader[reader.index("bool ReaderActivity::beginXtcLoad") :
+                           reader.index("bool ReaderActivity::finishXtcLoad")]
+        begin_txt = reader[reader.index("bool ReaderActivity::beginTxtLoad") :
+                           reader.index("bool ReaderActivity::finishTxtLoad")]
+        txt = reader[reader.index("bool ReaderActivity::finishTxtLoad") :
+                     reader.index("void ReaderActivity::cancelCooperativeOpen")]
+
+        self.assertIn("recoverInterruptedBookFileReplacement(path, &recoveredIdentity", begin_epub)
+        self.assertIn("makeUniqueNoThrow<Epub>(path, \"/.crosspoint\", verifiedEpubIdentity)", epub)
+        self.assertIn("ZipSourceIdentityJob", reader)
+        self.assertIn("loadForCooperativeSourceCheck", epub)
+        self.assertNotIn("ZipFile::getSourceIdentity", epub)
+        self.assertIn("inspectSourceBindingForLoad()", epub)
+        self.assertIn("if (bindingStatus != Epub::SourceBindingStatus::Match)", epub)
+        self.assertGreaterEqual(begin_epub.count("hasBookFileReplacementArtifacts(path)"), 2)
+        self.assertIn("preparedSourceIdentity->matchesOpenFile(path, preparedFile)", begin_epub)
+        self.assertIn("Storage.probeMedia()", begin_epub)
+        self.assertIn("return finishEpubLoad(preparedSourceIdentity->identity)", begin_epub)
+        for loader in (xtc, txt):
+            self.assertIn("identityStatus == SourceIdentityStore::LoadStatus::Primary", loader)
+            self.assertIn("if (!identityAlreadyPrimary)", loader)
+        for loader in (begin_xtc, begin_txt):
+            self.assertGreaterEqual(loader.count("hasBookFileReplacementArtifacts(path)"), 2)
+            self.assertIn("Storage.probeMedia()", loader)
+            self.assertIn("beginLoad(reusableIdentity)", loader)
+
+    def test_xtc_cover_generation_waits_for_first_page_and_idle_input(self):
+        reader = (REPO_ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
+        xtc_loader = reader[reader.index("bool ReaderActivity::finishXtcLoad") :
+                            reader.index("bool ReaderActivity::beginTxtLoad")]
+        activity = (REPO_ROOT / "src/activities/reader/XtcReaderActivity.cpp").read_text(encoding="utf-8")
+        pump = activity[activity.index("void XtcReaderActivity::pumpDeferredCoverPreparation") :
+                        activity.index("void XtcReaderActivity::openGoToPage")]
+        loop = activity[activity.index("void XtcReaderActivity::loop()") :
+                        activity.index("bool XtcReaderActivity::handleReaderShortcut")]
+
+        self.assertNotIn("generateThumbBmpPair", xtc_loader)
+        self.assertIn("deferCoverPreparation = needsShared || needsCarousel", xtc_loader)
+        self.assertIn("lastSuccessfullyRenderedPage.load", pump)
+        self.assertIn("RenderLock lock(std::try_to_lock)", pump)
+        self.assertIn("beginThumbnailPreparation", pump)
+        self.assertIn("stepThumbnailPreparation(1024, 8)", pump)
+        self.assertIn("ThumbnailPreparationStatus::InProgress) return", pump)
+        self.assertIn("const bool inputEdge = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()", loop)
+        self.assertIn("!inputEdge && !readerInputHeld", loop)
+        self.assertIn("pumpDeferredCoverPreparation()", loop)
+
+    def test_txt_and_xtc_reader_open_runs_in_bounded_cancellable_steps(self):
+        reader = (REPO_ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/ReaderActivity.h").read_text(encoding="utf-8")
+        pump = reader[reader.index("void ReaderActivity::pumpCooperativeOpen") :
+                      reader.index("void ReaderActivity::goToLibrary")]
+
+        self.assertIn("openingXtc->stepLoad(RECORDS_PER_STEP, FINGERPRINT_BYTES_PER_STEP)", pump)
+        self.assertIn("openingTxt->stepLoad(FINGERPRINT_BYTES_PER_STEP)", pump)
+        self.assertIn("openingEpub->stepCacheInspection(CACHE_ENTRIES_PER_STEP)", pump)
+        self.assertIn("openingEpub->stepIndexing()", pump)
+        self.assertIn("mappedInput.wasPressed(MappedInputManager::Button::Back)", pump)
+        self.assertIn("cancelCooperativeOpen()", pump)
+        self.assertIn("openingEpubFrameBufferLoan.reset()", pump)
+        self.assertIn("openingEpub->cancelCacheInspection()", reader)
+        self.assertIn("openingEpub->cancelIndexing()", reader)
+        self.assertIn(
+            "bool skipLoopDelay() override { return openingXtc || openingTxt || openingEpubIdentityJob || openingEpub; }",
+            header,
+        )
+
+    def test_home_library_and_reader_share_cooperative_epub_preparation(self):
+        epub = (REPO_ROOT / "lib/Epub/Epub.cpp").read_text(encoding="utf-8")
+        home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        library = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        reader = (REPO_ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
+
+        home_prepare = home[home.index("HomeActivity::SourcePreparationResult HomeActivity::stepPreparedEpub") :
+                            home.index("HomeActivity::SourcePreparationResult HomeActivity::stepPreparedXtc")]
+        library_covers = library[library.index("void RecentBooksActivity::processCoverQueue") :
+                                  library.index("int RecentBooksActivity::noticeHeight")]
+        thumbnail_begin = epub[epub.index("Epub::ThumbnailPreparationStatus Epub::beginThumbnailPreparation") :
+                               epub.index("Epub::ThumbnailPreparationStatus Epub::stepThumbnailPreparation")]
+        reader_pump = reader[reader.index("void ReaderActivity::pumpCooperativeOpen") :
+                             reader.index("void ReaderActivity::goToLibrary")]
+
+        self.assertIn("beginCoreMetadataRead()", home_prepare)
+        self.assertIn("stepCoreMetadataRead(metadata)", home_prepare)
+        self.assertIn("getSourceIdentityHandoff(preparedIdentity)", home)
+        self.assertIn("beginCoreMetadataRead()", library_covers)
+        self.assertIn("stepCoreMetadataRead(metadata)", library_covers)
+        self.assertIn("preparedEpubSourceIdentity", library_covers)
+        self.assertIn("ThumbnailPreparationStatus::NeedsCoreMetadata", thumbnail_begin)
+        self.assertNotIn("readCoreMetadata(", thumbnail_begin)
+        self.assertIn("openingEpubFinalIdentityCheck = true", reader)
+        self.assertIn("identity != openingEpubExpectedIdentity", reader_pump)
+
+    def test_xtc_reader_defers_saved_items_until_they_are_needed(self):
+        activity = (REPO_ROOT / "src/activities/reader/XtcReaderActivity.cpp").read_text(encoding="utf-8")
+        on_enter = activity[activity.index("void XtcReaderActivity::onEnter()") :
+                            activity.index("void XtcReaderActivity::onExit()")]
+        menu = activity[activity.index("void XtcReaderActivity::openReaderMenu()") :
+                        activity.index("void XtcReaderActivity::pumpDeferredCoverPreparation")]
+        chapters = activity[activity.index("void XtcReaderActivity::openChapterSelection()") :
+                            activity.index("void XtcReaderActivity::loop()")]
+        toggle = activity[activity.index("bool XtcReaderActivity::toggleBookmark()") :
+                          activity.index("void XtcReaderActivity::openSavedItems()")]
+
+        self.assertNotIn("loadBookmarks()", on_enter)
+        self.assertNotIn("getChapters()", on_enter)
+        self.assertIn("ensureBookmarksLoaded()", menu)
+        self.assertIn("const bool hasChapters = xtc->hasChapters()", menu)
+        self.assertNotIn("getChapters()", menu)
+        self.assertIn("RenderLock lock", chapters)
+        self.assertIn("getChapters()", chapters)
+        self.assertIn("ensureBookmarksLoaded()", toggle)
+
+    def test_reader_open_recovers_completion_once_and_skips_unchanged_json_writes(self):
+        reader = (REPO_ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
+        dispatch = reader[reader.index("void ReaderActivity::onEnter()") : reader.index("void ReaderActivity::onGoBack")]
+        move = (REPO_ROOT / "src/util/BookPathMoveUtils.cpp").read_text(encoding="utf-8")
+        recovery = move[move.index("bool recoverInterruptedBookFileReplacement") :
+                        move.index("BookFilePublishResult publishStagedBookFile")]
+        recent = (REPO_ROOT / "src/RecentBooksStore.cpp").read_text(encoding="utf-8")
+        add_recent = recent[recent.index("void RecentBooksStore::addBook") :
+                            recent.index("void RecentBooksStore::updateBook")]
+
+        self.assertEqual(dispatch.count("ReadingStatsCompletionTransaction::recoverPending()"), 1)
+        self.assertIn("if (!completionStatsAlreadyRecovered)", dispatch)
+        self.assertIn("completionStatsWritableAtOpen = completionRecovery !=", dispatch)
+        home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("ReaderOpenOrigin::HomeRecent, completionStatsAlreadyRecovered", home)
+        self.assertIn("!completionTransactionResolved && !canDeleteOrRelocateBookFile(bookPath)", recovery)
+        for name in ("EpubReaderActivity", "TxtReaderActivity", "XtcReaderActivity"):
+            activity = (REPO_ROOT / f"src/activities/reader/{name}.cpp").read_text(encoding="utf-8")
+            on_enter = activity[activity.index(f"void {name}::onEnter()") :
+                                activity.index(f"void {name}::onExit()")]
+            self.assertNotIn("recoverPending()", on_enter)
+            self.assertIn("completionStatsWritableAtOpen", on_enter)
+            self.assertIn("if (APP_STATE.openEpubPath !=", on_enter)
+
+        self.assertIn("const RecentBook& current = recentBooks.front()", add_recent)
+        self.assertIn("current.coverBmpPath == coverBmpPath", add_recent)
+        self.assertLess(add_recent.index("current.coverBmpPath == coverBmpPath"), add_recent.index("recentBooks.erase"))
+
+    def test_txt_reuses_valid_v2_progress_after_page_index_cache_miss(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
+        preflight = reader[reader.index("uint32_t TxtReaderActivity::initialPageIndexTarget") :
+                           reader.index("int TxtReaderActivity::estimatedTotalPages")]
+        load = reader[reader.index("void TxtReaderActivity::loadProgress()") :
+                      reader.index("bool TxtReaderActivity::loadPageIndexCache()")]
+
+        self.assertIn("std::optional<uint32_t> initialProgressOffset;", header)
+        self.assertIn("initialProgressOffset = savedValue;", preflight)
+        self.assertIn("decoded == ProgressFileCodec::TxtDecodeStatus::LegacyPage", preflight)
+        self.assertLess(load.index("if (initialProgressOffset)"), load.index("ProgressFile::loadTxt"))
+        self.assertIn("initialProgressOffset.reset();", load)
+        self.assertGreaterEqual(load.count("ProgressFile::loadTxt"), 2)
+
     def test_txt_bom_and_saved_offsets_fail_closed(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
@@ -483,7 +840,10 @@ class CodegenTest(unittest.TestCase):
         helper = reader[reader.index("bool TxtReaderActivity::jumpToStoredByteOffset") :]
         helper = helper[: helper.index("\n}") + 2]
         self.assertIn("byteOffset >= txt->getFileSize()", helper)
-        self.assertGreaterEqual(reader.count("jumpToStoredByteOffset("), 5)
+        initialization = reader[reader.index("void TxtReaderActivity::finishReaderInitialization") :
+                                reader.index("bool TxtReaderActivity::ensureContentReadSession")]
+        self.assertIn("initialBookmarkJump->textByteOffset >= txt->getFileSize()", initialization)
+        self.assertGreaterEqual(reader.count("jumpToStoredByteOffset("), 4)
 
     def test_thick_rectangle_border_stays_inside_declared_bounds(self):
         renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")
@@ -703,6 +1063,17 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("esp_task_wdt_add(nullptr)", source)
         self.assertNotIn("esp_task_wdt_delete(nullptr)", source)
 
+    def test_serial_command_input_is_static_bounded_and_nonblocking(self):
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        pump = main[main.index("void pumpSerialCommands()") : main.index("void loop()")]
+        self.assertIn("char serialCommandBuffer[SERIAL_COMMAND_MAX_BYTES + 1]", main)
+        self.assertIn("SERIAL_BYTES_PER_LOOP = 32", main)
+        self.assertIn("processed < SERIAL_BYTES_PER_LOOP", pump)
+        self.assertIn("discardSerialCommand = true", pump)
+        self.assertIn("if (byte == '\\n')", pump)
+        self.assertNotIn("readStringUntil", main)
+        self.assertNotIn("String line", main)
+
     def test_settings_page_serializes_large_api_requests_and_yields_between_chunks(self):
         page = (REPO_ROOT / "src/network/html/SettingsPage.html").read_text(encoding="utf-8")
         server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
@@ -736,8 +1107,28 @@ class CodegenTest(unittest.TestCase):
         # Counting a second unlocked pre-check would reintroduce the section race.
         self.assertGreaterEqual(reader.count("buildTickHeapGate()"), 2)
         self.assertIn("RenderLock lock(std::try_to_lock);", reader)
-        self.assertIn("lock.ownsLock() && section && section->isBuilding()", reader)
+        self.assertIn("if (lock.ownsLock())", reader)
+        self.assertIn("section && section->isBuilding() && withinBuildWindow", reader)
+        self.assertIn("(requiredBuild || buildTickHeapGate())", reader)
         self.assertGreaterEqual(reader.count("ImageBlock::setExtractor(nullptr, nullptr)"), 3)
+
+    def test_epub_next_page_image_extraction_is_bounded_and_outside_render(self):
+        epub = (REPO_ROOT / "lib/Epub/Epub.cpp").read_text(encoding="utf-8")
+        page = (REPO_ROOT / "lib/Epub/Epub/Page.h").read_text(encoding="utf-8")
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        preparation = epub[epub.index("Epub::ImagePreparationStatus Epub::beginImagePreparation") :
+                           epub.index("bool Epub::getItemSize")]
+        pump = reader[reader.index("bool EpubReaderActivity::pumpImagePreparation") :
+                      reader.index("void EpubReaderActivity::recordReadingSample")]
+        render = reader[reader.index("void EpubReaderActivity::render(RenderLock&&") :]
+        self.assertIn("imageStreamJob->begin", preparation)
+        self.assertIn("4096", preparation)
+        self.assertIn("StagedFileTransaction::publish", preparation)
+        self.assertIn("nextMissingImage", page)
+        self.assertIn("section->currentPage + 1", pump)
+        self.assertIn("epub->stepImagePreparation()", pump)
+        self.assertIn("RenderLock lock(std::try_to_lock);", pump)
+        self.assertIn("cancelImagePreparation();", render[:300])
 
     def test_home_never_decodes_an_original_epub_cover(self):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
@@ -753,14 +1144,45 @@ class CodegenTest(unittest.TestCase):
 
     def test_initial_epub_indexing_replaces_the_opening_popup(self):
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
-        self.assertRegex(
-            reader,
-            r"if \(needsFullBuild\) \{\s+renderer\.clearScreen\(\);\s+GUI\.drawPopup\(renderer, tr\(STR_INDEXING\)\);",
-        )
+        self.assertIn("bool showPopup = pendingPercentJump;", reader)
         self.assertRegex(
             reader,
             r"if \(showPopup\) \{\s+renderer\.clearScreen\(\);\s+GUI\.drawPopup\(renderer, tr\(STR_INDEXING\)\);",
         )
+
+    def test_epub_cold_extract_and_landing_are_cooperative(self):
+        section = (REPO_ROOT / "lib/Epub/Epub/Section.cpp").read_text(encoding="utf-8")
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        start_build = section[section.index("bool Section::startBuild") : section.index("bool Section::beginParser")]
+        extraction = section[section.index("Section::HtmlExtractionStep Section::stepHtmlExtraction") :
+                             section.index("bool Section::buildSomeMore")]
+        render = reader[reader.index("void EpubReaderActivity::render(RenderLock&&") :
+                        reader.index("bool EpubReaderActivity::applyDeferredReposition")]
+
+        self.assertNotIn("readItemContentsToStream", start_build)
+        self.assertIn("htmlStreamJob.step()", extraction)
+        self.assertEqual(render.count("section->buildSomeMore("), 1)
+        self.assertIn("sectionLandingPending = true;", render)
+        self.assertIn("sectionRenderWaiting = true;", render)
+        self.assertIn("requestedSectionPageReady()", reader)
+
+    def test_epub_page_lut_growth_is_nothrow_and_heap_bounded(self):
+        header = (REPO_ROOT / "lib/Epub/Epub/Section.h").read_text(encoding="utf-8")
+        section = (REPO_ROOT / "lib/Epub/Epub/Section.cpp").read_text(encoding="utf-8")
+        lut_growth = section[section.index("bool Section::PageLut::ensureAppendCapacity") :
+                             section.index("uint32_t Section::onPageComplete")]
+        start_build = section[section.index("bool Section::startBuild") :
+                              section.index("bool Section::beginParser")]
+        build_more = section[section.index("bool Section::buildSomeMore") :
+                             section.index("bool Section::hasHtmlCache")]
+
+        self.assertNotIn("std::vector<PageLutEntry>", header)
+        self.assertIn("struct PageLut", header)
+        self.assertIn("makeUniqueNoThrow<PageLutEntry[]>", lut_growth)
+        self.assertIn("MemoryBudget::hasContiguousHeadroom", lut_growth)
+        self.assertIn("if (!ctxPtr->lut.ensureAppendCapacity())", start_build)
+        self.assertIn("callbackFailure = EpubBuildStatus::OutOfMemory", start_build)
+        self.assertIn("if (build_->callbackFailure != EpubBuildStatus::Ok)", build_more)
 
     def test_home_cover_loading_message_is_epub_only(self):
         theme = (REPO_ROOT / "src/components/themes/crossvi/CrossViTheme.cpp").read_text(encoding="utf-8")
@@ -843,7 +1265,7 @@ class CodegenTest(unittest.TestCase):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
         sleep = main[main.index("void enterDeepSleep") : main.index("void setupDisplayAndFonts")]
         self.assertLess(sleep.index("saveSleepFrameBuffer();"), sleep.index("activityManager.goToSleep"))
-        screenshot = main[main.index('if (cmd == "SCREENSHOT")') :]
+        screenshot = main[main.index("void handleSerialCommand") : main.index("void pumpSerialCommands")]
         self.assertLess(screenshot.index("RenderLock lock;"), screenshot.index("display.getFrameBuffer()"))
         self.assertIn("if (buf)", screenshot)
         self.assertIn("SCREENSHOT_ERROR:BUSY", screenshot)
@@ -930,6 +1352,25 @@ class CodegenTest(unittest.TestCase):
         failed_save = update[update.index("if (!saveToFile())") :]
         self.assertIn("*it = std::move(previous);", failed_save)
 
+    def test_recent_book_missing_checks_stay_off_first_frame_and_reader_open(self):
+        store = (REPO_ROOT / "src/RecentBooksStore.cpp").read_text(encoding="utf-8")
+        add = store[store.index("void RecentBooksStore::addBook") : store.index("void RecentBooksStore::updateBook")]
+        step = store[store.index("RecentBooksStore::PruneStepResult RecentBooksStore::pruneMissingStep") :
+                     store.index("RecentBook RecentBooksStore::getDataFromBook")]
+        home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        load = home[home.index("void HomeActivity::loadRecentBooks") : home.index("void HomeActivity::loadBookSummary")]
+        maintenance = home[home.index("void HomeActivity::processRecentBooksMaintenance") :
+                           home.index("void HomeActivity::loop()")]
+        loop = home[home.index("void HomeActivity::loop()") : home.index("void HomeActivity::render(RenderLock&&)")]
+
+        self.assertNotIn("pruneMissing()", add)
+        self.assertNotIn("isMissing", load)
+        self.assertIn("pruneMissingStep(recentPruneIndex, pinnedPruneIndex", maintenance)
+        self.assertIn("processRecentBooksMaintenance()", loop)
+        self.assertIn("if (Storage.exists(path.c_str()))", step)
+        self.assertIn("if (!Storage.probeMedia())", step)
+        self.assertIn("if (!saveToFile())", step)
+
     def test_empty_file_name_uses_generic_icon_without_reading_past_the_string(self):
         theme = (REPO_ROOT / "src/components/UITheme.cpp").read_text(encoding="utf-8")
         get_icon = theme[theme.index("UIIcon UITheme::getFileIcon") : theme.index("int UITheme::getStatusBarHeight")]
@@ -988,7 +1429,10 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("handleGlobalShortcut(GlobalShortcut::RefreshScreen)", reader_double)
 
         self.assertIn("SettingInfo::DynamicEnum(\n        StrId::STR_TILT_SENSOR", settings)
-        self.assertIn("{StrId::STR_DISABLED, StrId::STR_TILT_PAGE_TURN}", settings)
+        self.assertIn("StrId::STR_TILT_PAGE_TURN_REVERSED", settings)
+        self.assertIn("TiltPageTurnPolicy::settingOptionForMode(SETTINGS.tiltPageTurn)", settings)
+        self.assertIn("TiltPageTurnPolicy::modeForSettingOption(value)", settings)
+        self.assertIn("SettingInfo::DynamicEnum(\n                               StrId::STR_TILT_PAGE_TURN", settings_list)
         self.assertNotIn("TiltSensorSettings", settings)
         self.assertNotIn("Page::TiltSensor", submenu)
 
@@ -1072,6 +1516,29 @@ class CodegenTest(unittest.TestCase):
             save = source[source.index(save_signature) : source.index(next_signature)]
             self.assertIn("storageAllowsPublish", save)
             self.assertNotIn("loadEnvelopePath", save)
+
+    def test_reader_secondary_state_waits_for_first_visible_page(self):
+        for filename, class_name in (
+                ("EpubReaderActivity.cpp", "EpubReaderActivity"),
+                ("TxtReaderActivity.cpp", "TxtReaderActivity"),
+                ("XtcReaderActivity.cpp", "XtcReaderActivity")):
+            source = (REPO_ROOT / "src/activities/reader" / filename).read_text(encoding="utf-8")
+            on_enter = source[source.index(f"void {class_name}::onEnter()") :
+                              source.index(f"void {class_name}::onExit()")]
+            deferred = source[source.index(f"void {class_name}::finishDeferredOpenState()") :
+                              source.index(f"void {class_name}::consumeReadingViewSignal()")]
+            consume = source[source.index(f"void {class_name}::consumeReadingViewSignal()") :]
+            loop = source[source.index(f"void {class_name}::loop()") :]
+
+            self.assertIn("APP_STATE.saveToFile()", on_enter)
+            self.assertNotIn("GlobalReadingStats::load", on_enter)
+            self.assertNotIn("RECENT_BOOKS.addBook", on_enter)
+            self.assertIn("GlobalReadingStats::load", deferred)
+            self.assertIn("RECENT_BOOKS.addBook", deferred)
+            self.assertIn("deferredOpenStateReady = true;", consume)
+            self.assertIn("if (!deferredOpenStatePending || !deferredOpenStateReady) return;", deferred)
+            self.assertIn("finishDeferredOpenState();", loop)
+            self.assertIn("deferredGlobalPageTurns", source)
 
     def test_safe_hot_paths_do_not_clear_or_copy_overwritten_storage(self):
         clipping = (REPO_ROOT / "src/clippings/ClippingPageTools.h").read_text(encoding="utf-8")

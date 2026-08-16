@@ -39,6 +39,7 @@ class HalFile : public Print {
   bool seekCur(int64_t offset);
   int available() const;
   size_t position() const;
+  bool getModifyDateTime(uint16_t* date, uint16_t* time) const;
   uint8_t getError() const { return error_ ? 1 : 0; }
   int read(void* destination, size_t length);
   int read() {
@@ -81,6 +82,7 @@ class HalStorage {
       failRemovePath_.clear();
       return false;
     }
+    modified_.erase(path);
     return files_.erase(path) != 0;
   }
   bool removeDir(const char* path) {
@@ -142,6 +144,11 @@ class HalStorage {
     }
     if (files_.count(to) != 0 || directories_.count(to) != 0) return false;
     files_[to] = found->second;
+    const auto modified = modified_.find(from);
+    if (modified != modified_.end()) {
+      modified_[to] = modified->second;
+      modified_.erase(modified);
+    }
     files_.erase(found);
     if ((corruptRename_ || corruptRenameDestination_ == to) && !files_[to].empty()) {
       corruptRename_ = false;
@@ -168,6 +175,7 @@ class HalStorage {
     ++openWriteAttempts_[path];
     if (unwritable_.count(path)) return false;
     files_[path].clear();
+    modified_[path] = ++modifiedClock_;
     file = makeFile(path, true);
     return true;
   }
@@ -194,14 +202,20 @@ class HalStorage {
     corruptRenameDestination_.clear();
     growOnReadCall_ = 0;
     readCalls_ = 0;
+    seekCalls_ = 0;
     maxRead_ = 0;
     invalidOperations_ = 0;
     openReadAttempts_.clear();
     openWriteAttempts_.clear();
     failOpenReadAttempt_.clear();
     reportedSizes_.clear();
+    modified_.clear();
+    modifiedClock_ = 0;
   }
-  void setFile(const std::string& path, std::vector<uint8_t> data) { files_[path] = std::move(data); }
+  void setFile(const std::string& path, std::vector<uint8_t> data) {
+    files_[path] = std::move(data);
+    modified_[path] = ++modifiedClock_;
+  }
   void setDirectory(const std::string& path) { directories_.insert(path); }
   std::vector<uint8_t>& mutableFile(const std::string& path) { return files_.at(path); }
   const std::vector<uint8_t>& file(const std::string& path) const { return files_.at(path); }
@@ -224,6 +238,16 @@ class HalStorage {
   void growOnReadCall(size_t call) { growOnReadCall_ = call; }
   void reportFileSize(const std::string& path, const uint64_t size) { reportedSizes_[path] = size; }
   size_t maxRead() const { return maxRead_; }
+  size_t readCalls() const { return readCalls_; }
+  size_t seekCalls() const { return seekCalls_; }
+  void resetIoCounters() {
+    growOnReadCall_ = 0;
+    readCalls_ = 0;
+    seekCalls_ = 0;
+    maxRead_ = 0;
+    openReadAttempts_.clear();
+    openWriteAttempts_.clear();
+  }
   size_t invalidOperationCount() const { return invalidOperations_; }
   size_t openReadAttemptsFor(const std::string& path) const {
     const auto found = openReadAttempts_.find(path);
@@ -253,12 +277,15 @@ class HalStorage {
   std::string corruptRenameDestination_;
   size_t growOnReadCall_ = 0;
   size_t readCalls_ = 0;
+  size_t seekCalls_ = 0;
   size_t maxRead_ = 0;
   size_t invalidOperations_ = 0;
   std::map<std::string, size_t> openReadAttempts_;
   std::map<std::string, size_t> openWriteAttempts_;
   std::map<std::string, size_t> failOpenReadAttempt_;
   std::map<std::string, uint64_t> reportedSizes_;
+  std::map<std::string, uint32_t> modified_;
+  uint32_t modifiedClock_ = 0;
 
   HalFile makeFile(const std::string& path, bool writable) {
     HalFile file;
@@ -288,12 +315,22 @@ inline size_t HalFile::position() const {
   return position_;
 }
 
+inline bool HalFile::getModifyDateTime(uint16_t* date, uint16_t* time) const {
+  if (!open_ || !storage_ || !date || !time) return false;
+  const auto found = storage_->modified_.find(path_);
+  if (found == storage_->modified_.end()) return false;
+  *date = static_cast<uint16_t>(found->second >> 16U);
+  *time = static_cast<uint16_t>(found->second);
+  return true;
+}
+
 inline bool HalFile::seek(const size_t position) {
   if (!open_ || !storage_) {
     ++HalStorage::getInstance().invalidOperations_;
     return false;
   }
   if (position > size()) return false;
+  ++storage_->seekCalls_;
   position_ = position;
   return true;
 }

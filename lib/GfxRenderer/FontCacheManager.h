@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -56,7 +57,8 @@ class FontCacheManager {
 
   enum class ScanMode : uint8_t { None, Scanning };
   ScanMode scanMode_ = ScanMode::None;
-  std::string scanText_;
-  uint32_t scanStyleCounts_[4] = {};
-  int scanFontId_ = -1;
+  std::array<std::string, 4> scanTextByStyle_;
+  // Font IDs are signed hashes and valid built-ins can be negative. Zero is
+  // reserved repository-wide as the "font not found" sentinel.
+  int scanFontId_ = 0;
 };

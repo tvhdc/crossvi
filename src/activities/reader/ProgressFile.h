@@ -203,6 +203,54 @@ inline bool removeIfPresent(const std::string& path) {
   return !Storage.exists(path.c_str()) || Storage.remove(path.c_str());
 }
 
+inline bool publishVerified(const std::string& primaryPath, const std::string& backupPath, const std::string& tempPath,
+                            const uint8_t* data, const size_t len, const bool primaryIsValid) {
+  if (!writeVerified(tempPath, data, len)) {
+    LOG_ERR("PRG", "Could not fully write, sync, and verify temp progress file: %s", tempPath.c_str());
+    removeIfPresent(tempPath);
+    return false;
+  }
+
+  bool rotated = false;
+  if (primaryIsValid) {
+    if (!removeIfPresent(backupPath) || !Storage.rename(primaryPath.c_str(), backupPath.c_str())) {
+      LOG_ERR("PRG", "Could not rotate progress backup: %s", primaryPath.c_str());
+      removeIfPresent(tempPath);
+      return false;
+    }
+    rotated = true;
+  } else if (!removeIfPresent(primaryPath)) {
+    LOG_ERR("PRG", "Could not replace invalid progress file: %s", primaryPath.c_str());
+    removeIfPresent(tempPath);
+    return false;
+  }
+
+  if (!Storage.rename(tempPath.c_str(), primaryPath.c_str())) {
+    LOG_ERR("PRG", "Failed to publish temp progress file: %s", primaryPath.c_str());
+    if (rotated && !Storage.rename(backupPath.c_str(), primaryPath.c_str())) {
+      LOG_ERR("PRG", "Progress rollback remains available in backup: %s", backupPath.c_str());
+    }
+    return false;
+  }
+  if (!verifyExact(primaryPath, data, len)) {
+    LOG_ERR("PRG", "Published progress verification failed: %s", primaryPath.c_str());
+    // The caller's bytes are still resident. Recreate and verify temp before
+    // removing a bad first-ever primary, otherwise this recovery path itself
+    // could turn a media error into complete progress loss.
+    const bool tempRecovered = writeVerified(tempPath, data, len);
+    if (!tempRecovered) LOG_ERR("PRG", "Could not preserve failed publication in temp: %s", tempPath.c_str());
+    if (rotated || tempRecovered) {
+      if (!removeIfPresent(primaryPath)) {
+        LOG_ERR("PRG", "Could not remove failed progress publication: %s", primaryPath.c_str());
+      } else if (rotated && !Storage.rename(backupPath.c_str(), primaryPath.c_str())) {
+        LOG_ERR("PRG", "Progress rollback remains available in backup: %s", backupPath.c_str());
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
 struct TxtValidatorContext {
   CandidateValidator downstream;
 };
@@ -368,50 +416,8 @@ inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, const
     return false;
   }
 
-  if (!detail::writeVerified(tempPath, data, len)) {
-    LOG_ERR("PRG", "Could not fully write, sync, and verify temp progress file: %s", tempPath.c_str());
-    detail::removeIfPresent(tempPath);
-    return false;
-  }
-
-  bool rotated = false;
-  if (primary.status == detail::CandidateStatus::Valid) {
-    if (!detail::removeIfPresent(backupPath) || !Storage.rename(primaryPath.c_str(), backupPath.c_str())) {
-      LOG_ERR("PRG", "Could not rotate progress backup: %s", primaryPath.c_str());
-      detail::removeIfPresent(tempPath);
-      return false;
-    }
-    rotated = true;
-  } else if (!detail::removeIfPresent(primaryPath)) {
-    LOG_ERR("PRG", "Could not replace invalid progress file: %s", primaryPath.c_str());
-    detail::removeIfPresent(tempPath);
-    return false;
-  }
-
-  if (!Storage.rename(tempPath.c_str(), primaryPath.c_str())) {
-    LOG_ERR("PRG", "Failed to publish temp progress file: %s", primaryPath.c_str());
-    if (rotated && !Storage.rename(backupPath.c_str(), primaryPath.c_str())) {
-      LOG_ERR("PRG", "Progress rollback remains available in backup: %s", backupPath.c_str());
-    }
-    return false;
-  }
-  if (!detail::verifyExact(primaryPath, data, len)) {
-    LOG_ERR("PRG", "Published progress verification failed: %s", primaryPath.c_str());
-    // The caller's bytes are still resident. Recreate and verify temp before
-    // removing a bad first-ever primary, otherwise this recovery path itself
-    // could turn a media error into complete progress loss.
-    const bool tempRecovered = detail::writeVerified(tempPath, data, len);
-    if (!tempRecovered) LOG_ERR("PRG", "Could not preserve failed publication in temp: %s", tempPath.c_str());
-    if (rotated || tempRecovered) {
-      if (!detail::removeIfPresent(primaryPath)) {
-        LOG_ERR("PRG", "Could not remove failed progress publication: %s", primaryPath.c_str());
-      } else if (rotated && !Storage.rename(backupPath.c_str(), primaryPath.c_str())) {
-        LOG_ERR("PRG", "Progress rollback remains available in backup: %s", backupPath.c_str());
-      }
-    }
-    return false;
-  }
-  return true;
+  return detail::publishVerified(primaryPath, backupPath, tempPath, data, len,
+                                 primary.status == detail::CandidateStatus::Valid);
 }
 
 // Writes either the legacy six-byte EPUB position or the content-anchored
@@ -436,5 +442,98 @@ inline bool writeTxtAtomic(const std::string& cachePath, const uint8_t (&data)[P
   const CandidateProtector futureProtector{detail::protectsFutureTxtRecord, nullptr};
   return writeAtomic(cachePath, data, sizeof(data), formatValidator, futureProtector);
 }
+
+// A reader-session writer may skip rescanning recovery siblings only after it
+// has published and byte-verified the current primary itself. The primary is
+// reverified on every save; any mutation, transaction artefact, or failed write
+// falls back to the full recovery-aware path on the next attempt.
+class WriteSession {
+ public:
+  void invalidate() {
+    trusted_ = false;
+    committedSize_ = 0;
+    cachePath_.clear();
+  }
+
+  bool writeAtomic(const std::string& cachePath, const uint8_t* data, const size_t len,
+                   const CandidateValidator validator = {}) {
+    bool attemptedFastPath = false;
+    bool success = tryFastPath(cachePath, data, len, validator, {}, false, attemptedFastPath);
+    if (!attemptedFastPath) success = ProgressFile::writeAtomic(cachePath, data, len, validator);
+    return finish(cachePath, data, len, success);
+  }
+
+  bool writeEpubAtomic(const std::string& cachePath, const uint8_t* data, const size_t len,
+                       const CandidateValidator validator = {}) {
+    if (len != EPUB_PROGRESS_SIZE && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) {
+      invalidate();
+      return false;
+    }
+    bool attemptedFastPath = false;
+    bool success = tryFastPath(cachePath, data, len, validator, {}, false, attemptedFastPath);
+    if (!attemptedFastPath) success = ProgressFile::writeEpubAtomic(cachePath, data, len, validator);
+    return finish(cachePath, data, len, success);
+  }
+
+  bool writeTxtAtomic(const std::string& cachePath, const uint8_t (&data)[ProgressFileCodec::TXT_V2_SIZE],
+                      const CandidateValidator validator = {}) {
+    const detail::TxtValidatorContext context{validator};
+    const CandidateValidator formatValidator{detail::validateTxtRecord, &context};
+    const CandidateProtector futureProtector{detail::protectsFutureTxtRecord, nullptr};
+    bool attemptedFastPath = false;
+    bool success =
+        tryFastPath(cachePath, data, sizeof(data), formatValidator, futureProtector, true, attemptedFastPath);
+    if (!attemptedFastPath) success = ProgressFile::writeTxtAtomic(cachePath, data, validator);
+    return finish(cachePath, data, sizeof(data), success);
+  }
+
+ private:
+  bool tryFastPath(const std::string& cachePath, const uint8_t* data, const size_t len,
+                   const CandidateValidator validator, const CandidateProtector protector, const bool inspectTxtBackup,
+                   bool& attempted) const {
+    attempted = false;
+    if (!trusted_ || cachePath != cachePath_ || committedSize_ == 0 || !data ||
+        (len != 4 && len != EPUB_PROGRESS_SIZE && len != EPUB_CONTENT_ANCHORED_PROGRESS_SIZE) ||
+        !validator.accepts(data, len) || !validator.accepts(committed_.data(), committedSize_) ||
+        protector.protects(committed_.data(), committedSize_)) {
+      return false;
+    }
+
+    const std::string primaryPath = cachePath + "/progress.bin";
+    const std::string backupPath = primaryPath + ".bak";
+    const std::string tempPath = primaryPath + ".tmp";
+    if (!detail::verifyExact(primaryPath, committed_.data(), committedSize_) || Storage.exists(tempPath.c_str())) {
+      return false;
+    }
+
+    if (inspectTxtBackup) {
+      if (detail::inspectTxtVersion(backupPath) == detail::TxtVersionStatus::NewerVersion) {
+        LOG_ERR("PRG", "Refusing to overwrite newer TXT progress: %s", backupPath.c_str());
+        attempted = true;
+        return false;
+      }
+    }
+
+    attempted = true;
+    return detail::publishVerified(primaryPath, backupPath, tempPath, data, len, true);
+  }
+
+  bool finish(const std::string& cachePath, const uint8_t* data, const size_t len, const bool success) {
+    if (!success) {
+      invalidate();
+      return false;
+    }
+    cachePath_ = cachePath;
+    std::copy_n(data, len, committed_.begin());
+    committedSize_ = len;
+    trusted_ = true;
+    return true;
+  }
+
+  std::string cachePath_;
+  std::array<uint8_t, EPUB_CONTENT_ANCHORED_PROGRESS_SIZE> committed_{};
+  size_t committedSize_ = 0;
+  bool trusted_ = false;
+};
 
 }  // namespace ProgressFile

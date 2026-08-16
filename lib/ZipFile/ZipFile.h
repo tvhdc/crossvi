@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 class ZipStreamReadJob;
+class ZipSourceIdentityJob;
 
 class ZipFile {
  public:
@@ -80,6 +81,7 @@ class ZipFile {
 
  private:
   friend class ZipStreamReadJob;
+  friend class ZipSourceIdentityJob;
 
   const std::string& filePath;
   HalFile file;
@@ -182,6 +184,29 @@ class ZipFile {
   }
 };
 
+class ZipSourceIdentityJob {
+ public:
+  enum class StepStatus : uint8_t { InProgress, Done, Error };
+  struct FileStamp {
+    uint16_t modifyDate = 0;
+    uint16_t modifyTime = 0;
+    bool valid = false;
+  };
+
+  ZipSourceIdentityJob();
+  ~ZipSourceIdentityJob();
+  ZipSourceIdentityJob(const ZipSourceIdentityJob&) = delete;
+  ZipSourceIdentityJob& operator=(const ZipSourceIdentityJob&) = delete;
+
+  bool begin(const std::string& zipPath);
+  StepStatus step(size_t maxBytes, ZipFile::SourceIdentity& identity, FileStamp* fileStamp = nullptr);
+  void cancel();
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl;
+};
+
 class ZipStreamReadJob {
  public:
   enum class BeginStatus : uint8_t { Started, NotApplicable, Error };
@@ -192,7 +217,8 @@ class ZipStreamReadJob {
   ZipStreamReadJob(const ZipStreamReadJob&) = delete;
   ZipStreamReadJob& operator=(const ZipStreamReadJob&) = delete;
 
-  BeginStatus begin(const std::string& zipPath, const char* entry, Print& out, size_t chunkSize, size_t maxOutputSize);
+  BeginStatus begin(const std::string& zipPath, const char* entry, Print& out, size_t chunkSize, size_t maxOutputSize,
+                    bool allowStored = false);
   StepStatus step();
   void cancel();
 

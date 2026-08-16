@@ -79,6 +79,8 @@ bool TextSettingsActivity::contains(const StrId nameId) {
   }
 }
 
+void TextSettingsActivity::persistSettings() { settingsSavePending_ = !SETTINGS.saveToFile(); }
+
 void TextSettingsActivity::rebuildFontOptions() {
   fonts_.clear();
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + sdFontSystem.registry().getFamilyCount());
@@ -158,7 +160,7 @@ void TextSettingsActivity::onEnter() {
     if (SETTINGS.fontSize >= ReaderFontSize::BUILTIN_COUNT) {
       SETTINGS.fontSize = CrossPointSettings::EXTRA_LARGE;
     }
-    SETTINGS.saveToFile();
+    persistSettings();
   }
 
   rebuildFontOptions();
@@ -177,6 +179,7 @@ void TextSettingsActivity::onEnter() {
 }
 
 void TextSettingsActivity::onExit() {
+  if (settingsSavePending_) persistSettings();
   sdFontSystem.releaseLoadedFont(renderer);
   customPreviewSnapshot_.reset();
   customPreviewSnapshotSize_ = 0;
@@ -228,7 +231,7 @@ void TextSettingsActivity::loop() {
       selectedRow_ = -1;
       requestUpdate();
     } else {
-      SETTINGS.saveToFile();
+      if (settingsSavePending_) persistSettings();
       finish();
     }
     return;
@@ -320,7 +323,7 @@ void TextSettingsActivity::applyFontSelection(const int index) {
   }
   if (!applied) return;
   rebuildSizeOptions();
-  SETTINGS.saveToFile();
+  persistSettings();
   requestUpdate();
 }
 
@@ -332,7 +335,7 @@ void TextSettingsActivity::applySizeSelection(const int index) {
     sdFontSystem.releaseLoadedFont(renderer);
     invalidatePreviewLocked();
   }
-  SETTINGS.saveToFile();
+  persistSettings();
   requestUpdate();
 }
 
@@ -350,7 +353,7 @@ void TextSettingsActivity::handleSelection() {
   const SettingInfo& setting = settings_[selectedRow_];
   if (setting.type == SettingType::TOGGLE && setting.valuePtr) {
     SETTINGS.*(setting.valuePtr) = !(SETTINGS.*(setting.valuePtr));
-    SETTINGS.saveToFile();
+    persistSettings();
     rebuildSettings();
     refreshPreviewAfterSettingChange(setting.nameId);
     return;
@@ -365,7 +368,7 @@ void TextSettingsActivity::handleSelection() {
     } else if (valuePtr) {
       SETTINGS.*valuePtr = static_cast<uint8_t>(index);
     }
-    SETTINGS.saveToFile();
+    persistSettings();
     rebuildSettings();
     refreshPreviewAfterSettingChange(settingId);
   };

@@ -14,6 +14,9 @@
 #include <StagedFileTransaction.h>
 
 #include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
 
 namespace {
 bool publishBitmap(const std::string& finalPath, const std::string& stagingPath) {
@@ -23,9 +26,542 @@ bool publishBitmap(const std::string& finalPath, const std::string& stagingPath)
 }
 
 bool exactWrite(HalFile& file, const void* data, const size_t size) { return file.write(data, size) == size; }
+
+constexpr size_t MAX_STREAMING_THUMBNAIL_BYTES = 64U * 1024U;
+constexpr size_t MAX_THUMBNAIL_SOURCE_CHUNK = 1024;
+
+bool thumbnailCacheReady(const std::string& finalPath, const int width, const int height, const bool crop,
+                         bool& ioError) {
+  const BitmapCacheState state = Bitmap::inspectDerivedCache(finalPath);
+  if (state == BitmapCacheState::IoError) {
+    ioError = true;
+    return false;
+  }
+  if (state != BitmapCacheState::Ready || crop) return state == BitmapCacheState::Ready;
+
+  HalFile cached;
+  if (!Storage.openFileForRead("XTC", finalPath, cached)) {
+    ioError = true;
+    return false;
+  }
+  Bitmap bitmap(cached);
+  const bool fits = bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.is1Bit() && bitmap.getWidth() > 0 &&
+                    bitmap.getHeight() > 0 && bitmap.getWidth() <= width && bitmap.getHeight() <= height;
+  const bool closed = cached.close();
+  if (fits && closed) return true;
+  if (!closed || !Storage.remove(finalPath.c_str())) ioError = true;
+  return false;
+}
+
+struct StreamingThumbnail {
+  uint16_t sourceWidth = 0;
+  uint16_t sourceHeight = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
+  size_t rowSize = 0;
+  uint32_t scaleInverse = 0;
+  bool columnMajor = false;
+  bool valid = false;
+  bool finished = false;
+  std::unique_ptr<uint8_t[]> pixels;
+  std::unique_ptr<uint32_t[]> sums;
+
+  int32_t activePrimary = -1;
+  uint16_t lastSourcePrimary = std::numeric_limits<uint16_t>::max();
+  uint16_t secondaryDestination = 0;
+  bool primaryAccepted = false;
+  bool primaryHasSamples = false;
+  size_t finalizedPrimary = 0;
+
+  bool initialise(const uint16_t sourceW, const uint16_t sourceH, const int targetWidth, const int targetHeight,
+                  const bool crop, const bool useColumnMajor) {
+    if (sourceW == 0 || sourceH == 0 || targetWidth <= 0 || targetHeight <= 0) return false;
+
+    const float scaleX = static_cast<float>(targetWidth) / sourceW;
+    const float scaleY = static_cast<float>(targetHeight) / sourceH;
+    const float scale = std::min(crop ? std::max(scaleX, scaleY) : std::min(scaleX, scaleY), 1.0f);
+    if (scale <= 0.0f) return false;
+
+    sourceWidth = sourceW;
+    sourceHeight = sourceH;
+    width = std::max<uint16_t>(1, static_cast<uint16_t>(sourceW * scale));
+    height = std::max<uint16_t>(1, static_cast<uint16_t>(sourceH * scale));
+    rowSize = (static_cast<size_t>(width) + 31U) / 32U * 4U;
+    scaleInverse = static_cast<uint32_t>(65536.0f / scale);
+    columnMajor = useColumnMajor;
+
+    size_t pixelBytes = 0;
+    if (scaleInverse == 0 || !xtc::checkedMultiply(rowSize, height, pixelBytes) || pixelBytes == 0 ||
+        pixelBytes > MAX_STREAMING_THUMBNAIL_BYTES) {
+      return false;
+    }
+    const size_t scratchLength = columnMajor ? height : width;
+    pixels = makeUniqueNoThrow<uint8_t[]>(pixelBytes);
+    sums = makeUniqueNoThrow<uint32_t[]>(scratchLength);
+    if (!pixels || !sums) return false;
+    std::memset(pixels.get(), 0xFF, pixelBytes);
+    valid = true;
+    return true;
+  }
+
+  void sourceRange(const uint16_t destination, const uint16_t sourceSize, uint32_t& start, uint32_t& end) const {
+    start = static_cast<uint32_t>((static_cast<uint64_t>(destination) * scaleInverse) >> 16U);
+    end = static_cast<uint32_t>((static_cast<uint64_t>(destination + 1U) * scaleInverse) >> 16U);
+    if (start >= sourceSize) start = sourceSize - 1U;
+    if (end > sourceSize) end = sourceSize;
+    if (end <= start) end = start + 1U;
+    if (end > sourceSize) end = sourceSize;
+  }
+
+  size_t primaryOutputSize() const { return columnMajor ? width : height; }
+  size_t secondaryOutputSize() const { return columnMajor ? height : width; }
+  uint16_t primarySourceSize() const { return columnMajor ? sourceWidth : sourceHeight; }
+  uint16_t secondarySourceSize() const { return columnMajor ? sourceHeight : sourceWidth; }
+
+  void clearSums() {
+    std::memset(sums.get(), 0, secondaryOutputSize() * sizeof(uint32_t));
+    primaryHasSamples = false;
+  }
+
+  void setBlack(const uint16_t x, const uint16_t y) {
+    const size_t byteIndex = static_cast<size_t>(y) * rowSize + x / 8U;
+    const uint8_t bitOffset = static_cast<uint8_t>(7U - x % 8U);
+    pixels[byteIndex] &= static_cast<uint8_t>(~(1U << bitOffset));
+  }
+
+  bool finalizeActivePrimary() {
+    if (!valid || activePrimary < 0 || static_cast<size_t>(activePrimary) >= primaryOutputSize() ||
+        !primaryHasSamples) {
+      valid = false;
+      return false;
+    }
+
+    uint32_t primaryStart = 0;
+    uint32_t primaryEnd = 0;
+    sourceRange(static_cast<uint16_t>(activePrimary), primarySourceSize(), primaryStart, primaryEnd);
+    const uint32_t primarySpan = primaryEnd - primaryStart;
+    for (uint16_t secondary = 0; secondary < secondaryOutputSize(); ++secondary) {
+      uint32_t secondaryStart = 0;
+      uint32_t secondaryEnd = 0;
+      sourceRange(secondary, secondarySourceSize(), secondaryStart, secondaryEnd);
+      const uint32_t sampleCount = primarySpan * (secondaryEnd - secondaryStart);
+      if (sampleCount == 0) {
+        valid = false;
+        return false;
+      }
+
+      const uint16_t x = columnMajor ? static_cast<uint16_t>(activePrimary) : secondary;
+      const uint16_t y = columnMajor ? secondary : static_cast<uint16_t>(activePrimary);
+      const uint8_t averageGray = static_cast<uint8_t>(sums[secondary] / sampleCount);
+      uint32_t hash = static_cast<uint32_t>(x) * 374761393U + static_cast<uint32_t>(y) * 668265263U;
+      hash = (hash ^ (hash >> 13U)) * 1274126177U;
+      const int threshold = static_cast<int>(hash >> 24U);
+      const int adjustedThreshold = 128 + ((threshold - 128) / 2);
+      if (averageGray < adjustedThreshold) setBlack(x, y);
+    }
+    ++finalizedPrimary;
+    return true;
+  }
+
+  void beginAscendingPrimary(const uint16_t source) {
+    if (activePrimary < 0) {
+      activePrimary = 0;
+      clearSums();
+    }
+    while (valid && static_cast<size_t>(activePrimary) < primaryOutputSize()) {
+      uint32_t start = 0;
+      uint32_t end = 0;
+      sourceRange(static_cast<uint16_t>(activePrimary), primarySourceSize(), start, end);
+      if (source < end) break;
+      if (!finalizeActivePrimary()) return;
+      ++activePrimary;
+      if (static_cast<size_t>(activePrimary) < primaryOutputSize()) clearSums();
+    }
+
+    primaryAccepted = false;
+    if (valid && static_cast<size_t>(activePrimary) < primaryOutputSize()) {
+      uint32_t start = 0;
+      uint32_t end = 0;
+      sourceRange(static_cast<uint16_t>(activePrimary), primarySourceSize(), start, end);
+      primaryAccepted = source >= start && source < end;
+    }
+    secondaryDestination = 0;
+  }
+
+  void beginDescendingPrimary(const uint16_t source) {
+    if (activePrimary < 0) {
+      activePrimary = static_cast<int32_t>(primaryOutputSize()) - 1;
+      clearSums();
+    }
+    while (valid && activePrimary >= 0) {
+      uint32_t start = 0;
+      uint32_t end = 0;
+      sourceRange(static_cast<uint16_t>(activePrimary), primarySourceSize(), start, end);
+      if (source >= start) break;
+      if (!finalizeActivePrimary()) return;
+      --activePrimary;
+      if (activePrimary >= 0) clearSums();
+    }
+
+    primaryAccepted = false;
+    if (valid && activePrimary >= 0) {
+      uint32_t start = 0;
+      uint32_t end = 0;
+      sourceRange(static_cast<uint16_t>(activePrimary), primarySourceSize(), start, end);
+      primaryAccepted = source >= start && source < end;
+    }
+    secondaryDestination = 0;
+  }
+
+  void addSecondarySample(const uint16_t source, const uint8_t gray) {
+    if (!valid || !primaryAccepted) return;
+    while (secondaryDestination < secondaryOutputSize()) {
+      uint32_t start = 0;
+      uint32_t end = 0;
+      sourceRange(secondaryDestination, secondarySourceSize(), start, end);
+      if (source < start) return;
+      if (source >= end) {
+        ++secondaryDestination;
+        continue;
+      }
+      sums[secondaryDestination] += gray;
+      primaryHasSamples = true;
+      return;
+    }
+  }
+
+  void consumeRowMajorPixel(const uint16_t x, const uint16_t y, const uint8_t gray) {
+    if (!valid || columnMajor || x >= sourceWidth || y >= sourceHeight) return;
+    if (lastSourcePrimary != y) {
+      if (lastSourcePrimary != std::numeric_limits<uint16_t>::max() && y < lastSourcePrimary) {
+        valid = false;
+        return;
+      }
+      lastSourcePrimary = y;
+      beginAscendingPrimary(y);
+    }
+    addSecondarySample(x, gray);
+  }
+
+  void consumeColumnMajorPixel(const uint16_t x, const uint16_t y, const uint8_t gray) {
+    if (!valid || !columnMajor || x >= sourceWidth || y >= sourceHeight) return;
+    if (lastSourcePrimary != x) {
+      if (lastSourcePrimary != std::numeric_limits<uint16_t>::max() && x > lastSourcePrimary) {
+        valid = false;
+        return;
+      }
+      lastSourcePrimary = x;
+      beginDescendingPrimary(x);
+    }
+    addSecondarySample(y, gray);
+  }
+
+  bool finish() {
+    if (!valid || finished || lastSourcePrimary == std::numeric_limits<uint16_t>::max()) return false;
+    if (activePrimary >= 0 && static_cast<size_t>(activePrimary) < primaryOutputSize() && !finalizeActivePrimary()) {
+      return false;
+    }
+    finished = valid && finalizedPrimary == primaryOutputSize();
+    return finished;
+  }
+};
 }  // namespace
 
+class Xtc::ThumbnailPairJob {
+  enum class Phase : uint8_t {
+    StreamSource,
+    FinishThumbnails,
+    BeginSharedOutput,
+    WriteSharedOutput,
+    BeginCarouselOutput,
+    WriteCarouselOutput,
+    PublishOutputs,
+    Done,
+    Error,
+  };
+
+  std::string sourcePath;
+  std::string sharedPath;
+  std::string carouselPath;
+  std::string outputStagingPath;
+  HalFile sourceFile;
+  HalFile secondPlaneFile;
+  HalFile outputFile;
+  xtc::PageLayout pageLayout;
+  RawSourceIdentityHandoff sourceIdentityHandoff;
+  StreamingThumbnail sharedThumbnail;
+  StreamingThumbnail carouselThumbnail;
+  const StreamingThumbnail* outputThumbnail = nullptr;
+  std::array<uint8_t, MAX_THUMBNAIL_SOURCE_CHUNK> firstChunk{};
+  std::array<uint8_t, MAX_THUMBNAIL_SOURCE_CHUNK> secondChunk{};
+  uint64_t expectedFileSize = 0;
+  size_t sourceBytesRead = 0;
+  size_t sourceBytesTotal = 0;
+  size_t outputRow = 0;
+  uint16_t sourceWidth = 0;
+  uint16_t sourceHeight = 0;
+  uint8_t bitDepth = 0;
+  bool hasSourceIdentityHandoff = false;
+  bool sharedReady = false;
+  bool carouselReady = false;
+  Phase phase = Phase::Error;
+
+  void consumeOneBit(const uint8_t* data, const size_t size, const size_t offset) {
+    for (size_t index = 0; index < size; ++index) {
+      const size_t sourceOffset = offset + index;
+      const uint16_t y = static_cast<uint16_t>(sourceOffset / pageLayout.rowBytes);
+      const uint16_t xBase = static_cast<uint16_t>((sourceOffset % pageLayout.rowBytes) * 8U);
+      for (uint8_t bit = 0; bit < 8U && xBase + bit < sourceWidth; ++bit) {
+        const uint8_t gray = (data[index] & (1U << (7U - bit))) != 0 ? 255U : 0U;
+        if (!sharedReady) sharedThumbnail.consumeRowMajorPixel(xBase + bit, y, gray);
+        if (!carouselReady) carouselThumbnail.consumeRowMajorPixel(xBase + bit, y, gray);
+      }
+    }
+  }
+
+  void consumeTwoBit(uint8_t* bit0, uint8_t* bit1, const size_t size, const size_t planeOffset) {
+    for (size_t index = 0; index < size; ++index) {
+      const size_t sourceOffset = planeOffset + index;
+      const size_t column = sourceOffset / pageLayout.columnBytes;
+      if (column >= sourceWidth) continue;
+      const uint16_t x = static_cast<uint16_t>(sourceWidth - 1U - column);
+      const uint16_t yBase = static_cast<uint16_t>((sourceOffset % pageLayout.columnBytes) * 8U);
+      for (uint8_t bit = 0; bit < 8U && yBase + bit < sourceHeight; ++bit) {
+        const uint8_t shift = static_cast<uint8_t>(7U - bit);
+        const uint8_t level =
+            static_cast<uint8_t>(((bit0[index] >> shift) & 1U) | (((bit1[index] >> shift) & 1U) << 1U));
+        const uint8_t gray = static_cast<uint8_t>((3U - level) * 85U);
+        if (!sharedReady) sharedThumbnail.consumeColumnMajorPixel(x, yBase + bit, gray);
+        if (!carouselReady) carouselThumbnail.consumeColumnMajorPixel(x, yBase + bit, gray);
+      }
+    }
+  }
+
+  bool sourceStillMatches() {
+    return sourceFile.isOpen() && sourceFile.fileSize64() == expectedFileSize &&
+           (!hasSourceIdentityHandoff || sourceIdentityHandoff.matchesOpenFile(sourcePath, sourceFile)) &&
+           (!secondPlaneFile.isOpen() || secondPlaneFile.fileSize64() == expectedFileSize);
+  }
+
+  bool closeSource() {
+    const bool stable = sourceStillMatches();
+    const bool secondClosed = !secondPlaneFile.isOpen() || secondPlaneFile.close();
+    const bool sourceClosed = !sourceFile.isOpen() || sourceFile.close();
+    return stable && secondClosed && sourceClosed;
+  }
+
+  bool beginOutput(const StreamingThumbnail& thumbnail, const std::string& finalPath) {
+    if (!thumbnail.finished || !thumbnail.pixels) return false;
+    outputThumbnail = &thumbnail;
+    outputStagingPath = finalPath + ".tmp";
+    outputRow = 0;
+    if ((Storage.exists(outputStagingPath.c_str()) && !Storage.remove(outputStagingPath.c_str())) ||
+        !Storage.openFileForWrite("XTC", outputStagingPath, outputFile)) {
+      return false;
+    }
+    BmpHeader header;
+    createBmpHeader(&header, thumbnail.width, thumbnail.height, BmpRowOrder::TopDown);
+    return exactWrite(outputFile, &header, sizeof(header));
+  }
+
+  bool writeOutputRows(const size_t maxRows) {
+    if (!outputThumbnail || !outputFile.isOpen()) return false;
+    const size_t endRow = std::min<size_t>(outputThumbnail->height, outputRow + maxRows);
+    while (outputRow < endRow) {
+      const uint8_t* row = outputThumbnail->pixels.get() + outputRow * outputThumbnail->rowSize;
+      if (!exactWrite(outputFile, row, outputThumbnail->rowSize)) return false;
+      ++outputRow;
+    }
+    return true;
+  }
+
+  bool finishOutputStaging() {
+    if (!outputThumbnail || outputRow != outputThumbnail->height || !outputFile.isOpen()) return false;
+    const bool synced = outputFile.sync();
+    const bool closed = outputFile.close();
+    outputThumbnail = nullptr;
+    return synced && closed;
+  }
+
+  bool sourcePathStillMatches() {
+    HalFile currentSource;
+    if (!Storage.openFileForRead("XTC", sourcePath, currentSource)) return false;
+    const bool matches =
+        currentSource.fileSize64() == expectedFileSize &&
+        (!hasSourceIdentityHandoff || sourceIdentityHandoff.matchesOpenFile(sourcePath, currentSource));
+    const bool closed = currentSource.close();
+    return matches && closed;
+  }
+
+  void cleanup() {
+    if (outputFile.isOpen()) outputFile.close();
+    if (secondPlaneFile.isOpen()) secondPlaneFile.close();
+    if (sourceFile.isOpen()) sourceFile.close();
+    if (!outputStagingPath.empty()) Storage.remove(outputStagingPath.c_str());
+    if (!sharedPath.empty()) Storage.remove((sharedPath + ".tmp").c_str());
+    if (!carouselPath.empty()) Storage.remove((carouselPath + ".tmp").c_str());
+  }
+
+  ThumbnailPreparationStatus fail() {
+    cleanup();
+    phase = Phase::Error;
+    return ThumbnailPreparationStatus::Error;
+  }
+
+ public:
+  ~ThumbnailPairJob() { cleanup(); }
+
+  bool begin(Xtc& book, const int carouselWidth, const int carouselHeight, const bool sharedAlreadyReady,
+             const bool carouselAlreadyReady) {
+    if (!book.loaded || !book.parser || book.parser->getPageCount() == 0) return false;
+    sharedReady = sharedAlreadyReady;
+    carouselReady = carouselAlreadyReady;
+    sourcePath = book.filepath;
+    sharedPath = book.getThumbBmpPath(SHARED_THUMB_HEIGHT);
+    carouselPath = book.getThumbBmpPath(carouselHeight);
+
+    xtc::PageInfo pageInfo;
+    ZipFile::SourceIdentity sourceIdentity;
+    if (!book.parser->getSourceIdentity(sourceIdentity) ||
+        !book.parser->openPagePayloadStream(0, pageInfo, sourceFile) || !sourceIdentity.isRawFile()) {
+      return false;
+    }
+    expectedFileSize = sourceIdentity.fileSize;
+    sourceWidth = pageInfo.width;
+    sourceHeight = pageInfo.height;
+    bitDepth = pageInfo.bitDepth;
+    if (!xtc::calculatePageLayout(sourceWidth, sourceHeight, bitDepth, pageLayout)) return false;
+    if ((!sharedReady && !sharedThumbnail.initialise(sourceWidth, sourceHeight, SHARED_THUMB_WIDTH, SHARED_THUMB_HEIGHT,
+                                                     true, bitDepth == 2)) ||
+        (!carouselReady && !carouselThumbnail.initialise(sourceWidth, sourceHeight, carouselWidth, carouselHeight,
+                                                         false, bitDepth == 2))) {
+      return false;
+    }
+
+    book.setupCacheDir();
+    hasSourceIdentityHandoff = book.parser->getSourceIdentityHandoff(sourceIdentityHandoff);
+    if (pageInfo.offset > std::numeric_limits<uint64_t>::max() - sizeof(xtc::XtgPageHeader)) return false;
+    const uint64_t payloadOffset = pageInfo.offset + sizeof(xtc::XtgPageHeader);
+    if (sourceFile.fileSize64() != expectedFileSize ||
+        (hasSourceIdentityHandoff && !sourceIdentityHandoff.matchesOpenFile(sourcePath, sourceFile))) {
+      return false;
+    }
+
+    sourceBytesTotal = bitDepth == 2 ? pageLayout.planeBytes : pageLayout.payloadBytes;
+    if (sourceBytesTotal == 0) return false;
+    if (bitDepth == 2) {
+      if (pageLayout.planeBytes > std::numeric_limits<uint64_t>::max() - payloadOffset ||
+          !Storage.openFileForRead("XTC", sourcePath, secondPlaneFile) ||
+          secondPlaneFile.fileSize64() != expectedFileSize ||
+          !secondPlaneFile.seek64(payloadOffset + pageLayout.planeBytes)) {
+        return false;
+      }
+    } else if (bitDepth != 1) {
+      return false;
+    }
+
+    phase = Phase::StreamSource;
+    return true;
+  }
+
+  ThumbnailPreparationStatus step(const size_t maxSourceBytes, const size_t maxOutputRows) {
+    if (maxSourceBytes == 0 || maxOutputRows == 0) return fail();
+
+    switch (phase) {
+      case Phase::StreamSource: {
+        size_t wanted = std::min({maxSourceBytes, firstChunk.size(), sourceBytesTotal - sourceBytesRead});
+        if (bitDepth == 2) {
+          wanted -= wanted % pageLayout.columnBytes;
+          if (wanted == 0) return fail();
+        }
+        const int firstRead = sourceFile.read(firstChunk.data(), wanted);
+        if (firstRead != static_cast<int>(wanted)) return fail();
+        if (bitDepth == 1) {
+          consumeOneBit(firstChunk.data(), wanted, sourceBytesRead);
+        } else {
+          const int secondRead = secondPlaneFile.read(secondChunk.data(), wanted);
+          if (secondRead != static_cast<int>(wanted)) return fail();
+          consumeTwoBit(firstChunk.data(), secondChunk.data(), wanted, sourceBytesRead);
+        }
+        if ((!sharedReady && !sharedThumbnail.valid) || (!carouselReady && !carouselThumbnail.valid)) return fail();
+        sourceBytesRead += wanted;
+        if (sourceBytesRead < sourceBytesTotal) return ThumbnailPreparationStatus::InProgress;
+        if (!closeSource()) return fail();
+        phase = Phase::FinishThumbnails;
+        return ThumbnailPreparationStatus::InProgress;
+      }
+      case Phase::FinishThumbnails:
+        if ((!sharedReady && !sharedThumbnail.finish()) || (!carouselReady && !carouselThumbnail.finish())) {
+          return fail();
+        }
+        phase = Phase::BeginSharedOutput;
+        return ThumbnailPreparationStatus::InProgress;
+      case Phase::BeginSharedOutput:
+        if (sharedReady) {
+          phase = Phase::BeginCarouselOutput;
+        } else {
+          if (!beginOutput(sharedThumbnail, sharedPath)) return fail();
+          phase = Phase::WriteSharedOutput;
+        }
+        return ThumbnailPreparationStatus::InProgress;
+      case Phase::WriteSharedOutput:
+        if (!writeOutputRows(maxOutputRows)) return fail();
+        if (outputRow < sharedThumbnail.height) return ThumbnailPreparationStatus::InProgress;
+        if (!finishOutputStaging()) return fail();
+        phase = Phase::BeginCarouselOutput;
+        return ThumbnailPreparationStatus::InProgress;
+      case Phase::BeginCarouselOutput:
+        if (carouselReady) {
+          phase = Phase::PublishOutputs;
+        } else {
+          if (!beginOutput(carouselThumbnail, carouselPath)) return fail();
+          phase = Phase::WriteCarouselOutput;
+        }
+        return ThumbnailPreparationStatus::InProgress;
+      case Phase::WriteCarouselOutput:
+        if (!writeOutputRows(maxOutputRows)) return fail();
+        if (outputRow < carouselThumbnail.height) return ThumbnailPreparationStatus::InProgress;
+        if (!finishOutputStaging()) return fail();
+        phase = Phase::PublishOutputs;
+        return ThumbnailPreparationStatus::InProgress;
+      case Phase::PublishOutputs:
+        if (!sourcePathStillMatches()) return fail();
+        if ((!sharedReady && !publishBitmap(sharedPath, sharedPath + ".tmp")) ||
+            (!carouselReady && !publishBitmap(carouselPath, carouselPath + ".tmp"))) {
+          return fail();
+        }
+        phase = Phase::Done;
+        return ThumbnailPreparationStatus::Ready;
+      case Phase::Done:
+        return ThumbnailPreparationStatus::Ready;
+      case Phase::Error:
+        return ThumbnailPreparationStatus::Error;
+    }
+    return fail();
+  }
+};
+
+Xtc::Xtc(std::string path, const std::string& cacheDir) : filepath(std::move(path)), loaded(false) {
+  cachePath = cacheDir + "/xtc_" + std::to_string(std::hash<std::string>{}(filepath));
+}
+
+Xtc::~Xtc() { cancelThumbnailPreparation(); }
+
 bool Xtc::load() {
+  if (!beginLoad()) return false;
+  while (true) {
+    const LoadStepResult result = stepLoad(16, 64U * 1024U);
+    if (result == LoadStepResult::Loaded) return true;
+    if (result == LoadStepResult::Error) {
+      parser.reset();
+      return false;
+    }
+    yield();
+  }
+}
+
+bool Xtc::beginLoad(const RawSourceIdentityHandoff* const preparedIdentity) {
+  if (loaded) return true;
   LOG_DBG("XTC", "Loading XTC: %s", filepath.c_str());
   loaded = false;
 
@@ -36,17 +572,33 @@ bool Xtc::load() {
     return false;
   }
 
-  // Open XTC file
-  xtc::XtcError err = parser->open(filepath.c_str());
+  const xtc::XtcError err = parser->beginOpen(filepath.c_str(), preparedIdentity);
   if (err != xtc::XtcError::OK) {
     LOG_ERR("XTC", "Failed to load: %s", xtc::errorToString(err));
     parser.reset();
     return false;
   }
+  return true;
+}
+
+Xtc::LoadStepResult Xtc::stepLoad(const size_t maxRecords, const size_t maxFingerprintBytes) {
+  if (loaded) return LoadStepResult::Loaded;
+  if (!parser) return LoadStepResult::Error;
+  const xtc::XtcParser::OpenStepResult result = parser->stepOpen(maxRecords, maxFingerprintBytes);
+  if (result == xtc::XtcParser::OpenStepResult::InProgress) return LoadStepResult::InProgress;
+  if (result == xtc::XtcParser::OpenStepResult::Error) {
+    LOG_ERR("XTC", "Failed to load: %s", xtc::errorToString(parser->getLastError()));
+    return LoadStepResult::Error;
+  }
 
   loaded = true;
   LOG_DBG("XTC", "Loaded XTC: %s (%lu pages)", filepath.c_str(), parser->getPageCount());
-  return true;
+  return LoadStepResult::Loaded;
+}
+
+void Xtc::cancelLoad() {
+  if (parser && !loaded) parser->cancelOpen();
+  if (!loaded) parser.reset();
 }
 
 bool Xtc::clearCache() const {
@@ -76,6 +628,10 @@ void Xtc::setupCacheDir() const {
     }
   }
   Storage.mkdir(cachePath.c_str());
+}
+
+bool Xtc::readCoreMetadata(std::string& title, std::string& author) const {
+  return xtc::XtcParser::readCoreMetadata(filepath.c_str(), title, author) == xtc::XtcError::OK;
 }
 
 std::string Xtc::getTitle() const {
@@ -258,152 +814,45 @@ bool Xtc::generateThumbBmp(const int height) const {
   return generateThumbBmp(static_cast<int>(height * 0.6f), height, true);
 }
 
-bool Xtc::generateThumbBmpPair(const int carouselWidth, const int carouselHeight) const {
-  if (carouselWidth <= 0 || carouselHeight <= 0) return false;
+Xtc::ThumbnailPreparationStatus Xtc::beginThumbnailPreparation(const int carouselWidth, const int carouselHeight) {
+  cancelThumbnailPreparation();
+  if (carouselWidth <= 0 || carouselHeight <= 0) return ThumbnailPreparationStatus::Error;
 
   const std::string sharedPath = getThumbBmpPath(SHARED_THUMB_HEIGHT);
   const std::string carouselPath = getThumbBmpPath(carouselHeight);
-  const auto cacheReady = [](const std::string& finalPath, const int width, const int height, const bool crop,
-                             bool& ioError) {
-    const BitmapCacheState state = Bitmap::inspectDerivedCache(finalPath);
-    if (state == BitmapCacheState::IoError) {
-      ioError = true;
-      return false;
-    }
-    if (state != BitmapCacheState::Ready || crop) return state == BitmapCacheState::Ready;
-
-    HalFile cached;
-    if (!Storage.openFileForRead("XTC", finalPath, cached)) {
-      ioError = true;
-      return false;
-    }
-    Bitmap bitmap(cached);
-    const bool fits = bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.is1Bit() && bitmap.getWidth() > 0 &&
-                      bitmap.getHeight() > 0 && bitmap.getWidth() <= width && bitmap.getHeight() <= height;
-    const bool closed = cached.close();
-    if (fits && closed) return true;
-    if (!closed || !Storage.remove(finalPath.c_str())) ioError = true;
-    return false;
-  };
-
   bool sharedIoError = false;
   bool carouselIoError = false;
-  const bool sharedReady = cacheReady(sharedPath, SHARED_THUMB_WIDTH, SHARED_THUMB_HEIGHT, true, sharedIoError);
-  const bool carouselReady = cacheReady(carouselPath, carouselWidth, carouselHeight, false, carouselIoError);
-  if (sharedIoError || carouselIoError) return false;
-  if (sharedReady && carouselReady) return true;
+  const bool sharedReady =
+      thumbnailCacheReady(sharedPath, SHARED_THUMB_WIDTH, SHARED_THUMB_HEIGHT, true, sharedIoError);
+  const bool carouselReady = thumbnailCacheReady(carouselPath, carouselWidth, carouselHeight, false, carouselIoError);
+  if (sharedIoError || carouselIoError) return ThumbnailPreparationStatus::Error;
+  if (sharedReady && carouselReady) return ThumbnailPreparationStatus::Ready;
+  if (!loaded || !parser || parser->getPageCount() == 0) return ThumbnailPreparationStatus::NeedsSource;
 
-  if (!loaded || !parser || parser->getPageCount() == 0) return false;
-  setupCacheDir();
-
-  xtc::PageInfo pageInfo;
-  if (!parser->getPageInfo(0, pageInfo)) return false;
-  const uint8_t bitDepth = parser->getBitDepth();
-  xtc::PageLayout pageLayout;
-  if (!xtc::calculatePageLayout(pageInfo.width, pageInfo.height, bitDepth, pageLayout)) return false;
-
-  const size_t bitmapSize = pageLayout.payloadBytes;
-  uint8_t* pageBuffer = static_cast<uint8_t*>(malloc(bitmapSize));
-  if (!pageBuffer) return false;
-  const size_t bytesRead = const_cast<xtc::XtcParser*>(parser.get())->loadPage(0, pageBuffer, bitmapSize);
-  if (bytesRead != bitmapSize) {
-    free(pageBuffer);
-    return false;
+  thumbnailPairJob = makeUniqueNoThrow<ThumbnailPairJob>();
+  if (!thumbnailPairJob || !thumbnailPairJob->begin(*this, carouselWidth, carouselHeight, sharedReady, carouselReady)) {
+    thumbnailPairJob.reset();
+    return ThumbnailPreparationStatus::Error;
   }
+  return ThumbnailPreparationStatus::InProgress;
+}
 
-  const int largestWidth = std::max({static_cast<int>(pageInfo.width), SHARED_THUMB_WIDTH, carouselWidth});
-  const size_t rowBufferSize = (static_cast<size_t>(largestWidth) + 31U) / 32U * 4U;
-  uint8_t* rowBuffer = static_cast<uint8_t*>(malloc(rowBufferSize));
-  if (!rowBuffer) {
-    free(pageBuffer);
-    return false;
+Xtc::ThumbnailPreparationStatus Xtc::stepThumbnailPreparation(const size_t maxSourceBytes, const size_t maxOutputRows) {
+  if (!thumbnailPairJob) return ThumbnailPreparationStatus::Error;
+  const ThumbnailPreparationStatus status = thumbnailPairJob->step(maxSourceBytes, maxOutputRows);
+  if (status != ThumbnailPreparationStatus::InProgress) thumbnailPairJob.reset();
+  return status;
+}
+
+void Xtc::cancelThumbnailPreparation() { thumbnailPairJob.reset(); }
+
+bool Xtc::generateThumbBmpPair(const int carouselWidth, const int carouselHeight) {
+  ThumbnailPreparationStatus status = beginThumbnailPreparation(carouselWidth, carouselHeight);
+  while (status == ThumbnailPreparationStatus::InProgress) {
+    status = stepThumbnailPreparation();
+    yield();
   }
-
-  const auto writeThumbnail = [&](const std::string& finalPath, const int targetWidth, const int targetHeight,
-                                  const bool crop) {
-    float scaleX = static_cast<float>(targetWidth) / pageInfo.width;
-    float scaleY = static_cast<float>(targetHeight) / pageInfo.height;
-    float scale = crop ? std::max(scaleX, scaleY) : std::min(scaleX, scaleY);
-    scale = std::min(scale, 1.0f);
-    if (scale <= 0.0f) return false;
-
-    const uint16_t thumbWidth = std::max<uint16_t>(1, static_cast<uint16_t>(pageInfo.width * scale));
-    const uint16_t thumbHeight = std::max<uint16_t>(1, static_cast<uint16_t>(pageInfo.height * scale));
-    const size_t rowSize = (static_cast<size_t>(thumbWidth) + 31U) / 32U * 4U;
-    if (rowSize > rowBufferSize) return false;
-
-    const std::string stagingPath = finalPath + ".tmp";
-    if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) return false;
-    HalFile output;
-    if (!Storage.openFileForWrite("XTC", stagingPath, output)) return false;
-
-    BmpHeader bmpHeader;
-    createBmpHeader(&bmpHeader, thumbWidth, thumbHeight, BmpRowOrder::TopDown);
-    bool writeOk = exactWrite(output, &bmpHeader, sizeof(bmpHeader));
-    const uint32_t scaleInverse = static_cast<uint32_t>(65536.0f / scale);
-    const size_t sourceRowBytes = bitDepth == 1 ? (pageInfo.width + 7U) / 8U : 0;
-
-    for (uint16_t dstY = 0; writeOk && dstY < thumbHeight; ++dstY) {
-      memset(rowBuffer, 0xFF, rowSize);
-      uint32_t sourceYStart = (static_cast<uint32_t>(dstY) * scaleInverse) >> 16U;
-      uint32_t sourceYEnd = (static_cast<uint32_t>(dstY + 1U) * scaleInverse) >> 16U;
-      if (sourceYStart >= pageInfo.height) sourceYStart = pageInfo.height - 1U;
-      if (sourceYEnd > pageInfo.height) sourceYEnd = pageInfo.height;
-      if (sourceYEnd <= sourceYStart) sourceYEnd = sourceYStart + 1U;
-      if (sourceYEnd > pageInfo.height) sourceYEnd = pageInfo.height;
-
-      for (uint16_t dstX = 0; dstX < thumbWidth; ++dstX) {
-        uint32_t sourceXStart = (static_cast<uint32_t>(dstX) * scaleInverse) >> 16U;
-        uint32_t sourceXEnd = (static_cast<uint32_t>(dstX + 1U) * scaleInverse) >> 16U;
-        if (sourceXStart >= pageInfo.width) sourceXStart = pageInfo.width - 1U;
-        if (sourceXEnd > pageInfo.width) sourceXEnd = pageInfo.width;
-        if (sourceXEnd <= sourceXStart) sourceXEnd = sourceXStart + 1U;
-        if (sourceXEnd > pageInfo.width) sourceXEnd = pageInfo.width;
-
-        uint32_t graySum = 0;
-        uint32_t totalCount = 0;
-        for (uint32_t sourceY = sourceYStart; sourceY < sourceYEnd; ++sourceY) {
-          for (uint32_t sourceX = sourceXStart; sourceX < sourceXEnd; ++sourceX) {
-            uint8_t grayValue = 255;
-            if (bitDepth == 2) {
-              const uint8_t pixelValue = xtc::readXthPixel(pageBuffer, pageLayout, pageInfo.width, sourceX, sourceY);
-              grayValue = static_cast<uint8_t>((3U - pixelValue) * 85U);
-            } else {
-              const size_t byteIndex = sourceY * sourceRowBytes + sourceX / 8U;
-              const size_t bitOffset = 7U - (sourceX % 8U);
-              if (byteIndex < bitmapSize) grayValue = ((pageBuffer[byteIndex] >> bitOffset) & 1U) ? 255 : 0;
-            }
-            graySum += grayValue;
-            ++totalCount;
-          }
-        }
-
-        const uint8_t averageGray = totalCount > 0 ? static_cast<uint8_t>(graySum / totalCount) : 255;
-        uint32_t hash = static_cast<uint32_t>(dstX) * 374761393U + static_cast<uint32_t>(dstY) * 668265263U;
-        hash = (hash ^ (hash >> 13U)) * 1274126177U;
-        const int threshold = static_cast<int>(hash >> 24U);
-        const int adjustedThreshold = 128 + ((threshold - 128) / 2);
-        if (averageGray < adjustedThreshold) {
-          const size_t byteIndex = dstX / 8U;
-          const size_t bitOffset = 7U - (dstX % 8U);
-          rowBuffer[byteIndex] &= ~(1U << bitOffset);
-        }
-      }
-      writeOk = exactWrite(output, rowBuffer, rowSize);
-    }
-
-    const bool synced = output.sync();
-    const bool closed = output.close();
-    const bool published = writeOk && synced && closed && publishBitmap(finalPath, stagingPath);
-    if (!published) Storage.remove(stagingPath.c_str());
-    return published;
-  };
-
-  const bool sharedOk = sharedReady || writeThumbnail(sharedPath, SHARED_THUMB_WIDTH, SHARED_THUMB_HEIGHT, true);
-  const bool carouselOk = carouselReady || writeThumbnail(carouselPath, carouselWidth, carouselHeight, false);
-  free(rowBuffer);
-  free(pageBuffer);
-  return sharedOk && carouselOk;
+  return status == ThumbnailPreparationStatus::Ready;
 }
 
 bool Xtc::generateThumbBmp(const int width, const int height, const bool crop) const {
@@ -687,6 +1136,10 @@ bool Xtc::getSourceIdentity(ZipFile::SourceIdentity& identity) const {
   return loaded && parser && parser->getSourceIdentity(identity);
 }
 
+bool Xtc::getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const {
+  return loaded && parser && parser->getSourceIdentityHandoff(handoff);
+}
+
 size_t Xtc::loadPage(uint32_t pageIndex, uint8_t* buffer, size_t bufferSize) const {
   if (!loaded || !parser) {
     return 0;
@@ -701,6 +1154,13 @@ xtc::XtcError Xtc::loadPageStreaming(uint32_t pageIndex,
     return xtc::XtcError::FILE_NOT_FOUND;
   }
   return const_cast<xtc::XtcParser*>(parser.get())->loadPageStreaming(pageIndex, callback, chunkSize);
+}
+
+xtc::XtcError Xtc::loadXthPlanePairs(
+    uint32_t pageIndex, std::function<void(uint8_t* bit0, uint8_t* bit1, size_t size, size_t planeOffset)> callback,
+    size_t chunkSize) const {
+  if (!loaded || !parser) return xtc::XtcError::FILE_NOT_FOUND;
+  return const_cast<xtc::XtcParser*>(parser.get())->loadXthPlanePairs(pageIndex, callback, chunkSize);
 }
 
 uint8_t Xtc::calculateProgress(uint32_t currentPage) const {

@@ -39,6 +39,7 @@ target_include_directories(BookFilePublishTest PRIVATE
   ${REPO_ROOT}/src/network
   ${REPO_ROOT}/src/util
   ${REPO_ROOT}/lib/HttpTransportPolicy
+  ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/Utf8
 )
 

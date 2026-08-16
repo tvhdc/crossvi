@@ -724,6 +724,64 @@ void markOtaValidOnceHealthy() {
 }  // namespace
 #endif
 
+namespace {
+constexpr size_t SERIAL_COMMAND_MAX_BYTES = 48;
+constexpr size_t SERIAL_BYTES_PER_LOOP = 32;
+char serialCommandBuffer[SERIAL_COMMAND_MAX_BYTES + 1]{};
+size_t serialCommandLength = 0;
+bool discardSerialCommand = false;
+
+void handleSerialCommand(const char* const line, const size_t length) {
+  constexpr char PREFIX[] = "CMD:";
+  constexpr char SCREENSHOT[] = "SCREENSHOT";
+  if (!line || length < sizeof(PREFIX) - 1 || std::memcmp(line, PREFIX, sizeof(PREFIX) - 1) != 0) return;
+
+  size_t begin = sizeof(PREFIX) - 1;
+  size_t end = length;
+  while (begin < end && static_cast<unsigned char>(line[begin]) <= ' ') ++begin;
+  while (end > begin && static_cast<unsigned char>(line[end - 1]) <= ' ') --end;
+  if (end - begin != sizeof(SCREENSHOT) - 1 || std::memcmp(line + begin, SCREENSHOT, sizeof(SCREENSHOT) - 1) != 0) {
+    return;
+  }
+
+  RenderLock lock;
+  const uint32_t bufferSize = display.getBufferSize();
+  uint8_t* const buf = display.getFrameBuffer();
+  if (buf) {
+    logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
+    logSerial.write(buf, bufferSize);
+    logSerial.printf("SCREENSHOT_END\n");
+  } else {
+    logSerial.printf("SCREENSHOT_ERROR:BUSY\n");
+  }
+}
+
+void pumpSerialCommands() {
+  size_t processed = 0;
+  while (processed < SERIAL_BYTES_PER_LOOP && logSerial.available() > 0) {
+    const int value = logSerial.read();
+    if (value < 0) break;
+    ++processed;
+    const char byte = static_cast<char>(value);
+    if (byte == '\n') {
+      if (!discardSerialCommand) {
+        serialCommandBuffer[serialCommandLength] = '\0';
+        handleSerialCommand(serialCommandBuffer, serialCommandLength);
+      }
+      serialCommandLength = 0;
+      discardSerialCommand = false;
+      continue;
+    }
+    if (discardSerialCommand) continue;
+    if (serialCommandLength == SERIAL_COMMAND_MAX_BYTES) {
+      discardSerialCommand = true;
+      continue;
+    }
+    serialCommandBuffer[serialCommandLength++] = byte;
+  }
+}
+}  // namespace
+
 void loop() {
 #ifndef SIMULATOR
   markOtaValidOnceHealthy();
@@ -750,27 +808,9 @@ void loop() {
     lastMemPrint = millis();
   }
 
-  // Handle incoming serial commands,
-  // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
-    String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
-      String cmd = line.substring(4);
-      cmd.trim();
-      if (cmd == "SCREENSHOT") {
-        RenderLock lock;
-        const uint32_t bufferSize = display.getBufferSize();
-        uint8_t* buf = display.getFrameBuffer();
-        if (buf) {
-          logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
-          logSerial.write(buf, bufferSize);
-          logSerial.printf("SCREENSHOT_END\n");
-        } else {
-          logSerial.printf("SCREENSHOT_ERROR:BUSY\n");
-        }
-      }
-    }
-  }
+  // Read a bounded number of bytes without waiting for a newline. Oversized
+  // lines are ignored through their terminator so a prefix can never execute.
+  pumpSerialCommands();
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();

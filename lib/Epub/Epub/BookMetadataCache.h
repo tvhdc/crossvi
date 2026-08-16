@@ -20,6 +20,7 @@ class BookMetadataCache {
     SourceMismatch,
     IoError,
   };
+  enum class LoadStepResult : uint8_t { InProgress, Loaded, Error };
 
   struct BookMetadata {
     std::string title;
@@ -56,6 +57,8 @@ class BookMetadataCache {
   };
 
  private:
+  class LoadState;
+
   std::string cachePath;
   uint32_t lutOffset;
   size_t dataEndOffset;
@@ -65,6 +68,7 @@ class BookMetadataCache {
   bool loaded;
   bool buildMode;
   LoadStatus lastLoadStatus;
+  std::unique_ptr<LoadState> loadState;
 
   HalFile bookFile;
   // Temp file handles during build
@@ -90,6 +94,9 @@ class BookMetadataCache {
   static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
   static constexpr uint16_t MAX_CACHED_SPINE_SUMMARIES = 2048;
 
+  LoadStatus failLoad(LoadStatus status);
+  LoadStepResult finishLoad();
+
   // FNV-1a 64-bit hash function
   static uint64_t fnvHash64(const std::string& s) {
     uint64_t hash = 14695981039346656037ull;
@@ -108,17 +115,8 @@ class BookMetadataCache {
  public:
   BookMetadata coreMetadata;
 
-  explicit BookMetadataCache(std::string cachePath)
-      : cachePath(std::move(cachePath)),
-        lutOffset(0),
-        dataEndOffset(0),
-        loadedFileSize(0),
-        spineCount(0),
-        tocCount(0),
-        loaded(false),
-        buildMode(false),
-        lastLoadStatus(LoadStatus::Missing) {}
-  ~BookMetadataCache() = default;
+  explicit BookMetadataCache(std::string cachePath);
+  ~BookMetadataCache();
 
   // Building phase (stream to disk immediately)
   bool beginWrite();
@@ -129,6 +127,7 @@ class BookMetadataCache {
   void createTocEntry(const std::string& title, const std::string& href, const std::string& anchor, uint8_t level);
   bool endTocPass();
   bool endWrite();
+  void cancelWrite();
   bool cleanupTmpFiles() const;
 
   // Post-processing to update mappings and sizes
@@ -137,6 +136,9 @@ class BookMetadataCache {
 
   // Reading phase (read mode)
   LoadStatus load(const ZipFile::SourceIdentity& expectedSourceIdentity);
+  LoadStepResult beginLoad(const ZipFile::SourceIdentity& expectedSourceIdentity);
+  LoadStepResult stepLoad(size_t maxEntries);
+  void cancelLoad();
   SpineEntry getSpineEntry(int index);
   uint32_t getSpineCumulativeSize(int index);
   int16_t getSpineTocIndex(int index);

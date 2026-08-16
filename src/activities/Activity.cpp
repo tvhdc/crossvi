@@ -19,10 +19,13 @@ bool Activity::handleSafeGlobalShortcut(const GlobalShortcut shortcut) {
 
 void Activity::onGoHome(HomeMenuItem item) { activityManager.goHome(item); }
 
-void Activity::openBookWithFeedback(const std::string& path, const ReaderOpenOrigin openOrigin) {
+void Activity::openBookWithFeedback(const std::string& path, const ReaderOpenOrigin openOrigin,
+                                    const bool completionStatsAlreadyRecovered,
+                                    const RawSourceIdentityHandoff* const preparedSourceIdentity) {
+  activityManager.beginReaderOpenMetric();
   openingBook.store(true, std::memory_order_release);
   requestUpdateAndWait();
-  activityManager.goToReader(path, false, openOrigin);
+  activityManager.goToReader(path, false, openOrigin, completionStatsAlreadyRecovered, true, preparedSourceIdentity);
 }
 
 bool Activity::renderBookLoadingOverlay() {

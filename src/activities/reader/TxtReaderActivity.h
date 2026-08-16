@@ -12,6 +12,7 @@
 #include "CrossPointSettings.h"
 #include "GlobalReadingStats.h"
 #include "PerBookReaderSettings.h"
+#include "ProgressFile.h"
 #include "ReaderUtils.h"
 #include "ReadingSessionTracker.h"
 #include "activities/Activity.h"
@@ -26,6 +27,7 @@ class TxtReaderActivity final : public Activity {
 
   int currentPage = 0;
   int lastSavedPage = -1;
+  ProgressFile::WriteSession progressWriteSession;
   int lastSuccessfullyRenderedPage = -1;
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
@@ -36,13 +38,25 @@ class TxtReaderActivity final : public Activity {
   std::unique_ptr<uint32_t[]> pageOffsets;
   size_t pageOffsetCount = 0;
   size_t pageOffsetCapacity = 0;
+  bool pageIndexComplete = false;
+  enum class PageIndexWork : uint8_t { None, Initial, Jump, CompleteForClipping };
+  std::atomic<PageIndexWork> pageIndexWork{PageIndexWork::None};
+  uint32_t pageIndexTargetOffset = 0;
+  bool pageIndexTargetRequiresComplete = false;
+  bool readerLayoutPrepared = false;
+  std::optional<uint32_t> initialProgressOffset;
   std::vector<std::string> currentPageLines;
   std::vector<uint32_t> currentPageLineOffsets;
+  HalFile contentFile;
+  std::unique_ptr<uint8_t[]> pageScratch;
+  size_t pageScratchSize = 0;
+  std::vector<std::string> pageIndexScratchLines;
   int linesPerPage = 0;
   int viewportWidth = 0;
   int cachedLineAdvance = 0;
   std::atomic<bool> initialized{false};
   bool initializationFailed = false;
+  bool readerOpenStagesPending = true;
 
   // Cached settings for cache validation (different fonts/margins require re-indexing)
   int cachedFontId = 0;
@@ -58,6 +72,7 @@ class TxtReaderActivity final : public Activity {
   // with layout; elapsed time, sessions and page turns remain well-defined.
   BookReadingStats bookReadingStats;
   GlobalReadingStats globalReadingStats;
+  bool completionStatsWritableAtOpen = true;
   bool bookReadingStatsTrusted = true;
   bool globalReadingStatsTrusted = true;
   bool bookReadingStatsWritable = true;
@@ -92,6 +107,9 @@ class TxtReaderActivity final : public Activity {
   bool pendingBookSettingsSaveError = false;
   bool pendingCacheClearError = false;
   bool skipStartupRecentUpdate = false;
+  bool deferredOpenStatePending = true;
+  bool deferredOpenStateReady = false;
+  uint32_t deferredGlobalPageTurns = 0;
   std::vector<BookmarkEntry> cachedBookmarks;
   bool bookmarksWritable = true;
   bool currentPageBookmarked = false;
@@ -126,6 +144,11 @@ class TxtReaderActivity final : public Activity {
   void renderStatusBar() const;
 
   void initializeReader();
+  void finishReaderInitialization();
+  bool ensureContentReadSession();
+  void releaseContentReadSession();
+  void processRequestedPageIndex();
+  void processBackgroundPageIndex();
   bool loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
                         std::vector<uint32_t>* outLineOffsets = nullptr);
   bool loadPageAtOffsetWithScratch(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
@@ -135,11 +158,15 @@ class TxtReaderActivity final : public Activity {
   std::unique_ptr<Page> buildInteractivePageFromLines(const std::vector<std::string>& lines,
                                                       const std::vector<uint32_t>& lineOffsets,
                                                       std::vector<TextWordAnchor>* anchors = nullptr);
-  bool buildPageIndex();
+  bool buildPageIndexUntil(size_t targetOffset, size_t maxPages);
+  bool buildPageIndexBatch(size_t maxPages);
+  void markPageIndexFailed();
+  uint32_t initialPageIndexTarget(bool& requiresCompleteIndex);
+  int estimatedTotalPages() const;
   bool appendPageOffset(uint32_t offset);
   bool loadPageIndexCache();
   void savePageIndexCache() const;
-  bool saveProgress() const;
+  bool saveProgress();
   void loadProgress();
   void openReadingStats();
   void openReaderMenu();
@@ -150,6 +177,7 @@ class TxtReaderActivity final : public Activity {
   void applyOrientation(uint8_t orientation);
   void updateAutoPageTurnPreference(uint8_t seconds, bool active);
   void jumpToPercent(int percent);
+  void applyIndexedByteOffset(uint32_t byteOffset);
   void loadCachedBookmarks();
   bool toggleBookmark();
   void updateCurrentPageBookmarked();
@@ -157,11 +185,13 @@ class TxtReaderActivity final : public Activity {
   bool jumpToStoredByteOffset(uint32_t byteOffset);
   void openDictionaryWordSelect();
   void openClippingSelection();
+  void openIndexedClippingSelection();
   void openClippings();
   void openSavedItems();
   bool validateClippingJump(const ClippingJumpResult& jump) const;
   void signalReadingPageVisible();
   void signalReadingPageHidden();
+  void finishDeferredOpenState();
   void consumeReadingViewSignal();
   void stopReadingPage(bool forwardPageTurn, uint32_t nowMs);
   void recordReadingSample(const ReadingSessionSample& sample);
@@ -171,7 +201,7 @@ class TxtReaderActivity final : public Activity {
 
  public:
   explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt,
-                             PerBookReaderSettings globalReaderSettings = {},
+                             bool completionStatsWritableAtOpen, PerBookReaderSettings globalReaderSettings = {},
                              PerBookReaderSettings bookReaderSettings = {}, bool bookSettingsWritable = true,
                              std::optional<ClippingJumpResult> initialClippingJump = std::nullopt,
                              std::optional<ProgressChangeResult> initialBookmarkJump = std::nullopt,
@@ -179,6 +209,7 @@ class TxtReaderActivity final : public Activity {
       : Activity("TxtReader", renderer, mappedInput),
         txt(std::move(txt)),
         pagesUntilFullRefresh(initialRefreshCountdown),
+        completionStatsWritableAtOpen(completionStatsWritableAtOpen),
         globalReaderSettings(std::move(globalReaderSettings)),
         bookReaderSettings(std::move(bookReaderSettings)),
         bookSettingsWritable(bookSettingsWritable),
@@ -191,6 +222,11 @@ class TxtReaderActivity final : public Activity {
   void onResume() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool skipLoopDelay() override {
+    return pageIndexWork.load(std::memory_order_acquire) != PageIndexWork::None ||
+           (initialized.load(std::memory_order_acquire) && !initializationFailed && lastSuccessfullyRenderedPage >= 0 &&
+            !pageIndexComplete);
+  }
   bool isReaderActivity() const override { return true; }
   bool handleForcedRefresh() override {
     {

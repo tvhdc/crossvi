@@ -363,6 +363,7 @@ STR_CRASH_DESCRIPTION: "Se guardó un informe detallado en crash_report.txt. Inc
 STR_CRASH_REASON: "Razón del fallo:"
 STR_CRASH_NO_REASON: "(No se registró una razón)."
 STR_TILT_PAGE_TURN: "Pasar página inclinando"
+STR_TILT_PAGE_TURN_REVERSED: "Pasar página inclinando (invertido)"
 STR_KB_HINT_MOVE_CURSOR: "Pulse IZQ. o DCHA. para mover el cursor"
 STR_KB_HINT_RETURN_CURSOR: "Pulse IZQ. para volver a la posición del cursor"
 STR_KB_HINT_HIDE_PASSWORD: "Pulse DCHA., luego [***] para ocultar la contraseña"

@@ -22,6 +22,7 @@
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
 struct ClippingJumpResult;
+struct RawSourceIdentityHandoff;
 struct SavedBookmarkJumpResult;
 
 // Keep coverless opening surfaces explicit instead of inferring them from
@@ -102,6 +103,8 @@ class ActivityManager {
   // yet.
   std::atomic<uint32_t> completedRenderGeneration{0};
   std::atomic<uint32_t> requestedRenderGeneration{0};
+  std::atomic<uint32_t> readerOpenStartedMs{0};
+  std::atomic_bool readerOpenMetricActive{false};
   std::optional<YourBooksReturnState> yourBooksReturnState;
   std::optional<SavedClippingsReturnState> savedClippingsReturnState;
 
@@ -127,7 +130,9 @@ class ActivityManager {
   void goToSavedClippings(std::optional<SavedClippingsReturnState> returnState = std::nullopt);
   void goToBrowser();
   void goToReader(std::string path, bool allowFastInitialRefresh = false,
-                  ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
+                  ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default, bool completionStatsAlreadyRecovered = false,
+                  bool readerOpenMetricAlreadyStarted = false,
+                  const RawSourceIdentityHandoff* preparedSourceIdentity = nullptr);
   void goToReader(std::string path, ClippingJumpResult clippingJump,
                   ReaderOpenOrigin openOrigin = ReaderOpenOrigin::Default);
   void goToReader(std::string path, SavedBookmarkJumpResult bookmarkJump,
@@ -137,6 +142,10 @@ class ActivityManager {
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE);
+  void beginReaderOpenMetric();
+  void reportReaderOpenStage(const char* format, const char* stage, uint32_t stageStartedMs) const;
+  void finishReaderOpenMetric(const char* format, uint32_t visibleAtMs);
+  void cancelReaderOpenMetric(const char* reason);
   // Wraps the already-selected normal startup destination without changing
   // recovery/crash routing. No-op when there is nothing eligible to import.
   void maybeOfferVCodexStatsImport();
