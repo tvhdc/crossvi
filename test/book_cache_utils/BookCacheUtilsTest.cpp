@@ -397,6 +397,11 @@ TEST_F(BookCacheUtilsTest, ReplacementArchivePurgesOnlyKnownDerivedCacheEntries)
   put("thumb_notes.bmp", 9);
   put("img_notes.jpg", 10);
   put("future_migration.bin", 11);
+  put("img_123456789_18_144x240.pxc", 18);
+  put("img_123456789_18_144x240.pxc.tmp", 19);
+  put("img_123456789_18_144x240.pxc.bak", 20);
+  put("img_123456789_18.png.tmp", 21);
+  put("img_123456789_18_144-240.pxc", 22);
   for (const char* name :
        {"cover.bmp", "cover.bmp.tmp", "cover.bmp.bak", "cover_crop.bmp.tmp", "cover_crop.bmp.bak", "thumb_120.bmp.tmp",
         "thumb_120.bmp.bak", "thumb_120.bmp.nocover", "thumb_120.bmp.nocover.tmp", "thumb_120.bmp.nocover.bak"}) {
@@ -417,13 +422,16 @@ TEST_F(BookCacheUtilsTest, ReplacementArchivePurgesOnlyKnownDerivedCacheEntries)
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/thumb_notes.bmp"), bytes(9));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/img_notes.jpg"), bytes(10));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/future_migration.bin"), bytes(11));
+  EXPECT_EQ(Storage.file(DISCARD_PATH + "/img_123456789_18_144-240.pxc"), bytes(22));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/cover.bmp.nocover"), bytes(15));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/thumb_notes.bmp.tmp"), bytes(16));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/thumb_120.bmp.nocover.extra"), bytes(17));
   for (const char* name : {"book.bin", "index.bin", "css_rules.cache", "cover_crop.bmp", "thumb_120.bmp", "img_2_7.JPG",
                            "cover.bmp", "cover.bmp.tmp", "cover.bmp.bak", "cover_crop.bmp.tmp", "cover_crop.bmp.bak",
                            "thumb_120.bmp.tmp", "thumb_120.bmp.bak", "thumb_120.bmp.nocover",
-                           "thumb_120.bmp.nocover.tmp", "thumb_120.bmp.nocover.bak", "sections", "html"}) {
+                           "thumb_120.bmp.nocover.tmp", "thumb_120.bmp.nocover.bak",
+                           "img_123456789_18_144x240.pxc", "img_123456789_18_144x240.pxc.tmp",
+                           "img_123456789_18_144x240.pxc.bak", "img_123456789_18.png.tmp", "sections", "html"}) {
     EXPECT_FALSE(Storage.exists(DISCARD_PATH + "/" + name)) << name;
   }
 }

@@ -13,7 +13,7 @@ class GfxRenderer;
 class ChapterHtmlSlimParser;
 class CssParser;
 
-enum class EpubBuildStatus : uint8_t { Ok, OutOfMemory, InvalidContent, IoError, CacheError };
+enum class EpubBuildStatus : uint8_t { Ok, OutOfMemory, InvalidContent, IoError, CacheError, StaleHtmlCache };
 
 class Section {
   std::shared_ptr<Epub> epub;
@@ -72,6 +72,7 @@ class Section {
     std::string htmlPath;
     std::string tmpHtmlPath;
     bool reusedHtml = false;
+    bool startedWithCachedHtml = false;
     bool htmlExtractionPending = false;
     bool htmlStreamActive = false;
     bool parserStarted = false;

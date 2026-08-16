@@ -237,17 +237,18 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   int outXBase = ctx->config->x;
   int screenWidth = ctx->screenWidth;
   bool useDithering = ctx->config->useDithering;
+  const bool renderToFramebuffer = !ctx->config->cacheOnly;
 
   // Pre-compute orientation and render-mode state once per callback.
   DirectPixelWriter pw;
-  pw.init(*ctx->renderer);
+  if (renderToFramebuffer) pw.init(*ctx->renderer);
 
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
     ctx->lastDstY = dstY;
     int outY = ctx->config->y + dstY;
     if (outY >= ctx->screenHeight) continue;
 
-    pw.beginRow(outY);
+    if (renderToFramebuffer) pw.beginRow(outY);
 
     // The cache streams to disk one row at a time. Flushing rows below this one
     // (PNGdec delivers scanlines top to bottom) repositions the single-row band.
@@ -280,7 +281,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
           ditheredGray = gray / 85;
           if (ditheredGray > 3) ditheredGray = 3;
         }
-        pw.writePixel(outX, ditheredGray);
+        if (renderToFramebuffer) pw.writePixel(outX, ditheredGray);
         if (caching) cw.writePixel(outX, ditheredGray);
       }
 
@@ -329,6 +330,7 @@ bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
 bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                     const RenderConfig& config) {
   LOG_DBG("PNG", "Decoding PNG: %s", imagePath.c_str());
+  if (config.cacheOnly && config.cachePath.empty()) return false;
 
   auto memory = MemoryBudget::snapshot();
   if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::PNG_DECODE)) {
@@ -437,6 +439,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
       LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
+      if (config.cacheOnly) return false;
     }
   }
 
@@ -456,7 +459,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   // Finalize the streamed cache (caching may have been cleared on a flush error).
   if (ctx.caching) {
-    ctx.cache.finalize();
+    if (!ctx.cache.finalize()) LOG_ERR("PNG", "Decoded image but failed to publish pixel cache: %s", imagePath.c_str());
   }
 
   return true;

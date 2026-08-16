@@ -536,6 +536,11 @@ bool Epub::parseTocNavFile() const {
     return false;
   }
 
+  if (!navParser.succeeded() || navParser.usableEntryCount() == 0) {
+    LOG_ERR("EBP", "EPUB 3 navigation document contains no usable TOC entries");
+    return false;
+  }
+
   LOG_DBG("EBP", "Parsed TOC nav items");
   return true;
 }
@@ -1250,6 +1255,7 @@ bool Epub::beginColdIndexing(const bool skipLoadingCss) {
   indexingReadState.reset();
   indexingSourceIdentityJob.reset();
   indexingCacheReloadActive = false;
+  indexingBookBuilt = false;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   indexingStartedMs = static_cast<uint32_t>(millis());
 #else
@@ -1405,11 +1411,19 @@ Epub::IndexStepResult Epub::stepIndexing() {
       const IndexingReadState::Kind kind = indexingReadState->kind;
       const ZipStreamReadJob::StepStatus readStatus = indexingReadState->job.step();
       if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return IndexStepResult::InProgress;
-      if (readStatus == ZipStreamReadJob::StepStatus::Done) return finishTocPass(true);
+
+      const bool navUsable =
+          kind == IndexingReadState::Kind::TocNav && indexingReadState->navParser &&
+          indexingReadState->navParser->succeeded() && indexingReadState->navParser->usableEntryCount() > 0;
+      if (readStatus == ZipStreamReadJob::StepStatus::Done &&
+          (kind != IndexingReadState::Kind::TocNav || navUsable)) {
+        return finishTocPass(true);
+      }
 
       indexingReadState.reset();
       if (kind == IndexingReadState::Kind::TocNav && !tocNcxItem.empty()) {
         LOG_DBG("EBP", "Falling back to NCX TOC");
+        if (!bookMetadataCache->restartTocPass()) return fail("Could not reset toc pass for NCX fallback");
         if (beginTocRead(false)) return IndexStepResult::InProgress;
       }
       return finishTocPass(false);
@@ -1419,9 +1433,16 @@ Epub::IndexStepResult Epub::stepIndexing() {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
       const uint32_t started = static_cast<uint32_t>(millis());
 #endif
-      if (!bookMetadataCache->buildBookBin(filepath, indexingMetadata, sourceIdentitySnapshot)) {
-        return fail("Could not update mappings and sizes");
+      if (!bookMetadataCache->isBuildingBookBin()) {
+        if (!bookMetadataCache->beginBuildBookBin(filepath, indexingMetadata, sourceIdentitySnapshot)) {
+          return fail("Could not begin updating mappings and sizes");
+        }
+        return IndexStepResult::InProgress;
       }
+      const BookMetadataCache::BuildStepResult buildResult = bookMetadataCache->stepBuildBookBin(8);
+      if (buildResult == BookMetadataCache::BuildStepResult::InProgress) return IndexStepResult::InProgress;
+      if (buildResult == BookMetadataCache::BuildStepResult::Error) return fail("Could not update mappings and sizes");
+      indexingBookBuilt = true;
       if (!bookMetadataCache->cleanupTmpFiles()) {
         LOG_DBG("EBP", "Could not cleanup tmp files - ignoring");
       }
@@ -1496,6 +1517,7 @@ Epub::IndexStepResult Epub::stepIndexing() {
       indexingMetadata = {};
       indexingSkipLoadingCss = false;
       indexingCacheReloadActive = false;
+      indexingBookBuilt = false;
       LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
       LOG_DBG("EBP", "Total cooperative indexing completed in %u ms",
@@ -1517,12 +1539,15 @@ void Epub::cancelIndexing() {
   indexingSourceIdentityJob.reset();
   if (bookMetadataCache) {
     if (indexingCacheReloadActive) bookMetadataCache->cancelLoad();
+    bookMetadataCache->cancelBuildBookBin();
     bookMetadataCache->cancelWrite();
   }
+  if (indexingBookBuilt) Storage.remove((cachePath + "/book.bin").c_str());
   indexingPhase = IndexingPhase::Idle;
   indexingMetadata = {};
   indexingSkipLoadingCss = false;
   indexingCacheReloadActive = false;
+  indexingBookBuilt = false;
   indexingStartedMs = 0;
   indexingPhaseStartedMs = 0;
 }
@@ -2359,6 +2384,18 @@ BookMetadataCache::SpineEntry Epub::getSpineItem(const int spineIndex) const {
   return bookMetadataCache->getSpineEntry(spineIndex);
 }
 
+int Epub::getAdjacentLinearSpineIndex(const int spineIndex, const bool forward) const {
+  const int spineCount = getSpineItemsCount();
+  const int exhausted = forward ? spineCount : -1;
+  if (spineCount <= 0) return exhausted;
+
+  for (int candidate = spineIndex + (forward ? 1 : -1); candidate >= 0 && candidate < spineCount;
+       candidate += forward ? 1 : -1) {
+    if (getSpineItem(candidate).linear) return candidate;
+  }
+  return exhausted;
+}
+
 BookMetadataCache::TocEntry Epub::getTocItem(const int tocIndex) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
     LOG_DBG("EBP", "getTocItem called but cache not loaded");
@@ -2425,8 +2462,10 @@ int Epub::getSpineIndexForTextReference() const {
           bookMetadataCache->coreMetadata.textReferenceHref.c_str());
 
   if (bookMetadataCache->coreMetadata.textReferenceHref.empty()) {
-    // there was no textReference in epub, so we return 0 (the first chapter)
-    return 0;
+    // With no explicit start target, begin at the first primary reading-order
+    // item and leave linear="no" auxiliaries reachable only through links/TOC.
+    const int firstLinear = getAdjacentLinearSpineIndex(-1, true);
+    return firstLinear < getSpineItemsCount() ? firstLinear : 0;
   }
 
   // loop through spine items to get the correct index matching the text href
@@ -2439,7 +2478,8 @@ int Epub::getSpineIndexForTextReference() const {
   }
   // This should not happen, as we checked for empty textReferenceHref earlier
   LOG_DBG("EBP", "Section not found for text reference");
-  return 0;
+  const int firstLinear = getAdjacentLinearSpineIndex(-1, true);
+  return firstLinear < getSpineItemsCount() ? firstLinear : 0;
 }
 
 // Calculate progress in book (returns 0.0-1.0)

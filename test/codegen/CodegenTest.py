@@ -481,6 +481,73 @@ class CodegenTest(unittest.TestCase):
         completion = navigation.index("markBookCompleted()")
         self.assertLess(navigation.index("stopReadingPage(false", advance), completion)
 
+    def test_txt_auto_turn_keeps_pumping_an_incomplete_page_index(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        loop = reader[reader.index("void TxtReaderActivity::loop()") :
+                      reader.index("bool TxtReaderActivity::handleReaderShortcut")]
+        auto_turn = loop[loop.index("if (automaticPageTurnActive && !indexWorkPending)") :
+                         loop.index("if (ReaderUtils::handleBackNavigation")]
+
+        self.assertIn("else if (!pageIndexComplete)", auto_turn)
+        self.assertIn("lastPageTurnTime = millis();", auto_turn)
+        incomplete = auto_turn[auto_turn.index("else if (!pageIndexComplete)") :]
+        incomplete = incomplete[: incomplete.index("else {")]
+        self.assertNotIn("return;", incomplete)
+
+    def test_txt_reflow_keeps_the_current_byte_offset_even_when_progress_save_fails(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
+        settings = reader[reader.index("void TxtReaderActivity::openBookReaderSettings") :
+                          reader.index("void TxtReaderActivity::applyOrientation")]
+        orientation = reader[reader.index("void TxtReaderActivity::applyOrientation") :
+                             reader.index("void TxtReaderActivity::updateAutoPageTurnPreference")]
+
+        self.assertIn("void rememberCurrentByteOffset();", header)
+        self.assertIn("bool pendingProgressSaveError = false;", header)
+        for operation in (settings, orientation):
+            self.assertLess(operation.index("rememberCurrentByteOffset();"), operation.index("invalidateReaderLayout();"))
+            self.assertIn("if (!saveProgress()) pendingProgressSaveError = true;", operation)
+
+    def test_epub_cover_skip_requires_the_declared_cover_resource(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        cover_skip = reader[reader.index("bool EpubReaderActivity::skipCoverPageIfNeeded") :
+                            reader.index("bool EpubReaderActivity::sectionLandingReady")]
+
+        self.assertIn("page.isCoverOnly(epub->getCoverItemHref())", cover_skip)
+        self.assertNotIn("leadingImageOnly", cover_skip)
+        self.assertNotIn("page.isImageOnly()", cover_skip)
+
+    def test_epub_image_only_pages_do_not_reuse_a_neighboring_text_offset(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
+        remember = reader[reader.index("void EpubReaderActivity::rememberCurrentContentOffset") :
+                          reader.index("void EpubReaderActivity::openBookReaderSettings")]
+        save = reader[reader.index("bool EpubReaderActivity::saveProgress") :]
+        save = save[: save.index("\n}") + 2]
+
+        self.assertIn("int currentPageSourceOffsetSpine = -1;", header)
+        self.assertIn("int currentPageSourceOffsetPage = -1;", header)
+        self.assertLess(remember.index("PageSourceAnchor::first"),
+                        remember.index("getVisibleTextOffsetForPage"))
+        self.assertIn("cachedContentSourceOffset.has_value()", remember)
+        self.assertIn("currentPageSourceOffset.has_value()", save)
+        self.assertIn("currentPageSourceOffsetSpine == spineIndex", save)
+        self.assertIn("currentPageSourceOffsetPage == currentPage", save)
+
+    def test_epub_sequential_navigation_skips_non_linear_spine_entries(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        page_turn = reader[reader.index("void EpubReaderActivity::pageTurn") :
+                           reader.index("bool EpubReaderActivity::moveOnePageWithoutRendering")]
+        cover_move = reader[reader.index("bool EpubReaderActivity::moveOnePageWithoutRendering") :
+                            reader.index("bool EpubReaderActivity::skipCoverPageIfNeeded")]
+
+        for operation in (page_turn, cover_move):
+            self.assertIn("getAdjacentLinearSpineIndex", operation)
+            self.assertNotIn("currentSpineIndex++", operation)
+            self.assertNotIn("currentSpineIndex--", operation)
+            self.assertNotIn("++currentSpineIndex", operation)
+            self.assertNotIn("--currentSpineIndex", operation)
+
     def test_txt_finishes_partial_index_in_bounded_background_ticks(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         loop = reader[reader.index("void TxtReaderActivity::loop()") : reader.index("bool TxtReaderActivity::handleReaderShortcut")]
@@ -738,6 +805,19 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("!preparedCssParser->loadFromCache()", start)
         self.assertIn("lastBuildStatus_ = EpubBuildStatus::CacheError", start)
         self.assertNotIn('LOG_ERR("SCT", "Failed to load CSS from cache");\n    }', start)
+
+    def test_corrupt_cached_epub_html_is_evicted_and_retried_once(self):
+        header = (REPO_ROOT / "lib/Epub/Epub/Section.h").read_text(encoding="utf-8")
+        section = (REPO_ROOT / "lib/Epub/Epub/Section.cpp").read_text(encoding="utf-8")
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        abandon = section[section.index("void Section::abandonBuild()") :
+                          section.index("std::unique_ptr<Page> Section::loadPageDuringBuild")]
+
+        self.assertIn("StaleHtmlCache", header)
+        self.assertIn("startedWithCachedHtml", header)
+        self.assertIn("build_->startedWithCachedHtml", section)
+        self.assertIn("Storage.remove(build_->htmlPath.c_str())", abandon)
+        self.assertGreaterEqual(reader.count("failure == EpubBuildStatus::StaleHtmlCache"), 3)
 
     def test_reader_background_layout_yields_to_input_and_bookmarks_parse_once(self):
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
@@ -1218,9 +1298,10 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("imageStreamJob->begin", preparation)
         self.assertIn("4096", preparation)
         self.assertIn("StagedFileTransaction::publish", preparation)
-        self.assertIn("nextMissingImage", page)
+        self.assertIn("nextImageNeedingPreparation", page)
         self.assertIn("section->currentPage + 1", pump)
         self.assertIn("epub->stepImagePreparation()", pump)
+        self.assertIn("image.preparePixelCache", pump)
         self.assertIn("RenderLock lock(std::try_to_lock);", pump)
         self.assertIn("cancelImagePreparation();", render[:300])
 

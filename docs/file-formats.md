@@ -92,10 +92,14 @@ verifies both live global primary/backup copies before reporting success.
 
 ## `book.bin`
 
-### Version 7
+### Version 12
 
 `book.bin` stores EPUB metadata plus lookup tables for spine and TOC entries.
-The current firmware writes this version from `BookMetadataCache`.
+The current firmware writes this version from `BookMetadataCache`. Version 10
+bound the cache to the exact ZIP central directory, version 11 corrected the
+EPUB 2 reading-start interpretation, and version 12 retains each OPF
+`itemref`'s `linear` flag. Older versions are derived data and are rebuilt;
+progress, bookmarks, highlights, and settings are not part of this file.
 
 ImHex pattern:
 
@@ -104,7 +108,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 7
+#define EXPECTED_VERSION 12
 #define MAX_STRING_LENGTH 65535
 
 struct String {
@@ -127,8 +131,17 @@ struct Metadata {
     String textReferenceHref [[comment("Path to guided first text reference")]];
 };
 
+struct SourceIdentity {
+    u64 fileSize;
+    u32 centralDirOffset;
+    u32 centralDirSize;
+    u16 totalEntries;
+    u64 centralDirHash;
+};
+
 struct SpineEntry {
     String href [[comment("Resource path")]];
+    u8 linear [[comment("1 for primary reading order; 0 for link-only auxiliary content")]];
     u32 cumulativeSize [[comment("Cumulative uncompressed spine size through this entry")]];
     s16 tocIndex [[comment("Index into TOC, or inherited/previous TOC index when no direct entry exists")]];
 };
@@ -150,6 +163,8 @@ struct BookBin {
     u32 lutOffset [[comment("Offset to lookup tables")]];
     u16 spineCount;
     u16 tocCount;
+    SourceIdentity sourceIdentity;
+    u32 sourceIdentityCrc [[comment("CRC32 of SourceIdentity")]];
 
     Metadata metadata;
 
@@ -163,6 +178,7 @@ struct BookBin {
 
     SpineEntry spines[spineCount];
     TocEntry toc[tocCount];
+    u32 commitMarker [[comment("0x424D434B, written only after all entries")]];
 };
 
 BookBin book @ 0x00;

@@ -43,6 +43,8 @@ class EpubReaderActivity final : public Activity {
   std::optional<uint32_t> cachedVisibleTextOffset;
   std::optional<uint32_t> pendingBookmarkSourceOffset;
   std::optional<uint32_t> currentPageSourceOffset;
+  int currentPageSourceOffsetSpine = -1;
+  int currentPageSourceOffsetPage = -1;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
@@ -123,6 +125,8 @@ class EpubReaderActivity final : public Activity {
   int imagePrefetchPage = -1;
   size_t imagePrefetchElement = 0;
   bool imagePrefetchPageComplete = false;
+  PageImagePreparation imagePrefetchCandidate;
+  bool imagePrefetchCandidatePending = false;
   bool readerOpenStagesPending = true;
 
   ClippingStore clippingStore;

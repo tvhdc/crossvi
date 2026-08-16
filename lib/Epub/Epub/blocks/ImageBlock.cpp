@@ -43,13 +43,12 @@ bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str());
 
 namespace {
 
-std::string getCachePath(const std::string& imagePath) {
-  // Replace extension with .pxc (pixel cache)
+std::string getCachePath(const std::string& imagePath, const int width, const int height) {
+  // Include rendered dimensions so returning to a previous font/margin layout
+  // can reuse its cache instead of replacing and re-decoding one shared .pxc.
   size_t dotPos = imagePath.rfind('.');
-  if (dotPos != std::string::npos) {
-    return imagePath.substr(0, dotPos) + ".pxc";
-  }
-  return imagePath + ".pxc";
+  const std::string base = dotPos == std::string::npos ? imagePath : imagePath.substr(0, dotPos);
+  return base + "_" + std::to_string(width) + "x" + std::to_string(height) + ".pxc";
 }
 
 bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int expectedHeight, uint16_t& cachedWidth,
@@ -260,12 +259,44 @@ bool ImageBlock::hasValidCache() const {
   return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
 }
 
-bool ImageBlock::needsDecode() const { return !imageFailedThisSession(imagePath) && !hasValidCache(); }
+bool ImageBlock::needsDecode() const {
+  return !decodedWithoutCache && !renderFailed && !imageFailedThisSession(imagePath) && !hasValidCache();
+}
+
+bool ImageBlock::preparePixelCache(GfxRenderer& renderer, const int x, const int y) const {
+  if (hasValidCache()) return true;
+  if (width <= 0 || height <= 0 || x < 0 || y < 0 || x + width > renderer.getScreenWidth() ||
+      y + height > renderer.getScreenHeight()) {
+    return false;
+  }
+
+  HalFile file;
+  if (!Storage.openFileForRead("IMG", imagePath, file)) return false;
+  const size_t fileSize = file.size();
+  const bool closed = file.close();
+  if (fileSize == 0 || !closed) return false;
+
+  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
+  if (!decoder) return false;
+
+  RenderConfig config;
+  config.x = x;
+  config.y = y;
+  config.maxWidth = width;
+  config.maxHeight = height;
+  config.useGrayscale = true;
+  config.useDithering = true;
+  config.performanceMode = false;
+  config.useExactDimensions = true;
+  config.cacheOnly = true;
+  config.cachePath = getPixelCachePath();
+  return decoder->decodeToFramebuffer(imagePath, renderer, config) && hasValidCache();
+}
 
 void ImageBlock::clearSessionRenderFailures() { failedImageCount = 0; }
 
 const std::string& ImageBlock::getPixelCachePath() const {
-  if (pixelCachePath.empty()) pixelCachePath = getCachePath(imagePath);
+  if (pixelCachePath.empty()) pixelCachePath = getCachePath(imagePath, width, height);
   return pixelCachePath;
 }
 
@@ -312,7 +343,11 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
     return;
   }
 
-  if (imageFailedThisSession(imagePath)) {
+  if (renderFailed || imageFailedThisSession(imagePath)) {
+    renderPlaceholder(renderer, x, y);
+    return;
+  }
+  if (decodedWithoutCache) {
     renderPlaceholder(renderer, x, y);
     return;
   }
@@ -336,6 +371,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
   if (!imageOpened && !Storage.exists(imagePath.c_str()) && !sourcePath.empty() && extractFn) {
     if (!extractFn(extractContext, sourcePath.c_str(), imagePath.c_str())) {
       LOG_ERR("IMG", "Failed to extract lazy image: %s", sourcePath.c_str());
+      renderFailed = true;
       rememberImageFailure(imagePath);
       renderPlaceholder(renderer, x, y);
       return;
@@ -348,6 +384,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
   }
   if (!imageOpened) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
+    renderFailed = true;
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
     return;
@@ -357,6 +394,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
 
   if (fileSize == 0) {
     LOG_ERR("IMG", "Image file is empty: %s", imagePath.c_str());
+    renderFailed = true;
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
     return;
@@ -378,6 +416,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {
     LOG_ERR("IMG", "No decoder found for image: %s", imagePath.c_str());
+    renderFailed = true;
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
     return;
@@ -395,9 +434,18 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
 #endif
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
+    renderFailed = true;
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
     return;
+  }
+
+  if (!hasValidCache()) {
+    // The current framebuffer already contains this decode. Do not repeat an
+    // expensive full-image decode in later passes of the same Page object when
+    // SD publication failed; the reader will use its single-pass fallback.
+    decodedWithoutCache = true;
+    LOG_ERR("IMG", "Decoded image but pixel cache is unavailable: %s", imagePath.c_str());
   }
 
   LOG_DBG("IMG", "Decode successful");

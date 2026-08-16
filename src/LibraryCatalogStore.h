@@ -20,6 +20,9 @@ struct LibraryBookRecord {
   std::string coverBmpPath;
   LibraryBookFormat format = LibraryBookFormat::Epub;
   uint64_t sourceSize = 0;
+  // Packed FAT modification time used only to invalidate stale catalog
+  // metadata when a book is replaced in place.
+  uint32_t sourceTimestamp = 0;
   // Packed FAT date/time. Zero means the filesystem did not expose a usable
   // timestamp; such records sort after timestamped records.
   uint32_t addedTimestamp = 0;

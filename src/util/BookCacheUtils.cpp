@@ -134,14 +134,37 @@ bool hasAsciiCaseInsensitiveSuffix(const std::string& value, const char* suffix)
 bool isGeneratedImageCacheFileName(const std::string& name) {
   constexpr size_t PREFIX_LENGTH = sizeof("img_") - 1;
   if (name.compare(0, PREFIX_LENGTH, "img_") != 0) return false;
-  const size_t separator = name.find('_', PREFIX_LENGTH);
-  const size_t extension = name.rfind('.');
-  if (separator == std::string::npos || extension == std::string::npos || separator >= extension ||
-      !isDecimalRange(name, PREFIX_LENGTH, separator) || !isDecimalRange(name, separator + 1, extension)) {
+
+  std::string stableName = name;
+  if (hasAsciiCaseInsensitiveSuffix(stableName, ".tmp") || hasAsciiCaseInsensitiveSuffix(stableName, ".bak")) {
+    stableName.resize(stableName.size() - 4);
+  }
+  const bool pixelCache = hasAsciiCaseInsensitiveSuffix(stableName, ".pxc");
+  if (!pixelCache && !hasAsciiCaseInsensitiveSuffix(stableName, ".jpg") &&
+      !hasAsciiCaseInsensitiveSuffix(stableName, ".jpeg") && !hasAsciiCaseInsensitiveSuffix(stableName, ".png")) {
     return false;
   }
-  return hasAsciiCaseInsensitiveSuffix(name, ".jpg") || hasAsciiCaseInsensitiveSuffix(name, ".jpeg") ||
-         hasAsciiCaseInsensitiveSuffix(name, ".png") || hasAsciiCaseInsensitiveSuffix(name, ".pxc");
+
+  const size_t extension = stableName.rfind('.');
+  const size_t firstSeparator = stableName.find('_', PREFIX_LENGTH);
+  if (firstSeparator == std::string::npos || extension == std::string::npos || firstSeparator >= extension ||
+      !isDecimalRange(stableName, PREFIX_LENGTH, firstSeparator)) {
+    return false;
+  }
+  const size_t secondSeparator = stableName.find('_', firstSeparator + 1);
+  if (secondSeparator == std::string::npos) {
+    // Legacy occurrence keys and new source keys both have two bounded
+    // decimal components before the raw extension.
+    return isDecimalRange(stableName, firstSeparator + 1, extension);
+  }
+  if (!pixelCache || stableName.find('_', secondSeparator + 1) != std::string::npos ||
+      !isDecimalRange(stableName, firstSeparator + 1, secondSeparator)) {
+    return false;
+  }
+  const size_t dimensionSeparator = stableName.find('x', secondSeparator + 1);
+  return dimensionSeparator != std::string::npos && dimensionSeparator < extension &&
+         isDecimalRange(stableName, secondSeparator + 1, dimensionSeparator) &&
+         isDecimalRange(stableName, dimensionSeparator + 1, extension);
 }
 
 bool isTransactionalCoverCacheFileName(const std::string& name) {

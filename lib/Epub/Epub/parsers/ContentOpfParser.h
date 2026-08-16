@@ -11,6 +11,16 @@
 class BookMetadataCache;
 
 class ContentOpfParser final : public Print {
+ public:
+  static constexpr size_t MAX_MANIFEST_ITEMS = 2048;
+  static constexpr size_t MAX_SPINE_ITEMS = 2048;
+  static constexpr size_t MAX_CSS_FILES = 256;
+  static constexpr size_t MAX_ITEM_ID_BYTES = 1024;
+  static constexpr size_t MAX_RESOURCE_PATH_BYTES = 4096;
+  static constexpr size_t MAX_METADATA_TEXT_BYTES = 4096;
+  static constexpr size_t MAX_LANGUAGE_BYTES = 64;
+
+ private:
   enum ParserState {
     START,
     IN_PACKAGE,
@@ -44,6 +54,8 @@ class ContentOpfParser final : public Print {
   std::deque<ItemIndexEntry> itemIndex;
   bool useItemIndex = false;
   bool ioFailed = false;
+  size_t manifestItemCount = 0;
+  size_t spineItemCount = 0;
 
   bool writeItemRecord(const std::string& itemId, const std::string& href);
   bool readItemRecord(uint32_t offset, uint16_t expectedIdLength, std::string& itemId, std::string& href);

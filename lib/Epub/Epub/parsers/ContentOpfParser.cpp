@@ -50,6 +50,20 @@ bool hasWhitespaceSeparatedToken(const std::string& value, const std::string_vie
   }
   return false;
 }
+
+bool assignBoundedAttribute(std::string& destination, const char* value, const size_t maxBytes) {
+  size_t length = 0;
+  while (length <= maxBytes && value[length] != '\0') ++length;
+  if (length > maxBytes) return false;
+  destination.assign(value, length);
+  return true;
+}
+
+bool appendBoundedText(std::string& destination, const char* value, const int length, const size_t maxBytes) {
+  if (length < 0 || static_cast<size_t>(length) > maxBytes - std::min(destination.size(), maxBytes)) return false;
+  destination.append(value, static_cast<size_t>(length));
+  return true;
+}
 }  // namespace
 
 bool ContentOpfParser::setup() {
@@ -242,7 +256,11 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       if (strcmp(atts[i], "name") == 0 && strcmp(atts[i + 1], "cover") == 0) {
         isCover = true;
       } else if (strcmp(atts[i], "content") == 0) {
-        coverItemId = atts[i + 1];
+        if (!assignBoundedAttribute(coverItemId, atts[i + 1], MAX_ITEM_ID_BYTES)) {
+          LOG_ERR("COF", "Cover item id exceeds limit");
+          self->ioFailed = true;
+          return;
+        }
       }
     }
 
@@ -253,21 +271,39 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_MANIFEST && (strcmp(name, "item") == 0 || strcmp(name, "opf:item") == 0)) {
+    if (++self->manifestItemCount > MAX_MANIFEST_ITEMS) {
+      LOG_ERR("COF", "Manifest exceeds %u items", static_cast<unsigned>(MAX_MANIFEST_ITEMS));
+      self->ioFailed = true;
+      return;
+    }
     std::string itemId;
-    std::string href;
+    std::string rawHref;
     std::string mediaType;
     std::string properties;
 
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "id") == 0) {
-        itemId = atts[i + 1];
+        if (!assignBoundedAttribute(itemId, atts[i + 1], MAX_ITEM_ID_BYTES)) self->ioFailed = true;
       } else if (strcmp(atts[i], "href") == 0) {
-        href = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + atts[i + 1]));
+        if (!assignBoundedAttribute(rawHref, atts[i + 1], MAX_RESOURCE_PATH_BYTES)) self->ioFailed = true;
       } else if (strcmp(atts[i], "media-type") == 0) {
-        mediaType = atts[i + 1];
+        if (!assignBoundedAttribute(mediaType, atts[i + 1], 256)) self->ioFailed = true;
       } else if (strcmp(atts[i], "properties") == 0) {
-        properties = atts[i + 1];
+        if (!assignBoundedAttribute(properties, atts[i + 1], 256)) self->ioFailed = true;
       }
+    }
+    if (self->ioFailed || itemId.empty() || rawHref.empty() ||
+        self->baseContentPath.size() > MAX_RESOURCE_PATH_BYTES - rawHref.size()) {
+      LOG_ERR("COF", "Invalid or oversized manifest item");
+      self->ioFailed = true;
+      return;
+    }
+    const std::string href =
+        FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + rawHref));
+    if (href.empty() || href.size() > MAX_RESOURCE_PATH_BYTES) {
+      LOG_ERR("COF", "Normalized manifest path exceeds limit");
+      self->ioFailed = true;
+      return;
     }
 
     // The scratch item store is only needed while building book.bin. Warm
@@ -306,6 +342,11 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
 
     // Collect CSS files
     if (mediaType == MEDIA_TYPE_CSS) {
+      if (self->cssFiles.size() >= MAX_CSS_FILES) {
+        LOG_ERR("COF", "Manifest exceeds %u CSS files", static_cast<unsigned>(MAX_CSS_FILES));
+        self->ioFailed = true;
+        return;
+      }
       self->cssFiles.push_back(href);
     }
 
@@ -330,46 +371,60 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   // Only run the spine parsing if there's a cache to add it to
   if (self->cache) {
     if (self->state == IN_SPINE && (strcmp(name, "itemref") == 0 || strcmp(name, "opf:itemref") == 0)) {
+      if (++self->spineItemCount > MAX_SPINE_ITEMS) {
+        LOG_ERR("COF", "Spine exceeds %u items", static_cast<unsigned>(MAX_SPINE_ITEMS));
+        self->ioFailed = true;
+        return;
+      }
+      std::string idref;
+      bool linear = true;
       for (int i = 0; atts[i]; i += 2) {
         if (strcmp(atts[i], "idref") == 0) {
-          const std::string idref = atts[i + 1];
-          std::string href;
-          bool found = false;
-
-          if (self->useItemIndex) {
-            // Fast path: binary search
-            uint32_t targetHash = fnvHash(idref);
-            uint16_t targetLen = static_cast<uint16_t>(idref.size());
-
-            auto it = std::lower_bound(self->itemIndex.begin(), self->itemIndex.end(),
-                                       ItemIndexEntry{targetHash, targetLen, 0},
-                                       [](const ItemIndexEntry& a, const ItemIndexEntry& b) {
-                                         return a.idHash < b.idHash || (a.idHash == b.idHash && a.idLen < b.idLen);
-                                       });
-
-            // Check for match (may need to check a few due to hash collisions)
-            while (it != self->itemIndex.end() && it->idHash == targetHash) {
-              std::string itemId;
-              std::string candidateHref;
-              if (!self->readItemRecord(it->fileOffset, it->idLen, itemId, candidateHref)) {
-                LOG_ERR("COF", "Couldn't read temp manifest item");
-                self->ioFailed = true;
-                return;
-              }
-              if (itemId == idref) {
-                href = std::move(candidateHref);
-                found = true;
-                break;
-              }
-              ++it;
-            }
-          }
-
-          if (found && self->cache) {
-            self->cache->createSpineEntry(href);
-          }
+          if (!assignBoundedAttribute(idref, atts[i + 1], MAX_ITEM_ID_BYTES)) self->ioFailed = true;
+        } else if (strcmp(atts[i], "linear") == 0 && strcmp(atts[i + 1], "no") == 0) {
+          linear = false;
         }
       }
+      if (self->ioFailed || idref.empty() || !self->useItemIndex) {
+        LOG_ERR("COF", "Spine itemref is missing or invalid");
+        self->ioFailed = true;
+        return;
+      }
+
+      std::string href;
+      bool found = false;
+      const uint32_t targetHash = fnvHash(idref);
+      const uint16_t targetLen = static_cast<uint16_t>(idref.size());
+      auto it = std::lower_bound(self->itemIndex.begin(), self->itemIndex.end(),
+                                 ItemIndexEntry{targetHash, targetLen, 0},
+                                 [](const ItemIndexEntry& a, const ItemIndexEntry& b) {
+                                   return a.idHash < b.idHash || (a.idHash == b.idHash && a.idLen < b.idLen);
+                                 });
+      while (it != self->itemIndex.end() && it->idHash == targetHash) {
+        std::string itemId;
+        std::string candidateHref;
+        if (!self->readItemRecord(it->fileOffset, it->idLen, itemId, candidateHref)) {
+          LOG_ERR("COF", "Couldn't read temp manifest item");
+          self->ioFailed = true;
+          return;
+        }
+        if (itemId == idref) {
+          if (found) {
+            LOG_ERR("COF", "Duplicate manifest id referenced by spine: %s", idref.c_str());
+            self->ioFailed = true;
+            return;
+          }
+          href = std::move(candidateHref);
+          found = true;
+        }
+        ++it;
+      }
+      if (!found) {
+        LOG_ERR("COF", "Unresolved spine idref: %s", idref.c_str());
+        self->ioFailed = true;
+        return;
+      }
+      self->cache->createSpineEntry(href, linear);
       return;
     }
   }
@@ -379,11 +434,18 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     std::string guideHref;
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "type") == 0) {
-        type = atts[i + 1];
+        if (!assignBoundedAttribute(type, atts[i + 1], 64)) self->ioFailed = true;
       } else if (strcmp(atts[i], "href") == 0) {
-        guideHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + atts[i + 1]));
+        std::string rawHref;
+        if (!assignBoundedAttribute(rawHref, atts[i + 1], MAX_RESOURCE_PATH_BYTES) ||
+            self->baseContentPath.size() > MAX_RESOURCE_PATH_BYTES - rawHref.size()) {
+          self->ioFailed = true;
+        } else {
+          guideHref = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + rawHref));
+        }
       }
     }
+    if (self->ioFailed || guideHref.size() > MAX_RESOURCE_PATH_BYTES) return;
     if (!guideHref.empty()) {
       // EPUB 2's guide reference type "text" is ambiguous: publishers use it
       // for arbitrary front matter as well as the reading start. Only the
@@ -405,17 +467,17 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
   auto* self = static_cast<ContentOpfParser*>(userData);
 
   if (self->state == IN_BOOK_TITLE) {
-    self->title.append(s, len);
+    if (!appendBoundedText(self->title, s, len, MAX_METADATA_TEXT_BYTES)) self->ioFailed = true;
     return;
   }
 
   if (self->state == IN_BOOK_AUTHOR) {
-    self->currentAuthor.append(s, len);
+    if (!appendBoundedText(self->currentAuthor, s, len, MAX_METADATA_TEXT_BYTES)) self->ioFailed = true;
     return;
   }
 
   if (self->state == IN_BOOK_LANGUAGE) {
-    self->currentLanguage.append(s, len);
+    if (!appendBoundedText(self->currentLanguage, s, len, MAX_LANGUAGE_BYTES)) self->ioFailed = true;
     return;
   }
 }
@@ -450,6 +512,12 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
 
   if (self->state == IN_BOOK_AUTHOR && strcmp(name, "dc:creator") == 0) {
     if (!self->currentAuthor.empty()) {
+      const size_t separatorBytes = self->author.empty() ? 0 : 2;
+      if (self->author.size() > MAX_METADATA_TEXT_BYTES - separatorBytes ||
+          self->currentAuthor.size() > MAX_METADATA_TEXT_BYTES - separatorBytes - self->author.size()) {
+        self->ioFailed = true;
+        return;
+      }
       if (!self->author.empty()) self->author.append(", ");
       self->author.append(self->currentAuthor);
     }

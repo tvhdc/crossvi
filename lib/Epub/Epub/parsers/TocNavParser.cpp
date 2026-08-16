@@ -6,6 +6,16 @@
 
 #include "Epub/BookMetadataCache.h"
 
+namespace {
+bool assignBoundedAttribute(std::string& destination, const char* value, const size_t maxBytes) {
+  size_t length = 0;
+  while (length <= maxBytes && value[length] != '\0') ++length;
+  if (length > maxBytes) return false;
+  destination.assign(value, length);
+  return true;
+}
+}  // namespace
+
 bool TocNavParser::setup() {
   parser = XML_ParserCreate(nullptr);
   if (!parser) {
@@ -24,7 +34,7 @@ TocNavParser::~TocNavParser() { destroyXmlParser(parser); }
 size_t TocNavParser::write(const uint8_t data) { return write(&data, 1); }
 
 size_t TocNavParser::write(const uint8_t* buffer, const size_t size) {
-  if (!parser) return 0;
+  if (!parser || failed) return 0;
 
   const uint8_t* currentBufferPos = buffer;
   auto remainingInBuffer = size;
@@ -43,6 +53,12 @@ size_t TocNavParser::write(const uint8_t* buffer, const size_t size) {
     if (XML_ParseBuffer(parser, static_cast<int>(toRead), remainingSize == toRead) == XML_STATUS_ERROR) {
       LOG_DBG("NAV", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
+      destroyXmlParser(parser);
+      return 0;
+    }
+
+    if (failed) {
+      LOG_ERR("NAV", "Navigation document exceeds parser limits");
       destroyXmlParser(parser);
       return 0;
     }
@@ -86,6 +102,10 @@ void XMLCALL TocNavParser::startElement(void* userData, const XML_Char* name, co
   }
 
   if (strcmp(name, "ol") == 0) {
+    if (self->olDepth >= MAX_TOC_DEPTH) {
+      self->failed = true;
+      return;
+    }
     self->olDepth++;
     self->state = IN_OL;
     return;
@@ -103,7 +123,7 @@ void XMLCALL TocNavParser::startElement(void* userData, const XML_Char* name, co
     // Get href attribute
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "href") == 0) {
-        self->currentHref = atts[i + 1];
+        if (!assignBoundedAttribute(self->currentHref, atts[i + 1], MAX_ENTRY_TEXT_BYTES)) self->failed = true;
         break;
       }
     }
@@ -116,7 +136,11 @@ void XMLCALL TocNavParser::characterData(void* userData, const XML_Char* s, cons
 
   // Only collect text when inside an anchor within the TOC nav
   if (self->state == IN_ANCHOR) {
-    self->currentLabel.append(s, len);
+    if (len < 0 || static_cast<size_t>(len) > MAX_ENTRY_TEXT_BYTES - std::min(self->currentLabel.size(), MAX_ENTRY_TEXT_BYTES)) {
+      self->failed = true;
+      return;
+    }
+    self->currentLabel.append(s, static_cast<size_t>(len));
   }
 }
 
@@ -126,6 +150,11 @@ void XMLCALL TocNavParser::endElement(void* userData, const XML_Char* name) {
   if (strcmp(name, "a") == 0 && self->state == IN_ANCHOR) {
     // Create TOC entry when closing anchor tag (we have all data now)
     if (!self->currentLabel.empty() && !self->currentHref.empty()) {
+      if (self->entryCount >= MAX_TOC_ENTRIES ||
+          self->baseContentPath.size() > MAX_ENTRY_TEXT_BYTES - self->currentHref.size()) {
+        self->failed = true;
+        return;
+      }
       const std::string rawTarget = self->baseContentPath + self->currentHref;
       const size_t pos = rawTarget.find('#');
       const std::string rawPath = pos == std::string::npos ? rawTarget : rawTarget.substr(0, pos);
@@ -140,6 +169,7 @@ void XMLCALL TocNavParser::endElement(void* userData, const XML_Char* name) {
         // olDepth gives us the nesting level (1-based from the outer ol)
         self->cache->createTocEntry(self->currentLabel, href, anchor, self->olDepth);
       }
+      ++self->entryCount;
 
       self->currentLabel.clear();
       self->currentHref.clear();
@@ -154,6 +184,10 @@ void XMLCALL TocNavParser::endElement(void* userData, const XML_Char* name) {
   }
 
   if (strcmp(name, "ol") == 0 && self->state >= IN_NAV_TOC) {
+    if (self->olDepth == 0) {
+      self->failed = true;
+      return;
+    }
     self->olDepth--;
     if (self->olDepth == 0) {
       self->state = IN_NAV_TOC;

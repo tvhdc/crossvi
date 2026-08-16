@@ -34,7 +34,7 @@ constexpr char ORDER_WORK_A_PATH[] = "/.crosspoint/library.order.a";
 constexpr char ORDER_WORK_B_PATH[] = "/.crosspoint/library.order.b";
 constexpr std::array<char, 8> MAGIC = {'C', 'V', 'L', 'I', 'B', '0', '1', '\0'};
 constexpr std::array<char, 8> ORDER_MAGIC = {'C', 'V', 'L', 'O', 'R', '0', '1', '\0'};
-constexpr uint16_t VERSION = 2;
+constexpr uint16_t VERSION = 3;
 constexpr uint16_t ORDER_VERSION = 2;
 
 #pragma pack(push, 1)
@@ -56,6 +56,7 @@ struct DiskRecord {
   char author[LibraryCatalogStore::MAX_AUTHOR_BYTES + 1];
   char cover[LibraryCatalogStore::MAX_PATH_BYTES + 1];
   uint64_t sourceSize;
+  uint32_t sourceTimestamp;
   uint32_t addedTimestamp;
   uint8_t format;
   uint8_t reserved[3];
@@ -131,6 +132,13 @@ uint32_t readTimestamp(HalFile& file) {
   uint16_t date = 0;
   uint16_t time = 0;
   if (!file.getCreateDateTime(&date, &time)) file.getModifyDateTime(&date, &time);
+  return date == 0 ? 0U : (static_cast<uint32_t>(date) << 16U) | time;
+}
+
+uint32_t readSourceTimestamp(HalFile& file) {
+  uint16_t date = 0;
+  uint16_t time = 0;
+  if (!file.getModifyDateTime(&date, &time)) file.getCreateDateTime(&date, &time);
   return date == 0 ? 0U : (static_cast<uint32_t>(date) << 16U) | time;
 }
 
@@ -254,6 +262,7 @@ bool toDisk(const LibraryBookRecord& record, DiskRecord& disk) {
   // the thumbnail will be regenerated when the book is next visible.
   if (record.coverBmpPath.size() < sizeof(disk.cover)) copyString(record.coverBmpPath, disk.cover, sizeof(disk.cover));
   disk.sourceSize = record.sourceSize;
+  disk.sourceTimestamp = record.sourceTimestamp;
   disk.addedTimestamp = record.addedTimestamp;
   disk.format = static_cast<uint8_t>(record.format);
   disk.crc = structureCrc(disk);
@@ -274,6 +283,7 @@ bool fromDisk(const DiskRecord& disk, LibraryBookRecord& record) {
   record.coverBmpPath = disk.cover;
   record.format = static_cast<LibraryBookFormat>(disk.format);
   record.sourceSize = disk.sourceSize;
+  record.sourceTimestamp = disk.sourceTimestamp;
   record.addedTimestamp = disk.addedTimestamp;
   record.pinned = false;
   return true;
@@ -546,10 +556,31 @@ void LibraryCatalogStore::validateOneSource() {
     return;
   }
   ++sourceValidationIndex_;
-  if (!Storage.exists(record.path.c_str())) {
+  HalFile source;
+  if (!Storage.openFileForRead("LIB", record.path, source)) {
+    if (Storage.exists(record.path.c_str())) {
+      resetSourceValidation();
+      phase_ = Phase::Error;
+      return;
+    }
     // A source disappeared outside CrossVi, so no dirty marker exists. Reuse
     // the normal cooperative rebuild; it removes every stale entry and also
     // discovers any other external changes without blocking the input loop.
+    if (!beginBuild()) phase_ = Phase::Error;
+    return;
+  }
+
+  const uint64_t sourceSize = source.fileSize64();
+  const uint32_t sourceTimestamp = readSourceTimestamp(source);
+  if (!source.close()) {
+    resetSourceValidation();
+    phase_ = Phase::Error;
+    return;
+  }
+  if (sourceSize != record.sourceSize || sourceTimestamp != record.sourceTimestamp) {
+    // Metadata and thumbnail paths are derived from the source. Rebuild the
+    // complete cooperative catalog so an in-place replacement cannot retain
+    // the previous book's title, author, cover or ordering data.
     if (!beginBuild()) phase_ = Phase::Error;
     return;
   }
@@ -623,12 +654,13 @@ bool LibraryCatalogStore::applyDirtyPath(const std::string& path) {
   if (!Storage.openFileForRead("LIB", path, source)) return false;
   const uint64_t sourceSize = source.fileSize64();
   const uint32_t addedTimestamp = readTimestamp(source);
+  const uint32_t sourceTimestamp = readSourceTimestamp(source);
   const bool sourceClosed = source.close();
   if (!sourceClosed) return false;
   resetUpdate(true);
   updateKind_ = UpdateKind::Upsert;
   updatePath_ = path;
-  updateRecord_ = {path, fallbackTitle(path), "", "", format, sourceSize, addedTimestamp};
+  updateRecord_ = {path, fallbackTitle(path), "", "", format, sourceSize, sourceTimestamp, addedTimestamp};
   const auto& recents = RECENT_BOOKS.getBooks();
   const auto recent =
       std::find_if(recents.begin(), recents.end(), [&path](const RecentBook& book) { return book.path == path; });
@@ -914,6 +946,7 @@ void LibraryCatalogStore::discoverOne() {
   const bool directory = entry.isDirectory();
   const uint64_t size = directory ? 0 : entry.fileSize64();
   const uint32_t addedTimestamp = directory ? 0 : readTimestamp(entry);
+  const uint32_t sourceTimestamp = directory ? 0 : readSourceTimestamp(entry);
   entry.close();
   if (name[0] == '\0' || isBookFileTransactionArtifact(name)) return;
   if (directory && isSkippedDirectory(name)) return;
@@ -953,7 +986,7 @@ void LibraryCatalogStore::discoverOne() {
   }
   LibraryBookFormat format;
   if (!isSupportedBook(path, format)) return;
-  LibraryBookRecord record{path, fallbackTitle(path), "", "", format, size, addedTimestamp};
+  LibraryBookRecord record{path, fallbackTitle(path), "", "", format, size, sourceTimestamp, addedTimestamp};
   const auto& recents = RECENT_BOOKS.getBooks();
   const auto recent =
       std::find_if(recents.begin(), recents.end(), [&path](const RecentBook& book) { return book.path == path; });

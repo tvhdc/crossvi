@@ -13,7 +13,7 @@ inline bool valid(const uint16_t width, const uint16_t height, const int expecte
 
   const uint64_t bytesPerRow = (static_cast<uint64_t>(width) + 3U) / 4U;
   const uint64_t payloadSize = bytesPerRow * height;
-  return payloadSize <= fileSize && 4U <= fileSize - payloadSize;
+  return fileSize == 4U + payloadSize;
 }
 
 }  // namespace pixel_cache_validation

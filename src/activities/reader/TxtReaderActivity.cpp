@@ -256,10 +256,17 @@ void TxtReaderActivity::loop() {
         ++currentPage;
         lastPageTurnTime = millis();
         requestUpdate();
-      } else if (pageIndexComplete) {
+        return;
+      } else if (!pageIndexComplete) {
+        // The visible watermark is not the end of the file. Let this loop tick
+        // reach processBackgroundPageIndex() so auto-turn can resume once the
+        // next bounded batch exposes another page.
+        lastPageTurnTime = millis();
+      } else {
         automaticPageTurnActive = false;
+        requestUpdate();
+        return;
       }
-      return;
     }
   }
 
@@ -1142,14 +1149,22 @@ void TxtReaderActivity::render(RenderLock&&) {
           static_cast<unsigned>(renderFreeHeap), static_cast<unsigned>(ESP.getMaxAllocHeap()));
 #endif
 
-  if (currentPage != lastSavedPage && saveProgress()) {
-    lastSavedPage = currentPage;
+  if (currentPage != lastSavedPage) {
+    if (saveProgress()) {
+      lastSavedPage = currentPage;
+    } else {
+      pendingProgressSaveError = true;
+    }
   }
 
   if (pendingStatsCompletionError) {
     pendingStatsCompletionError = false;
     signalReadingPageHidden();
     GUI.drawPopup(renderer, tr(STR_COMPLETE_BOOK_STATS_FAILED));
+  } else if (pendingProgressSaveError) {
+    pendingProgressSaveError = false;
+    signalReadingPageHidden();
+    GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
   } else if (pendingBookSettingsSaveError) {
     pendingBookSettingsSaveError = false;
     signalReadingPageHidden();
@@ -1930,6 +1945,12 @@ bool TxtReaderActivity::persistBookReaderSettings() {
              PerBookReaderSettingsStore::SaveStatus::SAVED;
 }
 
+void TxtReaderActivity::rememberCurrentByteOffset() {
+  initialProgressOffset.reset();
+  if (!pageOffsets || currentPage < 0 || static_cast<size_t>(currentPage) >= pageOffsetCount) return;
+  initialProgressOffset = pageOffsets[currentPage];
+}
+
 void TxtReaderActivity::invalidateReaderLayout() {
   pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
   readerLayoutPrepared = false;
@@ -1971,7 +1992,8 @@ void TxtReaderActivity::openBookReaderSettings() {
           requestUpdate();
           return;
         }
-        saveProgress();
+        rememberCurrentByteOffset();
+        if (!saveProgress()) pendingProgressSaveError = true;
         const PerBookReaderSettings previous = bookReaderSettings;
         bookReaderSettings = updated;
         applyEffectiveBookReaderSettings(globalReaderSettings, bookReaderSettings);
@@ -1995,7 +2017,8 @@ void TxtReaderActivity::applyOrientation(const uint8_t orientation) {
     requestUpdate();
     return;
   }
-  saveProgress();
+  rememberCurrentByteOffset();
+  if (!saveProgress()) pendingProgressSaveError = true;
   const PerBookReaderSettings previous = bookReaderSettings;
   SETTINGS.orientation = orientation;
   bookReaderSettings =

@@ -38,6 +38,8 @@ struct PixelCache {
   int flushedRows;  // image-local rows already written to file
   HalFile file;
   std::string cachePathStr;
+  std::string stagingPathStr;
+  std::string backupPathStr;
   bool ok;
 
   PixelCache()
@@ -58,9 +60,53 @@ struct PixelCache {
   static constexpr int MIN_BAND_ROWS = 16;
   static constexpr size_t MAX_BAND_BYTES = 24 * 1024;  // band working-set ceiling
 
+  uint64_t expectedFileSize() const {
+    return 4U + static_cast<uint64_t>(bytesPerRow) * static_cast<uint64_t>(height);
+  }
+
+  bool validateFile(const std::string& path) const {
+    HalFile candidate;
+    if (!Storage.openFileForRead("IMG", path, candidate)) return false;
+    uint16_t storedWidth = 0;
+    uint16_t storedHeight = 0;
+    const bool valid = candidate.read(&storedWidth, sizeof(storedWidth)) == sizeof(storedWidth) &&
+                       candidate.read(&storedHeight, sizeof(storedHeight)) == sizeof(storedHeight) &&
+                       storedWidth == static_cast<uint16_t>(width) && storedHeight == static_cast<uint16_t>(height) &&
+                       candidate.fileSize64() == expectedFileSize();
+    return candidate.close() && valid;
+  }
+
+  bool publishStagingFile() {
+    const bool hadFinal = Storage.exists(cachePathStr.c_str());
+    if (Storage.exists(backupPathStr.c_str()) && !Storage.remove(backupPathStr.c_str())) return false;
+    if (hadFinal && !Storage.rename(cachePathStr.c_str(), backupPathStr.c_str())) return false;
+
+    if (!Storage.rename(stagingPathStr.c_str(), cachePathStr.c_str())) {
+      if (hadFinal && !Storage.exists(cachePathStr.c_str()) &&
+          !Storage.rename(backupPathStr.c_str(), cachePathStr.c_str())) {
+        LOG_ERR("IMG", "Failed to restore previous cache: %s", cachePathStr.c_str());
+      }
+      return false;
+    }
+
+    if (!validateFile(cachePathStr)) {
+      Storage.remove(cachePathStr.c_str());
+      if (hadFinal && !Storage.rename(backupPathStr.c_str(), cachePathStr.c_str())) {
+        LOG_ERR("IMG", "Failed to restore previous cache after validation: %s", cachePathStr.c_str());
+      }
+      return false;
+    }
+
+    if (hadFinal && Storage.exists(backupPathStr.c_str()) && !Storage.remove(backupPathStr.c_str())) {
+      LOG_ERR("IMG", "Failed to remove old cache backup: %s", backupPathStr.c_str());
+    }
+    return true;
+  }
+
   // Open the cache file, write the header, and allocate a band buffer big enough
   // to hold the tallest single decode block (maxBlockDstRows output rows).
   bool begin(const std::string& cachePath, int w, int h, int ox, int oy, int maxBlockDstRows) {
+    if (w <= 0 || h <= 0 || w > UINT16_MAX || h > UINT16_MAX || maxBlockDstRows <= 0) return false;
     width = w;
     height = h;
     originX = ox;
@@ -69,6 +115,14 @@ struct PixelCache {
     bandStart = 0;
     flushedRows = 0;
     ok = false;
+    cachePathStr = cachePath;
+    stagingPathStr = cachePath + ".tmp";
+    backupPathStr = cachePath + ".bak";
+
+    if (Storage.exists(stagingPathStr.c_str()) && !Storage.remove(stagingPathStr.c_str())) {
+      LOG_ERR("IMG", "Failed to remove stale cache staging file: %s", stagingPathStr.c_str());
+      return false;
+    }
 
     int wantRows = maxBlockDstRows + 2;
     if (wantRows < MIN_BAND_ROWS) wantRows = MIN_BAND_ROWS;
@@ -96,18 +150,17 @@ struct PixelCache {
     memset(buffer, 0, bufSize);
     zeroRow = buffer + (size_t)bandRows * bytesPerRow;
 
-    if (!Storage.openFileForWrite("IMG", cachePath, file)) {
-      LOG_ERR("IMG", "Failed to open cache file for writing: %s", cachePath.c_str());
+    if (!Storage.openFileForWrite("IMG", stagingPathStr, file)) {
+      LOG_ERR("IMG", "Failed to open cache file for writing: %s", stagingPathStr.c_str());
       free(buffer);
       buffer = nullptr;
       return false;
     }
-    cachePathStr = cachePath;
 
     uint16_t w16 = (uint16_t)w;
     uint16_t h16 = (uint16_t)h;
     if (file.write(&w16, 2) != 2 || file.write(&h16, 2) != 2) {
-      LOG_ERR("IMG", "Failed to write cache header: %s", cachePath.c_str());
+      LOG_ERR("IMG", "Failed to write cache header: %s", stagingPathStr.c_str());
       abort();
       return false;
     }
@@ -141,7 +194,7 @@ struct PixelCache {
   }
 
   // Flush the final band and zero-fill any rows never covered (image clipped by
-  // the screen), then close the file.
+  // the screen), then durably publish the complete staging file.
   bool finalize() {
     if (!ok) {
       abort();
@@ -156,7 +209,13 @@ struct PixelCache {
         return false;
       }
     }
-    file.close();
+    const bool synced = file.sync();
+    const bool closed = file.close();
+    if (!synced || !closed || !validateFile(stagingPathStr) || !publishStagingFile()) {
+      LOG_ERR("IMG", "Failed to publish cache: %s", cachePathStr.c_str());
+      abort();
+      return false;
+    }
     LOG_DBG("IMG", "Cache written: %s (%dx%d, %d bytes)", cachePathStr.c_str(), width, height,
             4 + bytesPerRow * height);
     ok = false;  // file handed off; nothing left to clean up
@@ -166,8 +225,8 @@ struct PixelCache {
   // Drop a partial/failed cache so a later decode re-creates it cleanly.
   void abort() {
     if (file.isOpen()) file.close();
-    if (!cachePathStr.empty()) {
-      Storage.remove(cachePathStr.c_str());
+    if (!stagingPathStr.empty() && Storage.exists(stagingPathStr.c_str())) {
+      Storage.remove(stagingPathStr.c_str());
     }
     ok = false;
   }

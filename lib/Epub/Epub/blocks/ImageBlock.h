@@ -25,6 +25,8 @@ class ImageBlock final : public Block {
   bool imageExists() const;
   bool hasValidCache() const;
   bool needsDecode() const;
+  bool preparePixelCache(GfxRenderer& renderer, int x, int y) const;
+  bool wasDecodedWithoutCache() const { return decodedWithoutCache; }
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearSessionRenderFailures();
 
@@ -47,6 +49,8 @@ class ImageBlock final : public Block {
   size_t residentPixelBytes = 0;
   uint16_t residentWidth = 0;
   uint16_t residentHeight = 0;
+  bool decodedWithoutCache = false;
+  bool renderFailed = false;
   int16_t width;
   int16_t height;
 

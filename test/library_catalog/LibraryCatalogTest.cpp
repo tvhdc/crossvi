@@ -753,6 +753,31 @@ TEST_F(LibraryCatalogTest, SourceValidationKeepsAnUnchangedCatalogAndGeneration)
   EXPECT_FALSE(fs::exists(root_ / ".crosspoint/library.work"));
 }
 
+TEST_F(LibraryCatalogTest, SourceValidationRebuildsSameSizeBookChangedAtSamePath) {
+  addBook("book.txt");
+  ASSERT_TRUE(LIBRARY_CATALOG.startRefresh());
+  advanceToReady();
+  const uint32_t originalGeneration = LIBRARY_CATALOG.generation();
+
+  const fs::path path = root_ / "book.txt";
+  const auto originalWriteTime = fs::last_write_time(path);
+  {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << "edit";  // Same four-byte size as the original fixture.
+    ASSERT_TRUE(file.good());
+  }
+  fs::last_write_time(path, originalWriteTime + std::chrono::seconds(4));
+
+  LIBRARY_CATALOG.invalidateSourceValidation();
+  ASSERT_TRUE(LIBRARY_CATALOG.open());
+  advanceToReady();
+
+  EXPECT_GT(LIBRARY_CATALOG.generation(), originalGeneration);
+  LibraryBookRecord record;
+  ASSERT_TRUE(LIBRARY_CATALOG.loadRecord(0, record));
+  EXPECT_EQ(record.sourceSize, 4U);
+}
+
 TEST_F(LibraryCatalogTest, ResolvePinnedPathsAndLoadNonContiguousRecordsWithOneCatalog) {
   addBook("one.txt");
   addBook("two.txt");

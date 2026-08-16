@@ -671,9 +671,10 @@ ZipFile::StoredEntryOpenStatus ZipFile::openStoredEntry(const char* filename, Ha
 }
 
 int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<uint32_t>& sizes) {
-  if (targets.empty()) {
-    return 0;
-  }
+  if (targets.empty() || sizes.empty()) return 0;
+
+  // deque storage is not contiguous, so retain the compatibility overload for
+  // existing callers and use their original implementation below.
 
   const ScopedOpenClose zip{*this};
   if (!zip) return 0;
@@ -735,6 +736,55 @@ int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<u
     file.seekCur(m + k);
   }
 
+  return matched;
+}
+
+int ZipFile::fillUncompressedSizes(const SizeTarget* const targets, const size_t targetCount, uint32_t* const sizes,
+                                   const size_t sizeCount) {
+  if (!targets || targetCount == 0 || !sizes || sizeCount == 0) return 0;
+
+  const ScopedOpenClose zip{*this};
+  if (!zip || !loadZipDetails() || !file.seek(zipDetails.centralDirOffset)) return 0;
+
+  int matched = 0;
+  uint32_t sig = 0;
+  char itemName[256];
+  while (file.available()) {
+    if (file.read(&sig, sizeof(sig)) != sizeof(sig) || sig != 0x02014b50) break;
+
+    file.seekCur(20);
+    uint32_t uncompressedSize = 0;
+    file.read(&uncompressedSize, sizeof(uncompressedSize));
+    uint16_t nameLen = 0;
+    uint16_t extraLen = 0;
+    uint16_t commentLen = 0;
+    file.read(&nameLen, sizeof(nameLen));
+    file.read(&extraLen, sizeof(extraLen));
+    file.read(&commentLen, sizeof(commentLen));
+    file.seekCur(12);
+
+    if (nameLen < sizeof(itemName)) {
+      if (file.read(itemName, nameLen) != nameLen) break;
+      const uint64_t hash = fnvHash64(itemName, nameLen);
+      const SizeTarget key = {hash, nameLen, 0};
+      const SizeTarget* it = std::lower_bound(
+          targets, targets + targetCount, key, [](const SizeTarget& a, const SizeTarget& b) {
+            return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
+          });
+      while (it != targets + targetCount && it->hash == hash && it->len == nameLen) {
+        if (it->index < sizeCount) {
+          sizes[it->index] = uncompressedSize;
+          ++matched;
+        }
+        ++it;
+      }
+    } else if (!file.seekCur(nameLen)) {
+      break;
+    }
+
+    if (!file.seekCur(static_cast<int32_t>(extraLen) + commentLen)) break;
+    if (matched >= static_cast<int>(targetCount)) break;
+  }
   return matched;
 }
 

@@ -78,6 +78,16 @@ class PageHorizontalRule final : public PageElement {
   static std::unique_ptr<PageHorizontalRule> deserialize(BoundedFileReader& reader);
 };
 
+struct PageImagePreparation {
+  std::string sourcePath;
+  std::string imagePath;
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t width = 0;
+  int16_t height = 0;
+  bool needsExtraction = false;
+};
+
 class Page {
   mutable std::unique_ptr<uint8_t[]> imageReadBuffer;
   mutable size_t imageReadBufferCapacity = 0;
@@ -117,17 +127,32 @@ class Page {
     });
   }
 
-  // Returns one lazy raster that has not yet been extracted. The caller owns
-  // elementIndex so repeated idle ticks can scan a page without retaining the
-  // deserialized Page or an unbounded candidate list.
-  bool nextMissingImage(size_t& elementIndex, std::string& sourcePath, std::string& imagePath) const {
+  bool hasImagesDecodedWithoutCache() const {
+    return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
+      return element->getTag() == TAG_PageImage &&
+             static_cast<const PageImage&>(*element).getImageBlock().wasDecodedWithoutCache();
+    });
+  }
+
+  // Returns one raster that still needs raw extraction or pixel-cache decode.
+  // The caller owns elementIndex so idle preparation never retains a Page or
+  // an unbounded candidate list.
+  bool nextImageNeedingPreparation(size_t& elementIndex, PageImagePreparation& candidate) const {
     while (elementIndex < elements.size()) {
       const auto& element = elements[elementIndex++];
       if (element->getTag() != TAG_PageImage) continue;
-      const auto& image = static_cast<const PageImage&>(*element).getImageBlock();
-      if (image.getSourcePath().empty() || image.imageExists()) continue;
-      sourcePath = image.getSourcePath();
-      imagePath = image.getImagePath();
+      const auto& pageImage = static_cast<const PageImage&>(*element);
+      const auto& image = pageImage.getImageBlock();
+      if (!image.needsDecode()) continue;
+      const bool needsExtraction = !image.imageExists();
+      if (needsExtraction && image.getSourcePath().empty()) continue;
+      candidate.sourcePath = image.getSourcePath();
+      candidate.imagePath = image.getImagePath();
+      candidate.x = pageImage.xPos;
+      candidate.y = pageImage.yPos;
+      candidate.width = image.getWidth();
+      candidate.height = image.getHeight();
+      candidate.needsExtraction = needsExtraction;
       return true;
     }
     return false;

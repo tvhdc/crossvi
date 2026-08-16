@@ -107,6 +107,7 @@ class TxtReaderActivity final : public Activity {
   ReaderUtils::PageTurnGestureState pageTurnGesture;
   bool pendingShortcutUnsupportedNotice = false;
   std::atomic<bool> pendingScreenshot{false};
+  bool pendingProgressSaveError = false;
   bool pendingBookSettingsSaveError = false;
   bool pendingCacheClearError = false;
   bool skipStartupRecentUpdate = false;
@@ -171,6 +172,7 @@ class TxtReaderActivity final : public Activity {
   bool loadPageIndexCache();
   void savePageIndexCache() const;
   bool saveProgress();
+  void rememberCurrentByteOffset();
   void loadProgress();
   void openReadingStats();
   void openReaderMenu();

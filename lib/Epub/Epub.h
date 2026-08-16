@@ -222,6 +222,9 @@ class Epub {
   bool extractItemToFileAtomically(const std::string& itemHref, const std::string& finalPath) const;
   bool getItemSize(const std::string& itemHref, size_t* size) const;
   BookMetadataCache::SpineEntry getSpineItem(int spineIndex) const;
+  // Returns the next primary-reading-order item. Forward exhaustion uses the
+  // existing end-of-book sentinel (spine count); backward exhaustion is -1.
+  int getAdjacentLinearSpineIndex(int spineIndex, bool forward) const;
   BookMetadataCache::TocEntry getTocItem(int tocIndex) const;
   int getSpineItemsCount() const;
   int getTocItemsCount() const;
@@ -251,6 +254,7 @@ class Epub {
   BookMetadataCache::BookMetadata indexingMetadata;
   bool indexingSkipLoadingCss = false;
   bool indexingCacheReloadActive = false;
+  bool indexingBookBuilt = false;
   uint32_t indexingStartedMs = 0;
   uint32_t indexingPhaseStartedMs = 0;
   std::unique_ptr<CoreMetadataReadState> coreMetadataReadState;

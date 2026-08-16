@@ -21,6 +21,7 @@ class BookMetadataCache {
     IoError,
   };
   enum class LoadStepResult : uint8_t { InProgress, Loaded, Error };
+  enum class BuildStepResult : uint8_t { InProgress, Built, Error };
 
   struct BookMetadata {
     std::string title;
@@ -32,12 +33,13 @@ class BookMetadataCache {
 
   struct SpineEntry {
     std::string href;
+    bool linear;
     uint32_t cumulativeSize;
     int16_t tocIndex;
 
-    SpineEntry() : cumulativeSize(0), tocIndex(-1) {}
-    SpineEntry(std::string href, const uint32_t cumulativeSize, const int16_t tocIndex)
-        : href(std::move(href)), cumulativeSize(cumulativeSize), tocIndex(tocIndex) {}
+    SpineEntry() : linear(true), cumulativeSize(0), tocIndex(-1) {}
+    SpineEntry(std::string href, const bool linear, const uint32_t cumulativeSize, const int16_t tocIndex)
+        : href(std::move(href)), linear(linear), cumulativeSize(cumulativeSize), tocIndex(tocIndex) {}
   };
 
   struct TocEntry {
@@ -58,6 +60,7 @@ class BookMetadataCache {
 
  private:
   class LoadState;
+  class BuildState;
 
   std::string cachePath;
   uint32_t lutOffset;
@@ -79,6 +82,7 @@ class BookMetadataCache {
   // SdFat's shared sector cache (one 512B transaction per 4-byte pod). One
   // wrapper serves whichever pass is active (spine, then toc).
   std::unique_ptr<serialization::BufferedFileWriter> passOut;
+  std::unique_ptr<BuildState> buildState;
 
   // Index for fast href→spineIndex lookup (used only for large EPUBs)
   struct SpineHrefIndexEntry {
@@ -121,9 +125,10 @@ class BookMetadataCache {
   // Building phase (stream to disk immediately)
   bool beginWrite();
   bool beginContentOpfPass();
-  void createSpineEntry(const std::string& href);
+  void createSpineEntry(const std::string& href, bool linear = true);
   bool endContentOpfPass();
   bool beginTocPass();
+  bool restartTocPass();
   void createTocEntry(const std::string& title, const std::string& href, const std::string& anchor, uint8_t level);
   bool endTocPass();
   bool endWrite();
@@ -131,6 +136,13 @@ class BookMetadataCache {
   bool cleanupTmpFiles() const;
 
   // Post-processing to update mappings and sizes
+  // The source path and metadata objects must remain alive until the
+  // cooperative build finishes or is cancelled.
+  bool beginBuildBookBin(const std::string& epubPath, const BookMetadata& metadata,
+                         const ZipFile::SourceIdentity& sourceIdentity);
+  BuildStepResult stepBuildBookBin(size_t maxEntries);
+  void cancelBuildBookBin();
+  bool isBuildingBookBin() const { return buildState != nullptr; }
   bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
                     const ZipFile::SourceIdentity& sourceIdentity);
 

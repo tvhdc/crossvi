@@ -9,8 +9,8 @@
 #include "Epub/Epub/SectionCacheValidator.h"
 
 namespace {
-constexpr uint8_t FINAL_VERSION = 37;
-constexpr uint8_t PARTIAL_VERSION = 0xF5;
+constexpr uint8_t FINAL_VERSION = 38;
+constexpr uint8_t PARTIAL_VERSION = 0xF4;
 constexpr uint64_t HEADER_SIZE = 44;
 constexpr size_t PAGE_COUNT_OFFSET = 22;
 constexpr size_t PAGE_LUT_OFFSET = 24;

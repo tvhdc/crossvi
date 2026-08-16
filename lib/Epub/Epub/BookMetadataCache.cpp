@@ -8,6 +8,7 @@
 
 #include <array>
 #include <deque>
+#include <limits>
 #include <new>
 
 #include "FsHelpers.h"
@@ -20,7 +21,9 @@ namespace {
 // v11 stops treating ambiguous EPUB 2 guide type="text" entries as an
 // authoritative reading start. Rebuild older caches so the corrected OPF
 // interpretation reaches Epub::getTextReferenceHref().
-constexpr uint8_t BOOK_CACHE_VERSION = 11;
+// v12 retains the OPF itemref linear flag so sequential page turns can skip
+// auxiliary content without making direct links to it unreachable.
+constexpr uint8_t BOOK_CACHE_VERSION = 12;
 constexpr uint32_t BOOK_CACHE_COMMIT_MARKER = 0x424D434B;  // "BMCK"
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
@@ -61,10 +64,12 @@ bool consumeBoundedString(HalFile& file, const size_t endPosition, std::string* 
 bool inspectSpineEntry(HalFile& file, const size_t endPosition, const uint16_t tocCount,
                        uint32_t* cumulativeSize = nullptr, int16_t* parsedTocIndex = nullptr) {
   if (!consumeBoundedString(file, endPosition, nullptr)) return false;
+  uint8_t linear = 0;
   uint32_t cumulative = 0;
   int16_t tocIndex = -1;
-  if (!readPodExact(file, cumulative) || !readPodExact(file, tocIndex) || file.position() != endPosition ||
-      tocIndex < -1 || tocIndex >= static_cast<int32_t>(tocCount)) {
+  if (!readPodExact(file, linear) || linear > 1 || !readPodExact(file, cumulative) ||
+      !readPodExact(file, tocIndex) || file.position() != endPosition || tocIndex < -1 ||
+      tocIndex >= static_cast<int32_t>(tocCount)) {
     return false;
   }
   if (cumulativeSize) *cumulativeSize = cumulative;
@@ -86,11 +91,13 @@ bool inspectTocEntry(HalFile& file, const size_t endPosition, const uint16_t spi
 bool readSpineEntryChecked(HalFile& file, const size_t endPosition, const uint16_t tocCount,
                            BookMetadataCache::SpineEntry& entry) {
   BookMetadataCache::SpineEntry parsed;
-  if (!consumeBoundedString(file, endPosition, &parsed.href) || !readPodExact(file, parsed.cumulativeSize) ||
-      !readPodExact(file, parsed.tocIndex) || file.position() != endPosition || parsed.tocIndex < -1 ||
-      parsed.tocIndex >= static_cast<int32_t>(tocCount)) {
+  uint8_t linear = 0;
+  if (!consumeBoundedString(file, endPosition, &parsed.href) || !readPodExact(file, linear) || linear > 1 ||
+      !readPodExact(file, parsed.cumulativeSize) || !readPodExact(file, parsed.tocIndex) ||
+      file.position() != endPosition || parsed.tocIndex < -1 || parsed.tocIndex >= static_cast<int32_t>(tocCount)) {
     return false;
   }
+  parsed.linear = linear != 0;
   entry = std::move(parsed);
   return true;
 }
@@ -122,26 +129,12 @@ bool validateSpineScratchFile(HalFile& file, const uint16_t expectedCount) {
   if (!file.seek(0)) return false;
 
   for (uint16_t i = 0; i < expectedCount; ++i) {
+    uint8_t linear = 0;
     uint32_t cumulativeSize = 0;
     int16_t tocIndex = -1;
-    if (!consumeScratchString(file, fileSize) || !readPodExact(file, cumulativeSize) || !readPodExact(file, tocIndex) ||
-        cumulativeSize != 0 || tocIndex != -1) {
-      return false;
-    }
-  }
-  return file.position() == fileSize && file.seek(0);
-}
-
-bool validateTocScratchFile(HalFile& file, const uint16_t expectedCount, const uint16_t spineCount) {
-  const size_t fileSize = file.size();
-  if (!file.seek(0)) return false;
-
-  for (uint16_t i = 0; i < expectedCount; ++i) {
-    uint8_t level = 0;
-    int16_t spineIndex = -1;
-    if (!consumeScratchString(file, fileSize) || !consumeScratchString(file, fileSize) ||
-        !consumeScratchString(file, fileSize) || !readPodExact(file, level) || !readPodExact(file, spineIndex) ||
-        level == 0 || spineIndex < -1 || spineIndex >= static_cast<int32_t>(spineCount)) {
+    if (!consumeScratchString(file, fileSize) || !readPodExact(file, linear) || linear > 1 ||
+        !readPodExact(file, cumulativeSize) || !readPodExact(file, tocIndex) || cumulativeSize != 0 ||
+        tocIndex != -1) {
       return false;
     }
   }
@@ -184,6 +177,7 @@ template <typename F>
 uint32_t writeSpineEntryTo(F& file, const BookMetadataCache::SpineEntry& entry) {
   const uint32_t pos = file.position();
   serialization::writeString(file, entry.href);
+  serialization::writePod(file, static_cast<uint8_t>(entry.linear ? 1 : 0));
   serialization::writePod(file, entry.cumulativeSize);
   serialization::writePod(file, entry.tocIndex);
   return pos;
@@ -203,7 +197,10 @@ uint32_t writeTocEntryTo(F& file, const BookMetadataCache::TocEntry& entry) {
 template <typename F>
 BookMetadataCache::SpineEntry readSpineEntryFrom(F& file) {
   BookMetadataCache::SpineEntry entry;
+  uint8_t linear = 0;
   serialization::readString(file, entry.href);
+  serialization::readPod(file, linear);
+  entry.linear = linear != 0;
   serialization::readPod(file, entry.cumulativeSize);
   serialization::readPod(file, entry.tocIndex);
   return entry;
@@ -218,6 +215,39 @@ BookMetadataCache::TocEntry readTocEntryFrom(F& file) {
   serialization::readPod(file, entry.level);
   serialization::readPod(file, entry.spineIndex);
   return entry;
+}
+
+template <typename F, typename T>
+bool readScratchPod(F& file, T& value) {
+  return file.read(&value, sizeof(value)) == sizeof(value);
+}
+
+template <typename F>
+bool consumeScratchStringFrom(F& file, const size_t fileSize) {
+  uint32_t length = 0;
+  if (!readScratchPod(file, length) || length > BOOK_CACHE_MAX_ENTRY_SIZE) return false;
+  const size_t position = file.position();
+  return position <= fileSize && length <= fileSize - position && file.seek(position + length);
+}
+
+template <typename F>
+bool validateSpineScratchEntry(F& file, const size_t fileSize) {
+  uint8_t linear = 0;
+  uint32_t cumulativeSize = 0;
+  int16_t tocIndex = -1;
+  return consumeScratchStringFrom(file, fileSize) && readScratchPod(file, linear) && linear <= 1 &&
+         readScratchPod(file, cumulativeSize) && readScratchPod(file, tocIndex) && cumulativeSize == 0 &&
+         tocIndex == -1;
+}
+
+template <typename F>
+bool validateTocScratchEntry(F& file, const size_t fileSize, const uint16_t spineCount) {
+  uint8_t level = 0;
+  int16_t spineIndex = -1;
+  return consumeScratchStringFrom(file, fileSize) && consumeScratchStringFrom(file, fileSize) &&
+         consumeScratchStringFrom(file, fileSize) && readScratchPod(file, level) &&
+         readScratchPod(file, spineIndex) && level > 0 && spineIndex >= -1 &&
+         spineIndex < static_cast<int32_t>(spineCount);
 }
 }  // namespace
 
@@ -235,6 +265,48 @@ class BookMetadataCache::LoadState {
   size_t chunkCursor = 0;
 };
 
+class BookMetadataCache::BuildState {
+ public:
+  enum class Phase : uint8_t {
+    ValidateSpine,
+    ValidateToc,
+    OpenOutput,
+    SpineLut,
+    TocLut,
+    TocMap,
+    OpenZip,
+    SizeTargets,
+    BatchSizes,
+    WriteSpines,
+    WriteToc,
+    Finalize,
+  };
+
+  const std::string* epubPath = nullptr;
+  const BookMetadata* metadata = nullptr;
+  SourceIdentityCodec::Payload identityPayload{};
+  uint32_t identityChecksum = 0;
+  uint32_t metadataSize = 0;
+  uint32_t lutOffset = 0;
+  uint32_t lutSize = 0;
+  uint32_t spineBytes = 0;
+  size_t scratchSize = 0;
+  uint32_t nextEntry = 0;
+  uint32_t cumulativeSize = 0;
+  int lastSpineTocIndex = -1;
+  int missingTocCount = 0;
+  bool outputStarted = false;
+  bool useBatchSizes = false;
+  Phase phase = Phase::ValidateSpine;
+  std::unique_ptr<serialization::BufferedFileWriter> bookOut;
+  std::unique_ptr<serialization::BufferedFileReader> spineIn;
+  std::unique_ptr<serialization::BufferedFileReader> tocIn;
+  std::unique_ptr<int16_t[]> spineToTocIndex;
+  std::unique_ptr<uint32_t[]> spineSizes;
+  std::unique_ptr<ZipFile::SizeTarget[]> sizeTargets;
+  std::unique_ptr<ZipFile> zip;
+};
+
 BookMetadataCache::BookMetadataCache(std::string cachePath)
     : cachePath(std::move(cachePath)),
       lutOffset(0),
@@ -246,7 +318,11 @@ BookMetadataCache::BookMetadataCache(std::string cachePath)
       buildMode(false),
       lastLoadStatus(LoadStatus::Missing) {}
 
-BookMetadataCache::~BookMetadataCache() = default;
+BookMetadataCache::~BookMetadataCache() {
+  cancelBuildBookBin();
+  cancelLoad();
+  cancelWrite();
+}
 
 /* ============= WRITING / BUILDING FUNCTIONS ================ */
 
@@ -343,6 +419,12 @@ bool BookMetadataCache::endTocPass() {
   return flushed;
 }
 
+bool BookMetadataCache::restartTocPass() {
+  if (!endTocPass()) return false;
+  tocCount = 0;
+  return beginTocPass();
+}
+
 bool BookMetadataCache::endWrite() {
   if (!buildMode) {
     LOG_DBG("BMC", "endWrite called but not in build mode");
@@ -355,6 +437,7 @@ bool BookMetadataCache::endWrite() {
 }
 
 void BookMetadataCache::cancelWrite() {
+  cancelBuildBookBin();
   passOut.reset();
   if (spineFile) spineFile.close();
   if (tocFile) tocFile.close();
@@ -365,8 +448,9 @@ void BookMetadataCache::cancelWrite() {
   cleanupTmpFiles();
 }
 
-bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
-                                     const ZipFile::SourceIdentity& sourceIdentity) {
+bool BookMetadataCache::beginBuildBookBin(const std::string& epubPath, const BookMetadata& metadata,
+                                          const ZipFile::SourceIdentity& sourceIdentity) {
+  cancelBuildBookBin();
   const uint64_t metadataSize64 = BOOK_CACHE_MIN_METADATA_SIZE + static_cast<uint64_t>(metadata.title.size()) +
                                   metadata.author.size() + metadata.language.size() + metadata.coverItemHref.size() +
                                   metadata.textReferenceHref.size();
@@ -376,9 +460,12 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     return false;
   }
 
-  SourceIdentityCodec::Payload identityPayload;
-  if (!SourceIdentityCodec::encodePayload(sourceIdentity, identityPayload)) return false;
-  const uint32_t identityChecksum = SourceIdentityCodec::crc32(identityPayload.data(), identityPayload.size());
+  auto next = makeUniqueNoThrow<BuildState>();
+  if (!next || !SourceIdentityCodec::encodePayload(sourceIdentity, next->identityPayload)) return false;
+  next->epubPath = &epubPath;
+  next->metadata = &metadata;
+  next->identityChecksum = SourceIdentityCodec::crc32(next->identityPayload.data(), next->identityPayload.size());
+  next->metadataSize = static_cast<uint32_t>(metadataSize64);
 
   // Refuse to publish metadata parsed from an EPUB that changed during the
   // indexing passes. This check happens before book.bin is truncated.
@@ -389,227 +476,298 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     return false;
   }
 
-  // Validate both scratch streams before truncating a previously usable
-  // book.bin. The normal readers below assume the lengths written by the two
-  // parser passes are well formed; a removed/failing SD card must turn a torn
-  // scratch file into a clean indexing failure, never a large allocation.
   if (!Storage.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile)) return false;
-  const bool spineScratchValid = validateSpineScratchFile(spineFile, spineCount);
-  spineFile.close();
-  if (!spineScratchValid) {
-    LOG_ERR("BMC", "Spine tmp file is truncated or corrupt");
-    return false;
-  }
-  if (!Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) return false;
-  const bool tocScratchValid = validateTocScratchFile(tocFile, tocCount, spineCount);
-  tocFile.close();
-  if (!tocScratchValid) {
-    LOG_ERR("BMC", "TOC tmp file is truncated or corrupt");
-    return false;
-  }
-
-  // Open all three files, writing to meta, reading from spine and toc
-  if (!Storage.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
-    return false;
-  }
-
-  if (!Storage.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile)) {
-    // Explicit close() required: member variable persists beyond function scope
-    bookFile.close();
-    return false;
-  }
-
-  if (!Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) {
-    // Explicit close() required: member variables persist beyond function scope
-    bookFile.close();
+  next->scratchSize = spineFile.size();
+  next->spineIn = makeUniqueNoThrow<serialization::BufferedFileReader>(spineFile, BUILD_IO_BUFFER_SIZE);
+  if (!next->spineIn) {
     spineFile.close();
     return false;
   }
+  buildState = std::move(next);
+  return true;
+}
 
-  // Buffered streams for the whole build: every access below is sequential per
-  // file, but interleaved ACROSS files, which thrashes SdFat's single shared
-  // sector cache when unbuffered (one 512B SD transaction per 4-byte pod --
-  // measured 31s for a 1,732-spine omnibus). Three 4KB buffers, freed on return.
-  serialization::BufferedFileWriter bookOut(bookFile, BUILD_IO_BUFFER_SIZE);
-  serialization::BufferedFileReader spineIn(spineFile, BUILD_IO_BUFFER_SIZE);
-  serialization::BufferedFileReader tocIn(tocFile, BUILD_IO_BUFFER_SIZE);
+BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const size_t maxEntries) {
+  if (!buildState || maxEntries == 0) return BuildStepResult::Error;
 
-  constexpr uint32_t headerASize = BOOK_CACHE_FIXED_HEADER_SIZE;
-  const uint32_t metadataSize = static_cast<uint32_t>(metadataSize64);
-  const uint32_t lutSize = sizeof(uint32_t) * spineCount + sizeof(uint32_t) * tocCount;
-  const uint32_t lutOffset = headerASize + metadataSize;
+  const auto fail = [this](const char* message) {
+    (void)message;
+    LOG_ERR("BMC", "%s", message);
+    cancelBuildBookBin();
+    return BuildStepResult::Error;
+  };
+  BuildState& state = *buildState;
 
-  // Header A
-  serialization::writePod(bookOut, BOOK_CACHE_VERSION);
-  serialization::writePod(bookOut, lutOffset);
-  serialization::writePod(bookOut, spineCount);
-  serialization::writePod(bookOut, tocCount);
-  bookOut.write(identityPayload.data(), identityPayload.size());
-  serialization::writePod(bookOut, identityChecksum);
-  // Metadata
-  serialization::writeString(bookOut, metadata.title);
-  serialization::writeString(bookOut, metadata.author);
-  serialization::writeString(bookOut, metadata.language);
-  serialization::writeString(bookOut, metadata.coverItemHref);
-  serialization::writeString(bookOut, metadata.textReferenceHref);
-
-  // Loop through spine entries, writing LUT positions
-  spineIn.seek(0);
-  for (int i = 0; i < spineCount; i++) {
-    const uint32_t pos = spineIn.position();
-    readSpineEntryFrom(spineIn);
-    serialization::writePod(bookOut, pos + lutOffset + lutSize);
-  }
-  // Total size of the spine tmp file: entries land in book.bin after the toc LUT
-  // and the full spine block, so toc LUT positions are offset by it.
-  const auto spineBytes = static_cast<uint32_t>(spineIn.position());
-
-  // Loop through toc entries, writing LUT positions
-  tocIn.seek(0);
-  for (int i = 0; i < tocCount; i++) {
-    const uint32_t pos = tocIn.position();
-    readTocEntryFrom(tocIn);
-    serialization::writePod(bookOut, pos + lutOffset + lutSize + spineBytes);
-  }
-
-  // LUTs complete
-  // Loop through spines from spine file matching up TOC indexes, calculating cumulative size and writing to book.bin
-
-  // Build spineIndex->tocIndex mapping in one pass (O(n) instead of O(n*m))
-  std::deque<int16_t> spineToTocIndex(spineCount, -1);
-  tocIn.seek(0);
-  for (int j = 0; j < tocCount; j++) {
-    auto tocEntry = readTocEntryFrom(tocIn);
-    if (tocEntry.spineIndex >= 0 && tocEntry.spineIndex < spineCount) {
-      if (spineToTocIndex[tocEntry.spineIndex] == -1) {
-        spineToTocIndex[tocEntry.spineIndex] = static_cast<int16_t>(j);
+  if (state.phase == BuildState::Phase::ValidateSpine) {
+    size_t processed = 0;
+    while (state.nextEntry < spineCount && processed++ < maxEntries) {
+      if (!validateSpineScratchEntry(*state.spineIn, state.scratchSize)) {
+        return fail("Spine tmp file is truncated or corrupt");
       }
+      ++state.nextEntry;
     }
+    if (state.nextEntry < spineCount) return BuildStepResult::InProgress;
+    if (state.spineIn->position() != state.scratchSize) return fail("Spine tmp file has trailing data");
+    state.spineIn.reset();
+    if (!spineFile.close() || !Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) {
+      return fail("Could not open TOC tmp file");
+    }
+    state.scratchSize = tocFile.size();
+    state.tocIn = makeUniqueNoThrow<serialization::BufferedFileReader>(tocFile, BUILD_IO_BUFFER_SIZE);
+    if (!state.tocIn) return fail("Not enough memory to validate TOC tmp file");
+    state.nextEntry = 0;
+    state.phase = BuildState::Phase::ValidateToc;
+    return BuildStepResult::InProgress;
   }
 
-  ZipFile zip(epubPath);
-  // Pre-open zip file to speed up size calculations
-  if (!zip.open()) {
-    LOG_ERR("BMC", "Could not open EPUB zip for size calculations");
-    // Explicit close() required: member variables persist beyond function scope
-    bookFile.close();
-    spineFile.close();
-    tocFile.close();
-    return false;
+  if (state.phase == BuildState::Phase::ValidateToc) {
+    size_t processed = 0;
+    while (state.nextEntry < tocCount && processed++ < maxEntries) {
+      if (!validateTocScratchEntry(*state.tocIn, state.scratchSize, spineCount)) {
+        return fail("TOC tmp file is truncated or corrupt");
+      }
+      ++state.nextEntry;
+    }
+    if (state.nextEntry < tocCount) return BuildStepResult::InProgress;
+    if (state.tocIn->position() != state.scratchSize) return fail("TOC tmp file has trailing data");
+    state.tocIn.reset();
+    if (!tocFile.close()) return fail("Could not close TOC tmp file");
+    state.phase = BuildState::Phase::OpenOutput;
+    return BuildStepResult::InProgress;
   }
-  // NOTE: We intentionally skip calling loadAllFileStatSlims() here.
-  // For large EPUBs (2000+ chapters), pre-loading all ZIP central directory entries
-  // into memory causes OOM crashes on ESP32-C3's limited ~380KB RAM.
-  // Instead, for large books we use a one-pass batch lookup that scans the ZIP
-  // central directory once and matches against spine targets using hash comparison.
-  // This is O(n*log(m)) instead of O(n*m) while avoiding memory exhaustion.
-  // See: https://github.com/crosspoint-reader/crosspoint-reader/issues/134
 
-  std::deque<uint32_t> spineSizes;
-  bool useBatchSizes = false;
-
-  if (spineCount >= LARGE_SPINE_THRESHOLD) {
-    LOG_DBG("BMC", "Using batch size lookup for %d spine items", spineCount);
-
-    std::deque<ZipFile::SizeTarget> targets;
-    targets.resize(spineCount);
-
-    spineIn.seek(0);
-    for (int i = 0; i < spineCount; i++) {
-      auto entry = readSpineEntryFrom(spineIn);
-      std::string path = FsHelpers::normalisePath(entry.href);
-
-      ZipFile::SizeTarget t;
-      t.hash = ZipFile::fnvHash64(path.c_str(), path.size());
-      t.len = static_cast<uint16_t>(path.size());
-      t.index = static_cast<uint16_t>(i);
-      targets[i] = t;
+  if (state.phase == BuildState::Phase::OpenOutput) {
+    // The scratch files are fully validated before the derived final is
+    // truncated. A cancellation after this point removes the incomplete file.
+    if (!Storage.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
+      return fail("Could not create book.bin");
+    }
+    state.outputStarted = true;
+    if (!Storage.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile) ||
+        !Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) {
+      return fail("Could not reopen metadata scratch files");
+    }
+    state.bookOut = makeUniqueNoThrow<serialization::BufferedFileWriter>(bookFile, BUILD_IO_BUFFER_SIZE);
+    state.spineIn = makeUniqueNoThrow<serialization::BufferedFileReader>(spineFile, BUILD_IO_BUFFER_SIZE);
+    state.tocIn = makeUniqueNoThrow<serialization::BufferedFileReader>(tocFile, BUILD_IO_BUFFER_SIZE);
+    if (!state.bookOut || !state.spineIn || !state.tocIn) {
+      return fail("Not enough memory for buffered book cache build");
     }
 
-    std::sort(targets.begin(), targets.end(), [](const ZipFile::SizeTarget& a, const ZipFile::SizeTarget& b) {
-      return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
-    });
+    const uint32_t headerASize = BOOK_CACHE_FIXED_HEADER_SIZE;
+    state.lutSize = sizeof(uint32_t) * static_cast<uint32_t>(spineCount + tocCount);
+    state.lutOffset = headerASize + state.metadataSize;
+    serialization::writePod(*state.bookOut, BOOK_CACHE_VERSION);
+    serialization::writePod(*state.bookOut, state.lutOffset);
+    serialization::writePod(*state.bookOut, spineCount);
+    serialization::writePod(*state.bookOut, tocCount);
+    state.bookOut->write(state.identityPayload.data(), state.identityPayload.size());
+    serialization::writePod(*state.bookOut, state.identityChecksum);
+    serialization::writeString(*state.bookOut, state.metadata->title);
+    serialization::writeString(*state.bookOut, state.metadata->author);
+    serialization::writeString(*state.bookOut, state.metadata->language);
+    serialization::writeString(*state.bookOut, state.metadata->coverItemHref);
+    serialization::writeString(*state.bookOut, state.metadata->textReferenceHref);
+    state.nextEntry = 0;
+    state.phase = BuildState::Phase::SpineLut;
+    return BuildStepResult::InProgress;
+  }
 
-    spineSizes.resize(spineCount, 0);
-    int matched = zip.fillUncompressedSizes(targets, spineSizes);
-    LOG_DBG("BMC", "Batch lookup matched %d/%d spine items", matched, spineCount);
+  if (state.phase == BuildState::Phase::SpineLut) {
+    size_t processed = 0;
+    while (state.nextEntry < spineCount && processed++ < maxEntries) {
+      const uint32_t position = state.spineIn->position();
+      readSpineEntryFrom(*state.spineIn);
+      serialization::writePod(*state.bookOut, position + state.lutOffset + state.lutSize);
+      ++state.nextEntry;
+    }
+    if (state.nextEntry < spineCount) return BuildStepResult::InProgress;
+    state.spineBytes = static_cast<uint32_t>(state.spineIn->position());
+    if (!state.tocIn->seek(0)) return fail("Could not rewind TOC tmp file");
+    state.nextEntry = 0;
+    state.phase = BuildState::Phase::TocLut;
+    return BuildStepResult::InProgress;
+  }
+
+  if (state.phase == BuildState::Phase::TocLut) {
+    size_t processed = 0;
+    while (state.nextEntry < tocCount && processed++ < maxEntries) {
+      const uint32_t position = state.tocIn->position();
+      readTocEntryFrom(*state.tocIn);
+      serialization::writePod(*state.bookOut, position + state.lutOffset + state.lutSize + state.spineBytes);
+      ++state.nextEntry;
+    }
+    if (state.nextEntry < tocCount) return BuildStepResult::InProgress;
+
+    if (spineCount > 0) {
+      state.spineToTocIndex.reset(new (std::nothrow) int16_t[spineCount]);
+      if (!state.spineToTocIndex) return fail("Not enough memory for spine to TOC mapping");
+      std::fill_n(state.spineToTocIndex.get(), spineCount, static_cast<int16_t>(-1));
+    }
+    if (!state.tocIn->seek(0)) return fail("Could not rewind TOC mapping input");
+    state.nextEntry = 0;
+    state.phase = BuildState::Phase::TocMap;
+    return BuildStepResult::InProgress;
+  }
+
+  if (state.phase == BuildState::Phase::TocMap) {
+    size_t processed = 0;
+    while (state.nextEntry < tocCount && processed++ < maxEntries) {
+      const auto entry = readTocEntryFrom(*state.tocIn);
+      if (entry.spineIndex >= 0 && entry.spineIndex < spineCount &&
+          state.spineToTocIndex[entry.spineIndex] == -1) {
+        state.spineToTocIndex[entry.spineIndex] = static_cast<int16_t>(state.nextEntry);
+      }
+      ++state.nextEntry;
+    }
+    if (state.nextEntry < tocCount) return BuildStepResult::InProgress;
+    state.phase = BuildState::Phase::OpenZip;
+    return BuildStepResult::InProgress;
+  }
+
+  if (state.phase == BuildState::Phase::OpenZip) {
+    state.zip = makeUniqueNoThrow<ZipFile>(*state.epubPath);
+    if (!state.zip || !state.zip->open() || !state.spineIn->seek(0)) {
+      return fail("Could not open EPUB for spine size calculations");
+    }
+    state.useBatchSizes = spineCount >= LARGE_SPINE_THRESHOLD;
+    if (state.useBatchSizes) {
+      state.spineSizes.reset(new (std::nothrow) uint32_t[spineCount]);
+      state.sizeTargets.reset(new (std::nothrow) ZipFile::SizeTarget[spineCount]);
+      if (!state.spineSizes || !state.sizeTargets) return fail("Not enough memory for batch spine sizes");
+      std::fill_n(state.spineSizes.get(), spineCount, 0U);
+      state.nextEntry = 0;
+      state.phase = BuildState::Phase::SizeTargets;
+    } else {
+      state.nextEntry = 0;
+      state.phase = BuildState::Phase::WriteSpines;
+    }
+    return BuildStepResult::InProgress;
+  }
+
+  if (state.phase == BuildState::Phase::SizeTargets) {
+    size_t processed = 0;
+    while (state.nextEntry < spineCount && processed++ < maxEntries) {
+      const auto entry = readSpineEntryFrom(*state.spineIn);
+      const std::string path = FsHelpers::normalisePath(entry.href);
+      if (path.size() > UINT16_MAX) return fail("Spine path exceeds ZIP lookup bounds");
+      state.sizeTargets[state.nextEntry] = {ZipFile::fnvHash64(path.c_str(), path.size()),
+                                            static_cast<uint16_t>(path.size()),
+                                            static_cast<uint16_t>(state.nextEntry)};
+      ++state.nextEntry;
+    }
+    if (state.nextEntry < spineCount) return BuildStepResult::InProgress;
+    std::sort(state.sizeTargets.get(), state.sizeTargets.get() + spineCount,
+              [](const ZipFile::SizeTarget& a, const ZipFile::SizeTarget& b) {
+                return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
+              });
+    state.phase = BuildState::Phase::BatchSizes;
+    return BuildStepResult::InProgress;
+  }
+
+  if (state.phase == BuildState::Phase::BatchSizes) {
+    const int matched =
+        state.zip->fillUncompressedSizes(state.sizeTargets.get(), spineCount, state.spineSizes.get(), spineCount);
     (void)matched;
-
-    useBatchSizes = true;
+    LOG_DBG("BMC", "Batch lookup matched %d/%d spine items", matched, spineCount);
+    if (!state.spineIn->seek(0)) return fail("Could not rewind spine tmp file");
+    state.nextEntry = 0;
+    state.phase = BuildState::Phase::WriteSpines;
+    return BuildStepResult::InProgress;
   }
 
-  uint32_t cumSize = 0;
-  spineIn.seek(0);
-  int lastSpineTocIndex = -1;
-  int missingTocCount = 0;
-  for (int i = 0; i < spineCount; i++) {
-    auto spineEntry = readSpineEntryFrom(spineIn);
+  if (state.phase == BuildState::Phase::WriteSpines) {
+    size_t processed = 0;
+    while (state.nextEntry < spineCount && processed++ < maxEntries) {
+      auto entry = readSpineEntryFrom(*state.spineIn);
+      entry.tocIndex = state.spineToTocIndex ? state.spineToTocIndex[state.nextEntry] : -1;
+      if (entry.tocIndex == -1) {
+        ++state.missingTocCount;
+        entry.tocIndex = static_cast<int16_t>(state.lastSpineTocIndex);
+      }
+      state.lastSpineTocIndex = entry.tocIndex;
 
-    spineEntry.tocIndex = spineToTocIndex[i];
-
-    // Not a huge deal if we don't fine a TOC entry for the spine entry, this is expected behaviour for EPUBs
-    if (spineEntry.tocIndex == -1) {
-      missingTocCount++;
-      spineEntry.tocIndex = lastSpineTocIndex;
-    }
-    lastSpineTocIndex = spineEntry.tocIndex;
-
-    size_t itemSize = 0;
-    if (useBatchSizes) {
-      itemSize = spineSizes[i];
-      if (itemSize == 0) {
-        const std::string path = FsHelpers::normalisePath(spineEntry.href);
-        if (!zip.getInflatedFileSize(path.c_str(), &itemSize)) {
-          LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
+      size_t itemSize = state.useBatchSizes ? state.spineSizes[state.nextEntry] : 0;
+      if (!state.useBatchSizes || itemSize == 0) {
+        const std::string path = FsHelpers::normalisePath(entry.href);
+        if (!state.zip->getInflatedFileSize(path.c_str(), &itemSize)) {
+          return fail("Could not get size for spine item");
         }
       }
-    } else {
-      const std::string path = FsHelpers::normalisePath(spineEntry.href);
-      if (!zip.getInflatedFileSize(path.c_str(), &itemSize)) {
-        LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
+      if (itemSize > std::numeric_limits<uint32_t>::max() - static_cast<uint64_t>(state.cumulativeSize)) {
+        return fail("Cumulative spine size exceeds cache format limit");
       }
+      state.cumulativeSize += static_cast<uint32_t>(itemSize);
+      entry.cumulativeSize = state.cumulativeSize;
+      writeSpineEntryTo(*state.bookOut, entry);
+      ++state.nextEntry;
     }
-
-    cumSize += itemSize;
-    spineEntry.cumulativeSize = cumSize;
-
-    // Write out spine data to book.bin
-    writeSpineEntryTo(bookOut, spineEntry);
-  }
-  if (missingTocCount > 0) {
-    LOG_DBG("BMC", "%d/%d spine items have no direct TOC entry; reused the preceding section title", missingTocCount,
-            spineCount);
-  }
-  // Close opened zip file
-  zip.close();
-
-  // Loop through toc entries from toc file writing to book.bin
-  tocIn.seek(0);
-  for (int i = 0; i < tocCount; i++) {
-    auto tocEntry = readTocEntryFrom(tocIn);
-    writeTocEntryTo(bookOut, tocEntry);
+    if (state.nextEntry < spineCount) return BuildStepResult::InProgress;
+    if (state.missingTocCount > 0) {
+      LOG_DBG("BMC", "%d/%d spine items have no direct TOC entry; reused the preceding section title",
+              state.missingTocCount, spineCount);
+    }
+    state.zip->close();
+    state.zip.reset();
+    if (!state.tocIn->seek(0)) return fail("Could not rewind TOC output input");
+    state.nextEntry = 0;
+    state.phase = BuildState::Phase::WriteToc;
+    return BuildStepResult::InProgress;
   }
 
-  // Written last so a torn/short build can never be mistaken for a complete
-  // cache on the next boot.
-  serialization::writePod(bookOut, BOOK_CACHE_COMMIT_MARKER);
-  const bool written = bookOut.flush();
-
-  // Explicit close() required: member variables persist beyond function scope
-  const bool closed = bookFile.close();
-  spineFile.close();
-  tocFile.close();
-
-  if (!written || !closed) {
-    // A short write (card full/removed) would leave a truncated book.bin that
-    // still passes the version check on load; remove it so the next open rebuilds.
-    LOG_ERR("BMC", "Failed writing book.bin, removing truncated file");
-    Storage.remove((cachePath + bookBinFile).c_str());
-    return false;
+  if (state.phase == BuildState::Phase::WriteToc) {
+    size_t processed = 0;
+    while (state.nextEntry < tocCount && processed++ < maxEntries) {
+      writeTocEntryTo(*state.bookOut, readTocEntryFrom(*state.tocIn));
+      ++state.nextEntry;
+    }
+    if (state.nextEntry < tocCount) return BuildStepResult::InProgress;
+    state.phase = BuildState::Phase::Finalize;
+    return BuildStepResult::InProgress;
   }
 
-  LOG_DBG("BMC", "Successfully built book.bin");
-  return true;
+  if (state.phase == BuildState::Phase::Finalize) {
+    serialization::writePod(*state.bookOut, BOOK_CACHE_COMMIT_MARKER);
+    const bool written = state.bookOut->flush();
+    state.bookOut.reset();
+    state.spineIn.reset();
+    state.tocIn.reset();
+    const bool closed = bookFile.close();
+    const bool spineClosed = spineFile.close();
+    const bool tocClosed = tocFile.close();
+    if (!written || !closed || !spineClosed || !tocClosed) {
+      return fail("Failed writing book.bin");
+    }
+    state.outputStarted = false;
+    buildState.reset();
+    LOG_DBG("BMC", "Successfully built book.bin");
+    return BuildStepResult::Built;
+  }
+
+  return fail("Invalid book cache build state");
+}
+
+void BookMetadataCache::cancelBuildBookBin() {
+  if (!buildState) return;
+  const bool removeOutput = buildState->outputStarted;
+  buildState->bookOut.reset();
+  buildState->spineIn.reset();
+  buildState->tocIn.reset();
+  if (buildState->zip) buildState->zip->close();
+  buildState->zip.reset();
+  if (bookFile) bookFile.close();
+  if (spineFile) spineFile.close();
+  if (tocFile) tocFile.close();
+  buildState.reset();
+  if (removeOutput) Storage.remove((cachePath + bookBinFile).c_str());
+}
+
+bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
+                                     const ZipFile::SourceIdentity& sourceIdentity) {
+  if (!beginBuildBookBin(epubPath, metadata, sourceIdentity)) return false;
+  BuildStepResult result = BuildStepResult::InProgress;
+  while (result == BuildStepResult::InProgress) result = stepBuildBookBin(64);
+  return result == BuildStepResult::Built;
 }
 
 bool BookMetadataCache::cleanupTmpFiles() const {
@@ -635,13 +793,13 @@ uint32_t BookMetadataCache::writeTocEntry(HalFile& file, const TocEntry& entry) 
 
 // Note: for the LUT to be accurate, this **MUST** be called for all spine items before `addTocEntry` is ever called
 // this is because in this function we're marking positions of the items
-void BookMetadataCache::createSpineEntry(const std::string& href) {
+void BookMetadataCache::createSpineEntry(const std::string& href, const bool linear) {
   if (!buildMode || !spineFile) {
     LOG_DBG("BMC", "createSpineEntry called but not in build mode");
     return;
   }
 
-  const SpineEntry entry(href, 0, -1);
+  const SpineEntry entry(href, linear, 0, -1);
   if (passOut) {
     writeSpineEntryTo(*passOut, entry);
   } else {

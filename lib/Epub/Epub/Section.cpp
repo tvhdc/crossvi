@@ -38,7 +38,9 @@ namespace {
 // allowing EPUB highlights to survive pagination changes.
 // v36: word spacing is part of the layout cache identity.
 // v37: every page records its exact visible-text start for KOReader sync.
-constexpr uint8_t SECTION_FILE_VERSION = 37;
+// v38: extracted image paths are keyed by normalized EPUB source path, so one
+//      source image can be reused safely across spines without basename clashes.
+constexpr uint8_t SECTION_FILE_VERSION = 38;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -453,14 +455,22 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   const bool reusedHtml = Storage.exists(htmlPath.c_str());
   if (reusedHtml) {
     HalFile cachedHtml;
-    if (!Storage.openFileForRead("SCT", htmlPath, cachedHtml) ||
-        cachedHtml.fileSize64() > MAX_CHAPTER_UNCOMPRESSED_BYTES) {
-      if (cachedHtml) cachedHtml.close();
-      LOG_ERR("SCT", "Cached chapter exceeds the processing limit");
-      lastBuildStatus_ = EpubBuildStatus::OutOfMemory;
+    if (!Storage.openFileForRead("SCT", htmlPath, cachedHtml)) {
+      LOG_ERR("SCT", "Failed to open cached chapter");
+      lastBuildStatus_ = EpubBuildStatus::IoError;
       return false;
     }
-    cachedHtml.close();
+    if (cachedHtml.fileSize64() > MAX_CHAPTER_UNCOMPRESSED_BYTES) {
+      cachedHtml.close();
+      LOG_ERR("SCT", "Cached chapter exceeds the processing limit");
+      lastBuildStatus_ = Storage.remove(htmlPath.c_str()) ? EpubBuildStatus::StaleHtmlCache
+                                                          : EpubBuildStatus::IoError;
+      return false;
+    }
+    if (!cachedHtml.close()) {
+      lastBuildStatus_ = EpubBuildStatus::IoError;
+      return false;
+    }
     LOG_DBG("SCT", "Reusing cached HTML %s", htmlPath.c_str());
   } else {
     if (!Storage.exists(htmlDir.c_str()) && !Storage.mkdir(htmlDir.c_str())) {
@@ -522,6 +532,7 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   // referenced strings and handles. buildSomeMore() advances one 8 KiB output
   // chunk per call before beginning HTML parsing.
   ctx->reusedHtml = reusedHtml;
+  ctx->startedWithCachedHtml = reusedHtml;
   ctx->htmlPath = htmlPath;
   ctx->tmpHtmlPath = tmpHtmlPath;
   ctx->parsePath = reusedHtml ? htmlPath : tmpHtmlPath;
@@ -531,7 +542,7 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
   // Derive the content base directory and image cache path prefix for the parser
   const size_t lastSlash = localPath.find_last_of('/');
   ctx->contentBase = (lastSlash != std::string::npos) ? localPath.substr(0, lastSlash + 1) : "";
-  ctx->imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
+  ctx->imageBasePath = epub->getCachePath() + "/img_";
 
   ctx->cssParser = preparedCssParser;
 
@@ -598,11 +609,13 @@ bool Section::beginParser() {
   if (build_->parserStarted) return true;
   if (!build_->parser->beginParse()) {
     LOG_ERR("SCT", "Failed to begin parse");
-    lastBuildStatus_ =
-        build_->parser->lastFailure() == ChapterParseFailure::OutOfMemory
-            ? EpubBuildStatus::OutOfMemory
-            : (build_->parser->lastFailure() == ChapterParseFailure::IoError ? EpubBuildStatus::IoError
-                                                                             : EpubBuildStatus::InvalidContent);
+    const ChapterParseFailure failure = build_->parser->lastFailure();
+    lastBuildStatus_ = failure == ChapterParseFailure::OutOfMemory
+                           ? EpubBuildStatus::OutOfMemory
+                           : (failure == ChapterParseFailure::IoError
+                                  ? EpubBuildStatus::IoError
+                                  : (build_->startedWithCachedHtml ? EpubBuildStatus::StaleHtmlCache
+                                                                  : EpubBuildStatus::InvalidContent));
     return false;
   }
   build_->parserStarted = true;
@@ -728,11 +741,13 @@ bool Section::buildSomeMore(const int maxPages) {
     }
     if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
       LOG_ERR("SCT", "Parse error during incremental build");
-      lastBuildStatus_ =
-          build_->parser->lastFailure() == ChapterParseFailure::OutOfMemory
-              ? EpubBuildStatus::OutOfMemory
-              : (build_->parser->lastFailure() == ChapterParseFailure::IoError ? EpubBuildStatus::IoError
-                                                                               : EpubBuildStatus::InvalidContent);
+      const ChapterParseFailure failure = build_->parser->lastFailure();
+      lastBuildStatus_ = failure == ChapterParseFailure::OutOfMemory
+                             ? EpubBuildStatus::OutOfMemory
+                             : (failure == ChapterParseFailure::IoError
+                                    ? EpubBuildStatus::IoError
+                                    : (build_->startedWithCachedHtml ? EpubBuildStatus::StaleHtmlCache
+                                                                    : EpubBuildStatus::InvalidContent));
       abandonBuild();
       return false;
     }
@@ -1030,6 +1045,11 @@ void Section::abandonBuild() {
   if (committedReadFile_) committedReadFile_.close();
   if (Storage.exists(filePath.c_str())) {
     Storage.remove(filePath.c_str());
+  }
+  if (lastBuildStatus_ == EpubBuildStatus::StaleHtmlCache && Storage.exists(build_->htmlPath.c_str()) &&
+      !Storage.remove(build_->htmlPath.c_str())) {
+    LOG_ERR("SCT", "Failed to remove invalid cached HTML: %s", build_->htmlPath.c_str());
+    lastBuildStatus_ = EpubBuildStatus::IoError;
   }
   if (!build_->reusedHtml && Storage.exists(build_->tmpHtmlPath.c_str())) {
     Storage.remove(build_->tmpHtmlPath.c_str());

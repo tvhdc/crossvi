@@ -64,6 +64,15 @@ constexpr const char* LINETHROUGH_TAGS[] = {"del", "s", "strike"};
 constexpr const char* IMAGE_TAGS[] = {"img", "image"};
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
+uint64_t imageSourceHash(const std::string& path) {
+  uint64_t hash = 14695981039346656037ULL;
+  for (const char character : path) {
+    hash ^= static_cast<uint8_t>(character);
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
 bool matches(const char* tag_name, const char* const* possible_tags, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (strcmp(tag_name, possible_tags[i]) == 0) {
@@ -673,13 +682,16 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
           std::string resolvedPath = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->contentBase + src));
 
           if (ImageDecoderFactory::isFormatSupported(resolvedPath)) {
-            // Create a unique filename for the cached image
+            // Key the extracted raster by its normalized EPUB source. Reused
+            // images now share one raw file across chapters, while the path
+            // length reduces the already-small FNV collision surface.
             std::string ext;
             size_t extPos = resolvedPath.rfind('.');
             if (extPos != std::string::npos) {
               ext = resolvedPath.substr(extPos);
             }
-            std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
+            std::string cachedImagePath = self->imageBasePath + std::to_string(imageSourceHash(resolvedPath)) + "_" +
+                                          std::to_string(resolvedPath.size()) + ext;
 
             // Probe dimensions from the compressed header.  Most images can be
             // laid out without extracting their complete payload; extraction is
