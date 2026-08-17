@@ -31,6 +31,7 @@ class XtcReaderActivity final : public Activity {
   std::shared_ptr<Xtc> xtc;
 
   uint32_t currentPage = 0;
+  int8_t pendingPageTurnDelta = 0;
   std::optional<uint32_t> initialBookmarkPage;
   uint32_t lastSavedPage = static_cast<uint32_t>(-1);
   ProgressFile::WriteSession progressWriteSession;

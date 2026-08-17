@@ -1432,8 +1432,9 @@ class CodegenTest(unittest.TestCase):
         header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
         page_turn = reader[reader.index("void EpubReaderActivity::pageTurn") :
                            reader.index("bool EpubReaderActivity::moveOnePageWithoutRendering")]
-        self.assertLess(page_turn.index("RenderLock lock(*this)"),
+        self.assertLess(page_turn.index("RenderLock lock(std::try_to_lock)"),
                         page_turn.index("if (sectionLandingPending || sectionRenderWaiting ||"))
+        self.assertIn("ReaderUtils::queuePageTurns(pendingPageTurnDelta", page_turn)
         self.assertLess(page_turn.index("pendingPageTurnDelta"),
                         page_turn.index("stopReadingPage(isForwardTurn"))
         self.assertIn("const bool sectionTransition", page_turn)
@@ -1447,7 +1448,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("pageTurn(forward, true, true);", loop)
         self.assertIn("pageTurn(true, false);", loop)
         self.assertIn("pendingPageTurnDelta = 0", loop)
-        self.assertIn("MAX_QUEUED_PAGE_TURNS = 8", header)
+        self.assertIn("int8_t pendingPageTurnDelta", header)
         automatic = loop[loop.index("if (automaticPageTurnActive)") :
                          loop.index("if (showBookmarkMessage")]
         self.assertIn("if (!section || RenderLock::peek())", automatic)
@@ -1461,6 +1462,19 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("if (!section)", manual_dispatch)
         self.assertIn("pageTurn(false);", manual_dispatch)
         self.assertIn("pageTurn(true);", manual_dispatch)
+
+    def test_txt_and_xtc_page_turns_do_not_wait_for_the_render_mutex(self):
+        for name in ("TxtReaderActivity", "XtcReaderActivity"):
+            reader = (REPO_ROOT / f"src/activities/reader/{name}.cpp").read_text(encoding="utf-8")
+            header = (REPO_ROOT / f"src/activities/reader/{name}.h").read_text(encoding="utf-8")
+            navigation = reader[reader.index("const auto pageGesture") :
+                                reader.index(f"bool {name}::handleReaderShortcut")]
+
+            self.assertIn("int8_t pendingPageTurnDelta", header)
+            self.assertIn("ReaderUtils::queuePageTurns(pendingPageTurnDelta", navigation)
+            self.assertIn("ReaderUtils::takeQueuedPageTurn(pendingPageTurnDelta", navigation)
+            self.assertIn("RenderLock lock(std::try_to_lock)", navigation)
+            self.assertNotIn("RenderLock lock(*this)", navigation)
 
     def test_home_never_decodes_an_original_epub_cover(self):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")

@@ -97,6 +97,36 @@ TEST(ReaderGesture, UsesThirtySecondsOnlyWhenNoPreviousAutoTurnIntervalExists) {
   EXPECT_EQ(ReaderUtils::autoPageTurnShortcutSeconds(45), 45);
 }
 
+TEST(ReaderGesture, BoundsAndCoalescesQueuedPageTurns) {
+  int8_t pending = 0;
+  for (int i = 0; i < 12; ++i) ReaderUtils::queuePageTurns(pending, 1);
+  EXPECT_EQ(pending, ReaderUtils::MAX_QUEUED_PAGE_TURNS);
+
+  ReaderUtils::queuePageTurns(pending, -3);
+  EXPECT_EQ(pending, ReaderUtils::MAX_QUEUED_PAGE_TURNS - 3);
+
+  ReaderUtils::queuePageTurns(pending, -20);
+  EXPECT_EQ(pending, -ReaderUtils::MAX_QUEUED_PAGE_TURNS);
+}
+
+TEST(ReaderGesture, DrainsOneVisiblePageAtATime) {
+  int8_t pending = 0;
+  ReaderUtils::queuePageTurns(pending, 3);
+
+  bool forward = false;
+  EXPECT_TRUE(ReaderUtils::takeQueuedPageTurn(pending, forward));
+  EXPECT_TRUE(forward);
+  EXPECT_EQ(pending, 2);
+
+  ReaderUtils::queuePageTurns(pending, -4);
+  EXPECT_TRUE(ReaderUtils::takeQueuedPageTurn(pending, forward));
+  EXPECT_FALSE(forward);
+  EXPECT_EQ(pending, -1);
+  EXPECT_TRUE(ReaderUtils::takeQueuedPageTurn(pending, forward));
+  EXPECT_EQ(pending, 0);
+  EXPECT_FALSE(ReaderUtils::takeQueuedPageTurn(pending, forward));
+}
+
 TEST(ReaderRendering, SkipsEveryGrayscaleOperationWhenDriverDoesNotSupportIt) {
   GfxRenderer renderer;
   renderer.stripGrayscaleSupported = false;

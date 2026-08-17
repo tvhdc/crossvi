@@ -22,7 +22,20 @@ constexpr unsigned long SKIP_HOLD_MS = 700;
 constexpr unsigned long CONFIRM_HOLD_MS = 500;
 constexpr unsigned long BOOKMARK_MESSAGE_DURATION_MS = 2500;
 constexpr uint8_t DEFAULT_AUTO_PAGE_TURN_SECONDS = 30;
+constexpr int8_t MAX_QUEUED_PAGE_TURNS = 8;
 constexpr size_t GRAYSCALE_STRIP_SCRATCH_BYTES = 13U * 1024U;
+
+inline void queuePageTurns(int8_t& pending, const int delta) {
+  pending = static_cast<int8_t>(std::clamp(static_cast<int>(pending) + delta, -static_cast<int>(MAX_QUEUED_PAGE_TURNS),
+                                           static_cast<int>(MAX_QUEUED_PAGE_TURNS)));
+}
+
+inline bool takeQueuedPageTurn(int8_t& pending, bool& forward) {
+  if (pending == 0) return false;
+  forward = pending > 0;
+  pending += forward ? -1 : 1;
+  return true;
+}
 
 inline int grayscaleStripRows(const int widthBytes, const int height) {
   if (widthBytes <= 0 || height <= 0) return 0;

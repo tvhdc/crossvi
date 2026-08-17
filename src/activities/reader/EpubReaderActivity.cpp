@@ -481,6 +481,7 @@ void EpubReaderActivity::onExit() {
 }
 
 void EpubReaderActivity::onPause() {
+  pendingPageTurnDelta = 0;
   clearBlockingFeedback();
   cancelImagePreparation();
   consumeReadingViewSignal();
@@ -1241,9 +1242,7 @@ void EpubReaderActivity::loop() {
           // do not turn them into a series of identical e-ink redraws.
           pendingPageTurnDelta = 0;
         } else if (!sectionLandingPending && !sectionRenderWaiting) {
-          forward = pendingPageTurnDelta > 0;
-          pendingPageTurnDelta += forward ? -1 : 1;
-          drainTurn = true;
+          drainTurn = ReaderUtils::takeQueuedPageTurn(pendingPageTurnDelta, forward);
         }
       }
     }
@@ -2653,29 +2652,24 @@ void EpubReaderActivity::updateAutoPageTurnPreference(const uint8_t seconds, con
 void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhileWaiting,
                                   const bool drainingQueuedTurn) {
   {
-    RenderLock lock(*this);
+    RenderLock lock(std::try_to_lock);
+    if (!lock.ownsLock()) {
+      if (queueWhileWaiting) ReaderUtils::queuePageTurns(pendingPageTurnDelta, isForwardTurn ? 1 : -1);
+      lastPageTurnTime = millis();
+      return;
+    }
     const bool sectionTransition =
         !section && epub && currentSpineIndex >= 0 && currentSpineIndex < epub->getSpineItemsCount();
     if (sectionLandingPending || sectionRenderWaiting || sectionTransition ||
         (!drainingQueuedTurn && pendingPageTurnDelta != 0)) {
-      if (queueWhileWaiting) {
-        if (isForwardTurn && pendingPageTurnDelta < MAX_QUEUED_PAGE_TURNS) {
-          ++pendingPageTurnDelta;
-        } else if (!isForwardTurn && pendingPageTurnDelta > -MAX_QUEUED_PAGE_TURNS) {
-          --pendingPageTurnDelta;
-        }
-      }
+      if (queueWhileWaiting) ReaderUtils::queuePageTurns(pendingPageTurnDelta, isForwardTurn ? 1 : -1);
       // Re-arm auto-turn instead of retrying once per loop while the same page
       // is still being prepared. Manual turns retain their bounded delta.
       lastPageTurnTime = millis();
       return;
     }
-    resetImagePageScan();
-    consumeReadingViewSignal();
-    stopReadingPage(isForwardTurn, static_cast<uint32_t>(millis()));
-    coverSkipDirection = isForwardTurn ? CoverSkipDirection::Forward : CoverSkipDirection::Backward;
-    coverSkipHops = 0;
 
+    bool moved = false;
     if (section && isForwardTurn) {
       // Advance within the section while there are (or may still be) more pages: either a built
       // page ahead, or the section is still building/partial (windowed), in which case more pages exist
@@ -2684,6 +2678,7 @@ void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhil
       // the live pageCount alone would mistake the build watermark for the end of a giant spine.
       if (section->currentPage < section->pageCount - 1 || section->isBuilding() || section->isPartial()) {
         section->currentPage++;
+        moved = true;
       } else {
         nextPageNumber = 0;
         currentSpineIndex = epub->getAdjacentLinearSpineIndex(currentSpineIndex, true);
@@ -2691,10 +2686,12 @@ void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhil
         debugBeginSectionOpen(true);
 #endif
         section.reset();
+        moved = true;
       }
     } else if (section) {
       if (section->currentPage > 0) {
         section->currentPage--;
+        moved = true;
       } else if (currentSpineIndex > 0) {
         const int previousSpine = epub->getAdjacentLinearSpineIndex(currentSpineIndex, false);
         if (previousSpine < 0) return;
@@ -2705,8 +2702,19 @@ void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhil
         debugBeginSectionOpen(true);
 #endif
         section.reset();
+        moved = true;
       }
     }
+    if (!moved) {
+      lastPageTurnTime = millis();
+      return;
+    }
+
+    resetImagePageScan();
+    consumeReadingViewSignal();
+    stopReadingPage(isForwardTurn, static_cast<uint32_t>(millis()));
+    coverSkipDirection = isForwardTurn ? CoverSkipDirection::Forward : CoverSkipDirection::Backward;
+    coverSkipHops = 0;
     const bool preparationMatchesCurrentPage = section && imagePrefetchSpine == currentSpineIndex &&
                                                imagePrefetchPage == section->currentPage &&
                                                imagePrefetchSectionGeneration == sectionGeneration;

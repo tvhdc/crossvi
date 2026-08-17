@@ -28,7 +28,8 @@ class TxtReaderActivity final : public Activity {
   int currentPage = 0;
   int lastSavedPage = -1;
   ProgressFile::WriteSession progressWriteSession;
-  int lastSuccessfullyRenderedPage = -1;
+  std::atomic<int> lastSuccessfullyRenderedPage{-1};
+  int8_t pendingPageTurnDelta = 0;
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
 

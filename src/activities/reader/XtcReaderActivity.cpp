@@ -142,6 +142,7 @@ void XtcReaderActivity::onEnter() {
   deferredCoverLastInputAt = static_cast<uint32_t>(millis());
   confirmHold.reset();
   pageTurnGesture.reset();
+  pendingPageTurnDelta = 0;
   ignoreNextConfirmRelease = false;
   cachedBookmarks.clear();
   bookmarksLoaded = false;
@@ -178,6 +179,7 @@ void XtcReaderActivity::onEnter() {
 void XtcReaderActivity::onExit() {
   Activity::onExit();
 
+  pendingPageTurnDelta = 0;
   commitReadingSession();
   saveReadingStats();
 
@@ -191,6 +193,7 @@ void XtcReaderActivity::onExit() {
 }
 
 void XtcReaderActivity::onPause() {
+  pendingPageTurnDelta = 0;
   clearBlockingFeedback();
   if (xtc) xtc->cancelThumbnailPreparation();
   consumeReadingViewSignal();
@@ -385,6 +388,12 @@ void XtcReaderActivity::loop() {
     return;
   }
   const bool inputEdge = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
+  const bool readerInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                               mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                               mappedInput.isPressed(MappedInputManager::Button::PageForward);
   if (inputEdge) {
     deferredCoverLastInputAt = static_cast<uint32_t>(millis());
     if (xtc->thumbnailPreparationActive()) xtc->cancelThumbnailPreparation();
@@ -394,10 +403,11 @@ void XtcReaderActivity::loop() {
     requestUpdate();
   }
 
-  uint32_t pageSnapshot = 0;
+  uint32_t pageSnapshot = lastSuccessfullyRenderedPage.load(std::memory_order_acquire);
+  if (pageSnapshot == std::numeric_limits<uint32_t>::max()) pageSnapshot = 0;
   {
-    RenderLock lock;
-    pageSnapshot = currentPage;
+    RenderLock lock(std::try_to_lock);
+    if (lock.ownsLock()) pageSnapshot = currentPage;
   }
   const bool atEndOfBook = pageSnapshot >= xtc->getPageCount();
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
@@ -423,14 +433,17 @@ void XtcReaderActivity::loop() {
       return;
     }
     const unsigned long autoPageTurnInterval = static_cast<unsigned long>(autoPageTurnSeconds) * 1000UL;
-    if (!atEndOfBook && autoPageTurnSeconds != 0 && millis() - lastPageTurnTime >= autoPageTurnInterval) {
+    if (!atEndOfBook && autoPageTurnSeconds != 0 && !inputEdge && !readerInputHeld && pendingPageTurnDelta == 0 &&
+        millis() - lastPageTurnTime >= autoPageTurnInterval) {
       bool pageTurned = false;
       {
-        RenderLock lock(*this);
-        const uint32_t lockedPage = currentPage;
+        RenderLock lock(std::try_to_lock);
+        const uint32_t lockedPage = lock.ownsLock() ? currentPage : 0;
         const uint32_t pageCount = xtc->getPageCount();
-        if (lockedPage < pageCount && lastSuccessfullyRenderedPage == lockedPage &&
-            millis() - lastPageTurnTime >= autoPageTurnInterval) {
+        if (!lock.ownsLock() || activityManager.hasPendingRender() ||
+            lastSuccessfullyRenderedPage.load(std::memory_order_acquire) != lockedPage) {
+          lastPageTurnTime = millis();
+        } else if (lockedPage < pageCount && millis() - lastPageTurnTime >= autoPageTurnInterval) {
           consumeReadingViewSignal();
           stopReadingPage(true, static_cast<uint32_t>(millis()));
           if (lockedPage + 1 >= pageCount) {
@@ -513,15 +526,21 @@ void XtcReaderActivity::loop() {
   }
 
   const auto pageGesture = ReaderUtils::detectPageTurnGesture(mappedInput, pageTurnGesture);
-  const bool prevTriggered = pageGesture.prev;
-  const bool nextTriggered = pageGesture.next;
+  bool prevTriggered = pageGesture.prev;
+  bool nextTriggered = pageGesture.next;
+  bool drainingQueuedTurn = false;
+  if (!prevTriggered && !nextTriggered && pendingPageTurnDelta != 0 && !inputEdge && !readerInputHeld &&
+      !activityManager.hasPendingRender()) {
+    bool forward = false;
+    if (pendingPageTurnDelta < 0 && pageSnapshot == 0) {
+      pendingPageTurnDelta = 0;
+    } else if (ReaderUtils::takeQueuedPageTurn(pendingPageTurnDelta, forward)) {
+      prevTriggered = !forward;
+      nextTriggered = forward;
+      drainingQueuedTurn = true;
+    }
+  }
   if (!prevTriggered && !nextTriggered) {
-    const bool readerInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::Left) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::Right) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
-                                 mappedInput.isPressed(MappedInputManager::Button::PageForward);
     if (!inputEdge && !readerInputHeld) {
       finishDeferredOpenState();
       if (static_cast<uint32_t>(millis()) - deferredCoverLastInputAt >= DEFERRED_COVER_IDLE_MS) {
@@ -534,6 +553,7 @@ void XtcReaderActivity::loop() {
   // At end of the book with no suggestion menu, forward button goes home and back
   // button returns to last page
   if (pageSnapshot >= xtc->getPageCount()) {
+    pendingPageTurnDelta = 0;
     if (endOfBookMenuActive) {
       // Selection movement was handled above; absorb leftover page-turn triggers so
       // e.g. "previous" at the top of the list doesn't jump back into the book
@@ -552,49 +572,59 @@ void XtcReaderActivity::loop() {
   }
 
   if (pageGesture.longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
+    pendingPageTurnDelta = 0;
     pendingShortcutUnsupportedNotice = true;
     requestUpdate();
     return;
   }
 
-  const int skipAmount = pageGesture.longPress ? 10 : 1;
+  const int skipAmount = drainingQueuedTurn ? 1 : (pageGesture.longPress ? 10 : 1);
+  const int requestedDelta = nextTriggered ? skipAmount : -skipAmount;
+  if (!drainingQueuedTurn && pendingPageTurnDelta != 0) {
+    ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
+    return;
+  }
+
+  RenderLock lock(std::try_to_lock);
+  if (!lock.ownsLock() || activityManager.hasPendingRender() ||
+      lastSuccessfullyRenderedPage.load(std::memory_order_acquire) != currentPage) {
+    ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
+    lastPageTurnTime = millis();
+    return;
+  }
 
   if (prevTriggered) {
-    {
-      RenderLock lock;
+    bool changed = false;
+    if (currentPage > 0) {
       consumeReadingViewSignal();
       stopReadingPage(false, static_cast<uint32_t>(millis()));
-      if (currentPage >= static_cast<uint32_t>(skipAmount)) {
-        currentPage -= skipAmount;
-      } else {
-        currentPage = 0;
-      }
+      currentPage = currentPage >= static_cast<uint32_t>(skipAmount) ? currentPage - skipAmount : 0;
+      changed = true;
     }
-    requestUpdate();
+    lock.unlock();
+    if (changed) requestUpdate();
   } else if (nextTriggered) {
     bool completionFailed = false;
-    {
-      RenderLock lock;
-      consumeReadingViewSignal();
-      stopReadingPage(true, static_cast<uint32_t>(millis()), !pageGesture.longPress);
-      const uint32_t pageCount = xtc->getPageCount();
-      const uint64_t requested = static_cast<uint64_t>(currentPage) + static_cast<uint32_t>(skipAmount);
-      if (requested >= pageCount) {
-        if (pageCount > 0 && lastSuccessfullyRenderedPage == pageCount - 1) {
-          markBookCompleted();
-          completionFailed = pendingStatsCompletionError;
-          if (!completionFailed) {
-            currentPage = pageCount;
-            automaticPageTurnActive = false;
-          }
-        } else {
-          currentPage = pageCount > 0 ? pageCount - 1 : 0;
+    consumeReadingViewSignal();
+    stopReadingPage(true, static_cast<uint32_t>(millis()), !pageGesture.longPress);
+    const uint32_t pageCount = xtc->getPageCount();
+    const uint64_t requested = static_cast<uint64_t>(currentPage) + static_cast<uint32_t>(skipAmount);
+    if (requested >= pageCount) {
+      if (pageCount > 0 && lastSuccessfullyRenderedPage.load(std::memory_order_acquire) == pageCount - 1) {
+        markBookCompleted();
+        completionFailed = pendingStatsCompletionError;
+        if (!completionFailed) {
+          currentPage = pageCount;
+          automaticPageTurnActive = false;
         }
       } else {
-        currentPage = static_cast<uint32_t>(requested);
-        refreshEstimatedTimeLeft();
+        currentPage = pageCount > 0 ? pageCount - 1 : 0;
       }
+    } else {
+      currentPage = static_cast<uint32_t>(requested);
+      refreshEstimatedTimeLeft();
     }
+    lock.unlock();
     if (completionFailed) return;
     requestUpdate();
   }

@@ -228,8 +228,7 @@ class EpubReaderActivity final : public Activity {
   // Page-turn input can arrive while a requested page is still being laid
   // out. Keep the net turn request instead of mutating the placeholder page
   // (which finishSectionLanding() would overwrite) or silently dropping it.
-  int16_t pendingPageTurnDelta = 0;
-  static constexpr int16_t MAX_QUEUED_PAGE_TURNS = 8;
+  int8_t pendingPageTurnDelta = 0;
   uint32_t sectionPrepareStartedMs = 0;
 
   // Reused by every grayscale page once pagination is stable. Keeping one
