@@ -548,7 +548,7 @@ class CodegenTest(unittest.TestCase):
             self.assertNotIn("++currentSpineIndex", operation)
             self.assertNotIn("--currentSpineIndex", operation)
 
-    def test_txt_finishes_partial_index_in_bounded_background_ticks(self):
+    def test_txt_finishes_initial_index_before_reading_in_bounded_ticks(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         loop = reader[reader.index("void TxtReaderActivity::loop()") : reader.index("bool TxtReaderActivity::handleReaderShortcut")]
         requested = reader[reader.index("void TxtReaderActivity::processRequestedPageIndex") :
@@ -565,6 +565,10 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("processBackgroundPageIndex()", loop)
         self.assertNotIn("completePageIndex()", render)
         self.assertIn("pageIndexComplete", background)
+        self.assertIn("const bool requiresCompleteIndex =", requested)
+        self.assertIn("work == PageIndexWork::Initial || pageIndexTargetRequiresComplete", requested)
+        self.assertIn("requiresCompleteIndex ? txt->getFileSize()", requested)
+        self.assertIn("requiresCompleteIndex", requested[requested.index("const bool targetReady") :])
 
     def test_txt_initial_resume_jump_and_clipping_never_run_an_unbounded_index_scan(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
@@ -600,7 +604,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("std::unique_ptr<uint8_t[]> pageScratch;", header)
         self.assertIn("if (!contentFile.isOpen()", session)
         self.assertIn("pageScratchSize < CHUNK_SIZE + 1", session)
-        self.assertIn("if (!inputEdge && !readerInputHeld) {", loop)
+        self.assertIn("if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {", loop)
         self.assertIn("finishDeferredOpenState();", loop)
         self.assertIn("processBackgroundPageIndex();", loop)
         self.assertNotIn("makeUniqueNoThrow", load)
@@ -1279,14 +1283,41 @@ class CodegenTest(unittest.TestCase):
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
         self.assertIn("BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024", header)
         self.assertIn("BACKGROUND_BUILD_MIN_MAX_ALLOC = 16 * 1024", header)
+        self.assertIn("BACKGROUND_BUILD_PAGES_PER_TICK = 1", header)
         # The background tick must gate heap only after it owns the render lock.
         # Counting a second unlocked pre-check would reintroduce the section race.
         self.assertGreaterEqual(reader.count("buildTickHeapGate()"), 2)
         self.assertIn("RenderLock lock(std::try_to_lock);", reader)
-        self.assertIn("if (!inputEdge && !readerInputHeld && lock.ownsLock())", reader)
+        self.assertIn(
+            "if (!inputEdge && !readerInputHeld && lock.ownsLock() && !activityManager.hasPendingRender())",
+            reader,
+        )
         self.assertIn("section && section->isBuilding() && withinBuildWindow", reader)
-        self.assertIn("(requiredBuild || buildTickHeapGate())", reader)
+        self.assertIn("if (targetBuildRequired)", reader)
+        self.assertIn("else if (landingWarmupActive)", reader)
+        self.assertIn("sectionLandingWarmupPending = false", reader)
         self.assertGreaterEqual(reader.count("ImageBlock::setExtractor(nullptr, nullptr)"), 3)
+
+    def test_reader_background_work_yields_to_queued_renders(self):
+        manager = (REPO_ROOT / "src/activities/ActivityManager.h").read_text(encoding="utf-8")
+        epub = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        txt = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("bool hasPendingRender() const", manager)
+        self.assertIn("requestedUpdate.load(std::memory_order_acquire)", manager)
+        self.assertIn("requestedRenderGeneration.load(std::memory_order_acquire)", manager)
+        self.assertIn("completedRenderGeneration.load(std::memory_order_acquire)", manager)
+
+        epub_loop = epub[epub.index("void EpubReaderActivity::loop()") :
+                         epub.index("void EpubReaderActivity::pageTurn")]
+        self.assertGreaterEqual(epub_loop.count("!activityManager.hasPendingRender()"), 3)
+        pump = epub[epub.index("bool EpubReaderActivity::pumpImagePreparation") :
+                    epub.index("void EpubReaderActivity::pumpDeferredBookmarkLoad")]
+        self.assertGreaterEqual(pump.count("activityManager.hasPendingRender()"), 2)
+
+        txt_idle = txt[txt.index("if (!prevTriggered && !nextTriggered)") :
+                       txt.index("if (pageGesture.longPress")]
+        self.assertIn("!activityManager.hasPendingRender()", txt_idle)
 
     def test_epub_next_page_image_extraction_is_bounded_and_outside_render(self):
         epub = (REPO_ROOT / "lib/Epub/Epub.cpp").read_text(encoding="utf-8")
@@ -1296,16 +1327,98 @@ class CodegenTest(unittest.TestCase):
                            epub.index("bool Epub::getItemSize")]
         pump = reader[reader.index("bool EpubReaderActivity::pumpImagePreparation") :
                       reader.index("void EpubReaderActivity::recordReadingSample")]
+        queue_visible = reader[reader.index("void EpubReaderActivity::queueVisiblePageImagePreparation") :
+                               reader.index("bool EpubReaderActivity::pumpImagePreparation")]
         render = reader[reader.index("void EpubReaderActivity::render(RenderLock&&") :]
-        self.assertIn("imageStreamJob->begin", preparation)
+        render_contents = reader[reader.index("bool EpubReaderActivity::renderContents") :]
+        self.assertIn("imageStreamJob->beginCooperativeLookup", preparation)
         self.assertIn("4096", preparation)
-        self.assertIn("StagedFileTransaction::publish", preparation)
-        self.assertIn("nextImageNeedingPreparation", page)
-        self.assertIn("section->currentPage + 1", pump)
+        self.assertIn("StagedFileTransaction::beginPendingPublish", preparation)
+        self.assertIn("imagePublishedDigestJob->step(4096)", preparation)
+        self.assertIn('finalPath + ".pending"', preparation)
+        self.assertLess(
+            preparation.index("imagePublishedDigestJob->step(4096)"),
+            preparation.index("imageSourceIdentityJob->step(4096"),
+        )
+        self.assertNotIn("StagedFileTransaction::publish(", preparation)
+        self.assertIn("stepImageNeedingExtraction", page)
+        self.assertIn("MAX_ELEMENTS_PER_STEP = 64", page)
+        self.assertIn("MAX_IMAGE_PROBES_PER_STEP = 2", page)
+        self.assertIn("needsRawPreparation", page)
+        self.assertIn("section->currentPage + (visiblePagePreparation ? 0 : 1)", pump)
         self.assertIn("epub->stepImagePreparation()", pump)
-        self.assertIn("image.preparePixelCache", pump)
+        self.assertLess(
+            pump.index("if (epub->imagePreparationActive())"),
+            pump.index("const bool visiblePagePreparation"),
+        )
+        self.assertNotIn("preparePixelCache", pump)
         self.assertIn("RenderLock lock(std::try_to_lock);", pump)
-        self.assertIn("cancelImagePreparation();", render[:300])
+        self.assertIn("scanStatus == PageImageScanStatus::More", pump)
+        self.assertIn("ZipSourceIdentityJob", preparation)
+        self.assertIn("imageSourceIdentityJob->step(4096", preparation)
+        self.assertIn("sourcePathMatchesIdentityJob(filepath.c_str(), currentIdentity", preparation)
+        self.assertIn("input_.fileSize64() == expectedSize_", epub)
+        self.assertIn("if (!path || !stamp.valid) return false", epub)
+        self.assertIn("queueVisiblePageImagePreparation()", render)
+        self.assertNotIn("stepImageNeedingExtraction", render_contents)
+        self.assertNotIn("hasImagesNeedingDecode", render_contents)
+        self.assertIn("page->deferMissingImageExtraction()", render_contents)
+        self.assertIn("page->hasImagesAwaitingRawPreparation()", render_contents)
+        self.assertIn("if (sameTarget && imagePrefetchPageComplete)", queue_visible)
+        self.assertNotIn("cancelImagePreparation()", queue_visible)
+        self.assertIn("return clippingHighlights.truncated", render_contents)
+        self.assertIn("if (manualRefreshPending) forcedRefreshPending = true", render_contents)
+        self.assertIn("preparationMatchesCurrentPage", reader)
+        self.assertIn("imagePreparationForVisiblePage.store(true", reader)
+        self.assertGreaterEqual(reader.count("ImageBlock::markPreparationFailure(imagePreparationPath)"), 2)
+        self.assertIn("imagePreparationPath = candidate.imagePath", reader)
+
+    def test_epub_image_failure_suppression_resets_on_explicit_reflow(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        invalidate = reader[reader.index("void EpubReaderActivity::invalidateReaderLayout") :
+                            reader.index("void EpubReaderActivity::rememberCurrentContentOffset")]
+        orientation = reader[reader.index("void EpubReaderActivity::applyOrientation") :
+                             reader.index("void EpubReaderActivity::applyAutoPageTurnRuntime")]
+        auto_turn = reader[reader.index("void EpubReaderActivity::applyAutoPageTurnRuntime") :
+                           reader.index("void EpubReaderActivity::updateAutoPageTurnPreference")]
+        self.assertIn("ImageBlock::clearSessionRenderFailures()", invalidate)
+        self.assertIn("ImageBlock::clearSessionRenderFailures()", orientation)
+        self.assertIn("ImageBlock::clearSessionRenderFailures()", auto_turn)
+
+    def test_epub_page_turns_queue_while_layout_catches_up(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
+        page_turn = reader[reader.index("void EpubReaderActivity::pageTurn") :
+                           reader.index("bool EpubReaderActivity::moveOnePageWithoutRendering")]
+        self.assertLess(page_turn.index("RenderLock lock(*this)"),
+                        page_turn.index("if (sectionLandingPending || sectionRenderWaiting ||"))
+        self.assertLess(page_turn.index("pendingPageTurnDelta"),
+                        page_turn.index("stopReadingPage(isForwardTurn"))
+        self.assertIn("const bool sectionTransition", page_turn)
+        self.assertIn("sectionLandingPending || sectionRenderWaiting || sectionTransition", page_turn)
+        self.assertNotIn("cancelImagePreparation()", page_turn)
+        loop = reader[reader.index("void EpubReaderActivity::loop()") :
+                      reader.index("void EpubReaderActivity::pageTurn")]
+        self.assertIn("pendingPageTurnDelta != 0", loop)
+        self.assertIn("RenderLock lock(std::try_to_lock)", loop)
+        self.assertIn("!activityManager.hasPendingRender()", loop)
+        self.assertIn("pageTurn(forward, true, true);", loop)
+        self.assertIn("pageTurn(true, false);", loop)
+        self.assertIn("pendingPageTurnDelta = 0", loop)
+        self.assertIn("MAX_QUEUED_PAGE_TURNS = 8", header)
+        automatic = loop[loop.index("if (automaticPageTurnActive)") :
+                         loop.index("if (showBookmarkMessage")]
+        self.assertIn("if (!section || RenderLock::peek())", automatic)
+        self.assertNotIn("if (!section) {\n      requestUpdate();\n      return;", automatic)
+        self.assertNotIn("if (RenderLock::peek()) {\n      lastPageTurnTime = millis();\n      return;", automatic)
+        self.assertIn("if (landingWarmupActive && pendingPageTurnDelta != 0)", loop)
+        self.assertIn("else if (pendingPageTurnDelta != 0)", loop)
+        gesture = loop[loop.index("const auto pageGesture") :]
+        manual_dispatch = gesture[gesture.index("if (prevTriggered)") :
+                                  gesture.index("\n}\n\nbool EpubReaderActivity::handleReaderShortcut")]
+        self.assertNotIn("if (!section)", manual_dispatch)
+        self.assertIn("pageTurn(false);", manual_dispatch)
+        self.assertIn("pageTurn(true);", manual_dispatch)
 
     def test_home_never_decodes_an_original_epub_cover(self):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
@@ -1339,8 +1452,23 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("readItemContentsToStream", start_build)
         self.assertIn("htmlStreamJob.step()", extraction)
         self.assertEqual(render.count("section->buildSomeMore("), 1)
-        self.assertIn("initialBuildPages = std::clamp(missingPages, 1, MAX_INITIAL_BUILD_PAGES)", render)
-        self.assertNotIn("section->buildSomeMore(MAX_INITIAL_BUILD_PAGES)", render)
+        self.assertIn("section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)", render)
+        self.assertIn("bool EpubReaderActivity::sectionTurnBufferReady", reader)
+        self.assertIn("target < static_cast<int>(section->pageCount)", render)
+        landing = reader[reader.index("bool EpubReaderActivity::sectionLandingReady") :
+                         reader.index("bool EpubReaderActivity::sectionTurnBufferReady")]
+        self.assertNotIn("return sectionTurnBufferReady", landing)
+        warmup = reader[reader.index("bool EpubReaderActivity::sectionLandingReadyForRender") :
+                        reader.index("bool EpubReaderActivity::requestedSectionPageReady")]
+        self.assertIn("sectionLandingWarmupPending", warmup)
+        self.assertIn("sectionLandingTargetPage", warmup)
+        self.assertIn("sectionTurnBufferReady", warmup)
+        self.assertGreaterEqual(reader.count("if (!sectionLandingReadyForRender())"), 2)
+        self.assertIn("partialTarget + PARTIAL_REBUILD_START_MARGIN", render)
+        self.assertIn("sectionLandingWarmupPending = !pendingPercentJump && !partialTargetAvailable", render)
+        idle = reader[reader.index("if (!prevTriggered && !nextTriggered)") :
+                      reader.index("// At end of the book")]
+        self.assertIn("sectionTurnBufferReady(section->currentPage)", idle)
         self.assertIn("sectionLandingPending = true;", render)
         self.assertIn("sectionRenderWaiting = true;", render)
         self.assertIn("requestedSectionPageReady()", reader)

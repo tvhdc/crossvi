@@ -22,12 +22,19 @@ template <typename Predicate>
 void renderFilteredPageElements(const std::vector<std::shared_ptr<PageElement>>& elements, GfxRenderer& renderer,
                                 const int fontId, const int xOffset, const int yOffset,
                                 std::unique_ptr<uint8_t[]>& imageReadBuffer, size_t& imageReadBufferCapacity,
-                                Predicate&& predicate) {
+                                const bool allowSynchronousImageExtraction, Predicate&& predicate) {
+  bool rawPreparationDeferred = false;
   for (const auto& element : elements) {
     if (predicate(*element)) {
       if (element->getTag() == TAG_PageImage) {
-        static_cast<PageImage&>(*element).renderWithScratch(renderer, xOffset, yOffset, imageReadBuffer,
-                                                            imageReadBufferCapacity);
+        auto& image = static_cast<PageImage&>(*element);
+        if (rawPreparationDeferred) {
+          image.renderPlaceholder(renderer, xOffset, yOffset);
+          continue;
+        }
+        image.renderWithScratch(renderer, xOffset, yOffset, imageReadBuffer, imageReadBufferCapacity,
+                                allowSynchronousImageExtraction);
+        rawPreparationDeferred = image.getImageBlock().awaitsRawPreparation();
       } else {
         element->render(renderer, fontId, xOffset, yOffset);
       }
@@ -74,8 +81,10 @@ void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffse
 }
 
 void PageImage::renderWithScratch(GfxRenderer& renderer, const int xOffset, const int yOffset,
-                                  std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity) {
-  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, readBuffer, readBufferCapacity);
+                                  std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity,
+                                  const bool allowSynchronousExtraction) {
+  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, readBuffer, readBufferCapacity,
+                     allowSynchronousExtraction);
 }
 
 void PageImage::renderPlaceholder(GfxRenderer& renderer, const int xOffset, const int yOffset) const {
@@ -143,11 +152,12 @@ std::unique_ptr<PageHorizontalRule> PageHorizontalRule::deserialize(BoundedFileR
 
 void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
   renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, imageReadBuffer, imageReadBufferCapacity,
-                             [](const PageElement&) { return true; });
+                             allowSynchronousImageExtraction, [](const PageElement&) { return true; });
 }
 
 void Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
   renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, imageReadBuffer, imageReadBufferCapacity,
+                             allowSynchronousImageExtraction,
                              [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
 }
 

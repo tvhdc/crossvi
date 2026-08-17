@@ -39,7 +39,11 @@ void ImageBlock::setExtractor(void* context, const ExtractFn extractor) {
   extractFn = extractor;
 }
 
-bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str()); }
+bool ImageBlock::hasPendingPublication() const {
+  return Storage.exists((imagePath + ".pending").c_str()) || Storage.exists((imagePath + ".bak").c_str());
+}
+
+bool ImageBlock::imageExists() const { return !hasPendingPublication() && Storage.exists(imagePath.c_str()); }
 
 namespace {
 
@@ -62,13 +66,17 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
 }
 
 // Pages are deserialized afresh on each visit. Keep a bounded, allocation-free
-// record so an image that failed renders its placeholder directly for the rest
-// of the reader session instead of paying another placeholder refresh and
-// decode. The reader clears this on entry so transient memory/storage failures
-// are retried.
-constexpr size_t MAX_SESSION_IMAGE_FAILURES = 16;
-uint64_t failedImageHashes[MAX_SESSION_IMAGE_FAILURES];
-size_t failedImageCount = 0;
+// Bloom filter so every failed image renders its placeholder directly for the
+// rest of the reader session instead of paying another extraction/decode. A
+// fixed hash list used to stop recording at 16 entries, which let the 17th
+// broken image retry forever. False positives deliberately fail closed to a
+// placeholder and the reader clears the filter on every entry.
+// 1024 bits uses the same 128 bytes as the former 16-entry hash array while
+// avoiding its hard capacity. Three mixed probes keep accidental suppression
+// low even in a malformed EPUB containing dozens of broken images.
+constexpr size_t SESSION_IMAGE_FAILURE_FILTER_BITS = 1024;
+constexpr size_t SESSION_IMAGE_FAILURE_FILTER_WORDS = SESSION_IMAGE_FAILURE_FILTER_BITS / 64;
+uint64_t failedImageFilter[SESSION_IMAGE_FAILURE_FILTER_WORDS]{};
 
 // Keep small image caches in RAM across the repeated BW/LSB/MSB page passes.
 // The budget is global, so a page with many images cannot multiply this cost.
@@ -84,17 +92,40 @@ uint64_t imagePathHash(const std::string& path) {
   return hash;
 }
 
+void failureFilterBits(const std::string& path, size_t& first, size_t& second, size_t& third) {
+  uint64_t mixed = imagePathHash(path);
+  mixed ^= mixed >> 33U;
+  mixed *= 0xff51afd7ed558ccdULL;
+  mixed ^= mixed >> 33U;
+  mixed *= 0xc4ceb9fe1a85ec53ULL;
+  mixed ^= mixed >> 33U;
+  first = static_cast<size_t>(mixed) & (SESSION_IMAGE_FAILURE_FILTER_BITS - 1);
+  second = static_cast<size_t>(mixed >> 20U) & (SESSION_IMAGE_FAILURE_FILTER_BITS - 1);
+  third = static_cast<size_t>(mixed >> 40U) & (SESSION_IMAGE_FAILURE_FILTER_BITS - 1);
+}
+
+bool failureFilterBitSet(const size_t bit) { return (failedImageFilter[bit / 64] & (uint64_t{1} << (bit % 64))) != 0; }
+
+void setFailureFilterBit(const size_t bit) { failedImageFilter[bit / 64] |= uint64_t{1} << (bit % 64); }
+
 bool imageFailedThisSession(const std::string& path) {
-  const uint64_t hash = imagePathHash(path);
-  for (size_t i = 0; i < failedImageCount; i++) {
-    if (failedImageHashes[i] == hash) return true;
-  }
-  return false;
+  if (path.empty()) return false;
+  size_t firstBit = 0;
+  size_t secondBit = 0;
+  size_t thirdBit = 0;
+  failureFilterBits(path, firstBit, secondBit, thirdBit);
+  return failureFilterBitSet(firstBit) && failureFilterBitSet(secondBit) && failureFilterBitSet(thirdBit);
 }
 
 void rememberImageFailure(const std::string& path) {
-  if (failedImageCount == MAX_SESSION_IMAGE_FAILURES || imageFailedThisSession(path)) return;
-  failedImageHashes[failedImageCount++] = imagePathHash(path);
+  if (path.empty()) return;
+  size_t firstBit = 0;
+  size_t secondBit = 0;
+  size_t thirdBit = 0;
+  failureFilterBits(path, firstBit, secondBit, thirdBit);
+  setFailureFilterBit(firstBit);
+  setFailureFilterBit(secondBit);
+  setFailureFilterBit(thirdBit);
 }
 
 void renderCacheRow(DirectPixelWriter& writer, const uint8_t* rowBuffer, const int x, const int y, const int row,
@@ -243,8 +274,8 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
 ImageBlock::~ImageBlock() {
   if (residentPixelBytes == 0) return;
-  residentImageCacheBytes = residentPixelBytes <= residentImageCacheBytes ? residentImageCacheBytes - residentPixelBytes
-                                                                          : 0;
+  residentImageCacheBytes =
+      residentPixelBytes <= residentImageCacheBytes ? residentImageCacheBytes - residentPixelBytes : 0;
 }
 
 bool ImageBlock::hasValidCache() const {
@@ -260,10 +291,28 @@ bool ImageBlock::hasValidCache() const {
 }
 
 bool ImageBlock::needsDecode() const {
+  if (publicationPendingForRender()) return true;
   return !decodedWithoutCache && !renderFailed && !imageFailedThisSession(imagePath) && !hasValidCache();
 }
 
+bool ImageBlock::needsRawPreparation() const {
+  if (renderFailed || imageFailedThisSession(imagePath)) return false;
+  const bool pending = hasPendingPublication();
+  renderPublicationProbe = pending ? PublicationProbe::Pending : PublicationProbe::Clear;
+  if (pending) return true;
+  if (Storage.exists(imagePath.c_str())) return false;
+  return !decodedWithoutCache && !renderFailed && !imageFailedThisSession(imagePath) && !hasValidCache();
+}
+
+bool ImageBlock::publicationPendingForRender() const {
+  if (renderPublicationProbe == PublicationProbe::Unknown) {
+    renderPublicationProbe = hasPendingPublication() ? PublicationProbe::Pending : PublicationProbe::Clear;
+  }
+  return renderPublicationProbe == PublicationProbe::Pending;
+}
+
 bool ImageBlock::preparePixelCache(GfxRenderer& renderer, const int x, const int y) const {
+  if (hasPendingPublication()) return false;
   if (hasValidCache()) return true;
   if (width <= 0 || height <= 0 || x < 0 || y < 0 || x + width > renderer.getScreenWidth() ||
       y + height > renderer.getScreenHeight()) {
@@ -293,7 +342,11 @@ bool ImageBlock::preparePixelCache(GfxRenderer& renderer, const int x, const int
   return decoder->decodeToFramebuffer(imagePath, renderer, config) && hasValidCache();
 }
 
-void ImageBlock::clearSessionRenderFailures() { failedImageCount = 0; }
+void ImageBlock::clearSessionRenderFailures() {
+  for (uint64_t& word : failedImageFilter) word = 0;
+}
+
+void ImageBlock::markPreparationFailure(const std::string& imagePath) { rememberImageFailure(imagePath); }
 
 const std::string& ImageBlock::getPixelCachePath() const {
   if (pixelCachePath.empty()) pixelCachePath = getCachePath(imagePath, width, height);
@@ -314,7 +367,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 }
 
 void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::unique_ptr<uint8_t[]>& readBuffer,
-                        size_t& readBufferCapacity) {
+                        size_t& readBufferCapacity, const bool allowSynchronousExtraction) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
   // suppression, so it would otherwise do a full (discarded) cache render every
@@ -347,6 +400,15 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
     renderPlaceholder(renderer, x, y);
     return;
   }
+  if (publicationPendingForRender()) {
+    if (!allowSynchronousExtraction && !sourcePath.empty()) rawPreparationNeeded = true;
+    renderPlaceholder(renderer, x, y);
+    return;
+  }
+  if (rawPreparationNeeded && !allowSynchronousExtraction) {
+    renderPlaceholder(renderer, x, y);
+    return;
+  }
   if (decodedWithoutCache) {
     renderPlaceholder(renderer, x, y);
     return;
@@ -368,7 +430,13 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, std::un
   const uint32_t materializeStartedMs = static_cast<uint32_t>(millis());
 #endif
   bool imageOpened = Storage.openFileForRead("IMG", imagePath, file);
-  if (!imageOpened && !Storage.exists(imagePath.c_str()) && !sourcePath.empty() && extractFn) {
+  const bool imageMissing = !imageOpened && !Storage.exists(imagePath.c_str());
+  if (imageMissing && !sourcePath.empty() && !allowSynchronousExtraction) {
+    rawPreparationNeeded = true;
+    renderPlaceholder(renderer, x, y);
+    return;
+  }
+  if (imageMissing && !sourcePath.empty() && extractFn) {
     if (!extractFn(extractContext, sourcePath.c_str(), imagePath.c_str())) {
       LOG_ERR("IMG", "Failed to extract lazy image: %s", sourcePath.c_str());
       renderFailed = true;

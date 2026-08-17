@@ -100,16 +100,15 @@ bool validateTxtPageIndexCache(const char* path, void*) {
   uint8_t alignment = 0;
   uint32_t numPages = 0;
   ZipFile::SourceIdentity storedIdentity;
-  const bool headerOk = readPodExact(file, magic) && readPodExact(file, version) &&
-                        file.read(encodedIdentity.data(), encodedIdentity.size()) ==
-                            static_cast<int>(encodedIdentity.size()) &&
-                        readPodExact(file, fileSize) && readPodExact(file, cachedWidth) &&
-                        readPodExact(file, cachedLines) && readPodExact(file, fontId) &&
-                        readPodExact(file, lineAdvance) && readPodExact(file, margin) &&
-                        readPodExact(file, alignment) && readPodExact(file, numPages) &&
-                        SourceIdentityCodec::decode(encodedIdentity.data(), encodedIdentity.size(), storedIdentity) ==
-                            SourceIdentityCodec::DecodeStatus::OK &&
-                        storedIdentity.fileSize == fileSize;
+  const bool headerOk =
+      readPodExact(file, magic) && readPodExact(file, version) &&
+      file.read(encodedIdentity.data(), encodedIdentity.size()) == static_cast<int>(encodedIdentity.size()) &&
+      readPodExact(file, fileSize) && readPodExact(file, cachedWidth) && readPodExact(file, cachedLines) &&
+      readPodExact(file, fontId) && readPodExact(file, lineAdvance) && readPodExact(file, margin) &&
+      readPodExact(file, alignment) && readPodExact(file, numPages) &&
+      SourceIdentityCodec::decode(encodedIdentity.data(), encodedIdentity.size(), storedIdentity) ==
+          SourceIdentityCodec::DecodeStatus::OK &&
+      storedIdentity.fileSize == fileSize;
   const uint64_t expectedCacheSize = CACHE_HEADER_SIZE + static_cast<uint64_t>(numPages) * sizeof(uint32_t);
   const uint64_t maxPossiblePages = static_cast<uint64_t>(fileSize) + 1U;
   if (!headerOk || magic != CACHE_MAGIC || version != CACHE_VERSION || cachedWidth <= 0 || cachedLines <= 0 ||
@@ -370,7 +369,7 @@ void TxtReaderActivity::loop() {
   const bool prevTriggered = pageGesture.prev;
   const bool nextTriggered = pageGesture.next;
   if (!prevTriggered && !nextTriggered) {
-    if (!inputEdge && !readerInputHeld) {
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {
       finishDeferredOpenState();
       processBackgroundPageIndex();
     }
@@ -598,7 +597,11 @@ void TxtReaderActivity::processRequestedPageIndex() {
     const PageIndexWork work = pageIndexWork.load(std::memory_order_acquire);
     if (work == PageIndexWork::None || initializationFailed) return;
 
-    const size_t targetOffset = pageIndexTargetRequiresComplete ? txt->getFileSize() : pageIndexTargetOffset;
+    // A cold/stale cache is finished before the first readable page. Continuing
+    // the whole-file wrap scan after first paint competes with every page turn
+    // and discards all but the last page's reusable scratch data.
+    const bool requiresCompleteIndex = work == PageIndexWork::Initial || pageIndexTargetRequiresComplete;
+    const size_t targetOffset = requiresCompleteIndex ? txt->getFileSize() : pageIndexTargetOffset;
     if (!buildPageIndexUntil(targetOffset, BACKGROUND_INDEX_PAGES_PER_TICK)) {
       markPageIndexFailed();
       if (work == PageIndexWork::Initial) finishReaderInitialization();
@@ -608,7 +611,7 @@ void TxtReaderActivity::processRequestedPageIndex() {
       }
       redrawReader = true;
     } else {
-      const bool targetReady = pageIndexTargetRequiresComplete
+      const bool targetReady = requiresCompleteIndex
                                    ? pageIndexComplete
                                    : TxtPageIndex::containsTarget(pageOffsets.get(), pageOffsetCount, pageIndexComplete,
                                                                   pageIndexTargetOffset);
@@ -2407,8 +2410,8 @@ bool TxtReaderActivity::loadPageIndexCache() {
 
   std::string cachePath = txt->getCachePath() + "/index.bin";
   std::string backupPath = cachePath + ".bak";
-  const auto recovered = StagedFileTransaction::recover(cachePath.c_str(), backupPath.c_str(),
-                                                        validateTxtPageIndexCache);
+  const auto recovered =
+      StagedFileTransaction::recover(cachePath.c_str(), backupPath.c_str(), validateTxtPageIndexCache);
   if (recovered == StagedFileTransaction::Status::IoError) {
     LOG_ERR("TRS", "Could not recover TXT page index cache");
     Storage.remove(backupPath.c_str());

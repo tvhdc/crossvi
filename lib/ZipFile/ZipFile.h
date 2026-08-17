@@ -95,6 +95,9 @@ class ZipFile {
   bool loadFileStatSlim(const char* filename, FileStatSlim* fileStat);
   long getDataOffset(const FileStatSlim& fileStat);
   bool loadZipDetails();
+  StoredEntryOpenStatus openValidatedFileStat(const char* filename, const FileStatSlim& fileStat, HalFile& archive,
+                                              uint64_t& dataOffset, uint32_t& compressedSize,
+                                              uint32_t& uncompressedSize, uint16_t& method);
   StoredEntryOpenStatus openValidatedEntry(const char* filename, HalFile& archive, uint64_t& dataOffset,
                                            uint32_t& compressedSize, uint32_t& uncompressedSize, uint16_t& method);
 
@@ -220,6 +223,11 @@ class ZipStreamReadJob {
 
   BeginStatus begin(const std::string& zipPath, const char* entry, Print& out, size_t chunkSize, size_t maxOutputSize,
                     bool allowStored = false);
+  // Page-image preparation uses a bounded central-directory lookup before
+  // streaming. Existing callers retain begin()'s immediate NotApplicable and
+  // validation semantics.
+  BeginStatus beginCooperativeLookup(const std::string& zipPath, const char* entry, Print& out, size_t chunkSize,
+                                     size_t maxOutputSize);
   StepStatus step();
   void cancel();
 

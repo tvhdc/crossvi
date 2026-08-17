@@ -185,6 +185,14 @@ class ActivityManager {
   // Sleep cannot restore the modal stack, but it must still resume its book.
   bool hasReaderActivity() const;
   uint32_t getCompletedRenderGeneration() const { return completedRenderGeneration.load(std::memory_order_acquire); }
+  // A successful try-lock only proves that the render task has not acquired
+  // the mutex yet. Background reader work must also yield when a render is
+  // deferred or already queued for the display task.
+  bool hasPendingRender() const {
+    return requestedUpdate.load(std::memory_order_acquire) ||
+           requestedRenderGeneration.load(std::memory_order_acquire) !=
+               completedRenderGeneration.load(std::memory_order_acquire);
+  }
   bool handleForcedRefresh();
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;

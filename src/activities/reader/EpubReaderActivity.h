@@ -125,8 +125,8 @@ class EpubReaderActivity final : public Activity {
   int imagePrefetchPage = -1;
   size_t imagePrefetchElement = 0;
   bool imagePrefetchPageComplete = false;
-  PageImagePreparation imagePrefetchCandidate;
-  bool imagePrefetchCandidatePending = false;
+  std::atomic<bool> imagePreparationForVisiblePage{false};
+  std::string imagePreparationPath;
   bool readerOpenStagesPending = true;
 
   ClippingStore clippingStore;
@@ -218,6 +218,12 @@ class EpubReaderActivity final : public Activity {
   bool partialRebuildStartFailed = false;
   bool sectionLandingPending = false;
   bool sectionRenderWaiting = false;
+  bool sectionLandingWarmupPending = false;
+  // Page-turn input can arrive while a requested page is still being laid
+  // out. Keep the net turn request instead of mutating the placeholder page
+  // (which finishSectionLanding() would overwrite) or silently dropping it.
+  int16_t pendingPageTurnDelta = 0;
+  static constexpr int16_t MAX_QUEUED_PAGE_TURNS = 8;
   uint32_t sectionPrepareStartedMs = 0;
 
   // Reused by every grayscale page once pagination is stable. Keeping one
@@ -258,11 +264,11 @@ class EpubReaderActivity final : public Activity {
   bool renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft, uint32_t* pageFingerprintOut);
   void renderStatusBar() const;
-  // Pages laid out per incremental-build pump: on the render path (catching up to the page
-  // being shown) and per loop() tick (background build of a large chapter). Kept small so a
-  // background build chunk never noticeably delays input or a pending render.
-  static constexpr int MAX_INITIAL_BUILD_PAGES = 8;
-  static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
+  // Pages laid out per incremental-build pump. Kept at one so a build chunk
+  // never noticeably delays input or a pending render; fresh landings wait for
+  // their target-relative buffer cooperatively instead of building it in one
+  // render callback.
+  static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
   // Background parsing grows vectors/strings through throwing allocation
   // paths. Defer optional build ticks before fragmented heap reaches OOM.
   static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
@@ -295,7 +301,11 @@ class EpubReaderActivity final : public Activity {
   // Restore the cached content position after a settings change re-paginates a chapter.
   // Falls back to the old page ratio only when the visible page has no stable text anchor.
   bool applyDeferredReposition();
+  bool sectionTurnBufferReady(int targetPage) const;
+  std::optional<int> sectionLandingTargetPage() const;
   bool sectionLandingReady() const;
+  bool sectionLandingReadyForRender() const;
+  bool requestedSectionTargetReady() const;
   bool requestedSectionPageReady() const;
   void finishSectionLanding();
   void rememberCurrentContentOffset();
@@ -331,7 +341,7 @@ class EpubReaderActivity final : public Activity {
   void invalidateReaderLayout();
   void applyAutoPageTurnRuntime(uint8_t seconds, bool active);
   void updateAutoPageTurnPreference(uint8_t seconds, bool active);
-  void pageTurn(bool isForwardTurn);
+  void pageTurn(bool isForwardTurn, bool queueWhileWaiting = true, bool drainingQueuedTurn = false);
   bool moveOnePageWithoutRendering(bool forward);
   bool skipCoverPageIfNeeded(const Page& page);
   void loadCachedBookmarks();
@@ -346,6 +356,7 @@ class EpubReaderActivity final : public Activity {
   void consumeReadingViewSignal();
   void pumpDeferredCoverPreparation();
   bool pumpImagePreparation();
+  void queueVisiblePageImagePreparation();
   void cancelImagePreparation();
   void stopReadingPage(bool forwardPageTurn, uint32_t nowMs);
   void recordReadingSample(const ReadingSessionSample& sample);
@@ -393,7 +404,8 @@ class EpubReaderActivity final : public Activity {
                            static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
                           (requiredBuild || !buildHeapPaused);
     const bool preparingCover = deferredCoverRequested && deferredCoverFirstPageVisible && !deferredCoverFinished;
-    const bool preparingImage = epub && epub->imagePreparationActive();
+    const bool preparingImage =
+        imagePreparationForVisiblePage.load(std::memory_order_acquire) || (epub && epub->imagePreparationActive());
     return building || preparingImage || preparingCover;
   }
   bool isReaderActivity() const override { return true; }

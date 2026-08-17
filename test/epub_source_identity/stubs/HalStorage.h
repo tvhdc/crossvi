@@ -71,7 +71,10 @@ class HalStorage {
     return storage;
   }
 
-  bool exists(const char* path) const { return files_.count(path) != 0 || directories_.count(path) != 0; }
+  bool exists(const char* path) const {
+    ++existsAttempts_[path];
+    return files_.count(path) != 0 || directories_.count(path) != 0;
+  }
   bool mkdir(const char* path, bool = true) {
     if (exists(path)) return false;
     directories_.insert(path);
@@ -207,6 +210,7 @@ class HalStorage {
     invalidOperations_ = 0;
     openReadAttempts_.clear();
     openWriteAttempts_.clear();
+    existsAttempts_.clear();
     failOpenReadAttempt_.clear();
     reportedSizes_.clear();
     modified_.clear();
@@ -247,6 +251,7 @@ class HalStorage {
     maxRead_ = 0;
     openReadAttempts_.clear();
     openWriteAttempts_.clear();
+    existsAttempts_.clear();
   }
   size_t invalidOperationCount() const { return invalidOperations_; }
   size_t openReadAttemptsFor(const std::string& path) const {
@@ -256,6 +261,10 @@ class HalStorage {
   size_t openWriteAttemptsFor(const std::string& path) const {
     const auto found = openWriteAttempts_.find(path);
     return found == openWriteAttempts_.end() ? 0 : found->second;
+  }
+  size_t existsAttemptsFor(const std::string& path) const {
+    const auto found = existsAttempts_.find(path);
+    return found == existsAttempts_.end() ? 0 : found->second;
   }
 
  private:
@@ -282,6 +291,7 @@ class HalStorage {
   size_t invalidOperations_ = 0;
   std::map<std::string, size_t> openReadAttempts_;
   std::map<std::string, size_t> openWriteAttempts_;
+  mutable std::map<std::string, size_t> existsAttempts_;
   std::map<std::string, size_t> failOpenReadAttempt_;
   std::map<std::string, uint64_t> reportedSizes_;
   std::map<std::string, uint32_t> modified_;

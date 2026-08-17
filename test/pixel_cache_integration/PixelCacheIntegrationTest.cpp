@@ -52,17 +52,31 @@ class FakeDecoder final : public ImageToFramebufferDecoder {
 
 class PixelCacheIntegrationTest : public testing::Test {
  protected:
+  static bool extractImage(void* context, const char*, const char* destinationPath) {
+    auto& test = *static_cast<PixelCacheIntegrationTest*>(context);
+    ++test.extractCalls;
+    if (!test.extractSucceeds) return false;
+    Storage.setFile(destinationPath, {0x01});
+    return true;
+  }
+
   void SetUp() override {
     Storage.reset();
     ImageBlock::clearSessionRenderFailures();
+    ImageBlock::setExtractor(this, extractImage);
     ImageDecoderFactory::decoder = &decoder;
     Storage.setFile("/image.png", {0x01});
   }
 
-  void TearDown() override { ImageDecoderFactory::decoder = nullptr; }
+  void TearDown() override {
+    ImageBlock::setExtractor(nullptr, nullptr);
+    ImageDecoderFactory::decoder = nullptr;
+  }
 
   FakeDecoder decoder;
   GfxRenderer renderer;
+  bool extractSucceeds = true;
+  int extractCalls = 0;
 };
 
 TEST_F(PixelCacheIntegrationTest, ZeroWidthCacheIsRejectedAndRegenerated) {
@@ -124,6 +138,135 @@ TEST_F(PixelCacheIntegrationTest, IdlePreparationDecodesOnlyIntoPixelCache) {
 
   block.render(renderer, 7, 9);
   EXPECT_EQ(decoder.decodeCalls, 1);
+}
+
+TEST_F(PixelCacheIntegrationTest, PendingRawPublicationStaysHiddenFromDecoder) {
+  Storage.setFile("/image.png.pending", {'P'});
+  ImageBlock block("/image.png", "OPS/image.png", 4, 4);
+
+  EXPECT_FALSE(block.imageExists());
+  EXPECT_TRUE(block.needsRawPreparation());
+  EXPECT_TRUE(block.needsDecode());
+  EXPECT_FALSE(block.preparePixelCache(renderer, 0, 0));
+  block.render(renderer, 0, 0);
+
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 2);
+}
+
+TEST_F(PixelCacheIntegrationTest, ReaderRenderDefersMissingRawExtractionWithoutRecordingFailure) {
+  ASSERT_TRUE(Storage.remove("/image.png"));
+  ImageBlock deferred("/image.png", "OPS/image.png", 4, 4);
+  std::unique_ptr<uint8_t[]> readBuffer;
+  size_t readBufferCapacity = 0;
+
+  deferred.render(renderer, 0, 0, readBuffer, readBufferCapacity, false);
+
+  EXPECT_TRUE(deferred.awaitsRawPreparation());
+  EXPECT_EQ(extractCalls, 0);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 2);
+
+  ImageBlock synchronous("/image.png", "OPS/image.png", 4, 4);
+  EXPECT_TRUE(synchronous.needsDecode());
+  synchronous.render(renderer, 0, 0);
+  EXPECT_EQ(extractCalls, 1);
+  EXPECT_EQ(decoder.decodeCalls, 1);
+}
+
+TEST_F(PixelCacheIntegrationTest, ReaderRenderDoesNotQueueAnImageWithoutSource) {
+  ASSERT_TRUE(Storage.remove("/image.png"));
+  ImageBlock block("/image.png", 4, 4);
+  std::unique_ptr<uint8_t[]> readBuffer;
+  size_t readBufferCapacity = 0;
+
+  block.render(renderer, 0, 0, readBuffer, readBufferCapacity, false);
+
+  EXPECT_FALSE(block.awaitsRawPreparation());
+  EXPECT_EQ(extractCalls, 0);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 2);
+}
+
+TEST_F(PixelCacheIntegrationTest, ReaderRenderQueuesPendingPublicationWithoutOpeningDecoder) {
+  Storage.setFile("/image.png.pending", {'P'});
+  ImageBlock block("/image.png", "OPS/image.png", 4, 4);
+  std::unique_ptr<uint8_t[]> readBuffer;
+  size_t readBufferCapacity = 0;
+
+  block.render(renderer, 0, 0, readBuffer, readBufferCapacity, false);
+
+  EXPECT_TRUE(block.awaitsRawPreparation());
+  EXPECT_EQ(extractCalls, 0);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 2);
+}
+
+TEST_F(PixelCacheIntegrationTest, ReaderRenderUsesValidPixelCacheWhenRawImageIsMissing) {
+  ASSERT_TRUE(Storage.remove("/image.png"));
+  Storage.setFile("/image_4x4.pxc", cacheBytes(4, 4, 4));
+  ImageBlock block("/image.png", "OPS/image.png", 4, 4);
+  std::unique_ptr<uint8_t[]> readBuffer;
+  size_t readBufferCapacity = 0;
+
+  block.render(renderer, 0, 0, readBuffer, readBufferCapacity, false);
+
+  EXPECT_FALSE(block.awaitsRawPreparation());
+  EXPECT_EQ(extractCalls, 0);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 0);
+}
+
+TEST_F(PixelCacheIntegrationTest, PublicationMarkersAreProbedOnceAcrossRepeatedRenderPasses) {
+  Storage.setFile("/image_4x4.pxc", cacheBytes(4, 4, 4));
+  ImageBlock block("/image.png", 4, 4);
+  Storage.resetIoCounters();
+
+  EXPECT_FALSE(block.needsDecode());
+  for (int pass = 0; pass < 20; ++pass) block.render(renderer, 0, 0);
+
+  EXPECT_EQ(Storage.existsAttemptsFor("/image.png.pending"), 1U);
+  EXPECT_EQ(Storage.existsAttemptsFor("/image.png.bak"), 1U);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+}
+
+TEST_F(PixelCacheIntegrationTest, PendingPublicationSnapshotStaysHiddenAcrossRepeatedRenderPasses) {
+  Storage.setFile("/image.png.pending", {'P'});
+  ImageBlock block("/image.png", "OPS/image.png", 4, 4);
+  Storage.resetIoCounters();
+
+  for (int pass = 0; pass < 20; ++pass) block.render(renderer, 0, 0);
+
+  EXPECT_EQ(Storage.existsAttemptsFor("/image.png.pending"), 1U);
+  EXPECT_EQ(Storage.existsAttemptsFor("/image.png.bak"), 0U);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 40);
+}
+
+TEST_F(PixelCacheIntegrationTest, PreparationFailureRemainsSuppressedUntilExplicitReset) {
+  ImageBlock::markPreparationFailure("/image.png");
+  ImageBlock failed("/image.png", 4, 4);
+  EXPECT_FALSE(failed.needsDecode());
+
+  ImageBlock::clearSessionRenderFailures();
+  ImageBlock retried("/image.png", 4, 4);
+  EXPECT_TRUE(retried.needsDecode());
+}
+
+TEST_F(PixelCacheIntegrationTest, FailedPendingPublicationDoesNotQueueAgainUntilReset) {
+  Storage.setFile("/image.png.pending", {'P'});
+  ImageBlock::markPreparationFailure("/image.png");
+  ImageBlock block("/image.png", "OPS/image.png", 4, 4);
+  std::unique_ptr<uint8_t[]> readBuffer;
+  size_t readBufferCapacity = 0;
+
+  EXPECT_FALSE(block.needsRawPreparation());
+  block.render(renderer, 0, 0, readBuffer, readBufferCapacity, false);
+
+  EXPECT_FALSE(block.awaitsRawPreparation());
+  EXPECT_EQ(extractCalls, 0);
+  EXPECT_EQ(decoder.decodeCalls, 0);
+  EXPECT_EQ(renderer.fillRectCalls, 2);
 }
 
 TEST_F(PixelCacheIntegrationTest, DifferentLayoutSizesKeepIndependentPixelCaches) {
@@ -204,6 +347,27 @@ TEST_F(PixelCacheIntegrationTest, MoreThanSixteenFailedImagesAreNotDecodedAgainW
   blocks.back()->render(renderer, 0, 0);
 
   EXPECT_EQ(decoder.decodeCalls, 17);
+}
+
+TEST_F(PixelCacheIntegrationTest, MoreThanSixteenPreparationFailuresRemainSuppressedAfterDeserialization) {
+  std::vector<std::string> failedPaths;
+  for (int i = 0; i < 32; ++i) {
+    failedPaths.emplace_back("/async_broken_" + std::to_string(i) + ".png");
+    const std::string& path = failedPaths.back();
+    ImageBlock::markPreparationFailure(path);
+  }
+
+  for (const std::string& path : failedPaths) {
+    ImageBlock reloaded(path, 4, 4);
+    EXPECT_FALSE(reloaded.needsDecode()) << path;
+  }
+
+  ImageBlock unrelated("/healthy.png", 4, 4);
+  EXPECT_TRUE(unrelated.needsDecode());
+
+  ImageBlock::clearSessionRenderFailures();
+  ImageBlock retried(failedPaths.front(), 4, 4);
+  EXPECT_TRUE(retried.needsDecode());
 }
 
 TEST_F(PixelCacheIntegrationTest, SmallPixelCacheStaysResidentAcrossRepeatedPagePasses) {

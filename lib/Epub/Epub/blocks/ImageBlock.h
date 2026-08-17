@@ -23,12 +23,16 @@ class ImageBlock final : public Block {
   int16_t getHeight() const { return height; }
 
   bool imageExists() const;
+  bool hasPendingPublication() const;
+  bool needsRawPreparation() const;
   bool hasValidCache() const;
   bool needsDecode() const;
+  bool awaitsRawPreparation() const { return rawPreparationNeeded; }
   bool preparePixelCache(GfxRenderer& renderer, int x, int y) const;
   bool wasDecodedWithoutCache() const { return decodedWithoutCache; }
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearSessionRenderFailures();
+  static void markPreparationFailure(const std::string& imagePath);
 
   using ExtractFn = bool (*)(void* context, const char* sourcePath, const char* destinationPath);
   static void setExtractor(void* context, ExtractFn extractor);
@@ -37,7 +41,8 @@ class ImageBlock final : public Block {
   bool isEmpty() override { return false; }
 
   void render(GfxRenderer& renderer, const int x, const int y);
-  void render(GfxRenderer& renderer, int x, int y, std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity);
+  void render(GfxRenderer& renderer, int x, int y, std::unique_ptr<uint8_t[]>& readBuffer, size_t& readBufferCapacity,
+              bool allowSynchronousExtraction = true);
   bool serialize(serialization::BufferedFileWriter& file);
   static std::unique_ptr<ImageBlock> deserialize(BoundedFileReader& reader);
 
@@ -51,10 +56,14 @@ class ImageBlock final : public Block {
   uint16_t residentHeight = 0;
   bool decodedWithoutCache = false;
   bool renderFailed = false;
+  bool rawPreparationNeeded = false;
+  enum class PublicationProbe : uint8_t { Unknown, Clear, Pending };
+  mutable PublicationProbe renderPublicationProbe = PublicationProbe::Unknown;
   int16_t width;
   int16_t height;
 
   const std::string& getPixelCachePath() const;
+  bool publicationPendingForRender() const;
 
   static void* extractContext;
   static ExtractFn extractFn;

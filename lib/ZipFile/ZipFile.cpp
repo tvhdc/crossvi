@@ -74,6 +74,50 @@ class ZipStreamReadJob::Impl {
 
   ~Impl() { archive.close(); }
 
+  ZipStreamReadJob::BeginStatus configureStream(const uint64_t fileOffset, const uint32_t compressedSize,
+                                                const uint32_t uncompressedSize, const uint16_t method,
+                                                const size_t maxOutputSize, const bool allowStored) {
+    if (method == ZIP_METHOD_STORED && !allowStored) return ZipStreamReadJob::BeginStatus::NotApplicable;
+    if (method == ZIP_METHOD_STORED && compressedSize != uncompressedSize) {
+      return ZipStreamReadJob::BeginStatus::Error;
+    }
+    if ((method != ZIP_METHOD_STORED && method != ZIP_METHOD_DEFLATED) || uncompressedSize > maxOutputSize) {
+      LOG_ERR("ZIP", "Cooperative entry is unsupported or too large (%u bytes, limit %zu)", uncompressedSize,
+              maxOutputSize);
+      return ZipStreamReadJob::BeginStatus::Error;
+    }
+    if (!archive.seek64(fileOffset)) return ZipStreamReadJob::BeginStatus::Error;
+
+    outputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
+    if (!outputBuffer) {
+      LOG_ERR("ZIP", "Failed to allocate cooperative output buffer (%zu bytes)", chunkSize);
+      return ZipStreamReadJob::BeginStatus::Error;
+    }
+
+    expectedSize = uncompressedSize;
+    if (method == ZIP_METHOD_STORED) {
+      stored = true;
+      return ZipStreamReadJob::BeginStatus::Started;
+    }
+
+    inputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
+    if (!inputBuffer) {
+      LOG_ERR("ZIP", "Failed to allocate cooperative input buffer (%zu bytes)", chunkSize);
+      return ZipStreamReadJob::BeginStatus::Error;
+    }
+
+    ctx.file = &archive;
+    ctx.fileRemaining = compressedSize;
+    ctx.readBuf = inputBuffer.get();
+    ctx.readBufSize = chunkSize;
+    if (!inflate.init(true)) {
+      LOG_ERR("ZIP", "Failed to init cooperative inflate stream");
+      return ZipStreamReadJob::BeginStatus::Error;
+    }
+    inflate.setFill(zipFillCallback, &ctx);
+    return ZipStreamReadJob::BeginStatus::Started;
+  }
+
   HalFile archive;
   Print* out = nullptr;
   size_t chunkSize = 0;
@@ -84,6 +128,13 @@ class ZipStreamReadJob::Impl {
   std::unique_ptr<uint8_t[]> outputBuffer;
   ZipInflateCtx ctx;
   InflateStream inflate;
+  std::string lookupPath;
+  std::string lookupEntry;
+  std::unique_ptr<ZipFile> lookupZip;
+  uint32_t lookupCentralDirEnd = 0;
+  uint16_t lookupEntriesRemaining = 0;
+  size_t lookupMaxOutputSize = 0;
+  bool lookupPending = false;
 };
 
 class ZipSourceIdentityJob::Impl {
@@ -184,52 +235,123 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath
   const ZipFile::StoredEntryOpenStatus opened =
       zip.openValidatedEntry(entry, next->archive, fileOffset, compressedSize, uncompressedSize, method);
   if (opened != ZipFile::StoredEntryOpenStatus::Opened) return BeginStatus::Error;
-  if (method == ZIP_METHOD_STORED && !allowStored) return BeginStatus::NotApplicable;
-  if (method == ZIP_METHOD_STORED && compressedSize != uncompressedSize) return BeginStatus::Error;
-  if ((method != ZIP_METHOD_STORED && method != ZIP_METHOD_DEFLATED) || uncompressedSize > maxOutputSize) {
-    LOG_ERR("ZIP", "Cooperative entry is unsupported or too large (%u bytes, limit %zu)", uncompressedSize,
-            maxOutputSize);
+  const BeginStatus configured =
+      next->configureStream(fileOffset, compressedSize, uncompressedSize, method, maxOutputSize, allowStored);
+  if (configured != BeginStatus::Started) return configured;
+  impl = std::move(next);
+  return BeginStatus::Started;
+}
+
+ZipStreamReadJob::BeginStatus ZipStreamReadJob::beginCooperativeLookup(const std::string& zipPath, const char* entry,
+                                                                       Print& out, const size_t chunkSize,
+                                                                       const size_t maxOutputSize) {
+  cancel();
+  if (zipPath.empty() || !entry || entry[0] == '\0' || strlen(entry) >= 256 || chunkSize == 0 || maxOutputSize == 0) {
     return BeginStatus::Error;
   }
 
-  if (!next->archive.seek64(fileOffset)) {
+  auto next = std::unique_ptr<Impl>(new (std::nothrow) Impl(out, chunkSize));
+  if (!next) return BeginStatus::Error;
+  next->lookupPath = zipPath;
+  next->lookupEntry = entry;
+  next->lookupZip = std::unique_ptr<ZipFile>(new (std::nothrow) ZipFile(next->lookupPath));
+  if (!next->lookupZip || !next->lookupZip->open() || !next->lookupZip->loadZipDetails()) {
     return BeginStatus::Error;
   }
-
-  next->outputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
-  if (!next->outputBuffer) {
-    LOG_ERR("ZIP", "Failed to allocate cooperative output buffer (%zu bytes)", chunkSize);
+  const uint64_t centralDirEnd =
+      static_cast<uint64_t>(next->lookupZip->zipDetails.centralDirOffset) + next->lookupZip->zipDetails.centralDirSize;
+  if (centralDirEnd > UINT32_MAX || !next->lookupZip->file.seek(next->lookupZip->zipDetails.centralDirOffset)) {
     return BeginStatus::Error;
   }
-
-  next->expectedSize = uncompressedSize;
-  if (method == ZIP_METHOD_STORED) {
-    next->stored = true;
-    impl = std::move(next);
-    return BeginStatus::Started;
-  }
-
-  next->inputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
-  if (!next->inputBuffer) {
-    LOG_ERR("ZIP", "Failed to allocate cooperative input buffer (%zu bytes)", chunkSize);
-    return BeginStatus::Error;
-  }
-
-  next->ctx.file = &next->archive;
-  next->ctx.fileRemaining = compressedSize;
-  next->ctx.readBuf = next->inputBuffer.get();
-  next->ctx.readBufSize = chunkSize;
-  if (!next->inflate.init(true)) {
-    LOG_ERR("ZIP", "Failed to init cooperative inflate stream");
-    return BeginStatus::Error;
-  }
-  next->inflate.setFill(zipFillCallback, &next->ctx);
+  next->lookupCentralDirEnd = static_cast<uint32_t>(centralDirEnd);
+  next->lookupEntriesRemaining = next->lookupZip->zipDetails.totalEntries;
+  next->lookupMaxOutputSize = maxOutputSize;
+  next->lookupPending = true;
   impl = std::move(next);
   return BeginStatus::Started;
 }
 
 ZipStreamReadJob::StepStatus ZipStreamReadJob::step() {
   if (!impl) return StepStatus::Error;
+  if (impl->lookupPending) {
+    constexpr size_t LOOKUP_ENTRIES_PER_STEP = 8;
+    constexpr size_t CENTRAL_HEADER_SIZE = 46;
+    std::array<uint8_t, CENTRAL_HEADER_SIZE> centralHeader{};
+    std::array<char, 256> entryName{};
+
+    for (size_t scanned = 0; scanned < LOOKUP_ENTRIES_PER_STEP; ++scanned) {
+      if (!impl->lookupZip || impl->lookupEntriesRemaining == 0) {
+        LOG_ERR("ZIP", "Cooperative ZIP entry was not found: %s", impl->lookupEntry.c_str());
+        cancel();
+        return StepStatus::Error;
+      }
+      HalFile& centralDirectory = impl->lookupZip->file;
+      const uint64_t entryStart = centralDirectory.position();
+      if (entryStart > impl->lookupCentralDirEnd || CENTRAL_HEADER_SIZE > impl->lookupCentralDirEnd - entryStart ||
+          centralDirectory.read(centralHeader.data(), centralHeader.size()) != static_cast<int>(centralHeader.size()) ||
+          readLe32(centralHeader.data()) != 0x02014b50) {
+        LOG_ERR("ZIP", "Invalid cooperative central-directory record");
+        cancel();
+        return StepStatus::Error;
+      }
+
+      ZipFile::FileStatSlim fileStat{};
+      fileStat.flags = readLe16(centralHeader.data() + 8);
+      fileStat.method = readLe16(centralHeader.data() + 10);
+      fileStat.compressedSize = readLe32(centralHeader.data() + 20);
+      fileStat.uncompressedSize = readLe32(centralHeader.data() + 24);
+      fileStat.localHeaderOffset = readLe32(centralHeader.data() + 42);
+      const uint16_t nameLength = readLe16(centralHeader.data() + 28);
+      const uint16_t extraLength = readLe16(centralHeader.data() + 30);
+      const uint16_t commentLength = readLe16(centralHeader.data() + 32);
+      const uint64_t recordEnd = entryStart + CENTRAL_HEADER_SIZE + nameLength + extraLength + commentLength;
+      if (recordEnd < entryStart || recordEnd > impl->lookupCentralDirEnd) {
+        LOG_ERR("ZIP", "Cooperative central-directory record exceeds declared bounds");
+        cancel();
+        return StepStatus::Error;
+      }
+
+      bool found = false;
+      if (nameLength == impl->lookupEntry.size()) {
+        if (centralDirectory.read(entryName.data(), nameLength) != nameLength) {
+          cancel();
+          return StepStatus::Error;
+        }
+        found = memcmp(entryName.data(), impl->lookupEntry.data(), nameLength) == 0;
+      } else if (!centralDirectory.seekCur(nameLength)) {
+        cancel();
+        return StepStatus::Error;
+      }
+      if (!centralDirectory.seekCur(static_cast<uint32_t>(extraLength) + commentLength)) {
+        cancel();
+        return StepStatus::Error;
+      }
+      --impl->lookupEntriesRemaining;
+      if (!found) continue;
+
+      uint64_t fileOffset = 0;
+      uint32_t compressedSize = 0;
+      uint32_t uncompressedSize = 0;
+      uint16_t method = 0;
+      const ZipFile::StoredEntryOpenStatus opened = impl->lookupZip->openValidatedFileStat(
+          impl->lookupEntry.c_str(), fileStat, impl->archive, fileOffset, compressedSize, uncompressedSize, method);
+      if (opened != ZipFile::StoredEntryOpenStatus::Opened) {
+        cancel();
+        return StepStatus::Error;
+      }
+      const BeginStatus configured =
+          impl->configureStream(fileOffset, compressedSize, uncompressedSize, method, impl->lookupMaxOutputSize, true);
+      impl->lookupZip.reset();
+      impl->lookupPending = false;
+      if (configured != BeginStatus::Started) {
+        cancel();
+        return StepStatus::Error;
+      }
+      // Keep lookup and payload production on separate main-loop ticks.
+      return StepStatus::InProgress;
+    }
+    return StepStatus::InProgress;
+  }
   if (impl->stored && impl->expectedSize == 0) {
     cancel();
     return StepStatus::Done;
@@ -577,6 +699,27 @@ ZipFile::StoredEntryOpenStatus ZipFile::openValidatedEntry(const char* filename,
   if (!loadFileStatSlim(filename, &fileStat)) {
     return file.getError() == 0 ? StoredEntryOpenStatus::Missing : StoredEntryOpenStatus::IoError;
   }
+  return openValidatedFileStat(filename, fileStat, archive, dataOffset, compressedSize, uncompressedSize, method);
+}
+
+ZipFile::StoredEntryOpenStatus ZipFile::openValidatedFileStat(const char* filename, const FileStatSlim& fileStat,
+                                                              HalFile& archive, uint64_t& dataOffset,
+                                                              uint32_t& compressedSize, uint32_t& uncompressedSize,
+                                                              uint16_t& method) {
+  archive = HalFile{};
+  dataOffset = 0;
+  compressedSize = 0;
+  uncompressedSize = 0;
+  method = 0;
+  if (!filename || filename[0] == '\0') return StoredEntryOpenStatus::Invalid;
+
+  const size_t requestedNameLength = strlen(filename);
+  if (requestedNameLength == 0 || requestedNameLength >= 256) return StoredEntryOpenStatus::Invalid;
+
+  const ScopedOpenClose zip{*this};
+  if (!zip) return StoredEntryOpenStatus::IoError;
+  if (!loadZipDetails()) return StoredEntryOpenStatus::Invalid;
+
   const bool emptyStored =
       fileStat.method == ZIP_METHOD_STORED && fileStat.compressedSize == 0 && fileStat.uncompressedSize == 0;
   if ((fileStat.method != ZIP_METHOD_STORED && fileStat.method != ZIP_METHOD_DEFLATED) ||

@@ -62,10 +62,17 @@ class Epub {
   // Page-image extraction is prepared in bounded chunks while the reader is
   // idle. The final raster is published only after the complete ZIP entry has
   // been synced and validated.
+  class ImageDigestingOutput;
+  class ImageDigestReadJob;
   std::unique_ptr<ZipStreamReadJob> imageStreamJob;
+  std::unique_ptr<ZipSourceIdentityJob> imageSourceIdentityJob;
+  std::unique_ptr<ImageDigestingOutput> imageDigestingOutput;
+  std::unique_ptr<ImageDigestReadJob> imagePublishedDigestJob;
   HalFile imageStreamOutput;
   std::string imageStreamFinalPath;
   std::string imageStreamStagingPath;
+  std::string imagePublishMarkerPath;
+  bool imagePublishPending = false;
 
   struct CoverSource {
     HalFile file;
@@ -216,7 +223,10 @@ class Epub {
   ImagePreparationStatus beginImagePreparation(const std::string& itemHref, const std::string& finalPath);
   ImagePreparationStatus stepImagePreparation();
   void cancelImagePreparation();
-  bool imagePreparationActive() const { return imageStreamJob != nullptr; }
+  bool imagePreparationActive() const {
+    return imageStreamJob != nullptr || imageSourceIdentityJob != nullptr || imagePublishedDigestJob != nullptr ||
+           imagePublishPending;
+  }
   // Extract a supported raster item into the derived cache without exposing a
   // partially written final file. Existing valid output is reused.
   bool extractItemToFileAtomically(const std::string& itemHref, const std::string& finalPath) const;

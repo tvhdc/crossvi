@@ -210,6 +210,55 @@ bool validateRasterFile(const char* path, void*) {
   ImageDimensions dimensions{};
   return readOk && closed && probe.getDimensions(dimensions);
 }
+
+constexpr std::array<uint8_t, 5> IMAGE_PUBLISH_MARKER{'C', 'V', 'I', 'P', 1};
+
+bool writeImagePublishMarker(const std::string& markerPath) {
+  if (Storage.exists(markerPath.c_str()) && !Storage.remove(markerPath.c_str())) return false;
+  HalFile marker;
+  if (!Storage.openFileForWrite("EBP", markerPath, marker)) return false;
+  const bool written =
+      marker.write(IMAGE_PUBLISH_MARKER.data(), IMAGE_PUBLISH_MARKER.size()) == IMAGE_PUBLISH_MARKER.size();
+  const bool synced = written && marker.sync();
+  const bool closed = marker.close();
+  if (!written || !synced || !closed) Storage.remove(markerPath.c_str());
+  return written && synced && closed;
+}
+
+bool reconcileImagePublication(const std::string& finalPath, const std::string& stagingPath,
+                               const std::string& backupPath, const std::string& markerPath) {
+  if (!Storage.exists(markerPath.c_str())) {
+    return StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateRasterFile) !=
+           StagedFileTransaction::Status::IoError;
+  }
+
+  if (Storage.exists(backupPath.c_str())) {
+    // A retained backup proves publication began but was never committed.
+    // Restore it even when the new final happens to have a valid image header.
+    if (!StagedFileTransaction::rollbackPendingPublish(finalPath.c_str(), backupPath.c_str())) return false;
+  } else {
+    // A marker without a backup may precede publication or may refer to an
+    // unverified new final. Both files are derived data, so fail closed and
+    // regenerate instead of trying to infer which rename completed.
+    if (Storage.exists(finalPath.c_str()) && !Storage.remove(finalPath.c_str())) return false;
+  }
+
+  if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) return false;
+  return Storage.remove(markerPath.c_str());
+}
+
+bool sourcePathMatchesIdentityJob(const char* path, const ZipFile::SourceIdentity& identity,
+                                  const ZipSourceIdentityJob::FileStamp& stamp) {
+  if (!path || !stamp.valid) return false;
+  HalFile current;
+  if (!Storage.openFileForRead("EBP", path, current)) return false;
+  uint16_t modifyDate = 0;
+  uint16_t modifyTime = 0;
+  const bool sizeMatches = current.fileSize64() == identity.fileSize;
+  const bool stampMatches = current.getModifyDateTime(&modifyDate, &modifyTime) && modifyDate == stamp.modifyDate &&
+                            modifyTime == stamp.modifyTime;
+  return current.close() && sizeMatches && stampMatches;
+}
 }  // namespace
 
 class Epub::IndexingReadState {
@@ -252,6 +301,93 @@ class Epub::CoreMetadataReadState final : public Print {
   size_t guideWritten = 0;
   bool cacheLoadActive = false;
   bool verifyStarted = false;
+};
+
+class Epub::ImageDigestingOutput final : public Print {
+ public:
+  explicit ImageDigestingOutput(HalFile& output) : output_(output) {}
+
+  size_t write(const uint8_t data) override { return write(&data, 1); }
+  size_t write(const uint8_t* data, const size_t size) override {
+    if (!data || size == 0) return 0;
+    const size_t written = output_.write(data, size);
+    StagedFileTransaction::updateDigest(digest_, data, written);
+    if (!probeSettled_) {
+      const size_t consumed = probe_.write(data, written);
+      ImageDimensions dimensions{};
+      if (probe_.getDimensions(dimensions)) {
+        probeSettled_ = true;
+      } else if (consumed != written) {
+        probeSettled_ = true;
+        probeFailed_ = true;
+      }
+    }
+    return written;
+  }
+
+  const StagedFileTransaction::Digest& digest() const { return digest_; }
+  bool validRaster() const {
+    ImageDimensions dimensions{};
+    return !probeFailed_ && probe_.getDimensions(dimensions);
+  }
+
+ private:
+  HalFile& output_;
+  StagedFileTransaction::Digest digest_;
+  ImageDimsProbe probe_;
+  bool probeSettled_ = false;
+  bool probeFailed_ = false;
+};
+
+class Epub::ImageDigestReadJob {
+ public:
+  enum class StepStatus : uint8_t { InProgress, Done, Error };
+
+  ~ImageDigestReadJob() { cancel(); }
+
+  bool begin(const std::string& path) {
+    cancel();
+    if (!Storage.openFileForRead("EBP", path, input_)) return false;
+    expectedSize_ = input_.fileSize64();
+    remaining_ = expectedSize_;
+    digest_ = {};
+    return expectedSize_ > 0;
+  }
+
+  StepStatus step(const size_t maxBytes) {
+    if (!input_ || maxBytes == 0) return StepStatus::Error;
+    std::array<uint8_t, 512> buffer;
+    size_t budget = std::min<uint64_t>(maxBytes, remaining_);
+    while (budget > 0) {
+      const size_t chunk = std::min({buffer.size(), budget, static_cast<size_t>(remaining_)});
+      if (input_.read(buffer.data(), chunk) != static_cast<int>(chunk)) {
+        cancel();
+        return StepStatus::Error;
+      }
+      StagedFileTransaction::updateDigest(digest_, buffer.data(), chunk);
+      remaining_ -= chunk;
+      budget -= chunk;
+    }
+    if (remaining_ > 0) return StepStatus::InProgress;
+    const bool sizeUnchanged = input_.fileSize64() == expectedSize_;
+    const bool closed = input_.close();
+    return sizeUnchanged && closed && digest_.size == expectedSize_ ? StepStatus::Done : StepStatus::Error;
+  }
+
+  const StagedFileTransaction::Digest& digest() const { return digest_; }
+
+  void cancel() {
+    if (input_) input_.close();
+    input_ = {};
+    expectedSize_ = 0;
+    remaining_ = 0;
+  }
+
+ private:
+  HalFile input_;
+  StagedFileTransaction::Digest digest_;
+  uint64_t expectedSize_ = 0;
+  uint64_t remaining_ = 0;
 };
 
 Epub::Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
@@ -1416,14 +1552,12 @@ Epub::IndexStepResult Epub::stepIndexing() {
       const ZipStreamReadJob::StepStatus readStatus = indexingReadState->job.step();
       if (readStatus == ZipStreamReadJob::StepStatus::InProgress) return IndexStepResult::InProgress;
 
-      const bool navUsable =
-          kind == IndexingReadState::Kind::TocNav && indexingReadState->navParser &&
-          indexingReadState->navParser->succeeded() && indexingReadState->navParser->usableEntryCount() > 0;
-      const bool ncxUsable =
-          kind == IndexingReadState::Kind::TocNcx && indexingReadState->ncxParser &&
-          indexingReadState->ncxParser->succeeded();
-      if (readStatus == ZipStreamReadJob::StepStatus::Done &&
-          (navUsable || ncxUsable)) {
+      const bool navUsable = kind == IndexingReadState::Kind::TocNav && indexingReadState->navParser &&
+                             indexingReadState->navParser->succeeded() &&
+                             indexingReadState->navParser->usableEntryCount() > 0;
+      const bool ncxUsable = kind == IndexingReadState::Kind::TocNcx && indexingReadState->ncxParser &&
+                             indexingReadState->ncxParser->succeeded();
+      if (readStatus == ZipStreamReadJob::StepStatus::Done && (navUsable || ncxUsable)) {
         return finishTocPass(true);
       }
 
@@ -2263,13 +2397,11 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
       (!FsHelpers::hasJpgExtension(finalPathView) && !FsHelpers::hasPngExtension(finalPathView))) {
     return false;
   }
-  if (!sourceStillMatchesSnapshot()) return false;
-
   const std::string stagingPath = finalPath + ".tmp";
   const std::string backupPath = finalPath + ".bak";
-  const auto recovered = StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateRasterFile);
-  if (recovered == StagedFileTransaction::Status::IoError) return false;
-  if (validateRasterFile(finalPath.c_str(), nullptr)) return true;
+  const std::string markerPath = finalPath + ".pending";
+  if (!reconcileImagePublication(finalPath, stagingPath, backupPath, markerPath)) return false;
+  if (validateRasterFile(finalPath.c_str(), nullptr)) return sourceStillMatchesSnapshot();
   if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) return false;
 
   HalFile output;
@@ -2284,9 +2416,14 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
     return false;
   }
 
+  if (!writeImagePublishMarker(markerPath)) return false;
   const auto published =
       StagedFileTransaction::publish(finalPath.c_str(), stagingPath.c_str(), backupPath.c_str(), validateRasterFile);
-  return published == StagedFileTransaction::Status::Published;
+  if (published != StagedFileTransaction::Status::Published) {
+    reconcileImagePublication(finalPath, stagingPath, backupPath, markerPath);
+    return false;
+  }
+  return Storage.remove(markerPath.c_str());
 }
 
 Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& itemHref, const std::string& finalPath) {
@@ -2296,15 +2433,19 @@ Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& item
       (!FsHelpers::hasJpgExtension(finalPathView) && !FsHelpers::hasPngExtension(finalPathView))) {
     return ImagePreparationStatus::Error;
   }
-  if (!sourceStillMatchesSnapshot()) return ImagePreparationStatus::Error;
-
   const std::string backupPath = finalPath + ".bak";
-  const auto recovered = StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateRasterFile);
-  if (recovered == StagedFileTransaction::Status::IoError) return ImagePreparationStatus::Error;
-  if (validateRasterFile(finalPath.c_str(), nullptr)) return ImagePreparationStatus::NotNeeded;
+  const std::string stagingPath = finalPath + ".tmp";
+  const std::string markerPath = finalPath + ".pending";
+  if (!reconcileImagePublication(finalPath, stagingPath, backupPath, markerPath)) {
+    return ImagePreparationStatus::Error;
+  }
+  if (validateRasterFile(finalPath.c_str(), nullptr)) {
+    return sourceStillMatchesSnapshot() ? ImagePreparationStatus::NotNeeded : ImagePreparationStatus::Error;
+  }
 
   imageStreamFinalPath = finalPath;
-  imageStreamStagingPath = finalPath + ".tmp";
+  imageStreamStagingPath = stagingPath;
+  imagePublishMarkerPath = markerPath;
   if (Storage.exists(imageStreamStagingPath.c_str()) && !Storage.remove(imageStreamStagingPath.c_str())) {
     imageStreamFinalPath.clear();
     imageStreamStagingPath.clear();
@@ -2316,12 +2457,14 @@ Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& item
     return ImagePreparationStatus::Error;
   }
 
+  imageDigestingOutput =
+      std::unique_ptr<ImageDigestingOutput>(new (std::nothrow) ImageDigestingOutput(imageStreamOutput));
   imageStreamJob = std::unique_ptr<ZipStreamReadJob>(new (std::nothrow) ZipStreamReadJob());
   constexpr size_t MAX_EXTRACTED_RASTER_BYTES = 16U * 1024U * 1024U;
   const std::string sourcePath = FsHelpers::normalisePath(itemHref);
-  if (!imageStreamJob ||
-      imageStreamJob->begin(filepath, sourcePath.c_str(), imageStreamOutput, 4096, MAX_EXTRACTED_RASTER_BYTES, true) !=
-          ZipStreamReadJob::BeginStatus::Started) {
+  if (!imageDigestingOutput || !imageStreamJob ||
+      imageStreamJob->beginCooperativeLookup(filepath, sourcePath.c_str(), *imageDigestingOutput, 4096,
+                                             MAX_EXTRACTED_RASTER_BYTES) != ZipStreamReadJob::BeginStatus::Started) {
     cancelImagePreparation();
     return ImagePreparationStatus::Error;
   }
@@ -2329,39 +2472,119 @@ Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& item
 }
 
 Epub::ImagePreparationStatus Epub::stepImagePreparation() {
-  if (!imageStreamJob) return ImagePreparationStatus::Error;
-  const ZipStreamReadJob::StepStatus status = imageStreamJob->step();
-  if (status == ZipStreamReadJob::StepStatus::InProgress) return ImagePreparationStatus::InProgress;
+  if (imageStreamJob) {
+    const ZipStreamReadJob::StepStatus status = imageStreamJob->step();
+    if (status == ZipStreamReadJob::StepStatus::InProgress) return ImagePreparationStatus::InProgress;
 
-  imageStreamJob.reset();
-  const bool synced = status == ZipStreamReadJob::StepStatus::Done && imageStreamOutput.sync();
-  const bool closed = imageStreamOutput.close();
-  if (!synced || !closed || !sourceStillMatchesSnapshot() ||
-      !validateRasterFile(imageStreamStagingPath.c_str(), nullptr)) {
-    Storage.remove(imageStreamStagingPath.c_str());
-    imageStreamFinalPath.clear();
-    imageStreamStagingPath.clear();
+    imageStreamJob.reset();
+    const bool synced = status == ZipStreamReadJob::StepStatus::Done && imageStreamOutput.sync();
+    const bool closed = imageStreamOutput.close();
+    if (!synced || !closed || !imageDigestingOutput || !imageDigestingOutput->validRaster()) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+
+    if (!writeImagePublishMarker(imagePublishMarkerPath)) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+    imagePublishPending = true;
+    const std::string backupPath = imageStreamFinalPath + ".bak";
+    const auto published = StagedFileTransaction::beginPendingPublish(
+        imageStreamFinalPath.c_str(), imageStreamStagingPath.c_str(), backupPath.c_str(),
+        imageDigestingOutput->digest().size, validateRasterFile);
+    if (published != StagedFileTransaction::Status::Published) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+    imagePublishedDigestJob = std::unique_ptr<ImageDigestReadJob>(new (std::nothrow) ImageDigestReadJob());
+    if (!imagePublishedDigestJob || !imagePublishedDigestJob->begin(imageStreamFinalPath)) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+    return ImagePreparationStatus::InProgress;
+  }
+
+  if (imagePublishedDigestJob) {
+    if (!imageDigestingOutput || !imagePublishPending) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+    const auto digestStatus = imagePublishedDigestJob->step(4096);
+    if (digestStatus == ImageDigestReadJob::StepStatus::InProgress) return ImagePreparationStatus::InProgress;
+    if (digestStatus != ImageDigestReadJob::StepStatus::Done ||
+        !(imagePublishedDigestJob->digest() == imageDigestingOutput->digest())) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+
+    imagePublishedDigestJob.reset();
+    imageSourceIdentityJob = std::unique_ptr<ZipSourceIdentityJob>(new (std::nothrow) ZipSourceIdentityJob());
+    if (!imageSourceIdentityJob || !imageSourceIdentityJob->begin(filepath)) {
+      cancelImagePreparation();
+      return ImagePreparationStatus::Error;
+    }
+    return ImagePreparationStatus::InProgress;
+  }
+
+  if (!imageSourceIdentityJob || !imageDigestingOutput || !imagePublishPending) {
+    cancelImagePreparation();
+    return ImagePreparationStatus::Error;
+  }
+  ZipFile::SourceIdentity currentIdentity;
+  ZipSourceIdentityJob::FileStamp currentStamp;
+  const auto identityStatus = imageSourceIdentityJob->step(4096, currentIdentity, &currentStamp);
+  if (identityStatus == ZipSourceIdentityJob::StepStatus::InProgress) return ImagePreparationStatus::InProgress;
+  imageSourceIdentityJob.reset();
+  if (identityStatus != ZipSourceIdentityJob::StepStatus::Done || currentIdentity != sourceIdentitySnapshot ||
+      !sourcePathMatchesIdentityJob(filepath.c_str(), currentIdentity, currentStamp)) {
+    cancelImagePreparation();
     return ImagePreparationStatus::Error;
   }
 
+  // Keep the marker visible until the rollback candidate is gone. A failure or
+  // reset before marker removal therefore either restores the old raster or
+  // discards the new derived cache; readers never observe an ambiguous .bak.
   const std::string backupPath = imageStreamFinalPath + ".bak";
-  const auto published = StagedFileTransaction::publish(imageStreamFinalPath.c_str(), imageStreamStagingPath.c_str(),
-                                                        backupPath.c_str(), validateRasterFile);
-  imageStreamFinalPath.clear();
-  imageStreamStagingPath.clear();
-  return published == StagedFileTransaction::Status::Published ? ImagePreparationStatus::Ready
-                                                               : ImagePreparationStatus::Error;
+  if (!StagedFileTransaction::commitPendingPublish(backupPath.c_str())) {
+    cancelImagePreparation();
+    return ImagePreparationStatus::Error;
+  }
+  if (!Storage.remove(imagePublishMarkerPath.c_str())) {
+    cancelImagePreparation();
+    return ImagePreparationStatus::Error;
+  }
+  imagePublishPending = false;
+  cancelImagePreparation();
+  return ImagePreparationStatus::Ready;
 }
 
 void Epub::cancelImagePreparation() {
   if (imageStreamJob) imageStreamJob->cancel();
   imageStreamJob.reset();
+  if (imageSourceIdentityJob) imageSourceIdentityJob->cancel();
+  imageSourceIdentityJob.reset();
+  imagePublishedDigestJob.reset();
   if (imageStreamOutput) imageStreamOutput.close();
+  bool removePublishMarker = true;
+  if (imagePublishPending) {
+    const std::string backupPath = imageStreamFinalPath + ".bak";
+    if (!StagedFileTransaction::rollbackPendingPublish(imageStreamFinalPath.c_str(), backupPath.c_str())) {
+      LOG_ERR("EBP", "Could not roll back pending image-cache publication: %s", imageStreamFinalPath.c_str());
+      removePublishMarker = false;
+    }
+    imagePublishPending = false;
+  }
   if (!imageStreamStagingPath.empty() && Storage.exists(imageStreamStagingPath.c_str())) {
     Storage.remove(imageStreamStagingPath.c_str());
   }
+  if (removePublishMarker && !imagePublishMarkerPath.empty() && Storage.exists(imagePublishMarkerPath.c_str())) {
+    Storage.remove(imagePublishMarkerPath.c_str());
+  }
+  imageDigestingOutput.reset();
   imageStreamFinalPath.clear();
   imageStreamStagingPath.clear();
+  imagePublishMarkerPath.clear();
 }
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {

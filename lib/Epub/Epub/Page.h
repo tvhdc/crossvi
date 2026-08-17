@@ -56,7 +56,7 @@ class PageImage final : public PageElement {
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
   void renderWithScratch(GfxRenderer& renderer, int xOffset, int yOffset, std::unique_ptr<uint8_t[]>& readBuffer,
-                         size_t& readBufferCapacity);
+                         size_t& readBufferCapacity, bool allowSynchronousExtraction = true);
   void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset) const;
   bool serialize(serialization::BufferedFileWriter& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
@@ -78,19 +78,17 @@ class PageHorizontalRule final : public PageElement {
   static std::unique_ptr<PageHorizontalRule> deserialize(BoundedFileReader& reader);
 };
 
-struct PageImagePreparation {
+struct PageImageExtraction {
   std::string sourcePath;
   std::string imagePath;
-  int16_t x = 0;
-  int16_t y = 0;
-  int16_t width = 0;
-  int16_t height = 0;
-  bool needsExtraction = false;
 };
+
+enum class PageImageScanStatus : uint8_t { Found, More, Done };
 
 class Page {
   mutable std::unique_ptr<uint8_t[]> imageReadBuffer;
   mutable size_t imageReadBufferCapacity = 0;
+  bool allowSynchronousImageExtraction = true;
 
  public:
   // the list of block index and line numbers on this page
@@ -111,6 +109,13 @@ class Page {
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
+  void deferMissingImageExtraction() { allowSynchronousImageExtraction = false; }
+  bool hasImagesAwaitingRawPreparation() const {
+    return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
+      return element->getTag() == TAG_PageImage &&
+             static_cast<const PageImage&>(*element).getImageBlock().awaitsRawPreparation();
+    });
+  }
   bool serialize(HalFile& file, uint8_t* scratchBuffer = nullptr, size_t scratchCapacity = 0) const;
   static std::unique_ptr<Page> deserialize(BoundedFileReader& reader);
 
@@ -134,28 +139,37 @@ class Page {
     });
   }
 
-  // Returns one raster that still needs raw extraction or pixel-cache decode.
-  // The caller owns elementIndex so idle preparation never retains a Page or
-  // an unbounded candidate list.
-  bool nextImageNeedingPreparation(size_t& elementIndex, PageImagePreparation& candidate) const {
-    while (elementIndex < elements.size()) {
-      const auto& element = elements[elementIndex++];
-      if (element->getTag() != TAG_PageImage) continue;
-      const auto& pageImage = static_cast<const PageImage&>(*element);
-      const auto& image = pageImage.getImageBlock();
-      if (!image.needsDecode()) continue;
-      const bool needsExtraction = !image.imageExists();
-      if (needsExtraction && image.getSourcePath().empty()) continue;
-      candidate.sourcePath = image.getSourcePath();
-      candidate.imagePath = image.getImagePath();
-      candidate.x = pageImage.xPos;
-      candidate.y = pageImage.yPos;
-      candidate.width = image.getWidth();
-      candidate.height = image.getHeight();
-      candidate.needsExtraction = needsExtraction;
-      return true;
+  // Scan a bounded slice for one raster that still needs raw extraction.
+  // Pixel-cache decoding remains demand-driven because the codec is monolithic
+  // and cannot yield to input or a queued render. The caller owns elementIndex,
+  // so idle preparation retains neither a Page nor an unbounded candidate list.
+  PageImageScanStatus stepImageNeedingExtraction(size_t& elementIndex, PageImageExtraction& candidate) const {
+    static constexpr size_t MAX_ELEMENTS_PER_STEP = 64;
+    static constexpr size_t MAX_IMAGE_PROBES_PER_STEP = 2;
+    size_t elementsScanned = 0;
+    size_t imagesProbed = 0;
+    while (elementIndex < elements.size() && elementsScanned < MAX_ELEMENTS_PER_STEP) {
+      const auto& element = elements[elementIndex];
+      if (element->getTag() == TAG_PageImage) {
+        const auto& pageImage = static_cast<const PageImage&>(*element);
+        const auto& image = pageImage.getImageBlock();
+        if (!image.getSourcePath().empty()) {
+          if (imagesProbed >= MAX_IMAGE_PROBES_PER_STEP) return PageImageScanStatus::More;
+          ++imagesProbed;
+          ++elementIndex;
+          ++elementsScanned;
+          if (image.needsRawPreparation()) {
+            candidate.sourcePath = image.getSourcePath();
+            candidate.imagePath = image.getImagePath();
+            return PageImageScanStatus::Found;
+          }
+          continue;
+        }
+      }
+      ++elementIndex;
+      ++elementsScanned;
     }
-    return false;
+    return elementIndex < elements.size() ? PageImageScanStatus::More : PageImageScanStatus::Done;
   }
 
   // Used only for the optional EPUB opening-page skip. A page with no text,
