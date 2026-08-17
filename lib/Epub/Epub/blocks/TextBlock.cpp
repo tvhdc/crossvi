@@ -2,6 +2,7 @@
 
 #include <BidiUtils.h>
 #include <BufferedFile.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -135,6 +136,53 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
                      const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle)
     : TextBlock(words, wordXpos, wordStyles, focusBoundary, focusSuffixX, {}, {}, blockStyle) {}
+
+namespace {
+
+bool hasRtlScriptBytes(const char* text) {
+  for (const auto* cursor = reinterpret_cast<const uint8_t*>(text); *cursor; ++cursor) {
+    if (*cursor >= 0xD6 && *cursor <= 0xDB) return true;
+  }
+  return false;
+}
+
+void recordFontText(FontCacheManager& cache, const char* text, const int fontId,
+                    const EpdFontFamily::Style style, const bool resolveBidi, const int baseDirection) {
+  std::string visual;
+  if (resolveBidi && BidiUtils::applyBidiVisual(text, visual, baseDirection) && !visual.empty()) {
+    cache.recordText(visual.c_str(), fontId, style);
+  } else {
+    cache.recordText(text, fontId, style);
+  }
+}
+
+}  // namespace
+
+void TextBlock::collectFontText(FontCacheManager& cache, const int fontId) const {
+  if (!isValid) return;
+
+  for (uint16_t i = 0; i < numWords; ++i) {
+    const char* word = wordText(i);
+    const EpdFontFamily::Style style = wordStyle(i);
+    const uint8_t boundary = focusBoundary(i);
+    const bool resolveBidi = hasRtlScriptBytes(word);
+    const int baseDirection =
+        resolveBidi ? BidiUtils::detectParagraphLevel(word, blockStyle.isRtl ? 1 : 0) : 0;
+    if (boundary == 0) {
+      recordFontText(cache, word, fontId, style, resolveBidi, baseDirection);
+      continue;
+    }
+
+    char boldPrefix[40];
+    const size_t boldLength =
+        std::min<size_t>({static_cast<size_t>(boundary), static_cast<size_t>(wordTextLen(i)), sizeof(boldPrefix) - 1});
+    memcpy(boldPrefix, word, boldLength);
+    boldPrefix[boldLength] = '\0';
+    recordFontText(cache, boldPrefix, fontId, static_cast<EpdFontFamily::Style>(style | EpdFontFamily::BOLD),
+                   resolveBidi, baseDirection);
+    recordFontText(cache, word + boldLength, fontId, style, resolveBidi, baseDirection);
+  }
+}
 
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   if (!isValid) {

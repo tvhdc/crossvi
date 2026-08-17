@@ -1,6 +1,7 @@
 #include "Page.h"
 
 #include <BufferedFile.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
@@ -159,6 +160,14 @@ void Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffs
   renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, imageReadBuffer, imageReadBufferCapacity,
                              allowSynchronousImageExtraction,
                              [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
+}
+
+void Page::collectFontText(FontCacheManager& cache, const int fontId) const {
+  for (const auto& element : elements) {
+    if (element->getTag() == TAG_PageLine) {
+      static_cast<const PageLine&>(*element).getBlock()->collectFontText(cache, fontId);
+    }
+  }
 }
 
 bool Page::serialize(HalFile& file, uint8_t* const scratchBuffer, const size_t scratchCapacity) const {

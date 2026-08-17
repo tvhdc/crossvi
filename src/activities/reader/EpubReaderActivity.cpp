@@ -299,6 +299,7 @@ void EpubReaderActivity::onEnter() {
 
   if (!epub->setupCacheDir()) pendingBookmarkStorageError = true;
   progressWriteSession.invalidate();
+  pendingProgressSave = {};
 
   const ClippingStore::LoadResult clippingLoad =
       clippingStore.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor());
@@ -435,6 +436,9 @@ void EpubReaderActivity::releaseGrayscaleStripScratch() {
 void EpubReaderActivity::onExit() {
   Activity::onExit();
 
+  if (!flushPendingProgressSave()) {
+    LOG_ERR("ERS", "Could not persist the last visible page before reader exit");
+  }
   pendingPageTurnDelta = 0;
   releaseGrayscaleStripScratch();
   cancelImagePreparation();
@@ -481,6 +485,10 @@ void EpubReaderActivity::onExit() {
 }
 
 void EpubReaderActivity::onPause() {
+  if (!flushPendingProgressSave()) {
+    pendingSyncSaveError = true;
+    LOG_ERR("ERS", "Could not persist the last visible page before reader pause");
+  }
   pendingPageTurnDelta = 0;
   clearBlockingFeedback();
   cancelImagePreparation();
@@ -1214,13 +1222,10 @@ void EpubReaderActivity::loop() {
             // estimate and Dashboard correctly refuses to display it.
             const bool repositioned = applyDeferredReposition();
             const int exactPageCount = section->pageCount;
-            if (saveProgress(currentSpineIndex, section->currentPage, exactPageCount)) {
-              lastSavedSpineIndex = currentSpineIndex;
-              lastSavedPage = section->currentPage;
-              lastSavedPageCount = exactPageCount;
-            } else {
-              pendingSyncSaveError = true;
-            }
+            // Do not publish a deferred reposition until that page reaches the
+            // panel. If the visible page stayed put, merely refine its pending
+            // snapshot with the now-exact chapter count.
+            if (!repositioned) stageProgressSave(currentSpineIndex, section->currentPage, exactPageCount);
             if (repositioned || pendingSyncSaveError) requestUpdate();
           }
         }
@@ -1442,6 +1447,17 @@ void EpubReaderActivity::loop() {
   const bool longPress = pageGesture.longPress;
   if (!prevTriggered && !nextTriggered) {
     if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {
+      {
+        RenderLock progressLock(std::try_to_lock);
+        if (progressLock.ownsLock() && !activityManager.hasPendingRender() && pendingPageTurnDelta == 0 &&
+            pendingProgressSave.active && !pendingProgressSave.retryBlocked) {
+          if (!flushPendingProgressSave()) {
+            pendingSyncSaveError = true;
+            requestUpdate();
+          }
+          return;
+        }
+      }
       // Secondary state performs its bounded publication only after the first
       // page is visible, input is idle, and the turn buffer has been restored.
       // Upcoming page images take one bounded ZIP chunk before optional cover
@@ -3278,13 +3294,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           pagesUntilFullRefresh = 1;
         }
 
-        // Give the first extraction/layout slice the framebuffer's memory, then return it before
-        // rendering. Further slices run from loop(), keeping this render callback bounded.
+        // HTML extraction can outlive this render call. Do not lend the framebuffer
+        // to its ZIP stream: reclaiming that loan here would invalidate the inflater
+        // retained by Section for the next cooperative tick.
         // A cached partial target remains immediately readable; fresh/missing
         // targets wait for a small target-relative turn buffer below.
         sectionLandingWarmupPending = !pendingPercentJump && !partialTargetAvailable;
         releaseGrayscaleStripScratch();
-        GfxRenderer::FrameBufferLoan loan(renderer);
         if (!section->startBuild(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                  SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                  viewportHeight, SETTINGS.hyphenationEnabled, activeEmbeddedStyle(),
@@ -3292,7 +3308,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
                                  activeEpubRenderMode(), SETTINGS.forceParagraphIndents != 0)) {
           LOG_ERR("ERS", "Failed to start section build");
           const EpubBuildStatus failure = section->lastBuildStatus();
-          loan.end();
           handleBuildFailure(failure);
           return;
         }
@@ -3306,14 +3321,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)) {
           LOG_ERR("ERS", "Failed during initial section build slice");
           const EpubBuildStatus failure = section->lastBuildStatus();
-          loan.end();
           handleBuildFailure(failure);
           return;
         }
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
         debugRecordSectionBuild(debugPagesBefore, false);
 #endif
-        loan.end();
       }
     } else {
       LOG_DBG("ERS", "Cache found, skipping build...");
@@ -3531,17 +3544,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     debugReportVisibleSection();
 #endif
   }
-  // Only persist when the position actually changed. render() also runs on menu,
-  // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for 6 bytes.
-  // Every real page turn changes currentPage, so progress durability is unaffected.
-  if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
-      section->pageCount != lastSavedPageCount) {
-    if (saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages())) {
-      lastSavedSpineIndex = currentSpineIndex;
-      lastSavedPage = section->currentPage;
-      lastSavedPageCount = section->estimatedTotalPages();
-    }
-  }
+  // Record only a page that actually reached the panel. Atomic SD publication
+  // happens from loop() after a burst drains, so it cannot sit between two
+  // already-queued page renders.
+  stageProgressSave(currentSpineIndex, section->currentPage, section->estimatedTotalPages());
 
   showPendingSyncSaveError();
 
@@ -3614,23 +3620,69 @@ bool EpubReaderActivity::applyDeferredReposition() {
   return changed;
 }
 
-bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
+void EpubReaderActivity::stageProgressSave(const int spineIndex, const int currentPage, const int pageCount) {
+  if (!pendingProgressSave.active && spineIndex == lastSavedSpineIndex && currentPage == lastSavedPage &&
+      pageCount == lastSavedPageCount) {
+    return;
+  }
+  if (pendingProgressSave.active && spineIndex == pendingProgressSave.spineIndex &&
+      currentPage == pendingProgressSave.page && pageCount == pendingProgressSave.pageCount) {
+    return;
+  }
+
   std::optional<uint32_t> offset;
   if (section && spineIndex == currentSpineIndex && currentPage >= 0 && currentPage < section->pageCount &&
       currentPageSourceOffset.has_value() && currentPageSourceOffsetSpine == spineIndex &&
       currentPageSourceOffsetPage == currentPage) {
     offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
   }
+  pendingProgressSave = {true, false, spineIndex, currentPage, pageCount, offset};
+}
+
+bool EpubReaderActivity::writeProgress(const int spineIndex, const int currentPage, const int pageCount,
+                                       const std::optional<uint32_t>& visibleTextOffset) {
+  if (!epub) return false;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t startedMs = static_cast<uint32_t>(millis());
 #endif
-  const bool saved =
-      EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, offset, &progressWriteSession);
+  const bool saved = EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, visibleTextOffset,
+                                                   &progressWriteSession);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   LOG_DBG("ERS", "progress_save_ms=%u ok=%d", static_cast<unsigned>(static_cast<uint32_t>(millis()) - startedMs),
           saved ? 1 : 0);
 #endif
   return saved;
+}
+
+bool EpubReaderActivity::flushPendingProgressSave() {
+  if (!pendingProgressSave.active) return true;
+  if (!writeProgress(pendingProgressSave.spineIndex, pendingProgressSave.page, pendingProgressSave.pageCount,
+                     pendingProgressSave.visibleTextOffset)) {
+    pendingProgressSave.retryBlocked = true;
+    return false;
+  }
+
+  lastSavedSpineIndex = pendingProgressSave.spineIndex;
+  lastSavedPage = pendingProgressSave.page;
+  lastSavedPageCount = pendingProgressSave.pageCount;
+  pendingProgressSave = {};
+  return true;
+}
+
+bool EpubReaderActivity::saveProgress(const int spineIndex, const int currentPage, const int pageCount) {
+  std::optional<uint32_t> offset;
+  if (section && spineIndex == currentSpineIndex && currentPage >= 0 && currentPage < section->pageCount &&
+      currentPageSourceOffset.has_value() && currentPageSourceOffsetSpine == spineIndex &&
+      currentPageSourceOffsetPage == currentPage) {
+    offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
+  }
+  if (!writeProgress(spineIndex, currentPage, pageCount, offset)) return false;
+
+  lastSavedSpineIndex = spineIndex;
+  lastSavedPage = currentPage;
+  lastSavedPageCount = pageCount;
+  pendingProgressSave = {};
+  return true;
 }
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
@@ -3646,10 +3698,12 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const int fontId = SETTINGS.getReaderFontId();
   page->deferMissingImageExtraction();
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
+  // Collect serialized words directly. Replaying the whole Page through its
+  // render geometry only to discard every pixel repeated direction detection,
+  // decoration setup and virtual dispatch before the real render.
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
+  page->collectFontText(*fcm, fontId);
   scope.endScanAndPrewarm();
   EPUB_RENDER_TIMESTAMP(tPrewarm);
 

@@ -10,6 +10,7 @@
 #include "BlockStyle.h"
 
 class BoundedFileReader;
+class FontCacheManager;
 namespace serialization {
 class BufferedFileWriter;
 }
@@ -106,6 +107,7 @@ class TextBlock final : public Block {
   uint32_t sourceStart(const uint16_t i) const { return sourceStartArr[i]; }
   uint32_t sourceEnd(const uint16_t i) const { return sourceStartArr[i] + sourceLengthArr[i]; }
 
+  void collectFontText(FontCacheManager& cache, int fontId) const;
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(serialization::BufferedFileWriter& file) const;

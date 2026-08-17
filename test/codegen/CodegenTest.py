@@ -1463,6 +1463,28 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("pageTurn(false);", manual_dispatch)
         self.assertIn("pageTurn(true);", manual_dispatch)
 
+    def test_epub_progress_is_coalesced_until_the_turn_queue_is_stable(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
+        render = reader[reader.index("void EpubReaderActivity::render(RenderLock&&") :
+                        reader.index("bool EpubReaderActivity::applyDeferredReposition")]
+        loop = reader[reader.index("void EpubReaderActivity::loop()") :
+                      reader.index("bool EpubReaderActivity::handleReaderShortcut")]
+        pause = reader[reader.index("void EpubReaderActivity::onPause()") :
+                       reader.index("void EpubReaderActivity::onResume()")]
+        exit_path = reader[reader.index("void EpubReaderActivity::onExit()") :
+                           reader.index("void EpubReaderActivity::onPause()")]
+
+        self.assertIn("struct PendingProgressSave", header)
+        self.assertIn("stageProgressSave(currentSpineIndex, section->currentPage", render)
+        self.assertNotIn("saveProgress(currentSpineIndex, section->currentPage", render)
+        self.assertIn("pendingPageTurnDelta == 0", loop)
+        self.assertIn("pendingProgressSave.active", loop)
+        self.assertIn("!pendingProgressSave.retryBlocked", loop)
+        self.assertIn("flushPendingProgressSave()", loop)
+        self.assertIn("flushPendingProgressSave()", pause)
+        self.assertIn("flushPendingProgressSave()", exit_path)
+
     def test_txt_and_xtc_page_turns_do_not_wait_for_the_render_mutex(self):
         for name in ("TxtReaderActivity", "XtcReaderActivity"):
             reader = (REPO_ROOT / f"src/activities/reader/{name}.cpp").read_text(encoding="utf-8")
@@ -1553,6 +1575,38 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("sectionLandingPending = true;", render)
         self.assertIn("sectionRenderWaiting = true;", render)
         self.assertIn("requestedSectionPageReady()", reader)
+
+    def test_epub_cold_section_stream_does_not_borrow_the_framebuffer_across_ticks(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        render = reader[reader.index("void EpubReaderActivity::render(RenderLock&&") :
+                        reader.index("bool EpubReaderActivity::applyDeferredReposition")]
+        cold_start = render.index("const bool cacheComplete")
+        initial_build = render[cold_start : render.index("sectionLandingPending = true;", cold_start)]
+
+        self.assertIn("section->startBuild(", initial_build)
+        self.assertIn("section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)", initial_build)
+        self.assertNotIn("FrameBufferLoan", initial_build)
+
+    def test_epub_font_prewarm_collects_text_without_a_discarded_render_pass(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        page_header = (REPO_ROOT / "lib/Epub/Epub/Page.h").read_text(encoding="utf-8")
+        page = (REPO_ROOT / "lib/Epub/Epub/Page.cpp").read_text(encoding="utf-8")
+        text_block = (REPO_ROOT / "lib/Epub/Epub/blocks/TextBlock.cpp").read_text(encoding="utf-8")
+        render_contents = reader[reader.index("bool EpubReaderActivity::renderContents") :
+                                 reader.index("void EpubReaderActivity::renderStatusBar")]
+
+        prewarm = render_contents[:render_contents.index("scope.endScanAndPrewarm()")]
+        self.assertIn("collectFontText", page_header)
+        self.assertIn("page->collectFontText(*fcm, fontId)", prewarm)
+        self.assertNotIn("page->render(", prewarm)
+        self.assertIn("void Page::collectFontText", page)
+        collector = text_block[text_block.index("void TextBlock::collectFontText") :
+                               text_block.index("void TextBlock::render")]
+        self.assertIn("recordFontText(cache", collector)
+        self.assertIn("cache.recordText", text_block)
+        self.assertIn("hasRtlScriptBytes", collector)
+        self.assertIn("BidiUtils::detectParagraphLevel", collector)
+        self.assertIn("BidiUtils::applyBidiVisual", text_block)
 
     def test_epub_page_lut_growth_is_nothrow_and_heap_bounded(self):
         header = (REPO_ROOT / "lib/Epub/Epub/Section.h").read_text(encoding="utf-8")

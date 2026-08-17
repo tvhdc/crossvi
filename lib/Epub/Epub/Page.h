@@ -11,6 +11,7 @@
 #include "blocks/TextBlock.h"
 
 class BoundedFileReader;
+class FontCacheManager;
 namespace serialization {
 class BufferedFileWriter;
 }
@@ -108,6 +109,7 @@ class Page {
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
+  void collectFontText(FontCacheManager& cache, int fontId) const;
   void deferMissingImageExtraction() { allowSynchronousImageExtraction = false; }
   bool hasImagesAwaitingRawPreparation() const {
     return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {

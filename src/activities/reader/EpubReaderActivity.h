@@ -260,8 +260,20 @@ class EpubReaderActivity final : public Activity {
   void debugReportCompletedBuild() const;
 #endif
 
-  // Last position persisted by render()'s saveProgress, used to skip redundant
-  // writeAtomic calls on no-op re-renders (menu/bookmark/screenshot).
+  // The render task records only positions that actually reached the panel.
+  // The main task coalesces rapid turns and publishes the newest snapshot once
+  // the turn queue is idle. Lifecycle callbacks run under RenderLock and force
+  // one final attempt before the book is hidden or released.
+  struct PendingProgressSave {
+    bool active = false;
+    bool retryBlocked = false;
+    int spineIndex = -1;
+    int page = -1;
+    int pageCount = -1;
+    std::optional<uint32_t> visibleTextOffset;
+  } pendingProgressSave;
+
+  // Last position successfully persisted, used to skip no-op re-renders.
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
   int lastSavedPageCount = -1;
@@ -315,6 +327,10 @@ class EpubReaderActivity final : public Activity {
   bool requestedSectionPageReady() const;
   void finishSectionLanding();
   void rememberCurrentContentOffset();
+  void stageProgressSave(int spineIndex, int currentPage, int pageCount);
+  bool flushPendingProgressSave();
+  bool writeProgress(int spineIndex, int currentPage, int pageCount,
+                     const std::optional<uint32_t>& visibleTextOffset);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
