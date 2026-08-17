@@ -156,7 +156,6 @@ void GfxRenderer::begin() {
   panelHeight = display.getDisplayHeight();
   panelWidthBytes = display.getDisplayWidthBytes();
   frameBufferSize = display.getBufferSize();
-  bwBufferChunks.assign((frameBufferSize + BW_BUFFER_CHUNK_SIZE - 1) / BW_BUFFER_CHUNK_SIZE, nullptr);
 }
 
 void GfxRenderer::releaseFrameBufferForBuild() {
@@ -2263,81 +2262,6 @@ void GfxRenderer::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch
 }
 
 bool GfxRenderer::supportsStripGrayscale() const { return display.supportsStripGrayscale(); }
-
-void GfxRenderer::freeBwBufferChunks() {
-  for (auto& bwBufferChunk : bwBufferChunks) {
-    if (bwBufferChunk) {
-      free(bwBufferChunk);
-      bwBufferChunk = nullptr;
-    }
-  }
-}
-
-/**
- * This should be called before grayscale buffers are populated.
- * A `restoreBwBuffer` call should always follow the grayscale render if this method was called.
- * Uses chunked allocation to avoid needing 48KB of contiguous memory.
- * Returns true if buffer was stored successfully, false if allocation failed.
- */
-bool GfxRenderer::storeBwBuffer() {
-  // Allocate and copy each chunk
-  for (size_t i = 0; i < bwBufferChunks.size(); i++) {
-    // Check if any chunks are already allocated
-    if (bwBufferChunks[i]) {
-      LOG_ERR("GFX", "!! BW buffer chunk %zu already stored - this is likely a bug, freeing chunk", i);
-      free(bwBufferChunks[i]);
-      bwBufferChunks[i] = nullptr;
-    }
-
-    const size_t offset = i * BW_BUFFER_CHUNK_SIZE;
-    const size_t chunkSize = std::min(BW_BUFFER_CHUNK_SIZE, static_cast<size_t>(frameBufferSize - offset));
-    bwBufferChunks[i] = static_cast<uint8_t*>(malloc(chunkSize));
-
-    if (!bwBufferChunks[i]) {
-      LOG_ERR("GFX", "!! Failed to allocate BW buffer chunk %zu (%zu bytes)", i, chunkSize);
-      // Free previously allocated chunks
-      freeBwBufferChunks();
-      return false;
-    }
-
-    memcpy(bwBufferChunks[i], frameBuffer + offset, chunkSize);
-  }
-
-  LOG_DBG("GFX", "Stored BW buffer in %zu chunks (%zu bytes each)", bwBufferChunks.size(), BW_BUFFER_CHUNK_SIZE);
-  return true;
-}
-
-/**
- * This can only be called if `storeBwBuffer` was called prior to the grayscale render.
- * It should be called to restore the BW buffer state after grayscale rendering is complete.
- * Uses chunked restoration to match chunked storage.
- */
-void GfxRenderer::restoreBwBuffer() {
-  // Check if all chunks are allocated
-  bool missingChunks = false;
-  for (const auto& bwBufferChunk : bwBufferChunks) {
-    if (!bwBufferChunk) {
-      missingChunks = true;
-      break;
-    }
-  }
-
-  if (missingChunks) {
-    freeBwBufferChunks();
-    return;
-  }
-
-  for (size_t i = 0; i < bwBufferChunks.size(); i++) {
-    const size_t offset = i * BW_BUFFER_CHUNK_SIZE;
-    const size_t chunkSize = std::min(BW_BUFFER_CHUNK_SIZE, static_cast<size_t>(frameBufferSize - offset));
-    memcpy(frameBuffer + offset, bwBufferChunks[i], chunkSize);
-  }
-
-  display.cleanupGrayscaleBuffers(frameBuffer);
-
-  freeBwBufferChunks();
-  LOG_DBG("GFX", "Restored and freed BW buffer chunks");
-}
 
 /**
  * Cleanup grayscale buffers using the current frame buffer.

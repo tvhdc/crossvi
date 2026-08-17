@@ -1494,6 +1494,13 @@ class CodegenTest(unittest.TestCase):
         recovery = recovery[: recovery.index("HalFile f;")]
         self.assertNotIn("Storage.remove(backupPath.c_str())", recovery)
 
+    def test_renderer_does_not_keep_obsolete_full_frame_backup_storage(self):
+        renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.h").read_text(encoding="utf-8")
+        implementation = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")
+        for obsolete in ("bwBufferChunks", "storeBwBuffer", "restoreBwBuffer", "freeBwBufferChunks"):
+            self.assertNotIn(obsolete, renderer)
+            self.assertNotIn(obsolete, implementation)
+
     def test_home_never_decodes_an_original_epub_cover(self):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
         self.assertNotIn("Epub::ThumbnailMode::EmbeddedThenCover", home)

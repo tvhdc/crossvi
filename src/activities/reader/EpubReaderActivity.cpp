@@ -3766,7 +3766,7 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
   // Tiled grayscale: render each plane band-by-band into a small scratch and
   // stream straight to the controller, leaving the BW framebuffer intact so no
-  // full-frame storeBwBuffer is needed; controller RAM is re-synced from the
+  // full-frame backup is needed; controller RAM is re-synced from the
   // live framebuffer afterward. The page is re-rendered ceil(H/STRIP_ROWS) times
   // per plane, but renderCharImpl culls out-of-band glyphs before decode so the
   // cost stays close to one render. Both text (drawPixel) and images
