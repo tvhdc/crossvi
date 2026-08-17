@@ -37,6 +37,15 @@ inline bool takeQueuedPageTurn(int8_t& pending, bool& forward) {
   return true;
 }
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+inline void logPageTurnMetric(const char* format, const char* phase, const uint32_t sequence, const int direction,
+                              const int spine, const int32_t page, const int pending, const uint32_t atMs) {
+  LOG_DBG("PTM", "format=%s phase=%s seq=%lu dir=%d spine=%d page=%ld queue=%d at_ms=%lu", format, phase,
+          static_cast<unsigned long>(sequence), direction, spine, static_cast<long>(page), pending,
+          static_cast<unsigned long>(atMs));
+}
+#endif
+
 inline int grayscaleStripRows(const int widthBytes, const int height) {
   if (widthBytes <= 0 || height <= 0) return 0;
   const size_t rows = std::max<size_t>(1, GRAYSCALE_STRIP_SCRATCH_BYTES / static_cast<size_t>(widthBytes));

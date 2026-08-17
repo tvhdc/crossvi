@@ -30,6 +30,9 @@ class TxtReaderActivity final : public Activity {
   ProgressFile::WriteSession progressWriteSession;
   std::atomic<int> lastSuccessfullyRenderedPage{-1};
   int8_t pendingPageTurnDelta = 0;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  std::atomic<uint32_t> debugTurnSequence{0};
+#endif
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
 

@@ -239,6 +239,7 @@ class EpubReaderActivity final : public Activity {
   void releaseGrayscaleStripScratch();
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  std::atomic<uint32_t> debugTurnSequence{0};
   enum class DebugSectionCacheStatus : uint8_t { Unknown, Miss, Partial, Hit };
   struct DebugIndexMetrics {
     int spineIndex = -1;

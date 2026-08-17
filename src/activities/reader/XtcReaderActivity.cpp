@@ -580,8 +580,22 @@ void XtcReaderActivity::loop() {
 
   const int skipAmount = drainingQueuedTurn ? 1 : (pageGesture.longPress ? 10 : 1);
   const int requestedDelta = nextTriggered ? skipAmount : -skipAmount;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  uint32_t turnSequence = debugTurnSequence.load(std::memory_order_relaxed);
+  if (!drainingQueuedTurn) {
+    turnSequence = debugTurnSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    ReaderUtils::logPageTurnMetric("xtc", "input", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
+                                   static_cast<int32_t>(lastSuccessfullyRenderedPage.load(std::memory_order_acquire)),
+                                   pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+  }
+#endif
   if (!drainingQueuedTurn && pendingPageTurnDelta != 0) {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    ReaderUtils::logPageTurnMetric("xtc", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
+                                   static_cast<int32_t>(lastSuccessfullyRenderedPage.load(std::memory_order_acquire)),
+                                   pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+#endif
     return;
   }
 
@@ -589,6 +603,11 @@ void XtcReaderActivity::loop() {
   if (!lock.ownsLock() || activityManager.hasPendingRender() ||
       lastSuccessfullyRenderedPage.load(std::memory_order_acquire) != currentPage) {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    ReaderUtils::logPageTurnMetric("xtc", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
+                                   static_cast<int32_t>(lastSuccessfullyRenderedPage.load(std::memory_order_acquire)),
+                                   pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+#endif
     lastPageTurnTime = millis();
     return;
   }
@@ -694,6 +713,10 @@ void XtcReaderActivity::render(RenderLock&&) {
     return;
   }
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  ReaderUtils::logPageTurnMetric("xtc", "render_begin", debugTurnSequence.load(std::memory_order_relaxed), 0, -1,
+                                 static_cast<int32_t>(page), 0, static_cast<uint32_t>(millis()));
+#endif
   const uint32_t renderStartedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
   if (renderPage(book, page)) {
     lastSuccessfullyRenderedPage = page;
@@ -834,6 +857,10 @@ void XtcReaderActivity::openSavedItems() {
 
 void XtcReaderActivity::signalReadingPageVisible() {
   const uint32_t visibleAtMs = static_cast<uint32_t>(millis());
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  ReaderUtils::logPageTurnMetric("xtc", "visible", debugTurnSequence.load(std::memory_order_relaxed), 0, -1,
+                                 static_cast<int32_t>(currentPage), 0, visibleAtMs);
+#endif
   activityManager.finishReaderOpenMetric("xtc", visibleAtMs);
   pendingReadingViewAtMs.store(visibleAtMs, std::memory_order_relaxed);
   pendingReadingViewSignal.store(1, std::memory_order_release);

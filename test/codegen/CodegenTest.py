@@ -1476,6 +1476,18 @@ class CodegenTest(unittest.TestCase):
             self.assertIn("RenderLock lock(std::try_to_lock)", navigation)
             self.assertNotIn("RenderLock lock(*this)", navigation)
 
+    def test_readers_trace_input_queue_render_and_visible_page_boundaries(self):
+        utils = (REPO_ROOT / "src/activities/reader/ReaderUtils.h").read_text(encoding="utf-8")
+        self.assertIn("logPageTurnMetric", utils)
+        self.assertIn('LOG_DBG("PTM"', utils)
+
+        for name in ("EpubReaderActivity", "TxtReaderActivity", "XtcReaderActivity"):
+            reader = (REPO_ROOT / f"src/activities/reader/{name}.cpp").read_text(encoding="utf-8")
+            header = (REPO_ROOT / f"src/activities/reader/{name}.h").read_text(encoding="utf-8")
+            self.assertIn("debugTurnSequence", header)
+            for phase in ("input", "queued", "render_begin", "visible"):
+                self.assertIn(f'"{phase}"', reader)
+
     def test_home_never_decodes_an_original_epub_cover(self):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
         self.assertNotIn("Epub::ThumbnailMode::EmbeddedThenCover", home)

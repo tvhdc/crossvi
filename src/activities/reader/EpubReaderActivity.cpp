@@ -507,6 +507,10 @@ void EpubReaderActivity::onResume() {
 
 void EpubReaderActivity::signalReadingPageVisible() {
   const uint32_t visibleAtMs = static_cast<uint32_t>(millis());
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  ReaderUtils::logPageTurnMetric("epub", "visible", debugTurnSequence.load(std::memory_order_relaxed), 0,
+                                 currentSpineIndex, section ? section->currentPage : nextPageNumber, 0, visibleAtMs);
+#endif
   activityManager.finishReaderOpenMetric("epub", visibleAtMs);
   pendingReadingViewAtMs.store(visibleAtMs, std::memory_order_relaxed);
   pendingReadingViewSignal.store(1, std::memory_order_release);
@@ -2651,10 +2655,24 @@ void EpubReaderActivity::updateAutoPageTurnPreference(const uint8_t seconds, con
 
 void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhileWaiting,
                                   const bool drainingQueuedTurn) {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  uint32_t turnSequence = debugTurnSequence.load(std::memory_order_relaxed);
+  if (queueWhileWaiting && !drainingQueuedTurn) {
+    turnSequence = debugTurnSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    ReaderUtils::logPageTurnMetric("epub", "input", turnSequence, isForwardTurn ? 1 : -1, -1, -1, pendingPageTurnDelta,
+                                   static_cast<uint32_t>(millis()));
+  }
+#endif
   {
     RenderLock lock(std::try_to_lock);
     if (!lock.ownsLock()) {
       if (queueWhileWaiting) ReaderUtils::queuePageTurns(pendingPageTurnDelta, isForwardTurn ? 1 : -1);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      if (queueWhileWaiting) {
+        ReaderUtils::logPageTurnMetric("epub", "queued", turnSequence, isForwardTurn ? 1 : -1, -1, -1,
+                                       pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+      }
+#endif
       lastPageTurnTime = millis();
       return;
     }
@@ -2663,6 +2681,13 @@ void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhil
     if (sectionLandingPending || sectionRenderWaiting || sectionTransition ||
         (!drainingQueuedTurn && pendingPageTurnDelta != 0)) {
       if (queueWhileWaiting) ReaderUtils::queuePageTurns(pendingPageTurnDelta, isForwardTurn ? 1 : -1);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      if (queueWhileWaiting) {
+        ReaderUtils::logPageTurnMetric("epub", "queued", turnSequence, isForwardTurn ? 1 : -1, currentSpineIndex,
+                                       section ? section->currentPage : nextPageNumber, pendingPageTurnDelta,
+                                       static_cast<uint32_t>(millis()));
+      }
+#endif
       // Re-arm auto-turn instead of retrying once per loop while the same page
       // is still being prepared. Manual turns retain their bounded delta.
       lastPageTurnTime = millis();
@@ -3379,6 +3404,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   currentPageSourceOffset.reset();
   currentPageSourceOffsetSpine = -1;
   currentPageSourceOffsetPage = -1;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  ReaderUtils::logPageTurnMetric("epub", "render_begin", debugTurnSequence.load(std::memory_order_relaxed), 0,
+                                 currentSpineIndex, section->currentPage, 0, static_cast<uint32_t>(millis()));
+#endif
 
   {
     // Unified page read: the in-progress build's in-RAM table if it has reached the page,

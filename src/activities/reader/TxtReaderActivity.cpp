@@ -413,8 +413,22 @@ void TxtReaderActivity::loop() {
 
   const int pageDelta = drainingQueuedTurn ? 1 : (pageGesture.longPress ? 10 : 1);
   const int requestedDelta = nextTriggered ? pageDelta : -pageDelta;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  uint32_t turnSequence = debugTurnSequence.load(std::memory_order_relaxed);
+  if (!drainingQueuedTurn) {
+    turnSequence = debugTurnSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    ReaderUtils::logPageTurnMetric("text", "input", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
+                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire), pendingPageTurnDelta,
+                                   static_cast<uint32_t>(millis()));
+  }
+#endif
   if (!drainingQueuedTurn && pendingPageTurnDelta != 0) {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    ReaderUtils::logPageTurnMetric("text", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
+                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire), pendingPageTurnDelta,
+                                   static_cast<uint32_t>(millis()));
+#endif
     return;
   }
 
@@ -422,6 +436,11 @@ void TxtReaderActivity::loop() {
   if (!lock.ownsLock() || activityManager.hasPendingRender() ||
       lastSuccessfullyRenderedPage.load(std::memory_order_acquire) != currentPage) {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    ReaderUtils::logPageTurnMetric("text", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
+                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire), pendingPageTurnDelta,
+                                   static_cast<uint32_t>(millis()));
+#endif
     lastPageTurnTime = millis();
     return;
   }
@@ -1090,6 +1109,8 @@ void TxtReaderActivity::render(RenderLock&&) {
   if (currentPage >= totalPages) currentPage = totalPages - 1;
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  ReaderUtils::logPageTurnMetric("text", "render_begin", debugTurnSequence.load(std::memory_order_relaxed), 0, -1,
+                                 currentPage, 0, static_cast<uint32_t>(millis()));
   const uint32_t renderStartedMs = static_cast<uint32_t>(millis());
   const uint32_t renderStartFreeHeap = ESP.getFreeHeap();
 #endif
@@ -1343,6 +1364,10 @@ void TxtReaderActivity::renderStatusBar() const {
 
 void TxtReaderActivity::signalReadingPageVisible() {
   const uint32_t visibleAtMs = static_cast<uint32_t>(millis());
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  ReaderUtils::logPageTurnMetric("text", "visible", debugTurnSequence.load(std::memory_order_relaxed), 0, -1,
+                                 currentPage, 0, visibleAtMs);
+#endif
   activityManager.finishReaderOpenMetric("text", visibleAtMs);
   pendingReadingViewAtMs.store(visibleAtMs, std::memory_order_relaxed);
   pendingReadingViewSignal.store(1, std::memory_order_release);

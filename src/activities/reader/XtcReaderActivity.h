@@ -32,6 +32,9 @@ class XtcReaderActivity final : public Activity {
 
   uint32_t currentPage = 0;
   int8_t pendingPageTurnDelta = 0;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  std::atomic<uint32_t> debugTurnSequence{0};
+#endif
   std::optional<uint32_t> initialBookmarkPage;
   uint32_t lastSavedPage = static_cast<uint32_t>(-1);
   ProgressFile::WriteSession progressWriteSession;
