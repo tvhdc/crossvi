@@ -2330,7 +2330,6 @@ bool TxtReaderActivity::loadPageIndexCache() {
       StagedFileTransaction::recover(cachePath.c_str(), backupPath.c_str(), validateTxtPageIndexCache);
   if (recovered == StagedFileTransaction::Status::IoError) {
     LOG_ERR("TRS", "Could not recover TXT page index cache");
-    Storage.remove(backupPath.c_str());
   }
   HalFile f;
   if (!Storage.openFileForRead("TRS", cachePath, f)) {

@@ -1488,6 +1488,12 @@ class CodegenTest(unittest.TestCase):
             for phase in ("input", "queued", "render_begin", "visible"):
                 self.assertIn(f'"{phase}"', reader)
 
+    def test_txt_page_index_recovery_keeps_backup_after_io_error(self):
+        reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        recovery = reader[reader.index("bool TxtReaderActivity::loadPageIndexCache()") :]
+        recovery = recovery[: recovery.index("HalFile f;")]
+        self.assertNotIn("Storage.remove(backupPath.c_str())", recovery)
+
     def test_home_never_decodes_an_original_epub_cover(self):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
         self.assertNotIn("Epub::ThumbnailMode::EmbeddedThenCover", home)
