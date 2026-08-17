@@ -77,11 +77,8 @@ class Xtc {
   static constexpr int SHARED_THUMB_HEIGHT = 240;
   std::string getThumbBmpPath() const;
   std::string getThumbBmpPath(int height) const;
-  bool generateThumbBmp(int height) const;
-  bool generateThumbBmp(int width, int height, bool crop) const;
   // Builds the shared Library thumbnail and this device's Home carousel
   // thumbnail from one first-page read. Existing valid siblings are retained.
-  bool generateThumbBmpPair(int carouselWidth, int carouselHeight);
   ThumbnailPreparationStatus beginThumbnailPreparation(int carouselWidth, int carouselHeight);
   ThumbnailPreparationStatus stepThumbnailPreparation(size_t maxSourceBytes = 1024, size_t maxOutputRows = 16);
   void cancelThumbnailPreparation();
@@ -94,15 +91,6 @@ class Xtc {
   uint8_t getBitDepth() const;  // 1 = XTC (1-bit), 2 = XTCH (2-bit)
   bool getSourceIdentity(ZipFile::SourceIdentity& identity) const;
   bool getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) const;
-
-  /**
-   * Load page bitmap data
-   * @param pageIndex Page index (0-based)
-   * @param buffer Output buffer
-   * @param bufferSize Buffer size
-   * @return Number of bytes read
-   */
-  size_t loadPage(uint32_t pageIndex, uint8_t* buffer, size_t bufferSize) const;
 
   /**
    * Load page with streaming callback

@@ -129,7 +129,6 @@ class RecentBooksActivity final : public Activity {
   std::unique_ptr<Xtc> coverPreparationXtc;
   std::unique_ptr<Epub> preparedEpub;
   std::unique_ptr<Xtc> preparedXtc;
-  std::unique_ptr<Txt> preparedTxt;
   std::string sourcePreparationFailedPath;
   std::string coverPreparationPath;
   std::optional<RawSourceIdentityHandoff> preparedEpubSourceIdentity;

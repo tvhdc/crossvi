@@ -1233,6 +1233,35 @@ TEST_F(EpubSourceIdentityTest, CancellingPageImagePreparationRemovesOnlyScratchD
   EXPECT_FALSE(Storage.exists((finalPath + ".tmp").c_str()));
 }
 
+TEST_F(EpubSourceIdentityTest, DeferringUnpublishedImageCancellationKeepsScratchUntilIdleCleanup) {
+  constexpr char entryName[] = "OPS/images/page.png";
+  auto raster = makePngHeader(320, 480);
+  raster.resize(9000U, 0x5AU);
+  identify(makeStoredZip({{entryName, asString(raster), true}}));
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  epub.setupCacheDir();
+  ASSERT_TRUE(epub.bindCurrentSource());
+  const std::string finalPath = epub.getCachePath() + "/img_deferred_cancel.png";
+  const std::string stagingPath = finalPath + ".tmp";
+
+  ASSERT_EQ(epub.beginImagePreparation(entryName, finalPath), Epub::ImagePreparationStatus::InProgress);
+  for (size_t step = 0; Storage.file(stagingPath).empty() && step < 4U; ++step) {
+    ASSERT_EQ(epub.stepImagePreparation(), Epub::ImagePreparationStatus::InProgress);
+  }
+  ASSERT_FALSE(Storage.file(stagingPath).empty());
+  const size_t abandonedBytes = Storage.file(stagingPath).size();
+
+  EXPECT_TRUE(epub.deferImagePreparationCleanup());
+  EXPECT_FALSE(epub.imagePreparationActive());
+  EXPECT_TRUE(Storage.exists(stagingPath.c_str()));
+  EXPECT_EQ(Storage.file(stagingPath).size(), abandonedBytes);
+  EXPECT_FALSE(Storage.exists(finalPath.c_str()));
+  EXPECT_FALSE(Storage.exists((finalPath + ".pending").c_str()));
+
+  epub.cancelImagePreparation();
+  EXPECT_FALSE(Storage.exists(stagingPath.c_str()));
+}
+
 TEST_F(EpubSourceIdentityTest, CancellingPageImageVerificationRollsBackPendingPublication) {
   constexpr char entryName[] = "OPS/images/page.png";
   auto raster = makePngHeader(320, 480);
@@ -2048,6 +2077,29 @@ TEST_F(EpubSourceIdentityTest, CancellingDeflatedCoverPreparationRemovesOnlyScra
   EXPECT_FALSE(epub.thumbnailPreparationActive());
   EXPECT_FALSE(Storage.exists((epub.getCachePath() + "/.cover.jpg").c_str()));
   EXPECT_TRUE(Storage.exists(existingCache.c_str()));
+}
+
+TEST_F(EpubSourceIdentityTest, PageImagePreparationPreemptsDeflatedCoverStream) {
+  constexpr char coverPath[] = "OPS/images/cover.jpg";
+  auto bytes =
+      makeGuideCoverEpub(R"(<html><body><img src="images/cover.jpg"/></body></html>)", true, std::string(9000U, 'J'));
+  identify(bytes);
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  BookMetadataCache::BookMetadata metadata;
+  ASSERT_TRUE(epub.readCoreMetadata(metadata));
+  ASSERT_EQ(metadata.coverItemHref, coverPath);
+  ASSERT_EQ(epub.beginThumbnailPreparation({true, false, true}), Epub::ThumbnailPreparationStatus::InProgress);
+  ASSERT_TRUE(epub.thumbnailPreparationActive());
+
+  const std::string finalPath = epub.getCachePath() + "/visible.jpg";
+  EXPECT_EQ(epub.beginImagePreparation(coverPath, finalPath), Epub::ImagePreparationStatus::InProgress);
+  EXPECT_TRUE(epub.imagePreparationActive());
+  EXPECT_FALSE(epub.thumbnailPreparationActive());
+  EXPECT_FALSE(Storage.exists((epub.getCachePath() + "/.cover.jpg").c_str()));
+
+  EXPECT_EQ(epub.beginThumbnailPreparation({true, false, true}), Epub::ThumbnailPreparationStatus::Error);
+  EXPECT_TRUE(epub.imagePreparationActive());
+  EXPECT_FALSE(epub.thumbnailPreparationActive());
 }
 
 TEST_F(EpubSourceIdentityTest, StoredCoverPreparationUsesTheDirectRangePathWithoutScratch) {

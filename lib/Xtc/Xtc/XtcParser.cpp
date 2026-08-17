@@ -23,7 +23,6 @@ namespace xtc {
 namespace {
 
 constexpr size_t IDENTITY_CHUNK_SIZE = 2048;
-constexpr size_t IDENTITY_YIELD_BYTES = 64U * 1024U;
 
 bool rangeWithin(const uint64_t offset, const uint64_t length, const uint64_t fileSize) {
   return offset <= fileSize && length <= fileSize - offset;
@@ -79,17 +78,6 @@ XtcError XtcParser::failOpen(const XtcError error) {
   std::memset(&m_header, 0, sizeof(m_header));
   m_lastError = error;
   return error;
-}
-
-XtcError XtcParser::open(const char* filepath) {
-  XtcError error = beginOpen(filepath);
-  if (error != XtcError::OK) return error;
-  while (true) {
-    const OpenStepResult result = stepOpen(16, IDENTITY_YIELD_BYTES);
-    if (result == OpenStepResult::Opened) return XtcError::OK;
-    if (result == OpenStepResult::Error) return m_lastError;
-    yield();
-  }
 }
 
 XtcError XtcParser::beginOpen(const char* filepath, const RawSourceIdentityHandoff* const preparedIdentity) {
@@ -688,16 +676,6 @@ bool XtcParser::getSourceIdentityHandoff(RawSourceIdentityHandoff& handoff) cons
     return false;
   }
   handoff = m_sourceIdentityHandoff;
-  return true;
-}
-
-bool XtcParser::isValidXtcFile(const char* filepath) {
-  XtcParser parser;
-  if (parser.open(filepath) != XtcError::OK) return false;
-  PageInfo info;
-  for (uint32_t page = 0; page < parser.getPageCount(); ++page) {
-    if (!parser.getPageInfo(page, info)) return false;
-  }
   return true;
 }
 

@@ -7,7 +7,6 @@
 #include <string>
 
 #include "TxtLineWrap.h"
-#include "TxtPageIndex.h"
 #include "Utf8.h"
 
 namespace {
@@ -162,31 +161,6 @@ TEST(TxtLineWrapInput, DetectsOnlyACompleteLeadingUtf8Bom) {
   EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(bomText.data(), 2), 0U);
   EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(plainText.data(), plainText.size()), 0U);
   EXPECT_EQ(TxtLineWrap::leadingUtf8BomBytes(nullptr, 3), 0U);
-}
-
-TEST(TxtPageIndexTarget, ParsesPastAnExactTargetBoundary) {
-  EXPECT_FALSE(TxtPageIndex::reachedTargetPage(100, 1000, 100));
-  EXPECT_TRUE(TxtPageIndex::reachedTargetPage(101, 1000, 100));
-  EXPECT_TRUE(TxtPageIndex::reachedTargetPage(1000, 1000, 1000));
-}
-
-TEST(TxtPageIndexTarget, PublishesOnlyOffsetsCoveredByTheStagedIndex) {
-  const std::array<uint32_t, 3> offsets = {0, 100, 220};
-  EXPECT_TRUE(TxtPageIndex::containsTarget(offsets.data(), offsets.size(), false, 219));
-  EXPECT_FALSE(TxtPageIndex::containsTarget(offsets.data(), offsets.size(), false, 220));
-  EXPECT_TRUE(TxtPageIndex::containsTarget(offsets.data(), offsets.size(), true, 1000));
-  EXPECT_FALSE(TxtPageIndex::containsTarget(nullptr, 0, false, 0));
-}
-
-TEST(TxtPageIndexEstimate, UsesCompletedPagesAndHonorsBounds) {
-  const std::array<uint32_t, 3> evenOffsets = {0, 100, 200};
-  EXPECT_EQ(TxtPageIndex::estimateTotalPages(evenOffsets.data(), 2, 1000, 16384), 10U);
-  EXPECT_EQ(TxtPageIndex::estimateTotalPages(evenOffsets.data(), 3, 1000, 16384), 10U);
-
-  const std::array<uint32_t, 2> nearEnd = {0, 900};
-  EXPECT_EQ(TxtPageIndex::estimateTotalPages(nearEnd.data(), nearEnd.size(), 1000, 16384), 2U);
-  EXPECT_EQ(TxtPageIndex::estimateTotalPages(evenOffsets.data(), 2, 1000000, 16), 16U);
-  EXPECT_EQ(TxtPageIndex::estimateTotalPages(nullptr, 0, 1000, 16384), 0U);
 }
 
 TEST(TxtLineWrapSearch, PreservesLegacyWordBreakAcrossWidths) {

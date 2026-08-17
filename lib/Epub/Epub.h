@@ -72,6 +72,7 @@ class Epub {
   std::string imageStreamFinalPath;
   std::string imageStreamStagingPath;
   std::string imagePublishMarkerPath;
+  std::string imageDeferredCleanupPath;
   bool imagePublishPending = false;
 
   struct CoverSource {
@@ -89,8 +90,6 @@ class Epub {
                           bool resolveGuideCover = true);
   void resolveGuideCover(const std::string& guidePath, const uint8_t* contents, size_t size,
                          BookMetadataCache::BookMetadata& bookMetadata);
-  bool parseTocNcxFile() const;
-  bool parseTocNavFile() const;
   void discoverCssFilesFromZip();
   bool parseCssFiles() const;
   bool prepareCssCache(bool verifySourceAtEntry);
@@ -222,6 +221,10 @@ class Epub {
   // 4 KiB output chunk; cancellation removes only the unpublished scratch file.
   ImagePreparationStatus beginImagePreparation(const std::string& itemHref, const std::string& finalPath);
   ImagePreparationStatus stepImagePreparation();
+  // Release an unpublished inflater immediately while leaving its closed
+  // scratch file for the next idle cleanup. Published transactions still use
+  // cancelImagePreparation() so their rollback contract is never weakened.
+  bool deferImagePreparationCleanup();
   void cancelImagePreparation();
   bool imagePreparationActive() const {
     return imageStreamJob != nullptr || imageSourceIdentityJob != nullptr || imagePublishedDigestJob != nullptr ||

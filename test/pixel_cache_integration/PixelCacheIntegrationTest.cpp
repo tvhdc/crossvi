@@ -25,7 +25,6 @@ class FakeDecoder final : public ImageToFramebufferDecoder {
  public:
   bool decodeToFramebuffer(const std::string&, GfxRenderer&, const RenderConfig& config) override {
     ++decodeCalls;
-    lastCacheOnly = config.cacheOnly;
     if (!succeed) return false;
     if (!writeCache) return true;
 
@@ -46,7 +45,6 @@ class FakeDecoder final : public ImageToFramebufferDecoder {
 
   bool succeed = true;
   bool writeCache = true;
-  bool lastCacheOnly = false;
   int decodeCalls = 0;
 };
 
@@ -83,7 +81,6 @@ TEST_F(PixelCacheIntegrationTest, ZeroWidthCacheIsRejectedAndRegenerated) {
   Storage.setFile("/image_4x4.pxc", cacheBytes(0, 4, 0));
   ImageBlock block("/image.png", 4, 4);
 
-  EXPECT_TRUE(block.needsDecode());
   block.render(renderer, 0, 0);
 
   EXPECT_EQ(decoder.decodeCalls, 1);
@@ -96,7 +93,6 @@ TEST_F(PixelCacheIntegrationTest, TruncatedCacheFallsBackToPlaceholderWhenRegene
   decoder.succeed = false;
   ImageBlock block("/image.png", 4, 4);
 
-  EXPECT_TRUE(block.needsDecode());
   block.render(renderer, 0, 0);
 
   EXPECT_EQ(decoder.decodeCalls, 1);
@@ -110,7 +106,6 @@ TEST_F(PixelCacheIntegrationTest, CacheWithinOnePixelToleranceRendersWithoutDeco
   Storage.setFile("/image_4x4.pxc", cacheBytes(5, 3, 6));
   ImageBlock block("/image.png", 4, 4);
 
-  EXPECT_FALSE(block.needsDecode());
   block.render(renderer, 0, 0);
 
   EXPECT_EQ(decoder.decodeCalls, 0);
@@ -121,23 +116,10 @@ TEST_F(PixelCacheIntegrationTest, TrailingBytesInvalidatePixelCache) {
   Storage.setFile("/image_4x4.pxc", cacheBytes(4, 4, 5));  // Four payload bytes are required.
   ImageBlock block("/image.png", 4, 4);
 
-  EXPECT_TRUE(block.needsDecode());
   block.render(renderer, 0, 0);
 
   EXPECT_EQ(decoder.decodeCalls, 1);
   EXPECT_TRUE(block.hasValidCache());
-}
-
-TEST_F(PixelCacheIntegrationTest, IdlePreparationDecodesOnlyIntoPixelCache) {
-  ImageBlock block("/image.png", 4, 4);
-
-  ASSERT_TRUE(block.preparePixelCache(renderer, 7, 9));
-  EXPECT_EQ(decoder.decodeCalls, 1);
-  EXPECT_TRUE(decoder.lastCacheOnly);
-  EXPECT_TRUE(block.hasValidCache());
-
-  block.render(renderer, 7, 9);
-  EXPECT_EQ(decoder.decodeCalls, 1);
 }
 
 TEST_F(PixelCacheIntegrationTest, PendingRawPublicationStaysHiddenFromDecoder) {
@@ -146,8 +128,6 @@ TEST_F(PixelCacheIntegrationTest, PendingRawPublicationStaysHiddenFromDecoder) {
 
   EXPECT_FALSE(block.imageExists());
   EXPECT_TRUE(block.needsRawPreparation());
-  EXPECT_TRUE(block.needsDecode());
-  EXPECT_FALSE(block.preparePixelCache(renderer, 0, 0));
   block.render(renderer, 0, 0);
 
   EXPECT_EQ(decoder.decodeCalls, 0);
@@ -168,7 +148,6 @@ TEST_F(PixelCacheIntegrationTest, ReaderRenderDefersMissingRawExtractionWithoutR
   EXPECT_EQ(renderer.fillRectCalls, 2);
 
   ImageBlock synchronous("/image.png", "OPS/image.png", 4, 4);
-  EXPECT_TRUE(synchronous.needsDecode());
   synchronous.render(renderer, 0, 0);
   EXPECT_EQ(extractCalls, 1);
   EXPECT_EQ(decoder.decodeCalls, 1);
@@ -222,7 +201,6 @@ TEST_F(PixelCacheIntegrationTest, PublicationMarkersAreProbedOnceAcrossRepeatedR
   ImageBlock block("/image.png", 4, 4);
   Storage.resetIoCounters();
 
-  EXPECT_FALSE(block.needsDecode());
   for (int pass = 0; pass < 20; ++pass) block.render(renderer, 0, 0);
 
   EXPECT_EQ(Storage.existsAttemptsFor("/image.png.pending"), 1U);
@@ -246,11 +224,13 @@ TEST_F(PixelCacheIntegrationTest, PendingPublicationSnapshotStaysHiddenAcrossRep
 TEST_F(PixelCacheIntegrationTest, PreparationFailureRemainsSuppressedUntilExplicitReset) {
   ImageBlock::markPreparationFailure("/image.png");
   ImageBlock failed("/image.png", 4, 4);
-  EXPECT_FALSE(failed.needsDecode());
+  failed.render(renderer, 0, 0);
+  EXPECT_EQ(decoder.decodeCalls, 0);
 
   ImageBlock::clearSessionRenderFailures();
   ImageBlock retried("/image.png", 4, 4);
-  EXPECT_TRUE(retried.needsDecode());
+  retried.render(renderer, 0, 0);
+  EXPECT_EQ(decoder.decodeCalls, 1);
 }
 
 TEST_F(PixelCacheIntegrationTest, FailedPendingPublicationDoesNotQueueAgainUntilReset) {
@@ -273,8 +253,8 @@ TEST_F(PixelCacheIntegrationTest, DifferentLayoutSizesKeepIndependentPixelCaches
   ImageBlock small("/image.png", 4, 4);
   ImageBlock large("/image.png", 8, 8);
 
-  ASSERT_TRUE(small.preparePixelCache(renderer, 0, 0));
-  ASSERT_TRUE(large.preparePixelCache(renderer, 0, 0));
+  small.render(renderer, 0, 0);
+  large.render(renderer, 0, 0);
 
   EXPECT_TRUE(Storage.exists("/image_4x4.pxc"));
   EXPECT_TRUE(Storage.exists("/image_8x8.pxc"));
@@ -309,16 +289,15 @@ TEST_F(PixelCacheIntegrationTest, SyncFailurePreservesPreviousCache) {
   EXPECT_FALSE(Storage.exists("/image.pxc.tmp"));
 }
 
-TEST_F(PixelCacheIntegrationTest, PublishFailureRestoresPreviousCache) {
-  const std::vector<uint8_t> previous = cacheBytes(4, 4, 4);
-  Storage.setFile("/image.pxc", previous);
+TEST_F(PixelCacheIntegrationTest, PublishFailureLeavesARegenerableCacheMiss) {
+  Storage.setFile("/image.pxc", cacheBytes(0, 4, 0));
   PixelCache cache;
 
   ASSERT_TRUE(cache.begin("/image.pxc", 4, 4, 0, 0, 1));
   Storage.failRenameTo("/image.pxc");
 
   EXPECT_FALSE(cache.finalize());
-  EXPECT_EQ(Storage.file("/image.pxc"), previous);
+  EXPECT_FALSE(Storage.exists("/image.pxc"));
   EXPECT_FALSE(Storage.exists("/image.pxc.tmp"));
   EXPECT_FALSE(Storage.exists("/image.pxc.bak"));
 }
@@ -354,20 +333,25 @@ TEST_F(PixelCacheIntegrationTest, MoreThanSixteenPreparationFailuresRemainSuppre
   for (int i = 0; i < 32; ++i) {
     failedPaths.emplace_back("/async_broken_" + std::to_string(i) + ".png");
     const std::string& path = failedPaths.back();
+    Storage.setFile(path, {0x01});
     ImageBlock::markPreparationFailure(path);
   }
 
   for (const std::string& path : failedPaths) {
     ImageBlock reloaded(path, 4, 4);
-    EXPECT_FALSE(reloaded.needsDecode()) << path;
+    reloaded.render(renderer, 0, 0);
   }
+  EXPECT_EQ(decoder.decodeCalls, 0);
 
+  Storage.setFile("/healthy.png", {0x01});
   ImageBlock unrelated("/healthy.png", 4, 4);
-  EXPECT_TRUE(unrelated.needsDecode());
+  unrelated.render(renderer, 0, 0);
+  EXPECT_EQ(decoder.decodeCalls, 1);
 
   ImageBlock::clearSessionRenderFailures();
   ImageBlock retried(failedPaths.front(), 4, 4);
-  EXPECT_TRUE(retried.needsDecode());
+  retried.render(renderer, 0, 0);
+  EXPECT_EQ(decoder.decodeCalls, 2);
 }
 
 TEST_F(PixelCacheIntegrationTest, SmallPixelCacheStaysResidentAcrossRepeatedPagePasses) {

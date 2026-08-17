@@ -39,7 +39,6 @@ struct PixelCache {
   HalFile file;
   std::string cachePathStr;
   std::string stagingPathStr;
-  std::string backupPathStr;
   bool ok;
 
   PixelCache()
@@ -60,9 +59,7 @@ struct PixelCache {
   static constexpr int MIN_BAND_ROWS = 16;
   static constexpr size_t MAX_BAND_BYTES = 24 * 1024;  // band working-set ceiling
 
-  uint64_t expectedFileSize() const {
-    return 4U + static_cast<uint64_t>(bytesPerRow) * static_cast<uint64_t>(height);
-  }
+  uint64_t expectedFileSize() const { return 4U + static_cast<uint64_t>(bytesPerRow) * static_cast<uint64_t>(height); }
 
   bool validateFile(const std::string& path) const {
     HalFile candidate;
@@ -77,30 +74,15 @@ struct PixelCache {
   }
 
   bool publishStagingFile() {
-    const bool hadFinal = Storage.exists(cachePathStr.c_str());
-    if (Storage.exists(backupPathStr.c_str()) && !Storage.remove(backupPathStr.c_str())) return false;
-    if (hadFinal && !Storage.rename(cachePathStr.c_str(), backupPathStr.c_str())) return false;
-
-    if (!Storage.rename(stagingPathStr.c_str(), cachePathStr.c_str())) {
-      if (hadFinal && !Storage.exists(cachePathStr.c_str()) &&
-          !Storage.rename(backupPathStr.c_str(), cachePathStr.c_str())) {
-        LOG_ERR("IMG", "Failed to restore previous cache: %s", cachePathStr.c_str());
-      }
-      return false;
-    }
-
-    if (!validateFile(cachePathStr)) {
-      Storage.remove(cachePathStr.c_str());
-      if (hadFinal && !Storage.rename(backupPathStr.c_str(), cachePathStr.c_str())) {
-        LOG_ERR("IMG", "Failed to restore previous cache after validation: %s", cachePathStr.c_str());
-      }
-      return false;
-    }
-
-    if (hadFinal && Storage.exists(backupPathStr.c_str()) && !Storage.remove(backupPathStr.c_str())) {
-      LOG_ERR("IMG", "Failed to remove old cache backup: %s", backupPathStr.c_str());
-    }
-    return true;
+    // Pixel caches are disposable derived data, and production reaches this
+    // path only after the canonical cache failed validation. Validate and sync
+    // the complete staging file first, then replace the unusable canonical in
+    // two metadata operations. A power loss between them leaves a cache miss,
+    // never user data loss; the next render regenerates it.
+    const std::string legacyBackupPath = cachePathStr + ".bak";
+    if (Storage.exists(legacyBackupPath.c_str()) && !Storage.remove(legacyBackupPath.c_str())) return false;
+    if (Storage.exists(cachePathStr.c_str()) && !Storage.remove(cachePathStr.c_str())) return false;
+    return Storage.rename(stagingPathStr.c_str(), cachePathStr.c_str());
   }
 
   // Open the cache file, write the header, and allocate a band buffer big enough
@@ -117,7 +99,6 @@ struct PixelCache {
     ok = false;
     cachePathStr = cachePath;
     stagingPathStr = cachePath + ".tmp";
-    backupPathStr = cachePath + ".bak";
 
     if (Storage.exists(stagingPathStr.c_str()) && !Storage.remove(stagingPathStr.c_str())) {
       LOG_ERR("IMG", "Failed to remove stale cache staging file: %s", stagingPathStr.c_str());

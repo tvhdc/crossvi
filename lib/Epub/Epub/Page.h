@@ -108,7 +108,6 @@ class Page {
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
-  void renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
   void deferMissingImageExtraction() { allowSynchronousImageExtraction = false; }
   bool hasImagesAwaitingRawPreparation() const {
     return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
@@ -125,13 +124,6 @@ class Page {
                        [](const std::shared_ptr<PageElement>& el) { return el->getTag() == TAG_PageImage; });
   }
 
-  bool hasImagesNeedingDecode() const {
-    return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
-      return element->getTag() == TAG_PageImage &&
-             static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
-    });
-  }
-
   bool hasImagesDecodedWithoutCache() const {
     return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
       return element->getTag() == TAG_PageImage &&
@@ -142,7 +134,7 @@ class Page {
   // Scan a bounded slice for one raster that still needs raw extraction.
   // Pixel-cache decoding remains demand-driven because the codec is monolithic
   // and cannot yield to input or a queued render. The caller owns elementIndex,
-  // so idle preparation retains neither a Page nor an unbounded candidate list.
+  // so idle preparation keeps at most one bounded Page and no candidate list.
   PageImageScanStatus stepImageNeedingExtraction(size_t& elementIndex, PageImageExtraction& candidate) const {
     static constexpr size_t MAX_ELEMENTS_PER_STEP = 64;
     static constexpr size_t MAX_IMAGE_PROBES_PER_STEP = 2;

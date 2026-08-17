@@ -606,85 +606,6 @@ void Epub::resolveGuideCover(const std::string& guidePath, const uint8_t* conten
   }
 }
 
-bool Epub::parseTocNcxFile() const {
-  // the ncx file should have been specified in the content.opf file
-  if (tocNcxItem.empty()) {
-    LOG_DBG("EBP", "No ncx file specified");
-    return false;
-  }
-
-  LOG_DBG("EBP", "Parsing toc ncx file: %s", tocNcxItem.c_str());
-
-  size_t ncxSize;
-  if (!getItemSize(tocNcxItem, &ncxSize)) {
-    LOG_ERR("EBP", "Could not get size of toc ncx file");
-    return false;
-  }
-
-  const std::string ncxContentBasePath = tocNcxItem.substr(0, tocNcxItem.find_last_of('/') + 1);
-  TocNcxParser ncxParser(ncxContentBasePath, ncxSize, bookMetadataCache.get());
-
-  if (!ncxParser.setup()) {
-    LOG_ERR("EBP", "Could not setup toc ncx parser");
-    return false;
-  }
-
-  // Stream the decompressed NCX straight into the parser instead of round-tripping
-  // through a temp file on the SD card (decompress -> write -> reopen -> reread -> delete).
-  if (!readItemContentsToStream(tocNcxItem, ncxParser, 1024)) {
-    LOG_ERR("EBP", "Could not read toc ncx file");
-    return false;
-  }
-  if (!ncxParser.succeeded()) {
-    LOG_ERR("EBP", "Could not parse toc ncx file");
-    return false;
-  }
-
-  LOG_DBG("EBP", "Parsed TOC items");
-  return true;
-}
-
-bool Epub::parseTocNavFile() const {
-  // the nav file should have been specified in the content.opf file (EPUB 3)
-  if (tocNavItem.empty()) {
-    LOG_DBG("EBP", "No nav file specified");
-    return false;
-  }
-
-  LOG_DBG("EBP", "Parsing toc nav file: %s", tocNavItem.c_str());
-
-  size_t navSize;
-  if (!getItemSize(tocNavItem, &navSize)) {
-    LOG_ERR("EBP", "Could not get size of toc nav file");
-    return false;
-  }
-
-  // Note: We can't use `contentBasePath` here as the nav file may be in a different folder to the content.opf
-  // and the HTMLX nav file will have hrefs relative to itself
-  const std::string navContentBasePath = tocNavItem.substr(0, tocNavItem.find_last_of('/') + 1);
-  TocNavParser navParser(navContentBasePath, navSize, bookMetadataCache.get());
-
-  if (!navParser.setup()) {
-    LOG_ERR("EBP", "Could not setup toc nav parser");
-    return false;
-  }
-
-  // Stream the decompressed nav document straight into the parser instead of round-tripping
-  // through a temp file on the SD card (decompress -> write -> reopen -> reread -> delete).
-  if (!readItemContentsToStream(tocNavItem, navParser, 1024)) {
-    LOG_ERR("EBP", "Could not read toc nav file");
-    return false;
-  }
-
-  if (!navParser.succeeded() || navParser.usableEntryCount() == 0) {
-    LOG_ERR("EBP", "EPUB 3 navigation document contains no usable TOC entries");
-    return false;
-  }
-
-  LOG_DBG("EBP", "Parsed TOC nav items");
-  return true;
-}
-
 void Epub::discoverCssFilesFromZip() {
   const std::string& opfDir = contentBasePath;
   ZipFile zf(filepath);
@@ -2045,6 +1966,9 @@ bool Epub::generateJpegThumbnailPair(const int carouselWidth, const int carousel
 
 Epub::ThumbnailPreparationStatus Epub::beginThumbnailPreparation(const ThumbnailRequest& request) {
   cancelThumbnailPreparation();
+  // Page rasters have reader-visible priority. The reader scheduler retries
+  // optional cover work after the active image transaction has settled.
+  if (imagePreparationActive()) return ThumbnailPreparationStatus::Error;
   const ThumbnailRequest requested = allThumbnailVariants(request);
   if (!requested.shared && !requested.carousel) return ThumbnailPreparationStatus::NotNeeded;
 
@@ -2427,12 +2351,16 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
 }
 
 Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& itemHref, const std::string& finalPath) {
-  cancelImagePreparation();
+  if (imagePreparationActive()) cancelImagePreparation();
   const std::string_view finalPathView(finalPath);
   if (itemHref.empty() || finalPath.empty() ||
       (!FsHelpers::hasJpgExtension(finalPathView) && !FsHelpers::hasPngExtension(finalPathView))) {
     return ImagePreparationStatus::Error;
   }
+  // A page image is useful to the active reading view; an optional cover is
+  // not. Cancelling here also enforces that the two inflater jobs never share
+  // the constrained heap even if a caller bypasses the reader scheduler.
+  if (coverStreamJob) cancelThumbnailPreparation();
   const std::string backupPath = finalPath + ".bak";
   const std::string stagingPath = finalPath + ".tmp";
   const std::string markerPath = finalPath + ".pending";
@@ -2559,6 +2487,25 @@ Epub::ImagePreparationStatus Epub::stepImagePreparation() {
   return ImagePreparationStatus::Ready;
 }
 
+bool Epub::deferImagePreparationCleanup() {
+  // Only an unpublished stream is safe to abandon without synchronous FAT
+  // rollback. Once publication starts, cancelImagePreparation() must retain
+  // the marker/backup recovery contract.
+  if (!imageStreamJob || imagePublishPending || imageSourceIdentityJob || imagePublishedDigestJob ||
+      !imageDeferredCleanupPath.empty()) {
+    return false;
+  }
+
+  imageStreamJob->cancel();
+  imageStreamJob.reset();
+  if (imageStreamOutput) imageStreamOutput.close();
+  imageDeferredCleanupPath = std::move(imageStreamStagingPath);
+  imageDigestingOutput.reset();
+  imageStreamFinalPath.clear();
+  imagePublishMarkerPath.clear();
+  return true;
+}
+
 void Epub::cancelImagePreparation() {
   if (imageStreamJob) imageStreamJob->cancel();
   imageStreamJob.reset();
@@ -2578,6 +2525,11 @@ void Epub::cancelImagePreparation() {
   if (!imageStreamStagingPath.empty() && Storage.exists(imageStreamStagingPath.c_str())) {
     Storage.remove(imageStreamStagingPath.c_str());
   }
+  if (!imageDeferredCleanupPath.empty() && Storage.exists(imageDeferredCleanupPath.c_str())) {
+    if (!Storage.remove(imageDeferredCleanupPath.c_str())) {
+      LOG_ERR("EBP", "Could not remove deferred image-cache scratch: %s", imageDeferredCleanupPath.c_str());
+    }
+  }
   if (removePublishMarker && !imagePublishMarkerPath.empty() && Storage.exists(imagePublishMarkerPath.c_str())) {
     Storage.remove(imagePublishMarkerPath.c_str());
   }
@@ -2585,6 +2537,7 @@ void Epub::cancelImagePreparation() {
   imageStreamFinalPath.clear();
   imageStreamStagingPath.clear();
   imagePublishMarkerPath.clear();
+  imageDeferredCleanupPath.clear();
 }
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {

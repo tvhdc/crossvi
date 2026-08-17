@@ -472,17 +472,10 @@ void HomeActivity::loop() {
   const bool needsCarousel = CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout);
   if (!needsShared && !needsCarousel && !bookSummaryPending && firstRenderDone && !hadInput && !homeInputHeld &&
       coverWorkIdle && !sourcePreparationInProgress && focusedRecentBook && !coverPreparationAttempted &&
-      mediaAvailable) {
+      mediaAvailable && FsHelpers::hasEpubExtension(recentBooks[static_cast<size_t>(selectorIndex)].path)) {
     coverPreparationAttempted = true;
     const std::string& path = recentBooks[static_cast<size_t>(selectorIndex)].path;
-    SourcePreparationResult preparation = SourcePreparationResult::NotNeeded;
-    if (FsHelpers::hasEpubExtension(path)) {
-      preparation = stepPreparedEpub(path);
-    } else if (FsHelpers::hasXtcExtension(path)) {
-      preparation = stepPreparedXtc(path);
-    } else if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
-      preparation = stepPreparedTxt(path);
-    }
+    const SourcePreparationResult preparation = stepPreparedEpub(path);
     if (preparation == SourcePreparationResult::InProgress) coverPreparationAttempted = false;
   }
   const int carouselWidth = x3 ? Epub::CAROUSEL_THUMB_WIDTH : Epub::CAROUSEL_X4_THUMB_WIDTH;

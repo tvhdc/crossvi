@@ -237,18 +237,16 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   int outXBase = ctx->config->x;
   int screenWidth = ctx->screenWidth;
   bool useDithering = ctx->config->useDithering;
-  const bool renderToFramebuffer = !ctx->config->cacheOnly;
-
   // Pre-compute orientation and render-mode state once per callback.
   DirectPixelWriter pw;
-  if (renderToFramebuffer) pw.init(*ctx->renderer);
+  pw.init(*ctx->renderer);
 
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
     ctx->lastDstY = dstY;
     int outY = ctx->config->y + dstY;
     if (outY >= ctx->screenHeight) continue;
 
-    if (renderToFramebuffer) pw.beginRow(outY);
+    pw.beginRow(outY);
 
     // The cache streams to disk one row at a time. Flushing rows below this one
     // (PNGdec delivers scanlines top to bottom) repositions the single-row band.
@@ -281,7 +279,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
           ditheredGray = gray / 85;
           if (ditheredGray > 3) ditheredGray = 3;
         }
-        if (renderToFramebuffer) pw.writePixel(outX, ditheredGray);
+        pw.writePixel(outX, ditheredGray);
         if (caching) cw.writePixel(outX, ditheredGray);
       }
 
@@ -330,8 +328,6 @@ bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
 bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                     const RenderConfig& config) {
   LOG_DBG("PNG", "Decoding PNG: %s", imagePath.c_str());
-  if (config.cacheOnly && config.cachePath.empty()) return false;
-
   auto memory = MemoryBudget::snapshot();
   if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::PNG_DECODE)) {
     if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
@@ -439,7 +435,6 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
       LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
-      if (config.cacheOnly) return false;
     }
   }
 

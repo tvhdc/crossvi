@@ -481,18 +481,16 @@ class CodegenTest(unittest.TestCase):
         completion = navigation.index("markBookCompleted()")
         self.assertLess(navigation.index("stopReadingPage(false", advance), completion)
 
-    def test_txt_auto_turn_keeps_pumping_an_incomplete_page_index(self):
+    def test_txt_auto_turn_only_runs_after_the_page_index_is_complete(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         loop = reader[reader.index("void TxtReaderActivity::loop()") :
                       reader.index("bool TxtReaderActivity::handleReaderShortcut")]
         auto_turn = loop[loop.index("if (automaticPageTurnActive && !indexWorkPending)") :
                          loop.index("if (ReaderUtils::handleBackNavigation")]
 
-        self.assertIn("else if (!pageIndexComplete)", auto_turn)
-        self.assertIn("lastPageTurnTime = millis();", auto_turn)
-        incomplete = auto_turn[auto_turn.index("else if (!pageIndexComplete)") :]
-        incomplete = incomplete[: incomplete.index("else {")]
-        self.assertNotIn("return;", incomplete)
+        self.assertIn("!initializationFailed && pageIndexComplete", loop)
+        self.assertNotIn("!pageIndexComplete", auto_turn)
+        self.assertIn("automaticPageTurnActive = false;", auto_turn)
 
     def test_txt_reflow_keeps_the_current_byte_offset_even_when_progress_save_fails(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
@@ -550,53 +548,61 @@ class CodegenTest(unittest.TestCase):
 
     def test_txt_finishes_initial_index_before_reading_in_bounded_ticks(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
         loop = reader[reader.index("void TxtReaderActivity::loop()") : reader.index("bool TxtReaderActivity::handleReaderShortcut")]
-        requested = reader[reader.index("void TxtReaderActivity::processRequestedPageIndex") :
-                           reader.index("void TxtReaderActivity::processBackgroundPageIndex")]
-        background = reader[reader.index("void TxtReaderActivity::processBackgroundPageIndex") :
-                            reader.index("bool TxtReaderActivity::buildPageIndexUntil")]
+        indexing = reader[reader.index("void TxtReaderActivity::processPageIndex") :
+                          reader.index("bool TxtReaderActivity::buildPageIndexBatch")]
+        build = reader[reader.index("bool TxtReaderActivity::buildPageIndexBatch") :
+                       reader.index("void TxtReaderActivity::markPageIndexFailed")]
         render = reader[reader.index("void TxtReaderActivity::render(RenderLock&&)") :]
         render = render[: render.index("void TxtReaderActivity::renderCurrentPage")]
 
-        self.assertIn("RenderLock lock(std::try_to_lock);", background)
-        self.assertIn("buildPageIndexUntil(targetOffset, BACKGROUND_INDEX_PAGES_PER_TICK)", requested)
-        self.assertIn("processRequestedPageIndex()", loop)
-        self.assertIn("buildPageIndexBatch(BACKGROUND_INDEX_PAGES_PER_TICK)", background)
-        self.assertIn("processBackgroundPageIndex()", loop)
+        self.assertIn("RenderLock lock(std::try_to_lock);", indexing)
+        self.assertIn("buildPageIndexBatch(INDEX_PAGES_PER_TICK)", indexing)
+        self.assertIn("processPageIndex()", loop)
+        self.assertIn("if (parsedPages >= maxPages) break;", build)
+        self.assertIn("else if (pageIndexComplete)", indexing)
+        self.assertLess(indexing.index("else if (pageIndexComplete)"),
+                        indexing.index("finishReaderInitialization();", indexing.index("else if (pageIndexComplete)")))
         self.assertNotIn("completePageIndex()", render)
-        self.assertIn("pageIndexComplete", background)
-        self.assertIn("const bool requiresCompleteIndex =", requested)
-        self.assertIn("work == PageIndexWork::Initial || pageIndexTargetRequiresComplete", requested)
-        self.assertIn("requiresCompleteIndex ? txt->getFileSize()", requested)
-        self.assertIn("requiresCompleteIndex", requested[requested.index("const bool targetReady") :])
+        self.assertNotIn("processBackgroundPageIndex", reader)
+        self.assertNotIn("PageIndexWork", header)
+        self.assertNotIn("pageIndexTarget", header)
+        self.assertIn("return pageIndexing.load(std::memory_order_acquire);", header)
 
-    def test_txt_initial_resume_jump_and_clipping_never_run_an_unbounded_index_scan(self):
+    def test_txt_resume_jump_and_clipping_reuse_the_complete_index(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         initialize = reader[reader.index("void TxtReaderActivity::initializeReader") :
                             reader.index("void TxtReaderActivity::finishReaderInitialization")]
+        finish = reader[reader.index("void TxtReaderActivity::finishReaderInitialization") :
+                        reader.index("bool TxtReaderActivity::ensureContentReadSession")]
         clipping = reader[reader.index("void TxtReaderActivity::openClippingSelection") :
-                          reader.index("void TxtReaderActivity::openIndexedClippingSelection")]
+                          reader.index("void TxtReaderActivity::openClippings")]
         jump = reader[reader.index("void TxtReaderActivity::jumpToByteOffset") :
                       reader.index("void TxtReaderActivity::applyIndexedByteOffset")]
 
         for operation in (initialize, clipping, jump):
-            self.assertNotIn("buildPageIndexUntil(", operation)
-        self.assertNotIn("completePageIndex()", reader)
-        self.assertIn("PageIndexWork::Initial", initialize)
-        self.assertIn("PageIndexWork::CompleteForClipping", clipping)
-        self.assertIn("PageIndexWork::Jump", jump)
+            self.assertNotIn("buildPageIndexBatch(", operation)
+        self.assertNotIn("ProgressFile::loadTxt", initialize)
+        self.assertNotIn("validateClippingJump", initialize)
+        self.assertEqual(finish.count("validateClippingJump"), 1)
+        self.assertNotIn("STR_INDEXING", clipping)
+        self.assertNotIn("STR_INDEXING", jump)
+        self.assertIn("applyIndexedByteOffset(byteOffset);", jump)
 
-    def test_txt_reuses_page_io_and_only_indexes_when_input_is_idle(self):
+    def test_txt_reuses_page_io_and_only_builds_the_initial_index_when_input_is_idle(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
         loop = reader[reader.index("void TxtReaderActivity::loop()") :
                       reader.index("bool TxtReaderActivity::handleReaderShortcut")]
         session = reader[reader.index("bool TxtReaderActivity::ensureContentReadSession") :
-                         reader.index("bool TxtReaderActivity::buildPageIndexUntil")]
+                         reader.index("void TxtReaderActivity::processPageIndex")]
+        scratch_release = reader[reader.index("void TxtReaderActivity::releasePageIndexScratch") :
+                                 reader.index("void TxtReaderActivity::releaseContentReadSession")]
         load = reader[reader.index("bool TxtReaderActivity::loadPageAtOffset(size_t offset") :
                       reader.index("bool TxtReaderActivity::loadPageAtOffsetWithScratch")]
-        build = reader[reader.index("bool TxtReaderActivity::buildPageIndexUntil") :
-                       reader.index("bool TxtReaderActivity::buildPageIndexBatch")]
+        build = reader[reader.index("bool TxtReaderActivity::buildPageIndexBatch") :
+                       reader.index("void TxtReaderActivity::markPageIndexFailed")]
         render = reader[reader.index("void TxtReaderActivity::render(RenderLock&&)") :
                         reader.index("void TxtReaderActivity::renderCurrentPage")]
 
@@ -604,15 +610,23 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("std::unique_ptr<uint8_t[]> pageScratch;", header)
         self.assertIn("if (!contentFile.isOpen()", session)
         self.assertIn("pageScratchSize < CHUNK_SIZE + 1", session)
-        self.assertIn("if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {", loop)
+        self.assertIn("std::vector<std::string>{}.swap(pageIndexScratchLines);", scratch_release)
+        self.assertIn("std::vector<uint32_t>{}.swap(pageIndexScratchLineOffsets);", scratch_release)
+        self.assertIn("if (!inputEdge && !readerInputHeld) processPageIndex();", loop)
         self.assertIn("finishDeferredOpenState();", loop)
-        self.assertIn("processBackgroundPageIndex();", loop)
+        self.assertNotIn("processBackgroundPageIndex", loop)
         self.assertNotIn("makeUniqueNoThrow", load)
         self.assertNotIn("HalFile contentFile", load)
         self.assertIn("&pageIndexScratchLineOffsets", build)
         self.assertIn("pageIndexScratchOffset = static_cast<uint32_t>(pageStartOffset)", build)
         self.assertIn("currentPageLines.swap(pageIndexScratchLines)", render)
         self.assertIn("currentPageLineOffsets.swap(pageIndexScratchLineOffsets)", render)
+        reused_scratch = render[render.index("if (pageIndexScratchOffset &&") :
+                                render.index("if (!pageReused && pageIndexScratchOffset)")]
+        self.assertIn("releasePageIndexScratch();", reused_scratch)
+        stale_scratch = render[render.index("if (!pageReused && pageIndexScratchOffset)") :
+                               render.index("if (!pageReused && !loadPageAtOffset")]
+        self.assertIn("releasePageIndexScratch();", stale_scratch)
 
     def test_txt_long_builtin_lines_use_single_pass_shaped_wrap(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
@@ -650,6 +664,9 @@ class CodegenTest(unittest.TestCase):
         home = (REPO_ROOT / "src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
         stats = home[home.index("bool HomeActivity::loadRecentNonEpubReadingStats") :]
         loop = home[home.index("void HomeActivity::loop()") : home.index("void HomeActivity::render(RenderLock&&)")]
+        idle_preparation = loop[
+            loop.index("if (!needsShared && !needsCarousel") : loop.index("const int carouselWidth")
+        ]
         selection = home[home.index("void HomeActivity::onSelectBook") :
                          home.index("void HomeActivity::onFileBrowserOpen")]
         preparation = home[
@@ -669,6 +686,9 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("preparedEpub.reset();", preparation)
         self.assertIn("preparedTxt.reset();", preparation)
         self.assertNotIn("xtc->load()", loop)
+        self.assertIn("stepPreparedEpub", idle_preparation)
+        self.assertNotIn("stepPreparedXtc", idle_preparation)
+        self.assertNotIn("stepPreparedTxt", idle_preparation)
 
     def test_library_hands_only_the_selected_prepared_xtc_identity_to_reader(self):
         recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
@@ -686,9 +706,11 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("openBookWithFeedback(std::move(preparedXtc)", opening)
         self.assertIn("preparedXtcSourceIdentity->path == path", opening)
         self.assertIn("openBookWithFeedback(path, ReaderOpenOrigin::Default, false, reusableIdentity)", opening)
-        for object_name in ("preparedEpub", "preparedXtc", "preparedTxt"):
+        for object_name in ("preparedEpub", "preparedXtc"):
             self.assertIn(f"if ({object_name} && {object_name}->getPath() != book.path) {object_name}.reset();",
                           preparation)
+        self.assertNotIn("preparedTxt", preparation)
+        self.assertNotIn("stepLoad(", preparation)
 
     def test_file_browser_scans_cooperatively_with_explicit_bounds(self):
         browser = (REPO_ROOT / "src/activities/home/FileBrowserActivity.cpp").read_text(encoding="utf-8")
@@ -705,11 +727,9 @@ class CodegenTest(unittest.TestCase):
         preparation = browser[browser.index("void FileBrowserActivity::processSelectedSourcePreparation") :
                               browser.index("void FileBrowserActivity::loop()")]
         self.assertIn("stepCoreMetadataRead(metadata)", preparation)
-        self.assertIn("stepLoad(4, 16U * 1024U)", preparation)
-        self.assertIn("stepLoad(16U * 1024U)", preparation)
-        for object_name in ("preparedEpub", "preparedXtc", "preparedTxt"):
-            self.assertIn(f"if ({object_name} && {object_name}->getPath() != path) {object_name}.reset();",
-                          preparation)
+        self.assertNotIn("stepLoad(", preparation)
+        self.assertNotIn("preparedXtc", preparation)
+        self.assertNotIn("preparedTxt", preparation)
 
     def test_bmp_viewer_displays_before_bounded_cooperative_sibling_scan(self):
         viewer = (REPO_ROOT / "src/activities/util/BmpViewerActivity.cpp").read_text(encoding="utf-8")
@@ -762,7 +782,8 @@ class CodegenTest(unittest.TestCase):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         render = reader[reader.index("void TxtReaderActivity::render(RenderLock&&)") :
                         reader.index("void TxtReaderActivity::renderCurrentPage")]
-        indexing = render[render.index("PageIndexWork::Initial") : render.index("if (initializationFailed)")]
+        indexing = render[render.index("pageIndexing.load(std::memory_order_acquire)") :
+                          render.index("if (initializationFailed)")]
 
         self.assertIn("GUI.drawPopup(renderer, tr(STR_INDEXING));", indexing)
         self.assertNotIn("renderer.displayBuffer", indexing)
@@ -994,17 +1015,20 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("current.coverBmpPath == coverBmpPath", add_recent)
         self.assertLess(add_recent.index("current.coverBmpPath == coverBmpPath"), add_recent.index("recentBooks.erase"))
 
-    def test_txt_reuses_valid_v2_progress_after_page_index_cache_miss(self):
+    def test_txt_loads_initial_progress_only_after_the_page_index_is_complete(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
-        preflight = reader[reader.index("uint32_t TxtReaderActivity::initialPageIndexTarget") :
-                           reader.index("int TxtReaderActivity::estimatedTotalPages")]
+        initialize = reader[reader.index("void TxtReaderActivity::initializeReader") :
+                            reader.index("void TxtReaderActivity::finishReaderInitialization")]
+        indexing = reader[reader.index("void TxtReaderActivity::processPageIndex") :
+                          reader.index("bool TxtReaderActivity::buildPageIndexBatch")]
         load = reader[reader.index("void TxtReaderActivity::loadProgress()") :
                       reader.index("bool TxtReaderActivity::loadPageIndexCache()")]
 
         self.assertIn("std::optional<uint32_t> initialProgressOffset;", header)
-        self.assertIn("initialProgressOffset = savedValue;", preflight)
-        self.assertIn("decoded == ProgressFileCodec::TxtDecodeStatus::LegacyPage", preflight)
+        self.assertNotIn("ProgressFile::loadTxt", initialize)
+        complete = indexing.index("else if (pageIndexComplete)")
+        self.assertGreater(indexing.index("finishReaderInitialization();", complete), complete)
         self.assertLess(load.index("if (initialProgressOffset)"), load.index("ProgressFile::loadTxt"))
         self.assertIn("initialProgressOffset.reset();", load)
         self.assertGreaterEqual(load.count("ProgressFile::loadTxt"), 2)
@@ -1323,6 +1347,7 @@ class CodegenTest(unittest.TestCase):
         epub = (REPO_ROOT / "lib/Epub/Epub.cpp").read_text(encoding="utf-8")
         page = (REPO_ROOT / "lib/Epub/Epub/Page.h").read_text(encoding="utf-8")
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        reader_header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
         preparation = epub[epub.index("Epub::ImagePreparationStatus Epub::beginImagePreparation") :
                            epub.index("bool Epub::getItemSize")]
         pump = reader[reader.index("bool EpubReaderActivity::pumpImagePreparation") :
@@ -1348,12 +1373,29 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("section->currentPage + (visiblePagePreparation ? 0 : 1)", pump)
         self.assertIn("epub->stepImagePreparation()", pump)
         self.assertLess(
-            pump.index("if (epub->imagePreparationActive())"),
-            pump.index("const bool visiblePagePreparation"),
+            pump.index("const bool visibleImageRequested"),
+            pump.index("if (visibleImageRequested && epub->imagePreparationActive()"),
         )
+        preemption = pump[
+            pump.index("if (visibleImageRequested && epub->imagePreparationActive()") :
+            pump.index("if (epub->imagePreparationActive())")
+        ]
+        self.assertIn("if (epub->deferImagePreparationCleanup())", preemption)
+        self.assertNotIn("cancelImagePreparation", preemption)
+        self.assertGreaterEqual(reader.count("imagePrefetchSectionGeneration == sectionGeneration"), 4)
         self.assertNotIn("preparePixelCache", pump)
         self.assertIn("RenderLock lock(std::try_to_lock);", pump)
         self.assertIn("scanStatus == PageImageScanStatus::More", pump)
+        self.assertEqual(pump.count("section->loadPage(targetPage)"), 1)
+        self.assertIn("if (!imagePrefetchScanPage)", pump)
+        self.assertIn("imagePrefetchScanPage->stepImageNeedingExtraction", pump)
+        self.assertIn("std::unique_ptr<Page> imagePrefetchScanPage", reader_header)
+        found = pump[pump.index("imagePreparationPath = candidate.imagePath") :]
+        self.assertLess(found.index("resetImagePageScan()"),
+                        found.index("epub->beginImagePreparation"))
+        self.assertLess(found.index("if (epub->thumbnailPreparationActive())"),
+                        found.index("epub->beginImagePreparation"))
+        self.assertIn("deferredCoverStarted = false", found[:found.index("epub->beginImagePreparation")])
         self.assertIn("ZipSourceIdentityJob", preparation)
         self.assertIn("imageSourceIdentityJob->step(4096", preparation)
         self.assertIn("sourcePathMatchesIdentityJob(filepath.c_str(), currentIdentity", preparation)

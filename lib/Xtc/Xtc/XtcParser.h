@@ -37,7 +37,6 @@ class XtcParser {
   ~XtcParser();
 
   // File open/close
-  XtcError open(const char* filepath);
   XtcError beginOpen(const char* filepath, const RawSourceIdentityHandoff* preparedIdentity = nullptr);
   OpenStepResult stepOpen(size_t maxRecords, size_t maxFingerprintBytes);
   void cancelOpen();
@@ -103,9 +102,6 @@ class XtcParser {
 
   bool hasChapters() const { return m_hasChapters; }
   const std::vector<ChapterInfo>& getChapters();
-
-  // Validation
-  static bool isValidXtcFile(const char* filepath);
 
   // Error information
   XtcError getLastError() const { return m_lastError; }

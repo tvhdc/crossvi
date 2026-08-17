@@ -1,6 +1,7 @@
 #pragma once
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
+#include <Epub/Page.h>
 #include <Epub/Section.h>
 
 #include <atomic>
@@ -125,6 +126,11 @@ class EpubReaderActivity final : public Activity {
   int imagePrefetchPage = -1;
   size_t imagePrefetchElement = 0;
   bool imagePrefetchPageComplete = false;
+  // Retain at most one bounded, deserialized Page while the idle scanner
+  // advances. It is discarded before render and whenever its target changes.
+  std::unique_ptr<Page> imagePrefetchScanPage;
+  uint32_t sectionGeneration = 0;
+  uint32_t imagePrefetchSectionGeneration = 0;
   std::atomic<bool> imagePreparationForVisiblePage{false};
   std::string imagePreparationPath;
   bool readerOpenStagesPending = true;
@@ -357,6 +363,7 @@ class EpubReaderActivity final : public Activity {
   void pumpDeferredCoverPreparation();
   bool pumpImagePreparation();
   void queueVisiblePageImagePreparation();
+  void resetImagePageScan();
   void cancelImagePreparation();
   void stopReadingPage(bool forwardPageTurn, uint32_t nowMs);
   void recordReadingSample(const ReadingSessionSample& sample);

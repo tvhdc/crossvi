@@ -617,12 +617,16 @@ void EpubReaderActivity::pumpDeferredCoverPreparation() {
 #endif
 }
 
+void EpubReaderActivity::resetImagePageScan() { imagePrefetchScanPage.reset(); }
+
 void EpubReaderActivity::cancelImagePreparation() {
   if (epub) epub->cancelImagePreparation();
+  resetImagePageScan();
   imagePrefetchSpine = -1;
   imagePrefetchPage = -1;
   imagePrefetchElement = 0;
   imagePrefetchPageComplete = false;
+  imagePrefetchSectionGeneration = 0;
   imagePreparationForVisiblePage.store(false, std::memory_order_release);
   imagePreparationPath.clear();
 }
@@ -630,16 +634,16 @@ void EpubReaderActivity::cancelImagePreparation() {
 void EpubReaderActivity::queueVisiblePageImagePreparation() {
   if (!section) return;
   const int targetPage = section->currentPage;
-  const bool sameTarget = imagePrefetchSpine == currentSpineIndex && imagePrefetchPage == targetPage;
+  const bool sameTarget = imagePrefetchSpine == currentSpineIndex && imagePrefetchPage == targetPage &&
+                          imagePrefetchSectionGeneration == sectionGeneration;
   if (sameTarget && imagePrefetchPageComplete) {
     imagePrefetchElement = 0;
     imagePrefetchPageComplete = false;
     imagePreparationPath.clear();
   }
-  // A mismatched active job belongs to a page the reader already left. Keep it
-  // intact here: pumpImagePreparation() finishes its bounded chunks at idle,
-  // then retargets this visible request without putting rollback/unlink I/O on
-  // the render hot path.
+  // Only signal here. The idle pump preempts mismatched work after this
+  // placeholder frame reaches the panel, keeping rollback/unlink I/O out of
+  // render() and the button path.
   imagePreparationForVisiblePage.store(true, std::memory_order_release);
 }
 
@@ -655,15 +659,36 @@ bool EpubReaderActivity::pumpImagePreparation() {
   if (!lock.ownsLock()) return true;
   if (activityManager.hasPendingRender()) return true;
 
-  // Finish the already-open transaction before retargeting. Cancelling a
-  // promoted raster can unlink or restore a multi-megabyte FAT chain; keeping
-  // that work out of pageTurn()/render() makes rapid turns take priority. Each
-  // normal step remains bounded and only starts while input/render are idle.
+  const bool visibleImageRequested = imagePreparationForVisiblePage.load(std::memory_order_acquire);
+  const bool preparationMatchesVisiblePage = section && imagePrefetchSpine == currentSpineIndex &&
+                                             imagePrefetchPage == section->currentPage &&
+                                             imagePrefetchSectionGeneration == sectionGeneration;
+
+  if (visibleImageRequested && epub->thumbnailPreparationActive()) {
+    epub->cancelThumbnailPreparation();
+    deferredCoverStarted = false;
+    deferredCoverStatus = Epub::ThumbnailPreparationStatus::NotNeeded;
+  }
+
+  // A still-unpublished offscreen stream can release its inflater immediately
+  // and leave only a hidden .tmp for cleanup after the visible image. A job
+  // already promoted behind .pending finishes its bounded verification phases
+  // before retargeting, avoiding a synchronous multi-megabyte FAT rollback.
+  if (visibleImageRequested && epub->imagePreparationActive() && !preparationMatchesVisiblePage) {
+    if (epub->deferImagePreparationCleanup()) {
+      resetImagePageScan();
+      imagePrefetchElement = 0;
+      imagePrefetchPageComplete = false;
+      imagePreparationPath.clear();
+    }
+  }
+
   if (epub->imagePreparationActive()) {
     const auto status = epub->stepImagePreparation();
     if (status == Epub::ImagePreparationStatus::Error) {
       LOG_ERR("ERS", "Could not pre-extract an image for page %d", imagePrefetchPage);
       ImageBlock::markPreparationFailure(imagePreparationPath);
+      resetImagePageScan();
       imagePreparationPath.clear();
     } else if (status == Epub::ImagePreparationStatus::Ready) {
       imagePreparationPath.clear();
@@ -672,20 +697,26 @@ bool EpubReaderActivity::pumpImagePreparation() {
   }
 
   if (!section || currentSpineIndex < 0 || currentSpineIndex >= epub->getSpineItemsCount()) {
+    resetImagePageScan();
     return false;
   }
 
-  const bool visiblePagePreparation = imagePreparationForVisiblePage.load(std::memory_order_acquire);
+  const bool visiblePagePreparation = visibleImageRequested;
   const int targetPage = section->currentPage + (visiblePagePreparation ? 0 : 1);
   if (targetPage < 0 || targetPage >= static_cast<int>(section->pageCount)) {
     cancelImagePreparation();
     return false;
   }
 
-  if (imagePrefetchSpine != currentSpineIndex || imagePrefetchPage != targetPage) {
-    cancelImagePreparation();
+  if (imagePrefetchSpine != currentSpineIndex || imagePrefetchPage != targetPage ||
+      imagePrefetchSectionGeneration != sectionGeneration) {
+    if (epub->imagePreparationActive()) epub->cancelImagePreparation();
+    resetImagePageScan();
     imagePrefetchSpine = currentSpineIndex;
     imagePrefetchPage = targetPage;
+    imagePrefetchSectionGeneration = sectionGeneration;
+    imagePrefetchElement = 0;
+    imagePrefetchPageComplete = false;
     imagePreparationForVisiblePage.store(visiblePagePreparation, std::memory_order_release);
   }
   if (imagePrefetchPageComplete) {
@@ -697,17 +728,24 @@ bool EpubReaderActivity::pumpImagePreparation() {
     return false;
   }
 
-  auto page = section->loadPage(targetPage);
-  if (!page) {
+  if (!imagePrefetchScanPage) {
+    imagePrefetchScanPage = section->loadPage(targetPage);
+  }
+  if (!imagePrefetchScanPage) {
     // Prefetch is optional. A permanently unreadable derived page must not be
     // retried on every idle loop or starve deferred cover work.
+    epub->cancelImagePreparation();
+    resetImagePageScan();
     imagePrefetchPageComplete = true;
     return false;
   }
   PageImageExtraction candidate;
-  const PageImageScanStatus scanStatus = page->stepImageNeedingExtraction(imagePrefetchElement, candidate);
+  const PageImageScanStatus scanStatus =
+      imagePrefetchScanPage->stepImageNeedingExtraction(imagePrefetchElement, candidate);
   if (scanStatus == PageImageScanStatus::More) return true;
   if (scanStatus == PageImageScanStatus::Done) {
+    epub->cancelImagePreparation();
+    resetImagePageScan();
     imagePrefetchPageComplete = true;
     if (imagePreparationForVisiblePage.load(std::memory_order_acquire)) {
       imagePreparationForVisiblePage.store(false, std::memory_order_release);
@@ -718,10 +756,19 @@ bool EpubReaderActivity::pumpImagePreparation() {
   }
 
   imagePreparationPath = candidate.imagePath;
+  // The candidate owns its path strings. Release the deserialized Page before
+  // allocating the inflater so the two bounded working sets do not coexist.
+  resetImagePageScan();
+  if (epub->thumbnailPreparationActive()) {
+    epub->cancelThumbnailPreparation();
+    deferredCoverStarted = false;
+    deferredCoverStatus = Epub::ThumbnailPreparationStatus::NotNeeded;
+  }
   const auto status = epub->beginImagePreparation(candidate.sourcePath, imagePreparationPath);
   if (status == Epub::ImagePreparationStatus::Error) {
     LOG_ERR("ERS", "Could not begin image preparation for page %d", targetPage);
     ImageBlock::markPreparationFailure(imagePreparationPath);
+    resetImagePageScan();
     imagePreparationPath.clear();
   } else if (status == Epub::ImagePreparationStatus::NotNeeded) {
     imagePreparationPath.clear();
@@ -1058,6 +1105,7 @@ void EpubReaderActivity::loop() {
                                activeEpubRenderMode(), SETTINGS.forceParagraphIndents != 0)) {
         const EpubBuildStatus failure = section->lastBuildStatus();
         if (failure == EpubBuildStatus::StaleHtmlCache) {
+          resetImagePageScan();
           section.reset();
           sectionLandingPending = false;
           sectionRenderWaiting = false;
@@ -1136,6 +1184,7 @@ void EpubReaderActivity::loop() {
           LOG_ERR("ERS", "Background section build failed");
           const EpubBuildStatus failure = section->lastBuildStatus();
           stopReadingPage(false, static_cast<uint32_t>(millis()));
+          resetImagePageScan();
           section.reset();
           sectionLandingPending = false;
           sectionRenderWaiting = false;
@@ -1994,6 +2043,7 @@ void EpubReaderActivity::invalidateReaderLayout() {
   }
   sdFontSystem.ensureLoaded(renderer, false);
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+  resetImagePageScan();
   section.reset();
 }
 
@@ -2550,6 +2600,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 
     // Reset section to force re-layout in the new orientation.
     ImageBlock::clearSessionRenderFailures();
+    resetImagePageScan();
     section.reset();
   }
   if (!persistBookReaderSettings()) pendingBookSettingsSaveError = true;
@@ -2581,6 +2632,7 @@ void EpubReaderActivity::applyAutoPageTurnRuntime(const uint8_t seconds, const b
       nextPageNumber = section->currentPage;
     }
     ImageBlock::clearSessionRenderFailures();
+    resetImagePageScan();
     section.reset();
     sectionLandingPending = false;
     sectionRenderWaiting = false;
@@ -2618,6 +2670,7 @@ void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhil
       lastPageTurnTime = millis();
       return;
     }
+    resetImagePageScan();
     consumeReadingViewSignal();
     stopReadingPage(isForwardTurn, static_cast<uint32_t>(millis()));
     coverSkipDirection = isForwardTurn ? CoverSkipDirection::Forward : CoverSkipDirection::Backward;
@@ -2654,14 +2707,14 @@ void EpubReaderActivity::pageTurn(const bool isForwardTurn, const bool queueWhil
         section.reset();
       }
     }
-    const bool preparationMatchesCurrentPage =
-        section && imagePrefetchSpine == currentSpineIndex && imagePrefetchPage == section->currentPage;
+    const bool preparationMatchesCurrentPage = section && imagePrefetchSpine == currentSpineIndex &&
+                                               imagePrefetchPage == section->currentPage &&
+                                               imagePrefetchSectionGeneration == sectionGeneration;
     if (preparationMatchesCurrentPage) {
       if (!imagePrefetchPageComplete) imagePreparationForVisiblePage.store(true, std::memory_order_release);
     } else {
-      // Do not rollback/unlink a partially prepared raster while handling the
-      // button. The idle pump settles it cooperatively and then follows the
-      // latest page target.
+      // Retargeting is deferred until the next idle pump so the button path
+      // never unlinks scratch or rolls back a promoted raster.
       imagePreparationForVisiblePage.store(false, std::memory_order_release);
     }
     refreshEstimatedTimeLeft();
@@ -2675,12 +2728,14 @@ bool EpubReaderActivity::moveOnePageWithoutRendering(const bool forward) {
 
   if (forward) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding() || section->isPartial()) {
+      resetImagePageScan();
       ++section->currentPage;
       return true;
     }
     const int nextSpine = epub->getAdjacentLinearSpineIndex(currentSpineIndex, true);
     if (nextSpine >= epub->getSpineItemsCount()) return false;
 
+    resetImagePageScan();
     nextPageNumber = 0;
     currentSpineIndex = nextSpine;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
@@ -2691,6 +2746,7 @@ bool EpubReaderActivity::moveOnePageWithoutRendering(const bool forward) {
   }
 
   if (section->currentPage > 0) {
+    resetImagePageScan();
     --section->currentPage;
     return true;
   }
@@ -2698,6 +2754,7 @@ bool EpubReaderActivity::moveOnePageWithoutRendering(const bool forward) {
   const int previousSpine = epub->getAdjacentLinearSpineIndex(currentSpineIndex, false);
   if (previousSpine < 0) return false;
 
+  resetImagePageScan();
   nextPageNumber = 0;
   pendingPageJump = std::numeric_limits<uint16_t>::max();
   currentSpineIndex = previousSpine;
@@ -2853,6 +2910,7 @@ void EpubReaderActivity::finishSectionLanding() {
 
 // TODO: Failure handling
 void EpubReaderActivity::render(RenderLock&& lock) {
+  resetImagePageScan();
   if (renderReaderExitOverlay()) {
     cancelImagePreparation();
     return;
@@ -2866,8 +2924,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     signalReadingPageHidden();
     return;
   }
-  const bool preparationMatchesCurrentPage =
-      section && imagePrefetchSpine == currentSpineIndex && imagePrefetchPage == section->currentPage;
+  const bool preparationMatchesCurrentPage = section && imagePrefetchSpine == currentSpineIndex &&
+                                             imagePrefetchPage == section->currentPage &&
+                                             imagePrefetchSectionGeneration == sectionGeneration;
   if (!preparationMatchesCurrentPage) imagePreparationForVisiblePage.store(false, std::memory_order_release);
 
   bool clippingHighlightsTruncated = false;
@@ -3079,6 +3138,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
+    ++sectionGeneration;
+    if (sectionGeneration == 0) ++sectionGeneration;
     sectionLandingWarmupPending = false;
     // Fresh section, fresh chance: a failed lazy extension start in a previous
     // section must not suppress watermark-triggered rebuilds for this one.

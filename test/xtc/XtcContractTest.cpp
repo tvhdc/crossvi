@@ -116,30 +116,6 @@ std::vector<uint8_t> makeBookWithPages(const uint16_t pageCount) {
   return bytes;
 }
 
-void paintBinaryPattern(std::vector<uint8_t>& bytes, const uint8_t bitDepth) {
-  xtc::PageLayout layout;
-  ASSERT_TRUE(xtc::calculatePageLayout(480, 800, bitDepth, layout));
-  uint64_t dataOffset = 0;
-  std::memcpy(&dataOffset, bytes.data() + 32, sizeof(dataOffset));
-  const size_t payloadOffset = static_cast<size_t>(dataOffset) + sizeof(xtc::XtgPageHeader);
-  for (uint16_t y = 0; y < 800; ++y) {
-    for (uint16_t x = 0; x < 480; ++x) {
-      const bool black = (static_cast<uint32_t>(x) * 3U + static_cast<uint32_t>(y) * 5U + (x / 13U) * 7U) % 29U < 11U;
-      if (!black) continue;
-      if (bitDepth == 1) {
-        const size_t offset = payloadOffset + static_cast<size_t>(y) * layout.rowBytes + x / 8U;
-        bytes[offset] &= static_cast<uint8_t>(~(1U << (7U - x % 8U)));
-      } else {
-        const size_t column = 479U - x;
-        const size_t offset = column * layout.columnBytes + y / 8U;
-        const uint8_t mask = static_cast<uint8_t>(1U << (7U - y % 8U));
-        bytes[payloadOffset + offset] |= mask;
-        bytes[payloadOffset + layout.planeBytes + offset] |= mask;
-      }
-    }
-  }
-}
-
 std::vector<uint8_t> makeValidBmp(const uint8_t pixel = 0x80U) {
   constexpr uint32_t pixelOffset = 14U + 40U + 8U;
   constexpr uint32_t fileSize = pixelOffset + 4U;
@@ -173,10 +149,28 @@ uint64_t pageOffset(const std::vector<uint8_t>& bytes) {
   return value;
 }
 
+xtc::XtcError finishOpen(xtc::XtcParser& parser) {
+  const xtc::XtcError begin = parser.beginOpen(BOOK_PATH);
+  if (begin != xtc::XtcError::OK) return begin;
+  while (true) {
+    const auto result = parser.stepOpen(16, 64U * 1024U);
+    if (result == xtc::XtcParser::OpenStepResult::Opened) return xtc::XtcError::OK;
+    if (result == xtc::XtcParser::OpenStepResult::Error) return parser.getLastError();
+  }
+}
+
 xtc::XtcError openBook(std::vector<uint8_t> bytes, xtc::XtcParser* parser = nullptr) {
   Storage.setFile(BOOK_PATH, std::move(bytes));
   xtc::XtcParser local;
-  return (parser ? parser : &local)->open(BOOK_PATH);
+  return finishOpen(parser ? *parser : local);
+}
+
+Xtc::ThumbnailPreparationStatus finishThumbnailPreparation(Xtc& book, const int width = 273, const int height = 456) {
+  Xtc::ThumbnailPreparationStatus status = book.beginThumbnailPreparation(width, height);
+  while (status == Xtc::ThumbnailPreparationStatus::InProgress) {
+    status = book.stepThumbnailPreparation(1024, 8);
+  }
+  return status;
 }
 
 std::vector<uint8_t> readFixture(const char* name) {
@@ -215,7 +209,7 @@ TEST_F(XtcContractTest, ValidatesPageTableInBoundedSequentialBlocks) {
   Storage.setFile(BOOK_PATH, makeBookWithPages(16));
   xtc::XtcParser parser;
 
-  ASSERT_EQ(parser.open(BOOK_PATH), xtc::XtcError::OK);
+  ASSERT_EQ(finishOpen(parser), xtc::XtcError::OK);
   EXPECT_LE(Storage.seekCalls(), 5U);
   EXPECT_LE(Storage.maxRead(), 2048U);
 }
@@ -335,39 +329,26 @@ TEST_F(XtcContractTest, ValidatesChapterRecordsWithoutChangingLazyLoadBehavior) 
   EXPECT_EQ(chapters[0].endPage, 0U);
 }
 
-TEST_F(XtcContractTest, ThumbnailCopyOpenFailureDoesNotTouchInvalidHandlesOrPublishPartialOutput) {
-  Storage.setFile(BOOK_PATH, makeBook());
-  Xtc book(BOOK_PATH, "/.crosspoint");
-  ASSERT_TRUE(book.load());
-  const std::string coverPath = book.getCoverBmpPath();
-  const std::string thumbnailPath = book.getThumbBmpPath(1000);
-  Storage.setFile(coverPath, makeValidBmp());
-  Storage.failOpenReadOnAttempt(coverPath, 2);
-
-  EXPECT_FALSE(book.generateThumbBmp(1000));
-  EXPECT_TRUE(Storage.exists(coverPath.c_str()));
-  EXPECT_FALSE(Storage.exists(thumbnailPath.c_str()));
-  EXPECT_FALSE(Storage.exists((thumbnailPath + ".tmp").c_str()));
-  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
-}
-
 TEST_F(XtcContractTest, ThumbnailUsesVerifiedBackupRecoveryBeforeReadingTheBook) {
   Xtc book(BOOK_PATH, "/.crosspoint");
-  const std::string thumbnailPath = book.getThumbBmpPath(120);
-  const std::string backupPath = thumbnailPath + ".bak";
+  const std::string sharedPath = book.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT);
+  const std::string carouselPath = book.getThumbBmpPath(456);
   const auto backup = makeValidBmp();
-  Storage.setFile(backupPath, backup);
+  Storage.setFile(sharedPath + ".bak", backup);
+  Storage.setFile(carouselPath + ".bak", backup);
 
-  EXPECT_TRUE(book.generateThumbBmp(120));
-  EXPECT_EQ(Storage.file(thumbnailPath), backup);
-  EXPECT_FALSE(Storage.exists(backupPath.c_str()));
+  EXPECT_EQ(book.beginThumbnailPreparation(273, 456), Xtc::ThumbnailPreparationStatus::Ready);
+  EXPECT_EQ(Storage.file(sharedPath), backup);
+  EXPECT_EQ(Storage.file(carouselPath), backup);
+  EXPECT_FALSE(Storage.exists((sharedPath + ".bak").c_str()));
+  EXPECT_FALSE(Storage.exists((carouselPath + ".bak").c_str()));
 }
 
 TEST_F(XtcContractTest, CarouselThumbnailFitsBeforeOneBitDithering) {
   Storage.setFile(BOOK_PATH, makeBook());
   Xtc book(BOOK_PATH, "/.crosspoint");
   ASSERT_TRUE(book.load());
-  ASSERT_TRUE(book.generateThumbBmp(273, 456, false));
+  ASSERT_EQ(finishThumbnailPreparation(book), Xtc::ThumbnailPreparationStatus::Ready);
 
   HalFile file;
   ASSERT_TRUE(Storage.openFileForRead("TEST", book.getThumbBmpPath(456), file));
@@ -388,7 +369,7 @@ TEST_F(XtcContractTest, PairedThumbnailsShareOneFirstPageReadForXtcAndXtch) {
     ASSERT_TRUE(book.load());
     Storage.resetIoCounters();
 
-    ASSERT_TRUE(book.generateThumbBmpPair(273, 456));
+    ASSERT_EQ(finishThumbnailPreparation(book), Xtc::ThumbnailPreparationStatus::Ready);
     EXPECT_LE(Storage.openReadAttemptsFor(BOOK_PATH), static_cast<size_t>(bitDepth) + 1U);
     EXPECT_LE(Storage.maxRead(), 1024U);
 
@@ -500,41 +481,20 @@ TEST_F(XtcContractTest, ThumbnailPairPreparationRejectsSourceReplacementBeforePu
   EXPECT_FALSE(Storage.exists((book.getThumbBmpPath(456) + ".tmp").c_str()));
 }
 
-TEST_F(XtcContractTest, StreamedThumbnailPairMatchesExistingAreaAverageOutput) {
-  for (const uint8_t bitDepth : {1U, 2U}) {
-    SCOPED_TRACE(bitDepth);
-    auto bookBytes = makeBook(bitDepth);
-    paintBinaryPattern(bookBytes, bitDepth);
-
-    Storage.setFile(BOOK_PATH, bookBytes);
-    Xtc reference(BOOK_PATH, "/.crosspoint");
-    ASSERT_TRUE(reference.load());
-    ASSERT_TRUE(reference.generateThumbBmp(Xtc::SHARED_THUMB_WIDTH, Xtc::SHARED_THUMB_HEIGHT, true));
-    ASSERT_TRUE(reference.generateThumbBmp(273, 456, false));
-    const auto expectedShared = Storage.file(reference.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT));
-    const auto expectedCarousel = Storage.file(reference.getThumbBmpPath(456));
-
-    Storage.reset();
-    Storage.setFile(BOOK_PATH, std::move(bookBytes));
-    Xtc streamed(BOOK_PATH, "/.crosspoint");
-    ASSERT_TRUE(streamed.load());
-    ASSERT_TRUE(streamed.generateThumbBmpPair(273, 456));
-    EXPECT_EQ(Storage.file(streamed.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT)), expectedShared);
-    EXPECT_EQ(Storage.file(streamed.getThumbBmpPath(456)), expectedCarousel);
-  }
-}
-
 TEST_F(XtcContractTest, PairedThumbnailsPreserveExistingSiblingWhenCarouselPublishFails) {
   Storage.setFile(BOOK_PATH, makeBook());
   Xtc book(BOOK_PATH, "/.crosspoint");
   ASSERT_TRUE(book.load());
-  ASSERT_TRUE(book.generateThumbBmp(Xtc::SHARED_THUMB_HEIGHT));
+  ASSERT_EQ(finishThumbnailPreparation(book), Xtc::ThumbnailPreparationStatus::Ready);
   const std::string sharedPath = book.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT);
   const std::vector<uint8_t> sharedBefore = Storage.file(sharedPath);
   const std::string carouselPath = book.getThumbBmpPath(456);
+  ASSERT_TRUE(Storage.remove(carouselPath.c_str()));
   Storage.failRenameTo(carouselPath);
 
-  EXPECT_FALSE(book.generateThumbBmpPair(273, 456));
+  Xtc retry(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(retry.load());
+  EXPECT_EQ(finishThumbnailPreparation(retry), Xtc::ThumbnailPreparationStatus::Error);
   EXPECT_EQ(Storage.file(sharedPath), sharedBefore);
   EXPECT_FALSE(Storage.exists(carouselPath.c_str()));
   EXPECT_FALSE(Storage.exists((carouselPath + ".tmp").c_str()));
@@ -548,7 +508,7 @@ TEST_F(XtcContractTest, ThumbnailPublishFaultsLeaveNoCommittedOrTemporaryOutput)
     Storage.setFile(BOOK_PATH, makeBook());
     Xtc book(BOOK_PATH, "/.crosspoint");
     ASSERT_TRUE(book.load());
-    const std::string finalPath = book.getThumbBmpPath(120);
+    const std::string finalPath = book.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT);
     const std::string stagingPath = finalPath + ".tmp";
     switch (fault) {
       case Fault::ShortWrite:
@@ -565,7 +525,7 @@ TEST_F(XtcContractTest, ThumbnailPublishFaultsLeaveNoCommittedOrTemporaryOutput)
         break;
     }
 
-    EXPECT_FALSE(book.generateThumbBmp(120));
+    EXPECT_EQ(finishThumbnailPreparation(book), Xtc::ThumbnailPreparationStatus::Error);
     EXPECT_FALSE(Storage.exists(finalPath.c_str()));
     EXPECT_FALSE(Storage.exists(stagingPath.c_str()));
     EXPECT_EQ(Storage.invalidOperationCount(), 0U);
@@ -760,7 +720,7 @@ TEST_F(XtcContractTest, ReadFailuresAndSourceMutationFailClosed) {
   Storage.setFile(BOOK_PATH, makeBook());
   Storage.shortReadFor(BOOK_PATH);
   xtc::XtcParser shortReadParser;
-  EXPECT_EQ(shortReadParser.open(BOOK_PATH), xtc::XtcError::READ_ERROR);
+  EXPECT_EQ(finishOpen(shortReadParser), xtc::XtcError::READ_ERROR);
   EXPECT_FALSE(shortReadParser.isOpen());
 
   Storage.reset();
@@ -769,7 +729,7 @@ TEST_F(XtcContractTest, ReadFailuresAndSourceMutationFailClosed) {
   // mutate the file as the streaming identity pass begins.
   Storage.growOnReadCall(4);
   xtc::XtcParser changingParser;
-  EXPECT_EQ(changingParser.open(BOOK_PATH), xtc::XtcError::READ_ERROR);
+  EXPECT_EQ(finishOpen(changingParser), xtc::XtcError::READ_ERROR);
   EXPECT_FALSE(changingParser.isOpen());
 }
 

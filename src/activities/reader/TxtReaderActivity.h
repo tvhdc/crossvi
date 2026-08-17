@@ -39,10 +39,7 @@ class TxtReaderActivity final : public Activity {
   size_t pageOffsetCount = 0;
   size_t pageOffsetCapacity = 0;
   bool pageIndexComplete = false;
-  enum class PageIndexWork : uint8_t { None, Initial, Jump, CompleteForClipping };
-  std::atomic<PageIndexWork> pageIndexWork{PageIndexWork::None};
-  uint32_t pageIndexTargetOffset = 0;
-  bool pageIndexTargetRequiresComplete = false;
+  std::atomic<bool> pageIndexing{false};
   bool readerLayoutPrepared = false;
   std::optional<uint32_t> initialProgressOffset;
   std::vector<std::string> currentPageLines;
@@ -151,9 +148,9 @@ class TxtReaderActivity final : public Activity {
   void initializeReader();
   void finishReaderInitialization();
   bool ensureContentReadSession();
+  void releasePageIndexScratch();
   void releaseContentReadSession();
-  void processRequestedPageIndex();
-  void processBackgroundPageIndex();
+  void processPageIndex();
   bool loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
                         std::vector<uint32_t>* outLineOffsets = nullptr);
   bool loadPageAtOffsetWithScratch(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
@@ -163,11 +160,8 @@ class TxtReaderActivity final : public Activity {
   std::unique_ptr<Page> buildInteractivePageFromLines(const std::vector<std::string>& lines,
                                                       const std::vector<uint32_t>& lineOffsets,
                                                       std::vector<TextWordAnchor>* anchors = nullptr);
-  bool buildPageIndexUntil(size_t targetOffset, size_t maxPages);
   bool buildPageIndexBatch(size_t maxPages);
   void markPageIndexFailed();
-  uint32_t initialPageIndexTarget(bool& requiresCompleteIndex);
-  int estimatedTotalPages() const;
   bool appendPageOffset(uint32_t offset);
   bool loadPageIndexCache();
   void savePageIndexCache() const;
@@ -191,7 +185,6 @@ class TxtReaderActivity final : public Activity {
   bool jumpToStoredByteOffset(uint32_t byteOffset);
   void openDictionaryWordSelect();
   void openClippingSelection();
-  void openIndexedClippingSelection();
   void openClippings();
   void openSavedItems();
   bool validateClippingJump(const ClippingJumpResult& jump) const;
@@ -228,11 +221,7 @@ class TxtReaderActivity final : public Activity {
   void onResume() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool skipLoopDelay() override {
-    return pageIndexWork.load(std::memory_order_acquire) != PageIndexWork::None ||
-           (initialized.load(std::memory_order_acquire) && !initializationFailed && lastSuccessfullyRenderedPage >= 0 &&
-            !pageIndexComplete);
-  }
+  bool skipLoopDelay() override { return pageIndexing.load(std::memory_order_acquire); }
   bool isReaderActivity() const override { return true; }
   bool handleForcedRefresh() override {
     {

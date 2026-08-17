@@ -26,9 +26,7 @@ class ImageBlock final : public Block {
   bool hasPendingPublication() const;
   bool needsRawPreparation() const;
   bool hasValidCache() const;
-  bool needsDecode() const;
   bool awaitsRawPreparation() const { return rawPreparationNeeded; }
-  bool preparePixelCache(GfxRenderer& renderer, int x, int y) const;
   bool wasDecodedWithoutCache() const { return decodedWithoutCache; }
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearSessionRenderFailures();

@@ -35,7 +35,6 @@
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "TxtLineWrap.h"
-#include "TxtPageIndex.h"
 #include "activities/reader/BookReaderSettingsActivity.h"
 #include "activities/reader/BookSavedItemsActivity.h"
 #include "activities/reader/ClipSelectionActivity.h"
@@ -61,7 +60,7 @@ constexpr size_t MIN_BINARY_WRAP_BYTES = 96;
 constexpr size_t CACHE_IO_BUFFER_SIZE = 1024;
 constexpr size_t CACHE_HEADER_SIZE = 34 + SourceIdentityCodec::ENCODED_SIZE;
 constexpr size_t INITIAL_INDEX_CAPACITY = 256;
-constexpr size_t BACKGROUND_INDEX_PAGES_PER_TICK = 2;
+constexpr size_t INDEX_PAGES_PER_TICK = 2;
 // ESP32-C3 has no PSRAM. Keep a corrupt or pathological text file from growing
 // the in-memory offset table until std::vector aborts (firmware builds disable
 // exceptions). 16K pages still exceeds any practical plain-text book while
@@ -211,7 +210,7 @@ void TxtReaderActivity::onEnter() {
 void TxtReaderActivity::onExit() {
   Activity::onExit();
 
-  pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
+  pageIndexing.store(false, std::memory_order_release);
 
   commitReadingSession();
   saveReadingStats();
@@ -289,8 +288,9 @@ void TxtReaderActivity::loop() {
                                mappedInput.isPressed(MappedInputManager::Button::Right) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageForward);
-  const bool indexWorkPending = pageIndexWork.load(std::memory_order_acquire) != PageIndexWork::None;
-  const bool readerReady = initialized.load(std::memory_order_acquire) && !initializationFailed && pageOffsetCount > 0;
+  const bool indexWorkPending = pageIndexing.load(std::memory_order_acquire);
+  const bool readerReady =
+      initialized.load(std::memory_order_acquire) && !initializationFailed && pageIndexComplete && pageOffsetCount > 0;
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     confirmHold.onPress();
     if (readerReady && !indexWorkPending && !automaticPageTurnActive) {
@@ -322,11 +322,6 @@ void TxtReaderActivity::loop() {
         lastPageTurnTime = millis();
         requestUpdate();
         return;
-      } else if (!pageIndexComplete) {
-        // The visible watermark is not the end of the file. Let this loop tick
-        // reach processBackgroundPageIndex() so auto-turn can resume once the
-        // next bounded batch exposes another page.
-        lastPageTurnTime = millis();
       } else {
         automaticPageTurnActive = false;
         requestUpdate();
@@ -343,7 +338,7 @@ void TxtReaderActivity::loop() {
   }
 
   if (indexWorkPending) {
-    if (!inputEdge && !readerInputHeld) processRequestedPageIndex();
+    if (!inputEdge && !readerInputHeld) processPageIndex();
     return;
   }
 
@@ -371,7 +366,6 @@ void TxtReaderActivity::loop() {
   if (!prevTriggered && !nextTriggered) {
     if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {
       finishDeferredOpenState();
-      processBackgroundPageIndex();
     }
     return;
   }
@@ -411,10 +405,6 @@ void TxtReaderActivity::loop() {
         stopReadingPage(true, static_cast<uint32_t>(millis()));
         currentPage = std::min(totalPages - 1, currentPage + pageDelta);
         changed = true;
-      } else if (!pageIndexComplete) {
-        // The bounded background job has not exposed the next page yet. Never
-        // mistake its temporary watermark for the end of the book.
-        completionAttemptBlocked = false;
       } else if (lastSuccessfullyRenderedPage != currentPage) {
         // Button notifications can arrive faster than e-paper renders. Do not
         // complete a book until its actual last page has reached the panel.
@@ -521,10 +511,7 @@ void TxtReaderActivity::initializeReader() {
   if (indexCacheHit) {
     finishReaderInitialization();
   } else {
-    bool requiresCompleteIndex = false;
-    pageIndexTargetOffset = initialPageIndexTarget(requiresCompleteIndex);
-    pageIndexTargetRequiresComplete = requiresCompleteIndex;
-    pageIndexWork.store(PageIndexWork::Initial, std::memory_order_release);
+    pageIndexing.store(true, std::memory_order_release);
   }
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
@@ -560,7 +547,7 @@ void TxtReaderActivity::finishReaderInitialization() {
     }
   }
 
-  pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
+  pageIndexing.store(false, std::memory_order_release);
   initialized.store(true, std::memory_order_release);
 }
 
@@ -577,96 +564,47 @@ bool TxtReaderActivity::ensureContentReadSession() {
   return true;
 }
 
-void TxtReaderActivity::releaseContentReadSession() {
-  contentFile = {};
-  pageScratch.reset();
-  pageScratchSize = 0;
-  pageIndexScratchLines = {};
-  pageIndexScratchLineOffsets = {};
+void TxtReaderActivity::releasePageIndexScratch() {
+  std::vector<std::string>{}.swap(pageIndexScratchLines);
+  std::vector<uint32_t>{}.swap(pageIndexScratchLineOffsets);
   pageIndexScratchOffset.reset();
   pageIndexScratchNextOffset = 0;
 }
 
-void TxtReaderActivity::processRequestedPageIndex() {
+void TxtReaderActivity::releaseContentReadSession() {
+  contentFile = {};
+  pageScratch.reset();
+  pageScratchSize = 0;
+  releasePageIndexScratch();
+}
+
+void TxtReaderActivity::processPageIndex() {
   bool redrawReader = false;
-  bool openClipping = false;
   {
     RenderLock lock(std::try_to_lock);
     if (!lock.ownsLock()) return;
 
-    const PageIndexWork work = pageIndexWork.load(std::memory_order_acquire);
-    if (work == PageIndexWork::None || initializationFailed) return;
+    if (!pageIndexing.load(std::memory_order_acquire) || initializationFailed) return;
 
     // A cold/stale cache is finished before the first readable page. Continuing
     // the whole-file wrap scan after first paint competes with every page turn
     // and discards all but the last page's reusable scratch data.
-    const bool requiresCompleteIndex = work == PageIndexWork::Initial || pageIndexTargetRequiresComplete;
-    const size_t targetOffset = requiresCompleteIndex ? txt->getFileSize() : pageIndexTargetOffset;
-    if (!buildPageIndexUntil(targetOffset, BACKGROUND_INDEX_PAGES_PER_TICK)) {
+    if (!buildPageIndexBatch(INDEX_PAGES_PER_TICK)) {
       markPageIndexFailed();
-      if (work == PageIndexWork::Initial) finishReaderInitialization();
-      if (work != PageIndexWork::Initial) {
-        pendingClippingNotice = ClippingNotice::Unavailable;
-        clearBlockingFeedback();
-      }
+      finishReaderInitialization();
       redrawReader = true;
-    } else {
-      const bool targetReady = requiresCompleteIndex
-                                   ? pageIndexComplete
-                                   : TxtPageIndex::containsTarget(pageOffsets.get(), pageOffsetCount, pageIndexComplete,
-                                                                  pageIndexTargetOffset);
-      if (!targetReady) return;
-
-      if (pageIndexComplete && pageOffsetCount > 0) savePageIndexCache();
-      pageIndexTargetRequiresComplete = false;
-      switch (work) {
-        case PageIndexWork::Initial:
-          finishReaderInitialization();
-          redrawReader = true;
-          break;
-        case PageIndexWork::Jump:
-          applyIndexedByteOffset(pageIndexTargetOffset);
-          pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
-          clearBlockingFeedback();
-          redrawReader = true;
-          break;
-        case PageIndexWork::CompleteForClipping:
-          pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
-          clearBlockingFeedback();
-          openClipping = true;
-          break;
-        case PageIndexWork::None:
-          break;
-      }
-    }
-  }
-
-  if (openClipping) {
-    openIndexedClippingSelection();
-  } else if (redrawReader) {
-    requestUpdate();
-  }
-}
-
-void TxtReaderActivity::processBackgroundPageIndex() {
-  bool failed = false;
-  {
-    RenderLock lock(std::try_to_lock);
-    if (!lock.ownsLock() || !initialized.load(std::memory_order_acquire) || initializationFailed ||
-        lastSuccessfullyRenderedPage < 0 || pageIndexComplete) {
-      return;
-    }
-    if (!buildPageIndexBatch(BACKGROUND_INDEX_PAGES_PER_TICK)) {
-      markPageIndexFailed();
-      failed = true;
     } else if (pageIndexComplete) {
-      savePageIndexCache();
+      if (pageOffsetCount > 0) savePageIndexCache();
+      finishReaderInitialization();
+      redrawReader = true;
     }
   }
-  if (failed) requestUpdate();
+
+  if (redrawReader) requestUpdate();
 }
 
-bool TxtReaderActivity::buildPageIndexUntil(const size_t targetOffset, const size_t maxPages) {
+bool TxtReaderActivity::buildPageIndexBatch(const size_t maxPages) {
+  if (pageIndexComplete) return true;
   if (maxPages == 0) return false;
   const size_t fileSize = txt->getFileSize();
   if (fileSize == 0) {
@@ -729,7 +667,7 @@ bool TxtReaderActivity::buildPageIndexUntil(const size_t targetOffset, const siz
     ++parsedPages;
     if (offset < fileSize && !appendPageOffset(static_cast<uint32_t>(offset))) return false;
 
-    if (TxtPageIndex::reachedTargetPage(offset, fileSize, targetOffset) || parsedPages >= maxPages) break;
+    if (parsedPages >= maxPages) break;
 
     // Yield to other tasks periodically
     if (pageOffsetCount % 20 == 0) {
@@ -743,11 +681,6 @@ bool TxtReaderActivity::buildPageIndexUntil(const size_t targetOffset, const siz
   return true;
 }
 
-bool TxtReaderActivity::buildPageIndexBatch(const size_t maxPages) {
-  if (pageIndexComplete) return true;
-  return buildPageIndexUntil(txt->getFileSize(), maxPages);
-}
-
 void TxtReaderActivity::markPageIndexFailed() {
   pageOffsets.reset();
   pageOffsetCount = 0;
@@ -756,48 +689,8 @@ void TxtReaderActivity::markPageIndexFailed() {
   totalPages = 0;
   initializationFailed = true;
   lastSuccessfullyRenderedPage = -1;
-  pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
+  pageIndexing.store(false, std::memory_order_release);
   releaseContentReadSession();
-}
-
-uint32_t TxtReaderActivity::initialPageIndexTarget(bool& requiresCompleteIndex) {
-  initialProgressOffset.reset();
-  requiresCompleteIndex = false;
-  uint32_t targetOffset = 0;
-  if (!txt || txt->getFileSize() == 0) return targetOffset;
-
-  uint8_t data[ProgressFileCodec::TXT_V2_SIZE]{};
-  const ProgressFile::LoadResult progress = ProgressFile::loadTxt(txt->getCachePath(), data, sizeof(data));
-  if (progress) {
-    uint32_t savedValue = 0;
-    const ProgressFileCodec::TxtDecodeStatus decoded = ProgressFileCodec::decodeTxt(data, progress.size, savedValue);
-    if (decoded == ProgressFileCodec::TxtDecodeStatus::Ok && savedValue < txt->getFileSize()) {
-      targetOffset = savedValue;
-      initialProgressOffset = savedValue;
-    } else if (decoded == ProgressFileCodec::TxtDecodeStatus::LegacyPage) {
-      // Legacy progress is a layout-dependent page number, so its exact
-      // bounds cannot be validated until the full index is known.
-      requiresCompleteIndex = true;
-    }
-  }
-
-  if (initialClippingJump && validateClippingJump(*initialClippingJump) && initialClippingJump->hasTextAnchor &&
-      initialClippingJump->textSourceStart < txt->getFileSize()) {
-    targetOffset = initialClippingJump->textSourceStart;
-    requiresCompleteIndex = false;
-  }
-  if (initialBookmarkJump && initialBookmarkJump->hasTextByteOffset &&
-      initialBookmarkJump->textByteOffset < txt->getFileSize()) {
-    targetOffset = initialBookmarkJump->textByteOffset;
-    requiresCompleteIndex = false;
-  }
-  return targetOffset;
-}
-
-int TxtReaderActivity::estimatedTotalPages() const {
-  if (pageIndexComplete || !txt) return totalPages;
-  return static_cast<int>(TxtPageIndex::estimateTotalPages(pageOffsets.get(), pageOffsetCount,
-                                                           static_cast<uint32_t>(txt->getFileSize()), MAX_INDEX_PAGES));
 }
 
 bool TxtReaderActivity::appendPageOffset(const uint32_t offset) {
@@ -1128,8 +1021,7 @@ void TxtReaderActivity::render(RenderLock&&) {
     initializeReader();
   }
 
-  if (!initialized.load(std::memory_order_acquire) &&
-      pageIndexWork.load(std::memory_order_acquire) == PageIndexWork::Initial) {
+  if (!initialized.load(std::memory_order_acquire) && pageIndexing.load(std::memory_order_acquire)) {
     lastSuccessfullyRenderedPage = -1;
     signalReadingPageHidden();
     renderer.clearScreen();
@@ -1175,9 +1067,11 @@ void TxtReaderActivity::render(RenderLock&&) {
     currentPageLines.swap(pageIndexScratchLines);
     currentPageLineOffsets.swap(pageIndexScratchLineOffsets);
     nextOffset = pageIndexScratchNextOffset;
-    pageIndexScratchOffset.reset();
-    pageIndexScratchNextOffset = 0;
+    releasePageIndexScratch();
     pageReused = true;
+  }
+  if (!pageReused && pageIndexScratchOffset) {
+    releasePageIndexScratch();
   }
   if (!pageReused && !loadPageAtOffset(offset, currentPageLines, nextOffset, &currentPageLineOffsets)) {
     lastSuccessfullyRenderedPage = -1;
@@ -1401,18 +1295,12 @@ void TxtReaderActivity::renderPage() {
 }
 
 void TxtReaderActivity::renderStatusBar() const {
-  const int displayedTotalPages = estimatedTotalPages();
   float progress = totalPages > 0 ? (currentPage + 1) * 100.0f / totalPages : 0;
-  if (!pageIndexComplete && txt && txt->getFileSize() > 0 && currentPage >= 0 &&
-      static_cast<size_t>(currentPage + 1) < pageOffsetCount) {
-    progress = std::min(100.0f, static_cast<float>(pageOffsets[currentPage + 1]) * 100.0f / txt->getFileSize());
-  }
   std::string title;
   if (SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE) {
     title = txt->getTitle();
   }
-  GUI.drawStatusBar(renderer, progress, currentPage + 1, displayedTotalPages, title, 0, 0, true, false,
-                    !pageIndexComplete);
+  GUI.drawStatusBar(renderer, progress, currentPage + 1, totalPages, title, 0, 0, true, false, false);
 }
 
 void TxtReaderActivity::signalReadingPageVisible() {
@@ -1822,31 +1710,6 @@ void TxtReaderActivity::openClippingSelection() {
     requestUpdate();
     return;
   }
-  bool queued = false;
-  {
-    RenderLock lock(*this);
-    if (!pageIndexComplete) {
-      pageIndexTargetOffset = static_cast<uint32_t>(txt->getFileSize());
-      pageIndexTargetRequiresComplete = true;
-      pageIndexWork.store(PageIndexWork::CompleteForClipping, std::memory_order_release);
-      queued = true;
-    }
-  }
-  if (queued) {
-    queueBlockingFeedback(StrId::STR_INDEXING);
-    return;
-  }
-
-  openIndexedClippingSelection();
-}
-
-void TxtReaderActivity::openIndexedClippingSelection() {
-  if (!txt || !pageIndexComplete || !clippingStore.isLoaded() || currentPage < 0 ||
-      static_cast<size_t>(currentPage) >= pageOffsetCount) {
-    pendingClippingNotice = ClippingNotice::Unavailable;
-    requestUpdate();
-    return;
-  }
   auto page = buildInteractivePage(static_cast<uint16_t>(currentPage));
   if (!page) {
     pendingClippingNotice = ClippingNotice::Unavailable;
@@ -2021,10 +1884,8 @@ void TxtReaderActivity::rememberCurrentByteOffset() {
 }
 
 void TxtReaderActivity::invalidateReaderLayout() {
-  pageIndexWork.store(PageIndexWork::None, std::memory_order_release);
+  pageIndexing.store(false, std::memory_order_release);
   readerLayoutPrepared = false;
-  pageIndexTargetOffset = 0;
-  pageIndexTargetRequiresComplete = false;
   pageOffsets.reset();
   pageOffsetCount = 0;
   pageOffsetCapacity = 0;
@@ -2122,24 +1983,11 @@ void TxtReaderActivity::jumpToPercent(const int percent) {
 
 void TxtReaderActivity::jumpToByteOffset(const uint32_t byteOffset) {
   if (pageOffsetCount == 0) return;
-  bool queued = false;
   {
     RenderLock lock(*this);
-    if (!TxtPageIndex::containsTarget(pageOffsets.get(), pageOffsetCount, pageIndexComplete, byteOffset)) {
-      pageIndexTargetOffset = byteOffset;
-      pageIndexTargetRequiresComplete = false;
-      pageIndexWork.store(PageIndexWork::Jump, std::memory_order_release);
-      queued = true;
-    } else {
-      applyIndexedByteOffset(byteOffset);
-    }
+    applyIndexedByteOffset(byteOffset);
   }
-
-  if (queued) {
-    queueBlockingFeedback(StrId::STR_INDEXING);
-  } else {
-    requestUpdate();
-  }
+  requestUpdate();
 }
 
 void TxtReaderActivity::applyIndexedByteOffset(const uint32_t byteOffset) {

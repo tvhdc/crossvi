@@ -14,8 +14,6 @@
 #include "util/ButtonNavigator.h"
 
 class Epub;
-class Txt;
-class Xtc;
 
 class FileBrowserActivity final : public Activity {
  public:
@@ -64,8 +62,6 @@ class FileBrowserActivity final : public Activity {
   StrId popupMessage = StrId::STR_NONE_OPT;
   unsigned long popupTime = 0;
   std::unique_ptr<Epub> preparedEpub;
-  std::unique_ptr<Xtc> preparedXtc;
-  std::unique_ptr<Txt> preparedTxt;
   std::string sourcePreparationFailedPath;
   uint32_t sourcePreparationLastInputAt = 0;
 

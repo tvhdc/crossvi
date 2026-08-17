@@ -290,11 +290,6 @@ bool ImageBlock::hasValidCache() const {
   return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
 }
 
-bool ImageBlock::needsDecode() const {
-  if (publicationPendingForRender()) return true;
-  return !decodedWithoutCache && !renderFailed && !imageFailedThisSession(imagePath) && !hasValidCache();
-}
-
 bool ImageBlock::needsRawPreparation() const {
   if (renderFailed || imageFailedThisSession(imagePath)) return false;
   const bool pending = hasPendingPublication();
@@ -309,37 +304,6 @@ bool ImageBlock::publicationPendingForRender() const {
     renderPublicationProbe = hasPendingPublication() ? PublicationProbe::Pending : PublicationProbe::Clear;
   }
   return renderPublicationProbe == PublicationProbe::Pending;
-}
-
-bool ImageBlock::preparePixelCache(GfxRenderer& renderer, const int x, const int y) const {
-  if (hasPendingPublication()) return false;
-  if (hasValidCache()) return true;
-  if (width <= 0 || height <= 0 || x < 0 || y < 0 || x + width > renderer.getScreenWidth() ||
-      y + height > renderer.getScreenHeight()) {
-    return false;
-  }
-
-  HalFile file;
-  if (!Storage.openFileForRead("IMG", imagePath, file)) return false;
-  const size_t fileSize = file.size();
-  const bool closed = file.close();
-  if (fileSize == 0 || !closed) return false;
-
-  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
-  if (!decoder) return false;
-
-  RenderConfig config;
-  config.x = x;
-  config.y = y;
-  config.maxWidth = width;
-  config.maxHeight = height;
-  config.useGrayscale = true;
-  config.useDithering = true;
-  config.performanceMode = false;
-  config.useExactDimensions = true;
-  config.cacheOnly = true;
-  config.cachePath = getPixelCachePath();
-  return decoder->decodeToFramebuffer(imagePath, renderer, config) && hasValidCache();
 }
 
 void ImageBlock::clearSessionRenderFailures() {
