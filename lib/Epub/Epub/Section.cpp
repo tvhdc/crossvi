@@ -1133,6 +1133,32 @@ std::optional<uint16_t> Section::findPageForSourceOffset(const uint32_t offset, 
     return value && PageSourceAnchor::contains(*value, offset);
   };
 
+  if (matches(hint)) return hint;
+
+  std::optional<uint16_t> candidate;
+  uint32_t low = 0;
+  uint32_t high = pageCount;
+  while (low < high) {
+    const uint16_t mid = static_cast<uint16_t>(low + (high - low) / 2U);
+    const auto page = loadPage(mid);
+    if (!page) {
+      candidate.reset();
+      break;
+    }
+    const auto firstOffset = PageSourceAnchor::first(*page);
+    if (!firstOffset.has_value()) {
+      candidate.reset();
+      break;
+    }
+    if (*firstOffset <= offset) {
+      candidate = mid;
+      low = static_cast<uint32_t>(mid) + 1U;
+    } else {
+      high = mid;
+    }
+  }
+  if (candidate.has_value() && *candidate != hint && matches(*candidate)) return *candidate;
+
   for (uint32_t distance = 0; distance < pageCount; ++distance) {
     if (distance <= hint) {
       const uint16_t before = static_cast<uint16_t>(hint - distance);

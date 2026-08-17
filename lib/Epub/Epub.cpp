@@ -499,6 +499,10 @@ bool Epub::parseTocNcxFile() const {
     LOG_ERR("EBP", "Could not read toc ncx file");
     return false;
   }
+  if (!ncxParser.succeeded()) {
+    LOG_ERR("EBP", "Could not parse toc ncx file");
+    return false;
+  }
 
   LOG_DBG("EBP", "Parsed TOC items");
   return true;
@@ -1415,8 +1419,11 @@ Epub::IndexStepResult Epub::stepIndexing() {
       const bool navUsable =
           kind == IndexingReadState::Kind::TocNav && indexingReadState->navParser &&
           indexingReadState->navParser->succeeded() && indexingReadState->navParser->usableEntryCount() > 0;
+      const bool ncxUsable =
+          kind == IndexingReadState::Kind::TocNcx && indexingReadState->ncxParser &&
+          indexingReadState->ncxParser->succeeded();
       if (readStatus == ZipStreamReadJob::StepStatus::Done &&
-          (kind != IndexingReadState::Kind::TocNav || navUsable)) {
+          (navUsable || ncxUsable)) {
         return finishTocPass(true);
       }
 
@@ -2256,6 +2263,7 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
       (!FsHelpers::hasJpgExtension(finalPathView) && !FsHelpers::hasPngExtension(finalPathView))) {
     return false;
   }
+  if (!sourceStillMatchesSnapshot()) return false;
 
   const std::string stagingPath = finalPath + ".tmp";
   const std::string backupPath = finalPath + ".bak";
@@ -2270,7 +2278,8 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
   const bool extracted = readItemContentsToStream(itemHref, output, 4096, false, MAX_EXTRACTED_RASTER_BYTES);
   const bool synced = output.sync();
   const bool closed = output.close();
-  if (!extracted || !synced || !closed || !validateRasterFile(stagingPath.c_str(), nullptr)) {
+  if (!extracted || !synced || !closed || !sourceStillMatchesSnapshot() ||
+      !validateRasterFile(stagingPath.c_str(), nullptr)) {
     Storage.remove(stagingPath.c_str());
     return false;
   }
@@ -2287,6 +2296,7 @@ Epub::ImagePreparationStatus Epub::beginImagePreparation(const std::string& item
       (!FsHelpers::hasJpgExtension(finalPathView) && !FsHelpers::hasPngExtension(finalPathView))) {
     return ImagePreparationStatus::Error;
   }
+  if (!sourceStillMatchesSnapshot()) return ImagePreparationStatus::Error;
 
   const std::string backupPath = finalPath + ".bak";
   const auto recovered = StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateRasterFile);
@@ -2326,7 +2336,8 @@ Epub::ImagePreparationStatus Epub::stepImagePreparation() {
   imageStreamJob.reset();
   const bool synced = status == ZipStreamReadJob::StepStatus::Done && imageStreamOutput.sync();
   const bool closed = imageStreamOutput.close();
-  if (!synced || !closed || !validateRasterFile(imageStreamStagingPath.c_str(), nullptr)) {
+  if (!synced || !closed || !sourceStillMatchesSnapshot() ||
+      !validateRasterFile(imageStreamStagingPath.c_str(), nullptr)) {
     Storage.remove(imageStreamStagingPath.c_str());
     imageStreamFinalPath.clear();
     imageStreamStagingPath.clear();

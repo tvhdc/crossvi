@@ -137,6 +137,7 @@ class ChapterHtmlSlimParser {
   bool ensureMemory(const char* stage);
   bool createPage(const char* stage);
   void failOutOfMemory(const char* stage);
+  void failInvalidContent(const char* stage);
   void softFlushTextBlockIfNeeded();
   void flushPendingAnchor();
   void flushPartWordBuffer();

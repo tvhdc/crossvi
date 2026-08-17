@@ -3,6 +3,7 @@
 #include <BidiUtils.h>
 #include <BufferedFile.h>
 #include <Epub/Page.h>
+#include <Epub/SourceIdentityCodec.h>
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
@@ -11,6 +12,7 @@
 #include <JsonSettingsIO.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <StagedFileTransaction.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -57,7 +59,7 @@ constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
 // The legacy scan is cheaper when a short line only barely overflows.
 constexpr size_t MIN_BINARY_WRAP_BYTES = 96;
 constexpr size_t CACHE_IO_BUFFER_SIZE = 1024;
-constexpr size_t CACHE_HEADER_SIZE = 34;
+constexpr size_t CACHE_HEADER_SIZE = 34 + SourceIdentityCodec::ENCODED_SIZE;
 constexpr size_t INITIAL_INDEX_CAPACITY = 256;
 constexpr size_t BACKGROUND_INDEX_PAGES_PER_TICK = 2;
 // ESP32-C3 has no PSRAM. Keep a corrupt or pathological text file from growing
@@ -67,10 +69,74 @@ constexpr size_t BACKGROUND_INDEX_PAGES_PER_TICK = 2;
 constexpr size_t MAX_INDEX_PAGES = 16U * 1024U;
 // Cache file magic and version
 constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
-constexpr uint8_t CACHE_VERSION = 6;          // Increment when pagination behavior changes
+constexpr uint8_t CACHE_VERSION = 7;          // Increment when pagination/cache identity behavior changes
 constexpr uint8_t MIN_AUTO_PAGE_TURN_SECONDS = 5;
 constexpr uint8_t MAX_AUTO_PAGE_TURN_SECONDS = 120;
 constexpr unsigned long MILLISECONDS_PER_SECOND = 1000UL;
+
+template <typename T>
+bool readPodExact(HalFile& file, T& value) {
+  return file.read(&value, sizeof(T)) == static_cast<int>(sizeof(T));
+}
+
+bool validateTxtPageIndexCache(const char* path, void*) {
+  HalFile file;
+  if (!Storage.openFileForRead("TRS", path, file)) return false;
+  const uint64_t cacheSize = file.fileSize64();
+  if (cacheSize < CACHE_HEADER_SIZE) {
+    file.close();
+    return false;
+  }
+
+  uint32_t magic = 0;
+  uint8_t version = 0;
+  SourceIdentityCodec::Encoded encodedIdentity{};
+  uint32_t fileSize = 0;
+  int32_t cachedWidth = 0;
+  int32_t cachedLines = 0;
+  int32_t fontId = 0;
+  int32_t lineAdvance = 0;
+  int32_t margin = 0;
+  uint8_t alignment = 0;
+  uint32_t numPages = 0;
+  ZipFile::SourceIdentity storedIdentity;
+  const bool headerOk = readPodExact(file, magic) && readPodExact(file, version) &&
+                        file.read(encodedIdentity.data(), encodedIdentity.size()) ==
+                            static_cast<int>(encodedIdentity.size()) &&
+                        readPodExact(file, fileSize) && readPodExact(file, cachedWidth) &&
+                        readPodExact(file, cachedLines) && readPodExact(file, fontId) &&
+                        readPodExact(file, lineAdvance) && readPodExact(file, margin) &&
+                        readPodExact(file, alignment) && readPodExact(file, numPages) &&
+                        SourceIdentityCodec::decode(encodedIdentity.data(), encodedIdentity.size(), storedIdentity) ==
+                            SourceIdentityCodec::DecodeStatus::OK &&
+                        storedIdentity.fileSize == fileSize;
+  const uint64_t expectedCacheSize = CACHE_HEADER_SIZE + static_cast<uint64_t>(numPages) * sizeof(uint32_t);
+  const uint64_t maxPossiblePages = static_cast<uint64_t>(fileSize) + 1U;
+  if (!headerOk || magic != CACHE_MAGIC || version != CACHE_VERSION || cachedWidth <= 0 || cachedLines <= 0 ||
+      lineAdvance <= 0 || expectedCacheSize != cacheSize || numPages == 0 || numPages > maxPossiblePages ||
+      numPages > MAX_INDEX_PAGES) {
+    file.close();
+    return false;
+  }
+
+  uint32_t previousOffset = 0;
+  for (uint32_t i = 0; i < numPages; ++i) {
+    uint32_t pageOffset = 0;
+    if (!readPodExact(file, pageOffset)) {
+      file.close();
+      return false;
+    }
+    const bool invalidFirstOffset = i == 0 && pageOffset != 0;
+    const bool invalidLaterOffset = i > 0 && pageOffset <= previousOffset;
+    const bool pastContent = fileSize == 0 ? pageOffset != 0 : pageOffset >= fileSize;
+    if (invalidFirstOffset || invalidLaterOffset || pastContent) {
+      file.close();
+      return false;
+    }
+    previousOffset = pageOffset;
+  }
+  return file.close();
+}
 
 uint8_t normalizeAutoPageTurnSeconds(const uint8_t seconds) {
   return seconds == 0 ? 0 : std::clamp<uint8_t>(seconds, MIN_AUTO_PAGE_TURN_SECONDS, MAX_AUTO_PAGE_TURN_SECONDS);
@@ -2328,6 +2394,7 @@ bool TxtReaderActivity::loadPageIndexCache() {
   // Cache file format (using serialization module):
   // - uint32_t: magic "TXTI"
   // - uint8_t: cache version
+  // - SourceIdentityCodec::Encoded: raw file source identity
   // - uint32_t: file size (to validate cache)
   // - int32_t: viewport width
   // - int32_t: lines per page
@@ -2339,6 +2406,13 @@ bool TxtReaderActivity::loadPageIndexCache() {
   // - N * uint32_t: page offsets
 
   std::string cachePath = txt->getCachePath() + "/index.bin";
+  std::string backupPath = cachePath + ".bak";
+  const auto recovered = StagedFileTransaction::recover(cachePath.c_str(), backupPath.c_str(),
+                                                        validateTxtPageIndexCache);
+  if (recovered == StagedFileTransaction::Status::IoError) {
+    LOG_ERR("TRS", "Could not recover TXT page index cache");
+    Storage.remove(backupPath.c_str());
+  }
   HalFile f;
   if (!Storage.openFileForRead("TRS", cachePath, f)) {
     LOG_DBG("TRS", "No page index cache found");
@@ -2365,6 +2439,20 @@ bool TxtReaderActivity::loadPageIndexCache() {
   serialization::readPod(in, version);
   if (version != CACHE_VERSION) {
     LOG_DBG("TRS", "Cache version mismatch (%d != %d), rebuilding", version, CACHE_VERSION);
+    return false;
+  }
+
+  SourceIdentityCodec::Encoded encodedIdentity{};
+  if (in.read(encodedIdentity.data(), encodedIdentity.size()) != encodedIdentity.size()) {
+    LOG_DBG("TRS", "Cache source identity is truncated, rebuilding");
+    return false;
+  }
+  ZipFile::SourceIdentity storedIdentity;
+  ZipFile::SourceIdentity currentIdentity;
+  if (SourceIdentityCodec::decode(encodedIdentity.data(), encodedIdentity.size(), storedIdentity) !=
+          SourceIdentityCodec::DecodeStatus::OK ||
+      !txt->getSourceIdentity(currentIdentity) || storedIdentity != currentIdentity) {
+    LOG_DBG("TRS", "Cache source identity mismatch, rebuilding");
     return false;
   }
 
@@ -2461,8 +2549,20 @@ bool TxtReaderActivity::loadPageIndexCache() {
 void TxtReaderActivity::savePageIndexCache() const {
   if (!pageIndexComplete || pageOffsetCount == 0) return;
   std::string cachePath = txt->getCachePath() + "/index.bin";
+  std::string stagingPath = cachePath + ".tmp";
+  std::string backupPath = cachePath + ".bak";
+  ZipFile::SourceIdentity sourceIdentity;
+  SourceIdentityCodec::Encoded encodedIdentity{};
+  if (!txt->getSourceIdentity(sourceIdentity) || !SourceIdentityCodec::encode(sourceIdentity, encodedIdentity)) {
+    LOG_ERR("TRS", "Failed to encode TXT source identity for page index cache");
+    return;
+  }
+  if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) {
+    LOG_ERR("TRS", "Failed to remove stale TXT page index staging file");
+    return;
+  }
   HalFile f;
-  if (!Storage.openFileForWrite("TRS", cachePath, f)) {
+  if (!Storage.openFileForWrite("TRS", stagingPath, f)) {
     LOG_ERR("TRS", "Failed to save page index cache");
     return;
   }
@@ -2472,6 +2572,7 @@ void TxtReaderActivity::savePageIndexCache() const {
   // Write header using serialization module
   serialization::writePod(out, CACHE_MAGIC);
   serialization::writePod(out, CACHE_VERSION);
+  out.write(encodedIdentity.data(), encodedIdentity.size());
   serialization::writePod(out, static_cast<uint32_t>(txt->getFileSize()));
   serialization::writePod(out, static_cast<int32_t>(viewportWidth));
   serialization::writePod(out, static_cast<int32_t>(linesPerPage));
@@ -2488,6 +2589,24 @@ void TxtReaderActivity::savePageIndexCache() const {
 
   if (!out.flush()) {
     LOG_ERR("TRS", "Failed to write page index cache");
+    f.close();
+    Storage.remove(stagingPath.c_str());
+    return;
+  }
+
+  const bool synced = f.sync();
+  const bool closed = f.close();
+  if (!synced || !closed) {
+    LOG_ERR("TRS", "Failed to finalize page index cache");
+    Storage.remove(stagingPath.c_str());
+    return;
+  }
+
+  const auto published = StagedFileTransaction::publish(cachePath.c_str(), stagingPath.c_str(), backupPath.c_str(),
+                                                        validateTxtPageIndexCache);
+  if (published != StagedFileTransaction::Status::Published) {
+    LOG_ERR("TRS", "Failed to publish page index cache");
+    Storage.remove(stagingPath.c_str());
     return;
   }
 

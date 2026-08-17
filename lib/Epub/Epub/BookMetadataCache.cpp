@@ -3,6 +3,7 @@
 #include <BufferedFile.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <StagedFileTransaction.h>
 #include <Utf8.h>
 #include <ZipFile.h>
 
@@ -26,6 +27,8 @@ namespace {
 constexpr uint8_t BOOK_CACHE_VERSION = 12;
 constexpr uint32_t BOOK_CACHE_COMMIT_MARKER = 0x424D434B;  // "BMCK"
 constexpr char bookBinFile[] = "/book.bin";
+constexpr char bookBinStagingFile[] = "/book.bin.tmp";
+constexpr char bookBinBackupFile[] = "/book.bin.bak";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
 // Buffer size for the buildBookBin streams. 3 buffers x 4KB, transient (freed on
@@ -170,6 +173,94 @@ bool readEntryBounds(HalFile& file, const uint32_t lutOffset, const uint32_t ent
   return true;
 }
 
+bool validateBookCacheCandidate(const char* path, void* context) {
+  const auto* expectedSourceIdentity = static_cast<const ZipFile::SourceIdentity*>(context);
+  if (!expectedSourceIdentity) return false;
+
+  HalFile file;
+  if (!Storage.openFileForRead("BMC", path, file)) return false;
+
+  bool valid = false;
+  do {
+    const size_t fileSize = file.size();
+    if (fileSize < BOOK_CACHE_MIN_FILE_SIZE) break;
+
+    uint8_t version = 0;
+    uint32_t candidateLutOffset = 0;
+    uint16_t candidateSpineCount = 0;
+    uint16_t candidateTocCount = 0;
+    SourceIdentityCodec::Payload identityPayload{};
+    uint32_t identityChecksum = 0;
+    ZipFile::SourceIdentity storedIdentity;
+    if (!readPodExact(file, version) || version != BOOK_CACHE_VERSION || !readPodExact(file, candidateLutOffset) ||
+        !readPodExact(file, candidateSpineCount) || !readPodExact(file, candidateTocCount) ||
+        file.read(identityPayload.data(), identityPayload.size()) != static_cast<int>(identityPayload.size()) ||
+        !readPodExact(file, identityChecksum) ||
+        identityChecksum != SourceIdentityCodec::crc32(identityPayload.data(), identityPayload.size()) ||
+        !SourceIdentityCodec::decodePayload(identityPayload.data(), identityPayload.size(), storedIdentity) ||
+        storedIdentity != *expectedSourceIdentity) {
+      break;
+    }
+
+    const size_t minimumLutOffset = BOOK_CACHE_FIXED_HEADER_SIZE + BOOK_CACHE_MIN_METADATA_SIZE;
+    if (candidateLutOffset < minimumLutOffset ||
+        candidateLutOffset - BOOK_CACHE_FIXED_HEADER_SIZE > BOOK_CACHE_MAX_METADATA_SIZE) {
+      break;
+    }
+
+    const uint32_t entryCount = static_cast<uint32_t>(candidateSpineCount) + candidateTocCount;
+    const uint64_t lutSize = static_cast<uint64_t>(entryCount) * sizeof(uint32_t);
+    const uint64_t dataEnd = fileSize - sizeof(BOOK_CACHE_COMMIT_MARKER);
+    const uint64_t dataStart = static_cast<uint64_t>(candidateLutOffset) + lutSize;
+    if (dataStart > dataEnd || dataEnd > UINT32_MAX) break;
+
+    uint32_t commitMarker = 0;
+    if (!file.seek(fileSize - sizeof(commitMarker)) || !readPodExact(file, commitMarker) ||
+        commitMarker != BOOK_CACHE_COMMIT_MARKER || !file.seek(BOOK_CACHE_FIXED_HEADER_SIZE) ||
+        !consumeBoundedString(file, candidateLutOffset, nullptr) ||
+        !consumeBoundedString(file, candidateLutOffset, nullptr) ||
+        !consumeBoundedString(file, candidateLutOffset, nullptr) ||
+        !consumeBoundedString(file, candidateLutOffset, nullptr) ||
+        !consumeBoundedString(file, candidateLutOffset, nullptr) || file.position() != candidateLutOffset) {
+      break;
+    }
+
+    if (entryCount == 0) {
+      valid = dataStart == dataEnd;
+      break;
+    }
+
+    uint32_t previousCumulativeSize = 0;
+    valid = true;
+    for (uint32_t index = 0; index < entryCount; ++index) {
+      size_t entryStart = 0;
+      size_t entryEnd = 0;
+      if (!readEntryBounds(file, candidateLutOffset, entryCount, index, static_cast<size_t>(dataEnd), entryStart,
+                           entryEnd) ||
+          (index == 0 && entryStart != dataStart) || !file.seek(entryStart)) {
+        valid = false;
+        break;
+      }
+
+      if (index < candidateSpineCount) {
+        uint32_t cumulativeSize = 0;
+        if (!inspectSpineEntry(file, entryEnd, candidateTocCount, &cumulativeSize) ||
+            cumulativeSize < previousCumulativeSize) {
+          valid = false;
+          break;
+        }
+        previousCumulativeSize = cumulativeSize;
+      } else if (!inspectTocEntry(file, entryEnd, candidateSpineCount)) {
+        valid = false;
+        break;
+      }
+    }
+  } while (false);
+
+  const bool closed = file.close();
+  return valid && closed;
+}
+
 // Entry (de)serializers, templated so they run over HalFile and the Buffered*
 // wrappers alike (two instantiations each -- a few hundred bytes of flash, in
 // exchange for the build path streaming at SD speed instead of per-pod).
@@ -284,6 +375,7 @@ class BookMetadataCache::BuildState {
 
   const std::string* epubPath = nullptr;
   const BookMetadata* metadata = nullptr;
+  ZipFile::SourceIdentity sourceIdentity{};
   SourceIdentityCodec::Payload identityPayload{};
   uint32_t identityChecksum = 0;
   uint32_t metadataSize = 0;
@@ -379,11 +471,13 @@ bool BookMetadataCache::beginTocPass() {
     spineHrefIndex.resize(spineCount);
     spineFile.seek(0);
     for (int i = 0; i < spineCount; i++) {
+      const uint32_t scratchOffset = spineFile.position();
       auto entry = readSpineEntry(spineFile);
       SpineHrefIndexEntry idx;
       idx.hrefHash = fnvHash64(entry.href);
       idx.hrefLen = static_cast<uint16_t>(entry.href.size());
       idx.spineIndex = static_cast<int16_t>(i);
+      idx.scratchOffset = scratchOffset;
       spineHrefIndex[i] = idx;
     }
     std::sort(spineHrefIndex.begin(), spineHrefIndex.end(),
@@ -464,6 +558,7 @@ bool BookMetadataCache::beginBuildBookBin(const std::string& epubPath, const Boo
   if (!next || !SourceIdentityCodec::encodePayload(sourceIdentity, next->identityPayload)) return false;
   next->epubPath = &epubPath;
   next->metadata = &metadata;
+  next->sourceIdentity = sourceIdentity;
   next->identityChecksum = SourceIdentityCodec::crc32(next->identityPayload.data(), next->identityPayload.size());
   next->metadataSize = static_cast<uint32_t>(metadataSize64);
 
@@ -538,8 +633,12 @@ BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const siz
 
   if (state.phase == BuildState::Phase::OpenOutput) {
     // The scratch files are fully validated before the derived final is
-    // truncated. A cancellation after this point removes the incomplete file.
-    if (!Storage.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
+    // written. A cancellation after this point removes the incomplete staging file.
+    const std::string stagingPath = cachePath + bookBinStagingFile;
+    if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) {
+      return fail("Could not remove stale book.bin staging file");
+    }
+    if (!Storage.openFileForWrite("BMC", stagingPath, bookFile)) {
       return fail("Could not create book.bin");
     }
     state.outputStarted = true;
@@ -738,6 +837,14 @@ BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const siz
     if (!written || !closed || !spineClosed || !tocClosed) {
       return fail("Failed writing book.bin");
     }
+    const std::string finalPath = cachePath + bookBinFile;
+    const std::string stagingPath = cachePath + bookBinStagingFile;
+    const std::string backupPath = cachePath + bookBinBackupFile;
+    const auto published = StagedFileTransaction::publish(finalPath.c_str(), stagingPath.c_str(), backupPath.c_str(),
+                                                          validateBookCacheCandidate, &state.sourceIdentity);
+    if (published != StagedFileTransaction::Status::Published) {
+      return fail("Failed publishing book.bin");
+    }
     state.outputStarted = false;
     buildState.reset();
     LOG_DBG("BMC", "Successfully built book.bin");
@@ -759,7 +866,7 @@ void BookMetadataCache::cancelBuildBookBin() {
   if (spineFile) spineFile.close();
   if (tocFile) tocFile.close();
   buildState.reset();
-  if (removeOutput) Storage.remove((cachePath + bookBinFile).c_str());
+  if (removeOutput) Storage.remove((cachePath + bookBinStagingFile).c_str());
 }
 
 bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
@@ -779,6 +886,10 @@ bool BookMetadataCache::cleanupTmpFiles() const {
   const auto tocBinFile = cachePath + tmpTocBinFile;
   if (Storage.exists(tocBinFile.c_str())) {
     cleaned = Storage.remove(tocBinFile.c_str()) && cleaned;
+  }
+  const auto bookStagingFile = cachePath + bookBinStagingFile;
+  if (Storage.exists(bookStagingFile.c_str())) {
+    cleaned = Storage.remove(bookStagingFile.c_str()) && cleaned;
   }
   return cleaned;
 }
@@ -822,14 +933,17 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
     uint16_t targetLen = static_cast<uint16_t>(href.size());
 
     auto it =
-        std::lower_bound(spineHrefIndex.begin(), spineHrefIndex.end(), SpineHrefIndexEntry{targetHash, targetLen, 0},
+        std::lower_bound(spineHrefIndex.begin(), spineHrefIndex.end(), SpineHrefIndexEntry{targetHash, targetLen, 0, 0},
                          [](const SpineHrefIndexEntry& a, const SpineHrefIndexEntry& b) {
                            return a.hrefHash < b.hrefHash || (a.hrefHash == b.hrefHash && a.hrefLen < b.hrefLen);
                          });
 
     while (it != spineHrefIndex.end() && it->hrefHash == targetHash && it->hrefLen == targetLen) {
-      spineIndex = it->spineIndex;
-      break;
+      if (spineFile.seek(it->scratchOffset) && readSpineEntry(spineFile).href == href) {
+        spineIndex = it->spineIndex;
+        break;
+      }
+      ++it;
     }
 
     if (spineIndex == -1) {
@@ -915,6 +1029,13 @@ BookMetadataCache::LoadStepResult BookMetadataCache::beginLoad(const ZipFile::So
   loadedFileSize = 0;
   lastLoadStatus = LoadStatus::Missing;
   const std::string path = cachePath + bookBinFile;
+  const std::string backupPath = cachePath + bookBinBackupFile;
+  auto recoveryIdentity = expectedSourceIdentity;
+  const auto recovered = StagedFileTransaction::recover(path.c_str(), backupPath.c_str(), validateBookCacheCandidate,
+                                                        &recoveryIdentity);
+  if (recovered == StagedFileTransaction::Status::IoError) {
+    LOG_ERR("BMC", "Could not recover book.bin cache");
+  }
   if (!Storage.openFileForRead("BMC", path, bookFile)) {
     if (Storage.exists(path.c_str())) lastLoadStatus = LoadStatus::IoError;
     return LoadStepResult::Error;

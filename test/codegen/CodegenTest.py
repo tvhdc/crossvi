@@ -1008,7 +1008,9 @@ class CodegenTest(unittest.TestCase):
     def test_txt_bom_and_saved_offsets_fail_closed(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.h").read_text(encoding="utf-8")
-        self.assertIn("constexpr uint8_t CACHE_VERSION = 6", reader)
+        self.assertIn("constexpr uint8_t CACHE_VERSION = 7", reader)
+        self.assertIn("SourceIdentityCodec::Encoded: raw file source identity", reader)
+        self.assertIn("storedIdentity != currentIdentity", reader)
         self.assertIn("TxtLineWrap::leadingUtf8BomBytes(buffer, chunkSize)", reader)
         self.assertIn("bool jumpToStoredByteOffset(uint32_t byteOffset);", header)
         helper = reader[reader.index("bool TxtReaderActivity::jumpToStoredByteOffset") :]

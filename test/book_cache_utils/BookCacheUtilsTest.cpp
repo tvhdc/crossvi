@@ -140,15 +140,25 @@ TEST_F(BookCacheUtilsTest, ClearsDerivedCacheAndPreservesAllSupportedUserState) 
     put(name, value);
     expected.emplace(name, bytes(value++));
   }
+  put("book.bin", 87);
+  put("book.bin.bak", 88);
+  put("book.bin.tmp", 89);
   put("index.bin", 90);
+  put("index.bin.bak", 91);
+  put("index.bin.tmp", 92);
   Storage.addDirectory(std::string(CACHE_PATH) + "/sections");
-  Storage.setFile(std::string(CACHE_PATH) + "/sections/1.bin", bytes(92));
+  Storage.setFile(std::string(CACHE_PATH) + "/sections/1.bin", bytes(93));
 
   ASSERT_TRUE(clearBookCacheDirectoryPreservingUserState(CACHE_PATH));
 
   expectPreserved(expected);
   EXPECT_EQ(Storage.filesUnder(CACHE_PATH).size(), expected.size());
+  EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/book.bin").c_str()));
+  EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/book.bin.bak").c_str()));
+  EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/book.bin.tmp").c_str()));
   EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/index.bin").c_str()));
+  EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/index.bin.bak").c_str()));
+  EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/index.bin.tmp").c_str()));
   EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/sections").c_str()));
   EXPECT_FALSE(Storage.exists(STAGING_PATH));
 }
@@ -389,7 +399,11 @@ TEST_F(BookCacheUtilsTest, ReplacementArchivePurgesOnlyKnownDerivedCacheEntries)
   put("progress.bin", 1);
   put("reader_settings.bin", 2);
   put("book.bin", 3);
+  put("book.bin.bak", 23);
+  put("book.bin.tmp", 24);
   put("index.bin", 4);
+  put("index.bin.bak", 25);
+  put("index.bin.tmp", 26);
   put("css_rules.cache", 5);
   put("cover_crop.bmp", 6);
   put("thumb_120.bmp", 7);
@@ -426,12 +440,14 @@ TEST_F(BookCacheUtilsTest, ReplacementArchivePurgesOnlyKnownDerivedCacheEntries)
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/cover.bmp.nocover"), bytes(15));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/thumb_notes.bmp.tmp"), bytes(16));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/thumb_120.bmp.nocover.extra"), bytes(17));
-  for (const char* name : {"book.bin", "index.bin", "css_rules.cache", "cover_crop.bmp", "thumb_120.bmp", "img_2_7.JPG",
-                           "cover.bmp", "cover.bmp.tmp", "cover.bmp.bak", "cover_crop.bmp.tmp", "cover_crop.bmp.bak",
-                           "thumb_120.bmp.tmp", "thumb_120.bmp.bak", "thumb_120.bmp.nocover",
-                           "thumb_120.bmp.nocover.tmp", "thumb_120.bmp.nocover.bak",
-                           "img_123456789_18_144x240.pxc", "img_123456789_18_144x240.pxc.tmp",
-                           "img_123456789_18_144x240.pxc.bak", "img_123456789_18.png.tmp", "sections", "html"}) {
+  for (const char* name :
+       {"book.bin",       "book.bin.bak",   "book.bin.tmp",   "index.bin",      "index.bin.bak",
+        "index.bin.tmp",  "css_rules.cache", "cover_crop.bmp", "thumb_120.bmp",  "img_2_7.JPG",
+        "cover.bmp",     "cover.bmp.tmp",   "cover.bmp.bak",  "cover_crop.bmp.tmp",
+        "cover_crop.bmp.bak", "thumb_120.bmp.tmp", "thumb_120.bmp.bak", "thumb_120.bmp.nocover",
+        "thumb_120.bmp.nocover.tmp", "thumb_120.bmp.nocover.bak", "img_123456789_18_144x240.pxc",
+        "img_123456789_18_144x240.pxc.tmp", "img_123456789_18_144x240.pxc.bak",
+        "img_123456789_18.png.tmp", "sections", "html"}) {
     EXPECT_FALSE(Storage.exists(DISCARD_PATH + "/" + name)) << name;
   }
 }

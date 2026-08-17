@@ -52,9 +52,22 @@ constexpr std::array<const char*, 16> USER_STATE_FILES = {"progress.bin",
 constexpr std::array<const char*, 5> REPLACEMENT_USER_STATE_FILES = {
     ".crossvi_replaced_clippings.bin", ".crossvi_replaced_clippings.bin.bak", ".crossvi_replaced_clippings.bin.tmp",
     ".crossvi_replaced_clippings.move", ".crossvi_replaced_bookmark.json"};
-constexpr std::array<const char*, 12> DERIVED_CACHE_FILES = {
-    "book.bin",        "index.bin",  "spine.bin.tmp", "toc.bin.tmp", ".items.bin",     ".tmp.css",
-    "css_rules.cache", ".cover.jpg", ".cover.png",    "cover.bmp",   "cover_crop.bmp", "thumb_[HEIGHT].bmp"};
+constexpr std::array<const char*, 16> DERIVED_CACHE_FILES = {"book.bin",
+                                                             "book.bin.bak",
+                                                             "book.bin.tmp",
+                                                             "index.bin",
+                                                             "index.bin.bak",
+                                                             "index.bin.tmp",
+                                                             "spine.bin.tmp",
+                                                             "toc.bin.tmp",
+                                                             ".items.bin",
+                                                             ".tmp.css",
+                                                             "css_rules.cache",
+                                                             ".cover.jpg",
+                                                             ".cover.png",
+                                                             "cover.bmp",
+                                                             "cover_crop.bmp",
+                                                             "thumb_[HEIGHT].bmp"};
 constexpr std::array<const char*, 2> DERIVED_CACHE_DIRECTORIES = {"html", "sections"};
 
 struct CacheEntry {

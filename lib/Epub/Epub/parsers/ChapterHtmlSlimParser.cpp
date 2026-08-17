@@ -16,6 +16,7 @@
 
 #include "Epub.h"
 #include "Epub/Page.h"
+#include "Epub/SectionCacheValidator.h"
 #include "Epub/VisibleTextUtils.h"
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageDimsProbe.h"
@@ -54,6 +55,7 @@ constexpr size_t TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS = 256;
 // every text fragment (e.g. Kobo KePub spans). The cap prevents unbounded heap growth
 // on resource-constrained devices (~380KB heap). TOC anchors bypass this cap.
 constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
+constexpr size_t MAX_IMAGE_ATTRIBUTE_BYTES = SectionCacheValidation::MAX_IMAGE_PATH_BYTES;
 
 constexpr const char* HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
 constexpr const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
@@ -80,6 +82,14 @@ bool matches(const char* tag_name, const char* const* possible_tags, size_t coun
     }
   }
   return false;
+}
+
+bool assignBoundedString(std::string& destination, const char* value, const size_t maxBytes) {
+  size_t length = 0;
+  while (length <= maxBytes && value[length] != '\0') ++length;
+  if (length > maxBytes) return false;
+  destination.assign(value, length);
+  return true;
 }
 
 const char* getAttribute(const XML_Char** atts, const char* attrName) {
@@ -122,6 +132,13 @@ void ChapterHtmlSlimParser::failOutOfMemory(const char* stage) {
   LOG_ERR("EHP", "Out of memory at %s (free=%u maxalloc=%u)", stage, memory.freeHeap, memory.maxAllocHeap);
   MemoryBudget::logStage("EHP", stage);
   lastFailure_ = ChapterParseFailure::OutOfMemory;
+  if (xmlParser_) XML_StopParser(xmlParser_, XML_FALSE);
+}
+
+void ChapterHtmlSlimParser::failInvalidContent(const char* stage) {
+  if (lastFailure_ != ChapterParseFailure::None) return;
+  LOG_ERR("EHP", "Invalid chapter content at %s", stage);
+  lastFailure_ = ChapterParseFailure::InvalidContent;
   if (xmlParser_) XML_StopParser(xmlParser_, XML_FALSE);
 }
 
@@ -332,7 +349,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 }
 
 void ChapterHtmlSlimParser::softFlushTextBlockIfNeeded() {
-  if (!currentTextBlock || lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+  if (!currentTextBlock || lastFailure_ != ChapterParseFailure::None) return;
   const size_t softFlushThreshold = embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
   if (currentTextBlock->size() <= softFlushThreshold) return;
   if (!ensureMemory("paragraph_soft_flush")) return;
@@ -442,10 +459,14 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
   auto pageRule = std::shared_ptr<PageHorizontalRule>(
       new (std::nothrow) PageHorizontalRule(width, ruleThickness, xPos, currentPageNextY));
   if (!pageRule) {
-    LOG_ERR("EHP", "Failed to create PageHorizontalRule");
+    failOutOfMemory("horizontal_rule_alloc");
     return;
   }
-  currentPage->elements.push_back(pageRule);
+  if (currentPage->elements.size() >= SectionCacheValidation::MAX_PAGE_ELEMENTS) {
+    failInvalidContent("horizontal_rule_elements");
+    return;
+  }
+  currentPage->elements.push_back(std::move(pageRule));
   setCurrentPageVisibleOffset(visibleTextOffset);
   currentPageNextY = static_cast<int16_t>(currentPageNextY + ruleThickness + bottomSpacing);
 
@@ -457,7 +478,7 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
 
 void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
-  if (self->lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+  if (self->lastFailure_ != ChapterParseFailure::None) return;
 
   if (strcmp(name, "body") == 0) self->insideBody = true;
   if (self->insideBody && (self->nonVisibleTextDepth > 0 || VisibleTextUtils::isNonVisibleElement(name))) {
@@ -654,11 +675,20 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     if (atts != nullptr) {
       for (int i = 0; atts[i]; i += 2) {
         if (strcmp(atts[i], "src") == 0) {
-          src = atts[i + 1];
+          if (!assignBoundedString(src, atts[i + 1], MAX_IMAGE_ATTRIBUTE_BYTES)) {
+            self->failInvalidContent("image_src");
+            return;
+          }
         } else if (src.empty() && (strcmp(atts[i], "href") == 0 || strcmp(atts[i], "xlink:href") == 0)) {
-          src = atts[i + 1];
+          if (!assignBoundedString(src, atts[i + 1], MAX_IMAGE_ATTRIBUTE_BYTES)) {
+            self->failInvalidContent("image_href");
+            return;
+          }
         } else if (strcmp(atts[i], "alt") == 0) {
-          alt = atts[i + 1];
+          if (!assignBoundedString(alt, atts[i + 1], MAX_IMAGE_ATTRIBUTE_BYTES)) {
+            self->failInvalidContent("image_alt");
+            return;
+          }
         }
       }
 
@@ -858,16 +888,21 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               // fallback extracted the image eagerly. The reader can then
               // classify a cover-only page without decoding it again.
               if (!self->ensureMemory("image_block")) return;
-              auto imageBlock =
-                  std::make_shared<ImageBlock>(cachedImagePath, resolvedPath, displayWidth, displayHeight);
+              auto imageBlock = std::shared_ptr<ImageBlock>(
+                  new (std::nothrow) ImageBlock(cachedImagePath, resolvedPath, displayWidth, displayHeight));
               if (!imageBlock) {
-                LOG_ERR("EHP", "Failed to create ImageBlock");
+                self->failOutOfMemory("image_block_alloc");
                 return;
               }
               int xPos = (self->viewportWidth - displayWidth) / 2;
-              auto pageImage = std::make_shared<PageImage>(imageBlock, xPos, self->currentPageNextY);
+              auto pageImage =
+                  std::shared_ptr<PageImage>(new (std::nothrow) PageImage(imageBlock, xPos, self->currentPageNextY));
               if (!pageImage) {
-                LOG_ERR("EHP", "Failed to create PageImage");
+                self->failOutOfMemory("page_image_alloc");
+                return;
+              }
+              if (self->currentPage->elements.size() >= SectionCacheValidation::MAX_PAGE_ELEMENTS) {
+                self->failInvalidContent("image_page_elements");
                 return;
               }
               self->currentPage->elements.push_back(pageImage);
@@ -1177,7 +1212,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
 void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char* s, const int len) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
-  if (self->lastFailure_ == ChapterParseFailure::OutOfMemory || !self->currentTextBlock) return;
+  if (self->lastFailure_ != ChapterParseFailure::None || !self->currentTextBlock) return;
 
   const bool countVisibleOffsets = self->insideBody && self->nonVisibleTextDepth == 0 && !self->syntheticCharacterData;
   const uint32_t callbackVisibleOffset = self->visibleTextOffset;
@@ -1372,7 +1407,7 @@ void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const X
 
 void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
-  if (self->lastFailure_ == ChapterParseFailure::OutOfMemory) return;
+  if (self->lastFailure_ != ChapterParseFailure::None) return;
 
   if (self->nonVisibleTextDepth > 0) self->nonVisibleTextDepth--;
 
@@ -1678,7 +1713,16 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const
 
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
-  currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY));
+  if (currentPage->elements.size() >= SectionCacheValidation::MAX_PAGE_ELEMENTS) {
+    failInvalidContent("text_page_elements");
+    return;
+  }
+  auto pageLine = std::shared_ptr<PageLine>(new (std::nothrow) PageLine(std::move(line), xOffset, currentPageNextY));
+  if (!pageLine) {
+    failOutOfMemory("page_line_alloc");
+    return;
+  }
+  currentPage->elements.push_back(std::move(pageLine));
   currentPageNextY += lineHeight;
 }
 

@@ -20,6 +20,7 @@
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNavParser.h"
+#include "Epub/parsers/TocNcxParser.h"
 #include "ThumbnailConverterStub.h"
 
 namespace {
@@ -208,6 +209,23 @@ bool parseNavIntoScratchCache(const std::string& xml) {
   TocNavParser parser(baseContentPath, xml.size(), &cache);
   const bool parsed =
       parser.setup() && parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()) == xml.size();
+  cache.cancelWrite();
+  return parsed;
+}
+
+bool parseNcxIntoScratchCache(const std::string& xml) {
+  BookMetadataCache cache(CACHE_PATH);
+  if (!cache.beginWrite() || !cache.beginContentOpfPass()) return false;
+  cache.createSpineEntry("OPS/chapter.xhtml");
+  if (!cache.endContentOpfPass() || !cache.beginTocPass()) {
+    cache.cancelWrite();
+    return false;
+  }
+  const std::string baseContentPath = "OPS/";
+  TocNcxParser parser(baseContentPath, xml.size(), &cache);
+  const bool parsed = parser.setup() &&
+                      parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()) == xml.size() &&
+                      parser.succeeded();
   cache.cancelWrite();
   return parsed;
 }
@@ -673,6 +691,13 @@ TEST_F(EpubSourceIdentityTest, TocNavRejectsOversizedEntryLabel) {
   EXPECT_FALSE(parseNavIntoScratchCache(xml));
 }
 
+TEST_F(EpubSourceIdentityTest, TocNcxRejectsOversizedEntryLabel) {
+  const std::string xml = "<ncx><navMap><navPoint><navLabel><text>" + std::string(4097, 'x') +
+                          "</text></navLabel><content src=\"chapter.xhtml\"/></navPoint></navMap></ncx>";
+
+  EXPECT_FALSE(parseNcxIntoScratchCache(xml));
+}
+
 TEST_F(EpubSourceIdentityTest, ColdIndexingRejectsSpineResourcesMissingFromArchive) {
   identify(makeStoredZip({
       {"META-INF/container.xml",
@@ -1045,6 +1070,7 @@ TEST_F(EpubSourceIdentityTest, PageImagePreparationPublishesOnlyAfterBoundedStre
   identify(makeStoredZip({{entryName, asString(raster), true}}));
   Epub epub(EPUB_PATH, "/.crosspoint");
   epub.setupCacheDir();
+  ASSERT_TRUE(epub.bindCurrentSource());
   const std::string finalPath = epub.getCachePath() + "/img_0_0.png";
 
   ASSERT_EQ(epub.beginImagePreparation(entryName, finalPath), Epub::ImagePreparationStatus::InProgress);
@@ -1075,6 +1101,7 @@ TEST_F(EpubSourceIdentityTest, CancellingPageImagePreparationRemovesOnlyScratchD
   identify(makeStoredZip({{entryName, asString(raster), true}}));
   Epub epub(EPUB_PATH, "/.crosspoint");
   epub.setupCacheDir();
+  ASSERT_TRUE(epub.bindCurrentSource());
   const std::string finalPath = epub.getCachePath() + "/img_0_0.png";
 
   ASSERT_EQ(epub.beginImagePreparation(entryName, finalPath), Epub::ImagePreparationStatus::InProgress);
@@ -1348,19 +1375,36 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheBuildCanYieldAndCancelWithoutLea
   ASSERT_TRUE(cache.endTocPass());
   ASSERT_TRUE(cache.endWrite());
 
+  const std::vector<uint8_t> existingCache = {0xCAU, 0xFEU, 0xBAU, 0xBEU};
+  Storage.setFile(BOOK_CACHE_PATH, existingCache);
+  const std::string stagingPath = std::string(CACHE_PATH) + "/book.bin.tmp";
+
   BookMetadataCache::BookMetadata metadata;
   ASSERT_TRUE(cache.beginBuildBookBin(EPUB_PATH, metadata, identity));
   BookMetadataCache::BuildStepResult result = BookMetadataCache::BuildStepResult::InProgress;
-  for (size_t step = 0; step < 16 && !Storage.exists(BOOK_CACHE_PATH); ++step) {
+  for (size_t step = 0; step < 16 && !Storage.exists(stagingPath.c_str()); ++step) {
     result = cache.stepBuildBookBin(1);
     ASSERT_EQ(result, BookMetadataCache::BuildStepResult::InProgress);
   }
-  ASSERT_TRUE(Storage.exists(BOOK_CACHE_PATH));
+  ASSERT_TRUE(Storage.exists(stagingPath.c_str()));
+  EXPECT_EQ(Storage.file(BOOK_CACHE_PATH), existingCache);
   EXPECT_TRUE(cache.isBuildingBookBin());
 
   cache.cancelBuildBookBin();
   EXPECT_FALSE(cache.isBuildingBookBin());
-  EXPECT_FALSE(Storage.exists(BOOK_CACHE_PATH));
+  EXPECT_EQ(Storage.file(BOOK_CACHE_PATH), existingCache);
+  EXPECT_FALSE(Storage.exists(stagingPath.c_str()));
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheLoadRecoversBackupAfterInterruptedPublish) {
+  const auto identity = identify(makeZip());
+  Storage.setFile(std::string(CACHE_PATH) + "/book.bin.bak", makeBookCache(identity));
+
+  BookMetadataCache cache(CACHE_PATH);
+  EXPECT_EQ(cache.load(identity), BookMetadataCache::LoadStatus::Loaded);
+  EXPECT_TRUE(Storage.exists(BOOK_CACHE_PATH));
+  EXPECT_FALSE(Storage.exists((std::string(CACHE_PATH) + "/book.bin.bak").c_str()));
   EXPECT_EQ(Storage.invalidOperationCount(), 0U);
 }
 
