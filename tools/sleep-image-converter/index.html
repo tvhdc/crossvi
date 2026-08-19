@@ -143,6 +143,11 @@
       font: inherit;
     }
 
+    select option {
+      color: #1f2937;
+      background: #fff;
+    }
+
     input[type="file"] {
       padding: 10px;
       border: 1px dashed var(--border-color);
@@ -188,11 +193,46 @@
       border: 0;
       padding: 2px 4px;
       background: transparent;
+      color: var(--font-color);
       font-weight: 600;
+      color-scheme: light;
     }
 
     .inline {
       display: grid;
+      gap: 12px;
+    }
+
+    .zoomRow {
+      display: grid;
+      grid-template-columns: 38px 1fr 38px;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .zoomBtn {
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--font-color);
+      font: inherit;
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .zoomBtn:hover {
+      border-color: var(--accent-color);
+      color: var(--accent-hover-color);
+    }
+
+    .fieldTitle {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
       gap: 12px;
     }
 
@@ -394,6 +434,25 @@
         </div>
       </div>
 
+      <label for="fit" data-i18n="fitLabel"></label>
+      <select id="fit">
+        <option value="width" data-i18n="fitWidth"></option>
+        <option value="height" data-i18n="fitHeight"></option>
+        <option value="fill" selected data-i18n="fitFill"></option>
+      </select>
+      <p class="hint" data-i18n="fitHint"></p>
+
+      <label for="zoom" class="fieldTitle">
+        <span data-i18n="zoomLabel"></span>
+        <output id="zoomOut">100%</output>
+      </label>
+      <div class="zoomRow">
+        <button id="zoomDown" class="zoomBtn" type="button" aria-label="">−</button>
+        <input id="zoom" type="range" min="50" max="250" step="5" value="100">
+        <button id="zoomUp" class="zoomBtn" type="button" aria-label="">+</button>
+      </div>
+      <p class="hint" data-i18n="zoomHint"></p>
+
       <section id="normalOptions" class="advanced hidden">
         <strong data-i18n="smoothTitle"></strong>
         <p class="hint" data-i18n="smoothHint"></p>
@@ -449,6 +508,15 @@
         modeLabel: "3. Chọn cách dùng",
         modeTransparent: "Phủ lên màn hình đang có",
         modeNormal: "Thay toàn bộ màn hình ngủ",
+        fitLabel: "4. Cách đặt ảnh",
+        fitWidth: "Vừa theo chiều rộng",
+        fitHeight: "Vừa theo chiều cao",
+        fitFill: "Lấp đầy màn hình, không viền",
+        fitHint: "Lấp đầy sẽ che kín màn hình và có thể cắt bớt phần thừa ở cạnh dài.",
+        zoomLabel: "Phóng to / thu nhỏ",
+        zoomOut: "Thu nhỏ",
+        zoomIn: "Phóng to",
+        zoomHint: "100% là đúng theo kiểu đặt ảnh đã chọn. Với “lấp đầy”, 100% là mức nhỏ nhất để không bị viền.",
         smoothTitle: "Tối ưu ảnh đen trắng",
         smoothHint: "Dùng cho ảnh ngủ thường. Ảnh sẽ được resize đúng màn hình và chuyển thành đen trắng.",
         dither: "Làm vùng xám nhìn mịn hơn trên màn e‑ink",
@@ -488,6 +556,15 @@
         modeLabel: "3. Choose how to use it",
         modeTransparent: "Place over the current screen",
         modeNormal: "Replace the whole sleep screen",
+        fitLabel: "4. Image placement",
+        fitWidth: "Fit to width",
+        fitHeight: "Fit to height",
+        fitFill: "Fill the screen, no border",
+        fitHint: "Fill covers the whole screen and may crop the extra part on the long side.",
+        zoomLabel: "Zoom in / out",
+        zoomOut: "Zoom out",
+        zoomIn: "Zoom in",
+        zoomHint: "100% follows the selected placement. In Fill mode, 100% is the minimum to avoid borders.",
         smoothTitle: "Optimize black-and-white image",
         smoothHint: "For a full sleep picture. The image is resized to the screen and converted to black and white.",
         dither: "Make gray areas look smoother on e‑ink",
@@ -527,6 +604,15 @@
         modeLabel: "3. 选择用途",
         modeTransparent: "叠加在当前画面上",
         modeNormal: "替换整个睡眠画面",
+        fitLabel: "4. 图片摆放",
+        fitWidth: "适合宽度",
+        fitHeight: "适合高度",
+        fitFill: "铺满屏幕，无白边",
+        fitHint: "铺满会覆盖整个屏幕，长边多出的部分可能会被裁掉。",
+        zoomLabel: "放大 / 缩小",
+        zoomOut: "缩小",
+        zoomIn: "放大",
+        zoomHint: "100% 表示按当前摆放方式显示。铺满模式下，100% 是避免白边的最小值。",
         smoothTitle: "优化黑白图片",
         smoothHint: "用于普通睡眠图。图片会调整到屏幕尺寸并转成黑白。",
         dither: "让灰色区域在墨水屏上更平滑",
@@ -567,6 +653,11 @@
       language: document.getElementById("language"),
       device: document.getElementById("device"),
       mode: document.getElementById("mode"),
+      fit: document.getElementById("fit"),
+      zoom: document.getElementById("zoom"),
+      zoomOut: document.getElementById("zoomOut"),
+      zoomDown: document.getElementById("zoomDown"),
+      zoomUp: document.getElementById("zoomUp"),
       dither: document.getElementById("dither"),
       normalOptions: document.getElementById("normalOptions"),
       download: document.getElementById("download"),
@@ -581,6 +672,7 @@
     let sourceInfo = null;
     let sourceError = false;
     let downloadUrl = null;
+    let downloadGeneration = 0;
     let language = initialLanguage();
 
     function initialLanguage() {
@@ -610,6 +702,10 @@
       document.querySelectorAll("[data-i18n]").forEach(node => {
         node.textContent = t(node.dataset.i18n);
       });
+      els.zoomDown.setAttribute("aria-label", t("zoomOut"));
+      els.zoomDown.title = t("zoomOut");
+      els.zoomUp.setAttribute("aria-label", t("zoomIn"));
+      els.zoomUp.title = t("zoomIn");
       refreshStatus();
       render();
     }
@@ -643,6 +739,26 @@
 
     function target() {
       return targets[els.device.value] || targets.x3;
+    }
+
+    function zoomPercent() {
+      return Math.max(Number(els.zoom.min), Math.min(Number(els.zoom.max), Number(els.zoom.value) || 100));
+    }
+
+    function updateZoomControls() {
+      const min = els.fit.value === "fill" ? 100 : 50;
+      els.zoom.min = String(min);
+      if (Number(els.zoom.value) < min) els.zoom.value = String(min);
+      if (Number(els.zoom.value) > Number(els.zoom.max)) els.zoom.value = els.zoom.max;
+      els.zoomOut.textContent = `${zoomPercent()}%`;
+    }
+
+    function placementScale(profile) {
+      const widthScale = profile.width / sourceImage.naturalWidth;
+      const heightScale = profile.height / sourceImage.naturalHeight;
+      if (els.fit.value === "width") return widthScale;
+      if (els.fit.value === "height") return heightScale;
+      return Math.max(widthScale, heightScale);
     }
 
     function transparencyStats(imageData) {
@@ -682,7 +798,7 @@
       }
       if (!sourceImage) return null;
 
-      const scale = Math.min(t.width / sourceImage.naturalWidth, t.height / sourceImage.naturalHeight, 1);
+      const scale = placementScale(t) * (zoomPercent() / 100);
       const drawWidth = Math.max(1, Math.round(sourceImage.naturalWidth * scale));
       const drawHeight = Math.max(1, Math.round(sourceImage.naturalHeight * scale));
       const x = Math.floor((t.width - drawWidth) / 2);
@@ -767,6 +883,7 @@
 
     function updateDownload() {
       revokeDownload();
+      const generation = ++downloadGeneration;
       if (!sourceImage) {
         els.download.textContent = t("downloadIdle");
         return;
@@ -774,6 +891,7 @@
       const name = els.mode.value === "transparent" ? "sleep-overlay.png" : "sleep.bmp";
       els.download.textContent = t("downloadWorking");
       const finish = (blob) => {
+        if (generation !== downloadGeneration || !blob) return;
         downloadUrl = URL.createObjectURL(blob);
         els.download.href = downloadUrl;
         els.download.download = name;
@@ -789,6 +907,7 @@
 
     function render() {
       els.normalOptions.classList.toggle("hidden", els.mode.value !== "normal");
+      updateZoomControls();
       drawSource();
       updatePreviewState();
       updateDownload();
@@ -834,7 +953,16 @@
       img.src = URL.createObjectURL(file);
     });
 
-    for (const el of [els.device, els.mode, els.dither]) {
+    function stepZoom(delta) {
+      const next = Math.max(Number(els.zoom.min), Math.min(Number(els.zoom.max), zoomPercent() + delta));
+      els.zoom.value = String(next);
+      render();
+    }
+
+    els.zoomDown.addEventListener("click", () => stepZoom(-5));
+    els.zoomUp.addEventListener("click", () => stepZoom(5));
+
+    for (const el of [els.device, els.mode, els.fit, els.zoom, els.dither]) {
       el.addEventListener("input", render);
       el.addEventListener("change", render);
     }
