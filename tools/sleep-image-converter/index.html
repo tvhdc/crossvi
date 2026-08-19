@@ -6,66 +6,119 @@
   <title>CrossVi Sleep Image Maker</title>
   <style>
     :root {
-      color-scheme: light;
-      --paper: #f7f3e8;
-      --paper-strong: #fffaf0;
-      --ink: #17212b;
-      --muted: #65717c;
-      --line: #d9d0be;
-      --green: #2f8c68;
-      --green-dark: #176246;
-      --amber: #b7791f;
+      --font-color: #333;
+      --bg: #f5f5f5;
+      --title-color: #2c3e50;
+      --card-bg: #fff;
+      --label-color: #7f8c8d;
+      --border-color: #e5e8eb;
+      --accent-color: rgb(110, 154, 130);
+      --accent-color-10: rgba(110, 154, 130, 0.1);
+      --accent-hover-color: #5a8c73;
       --blue: #315f9d;
-      --shadow: 0 18px 60px rgba(49, 35, 12, 0.18);
+      --warning: #b7791f;
+      --badge-bg: #eef1f4;
+      --badge-text: #42505c;
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --font-color: #f5f5f5;
+        --bg: #333;
+        --title-color: #ecf0f1;
+        --card-bg: #444;
+        --label-color: #bdc3c7;
+        --border-color: #555;
+        --accent-color-10: rgba(110, 154, 130, 0.16);
+        --accent-hover-color: #9bc8ae;
+        --blue: #a9c7ff;
+        --warning: #f1c06a;
+        --badge-bg: #3a4147;
+        --badge-text: #dce4ec;
+        color-scheme: dark;
+      }
     }
 
     * { box-sizing: border-box; }
 
     body {
-      margin: 0;
-      min-height: 100vh;
-      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at 18% 12%, rgba(47, 140, 104, 0.17), transparent 30%),
-        radial-gradient(circle at 90% 8%, rgba(183, 121, 31, 0.14), transparent 34%),
-        linear-gradient(135deg, #efe7d6, #f9f5ea 54%, #e9dfcc);
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px;
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+      color: var(--font-color);
+      background: var(--bg);
     }
 
     main {
+      width: 100%;
+    }
+
+    .site-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+
+    .site-header h1 {
+      margin: 0;
+      color: var(--title-color);
+      font-size: clamp(30px, 4vw, 44px);
+      line-height: 1.06;
+      letter-spacing: -0.035em;
+    }
+
+    .lead {
+      max-width: 670px;
+      margin: 8px 0 0;
+      color: var(--label-color);
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--label-color);
+      font-size: 14px;
+    }
+
+    .flow span {
+      padding: 5px 9px;
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      background: var(--card-bg);
+    }
+
+    .flow .arrow {
+      border: 0;
+      padding-inline: 0;
+      background: transparent;
+    }
+
+    .workspace {
       display: grid;
-      grid-template-columns: minmax(290px, 430px) minmax(280px, 1fr);
-      gap: 26px;
-      width: min(1160px, 100%);
-      margin: 0 auto;
-      padding: 24px;
+      grid-template-columns: minmax(310px, 390px) minmax(360px, 1fr);
+      gap: 18px;
     }
 
     .panel, .previewPanel {
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      background: rgba(255, 250, 240, 0.9);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--card-bg);
       box-shadow: var(--shadow);
     }
 
-    .panel { padding: 20px; }
+    .panel { padding: 20px; align-self: start; }
 
-    .topbar {
-      margin-bottom: 14px;
-    }
-
-    h1 {
-      margin: 0 0 8px;
-      font-size: clamp(28px, 4vw, 44px);
-      line-height: 1.06;
-      letter-spacing: -0.045em;
-    }
-
-    p { margin: 0 0 16px; color: var(--muted); }
+    p { margin: 0 0 14px; color: var(--label-color); }
 
     .eyebrow {
       margin: 0 0 6px;
-      color: var(--green-dark);
+      color: var(--accent-color);
       font-size: 13px;
       font-weight: 800;
       letter-spacing: 0.08em;
@@ -74,33 +127,68 @@
 
     label {
       display: block;
-      margin: 14px 0 6px;
-      font-weight: 750;
+      margin: 16px 0 6px;
+      color: var(--title-color);
+      font-weight: 700;
     }
 
     input[type="file"], select, input[type="range"] { width: 100%; }
 
     select, .download {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 11px 12px;
-      color: var(--ink);
-      background: #fffdf7;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--font-color);
+      background: var(--card-bg);
       font: inherit;
     }
 
     input[type="file"] {
-      padding: 11px;
-      border: 1px dashed var(--line);
-      border-radius: 16px;
-      background: #fffdf7;
+      padding: 10px;
+      border: 1px dashed var(--border-color);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--font-color);
+    }
+
+    input[type="file"]::file-selector-button {
+      margin-right: 10px;
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 11px;
+      background: var(--accent-color);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--accent-color);
+    }
+
+    input[type="range"] {
+      accent-color: var(--accent-color);
     }
 
     .language {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--label-color);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .language select {
       min-width: 128px;
-      width: min(210px, 100%);
-      margin-left: auto;
-      margin-top: 0;
+      border: 0;
+      padding: 2px 4px;
+      background: transparent;
+      font-weight: 600;
     }
 
     .inline {
@@ -111,9 +199,9 @@
     .advanced {
       margin-top: 14px;
       padding: 14px;
-      border: 1px solid rgba(47, 140, 104, 0.22);
-      border-radius: 18px;
-      background: rgba(47, 140, 104, 0.07);
+      border: 1px solid rgba(110, 154, 130, 0.24);
+      border-radius: 10px;
+      background: var(--accent-color-10);
     }
 
     .option {
@@ -121,14 +209,14 @@
       align-items: flex-start;
       gap: 10px;
       margin-top: 12px;
-      color: var(--ink);
+      color: var(--font-color);
       font-weight: 650;
     }
 
     .option input { width: 18px; height: 18px; margin-top: 3px; }
 
     .hint, output {
-      color: var(--muted);
+      color: var(--label-color);
       font-size: 14px;
     }
 
@@ -139,10 +227,12 @@
       text-align: center;
       text-decoration: none;
       font-weight: 850;
-      background: var(--green);
+      background: var(--accent-color);
       color: white;
       border: 0;
     }
+
+    .download:hover { background: var(--accent-hover-color); }
 
     .download[aria-disabled="true"] {
       pointer-events: none;
@@ -153,13 +243,13 @@
     .previewPanel {
       display: grid;
       grid-template-rows: auto 1fr auto;
-      min-height: calc(100vh - 48px);
+      min-height: min(760px, calc(100vh - 112px));
       overflow: hidden;
     }
 
     .previewHeader, .previewFooter {
       padding: 14px 18px;
-      border-bottom: 1px solid var(--line);
+      border-bottom: 1px solid var(--border-color);
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -167,9 +257,9 @@
     }
 
     .previewFooter {
-      border-top: 1px solid var(--line);
+      border-top: 1px solid var(--border-color);
       border-bottom: 0;
-      color: var(--muted);
+      color: var(--label-color);
       font-size: 14px;
     }
 
@@ -181,8 +271,8 @@
       border-radius: 999px;
       font-size: 13px;
       font-weight: 850;
-      background: #eef1f4;
-      color: #42505c;
+      background: var(--badge-bg);
+      color: var(--badge-text);
       white-space: nowrap;
     }
 
@@ -192,13 +282,13 @@
     }
 
     .badge.solid {
-      background: rgba(47, 140, 104, 0.13);
-      color: var(--green-dark);
+      background: rgba(110, 154, 130, 0.16);
+      color: var(--accent-hover-color);
     }
 
     .badge.bmp {
       background: rgba(183, 121, 31, 0.16);
-      color: #875315;
+      color: var(--warning);
     }
 
     .previewStage {
@@ -206,28 +296,28 @@
       place-items: center;
       padding: 20px;
       overflow: auto;
-      background: #d9d0be;
+      background: var(--bg);
     }
 
     .checker {
-      padding: 18px;
-      border-radius: 20px;
-      background-color: #f8fafc;
+      padding: 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background-color: #f5f7fa;
       background-image:
-        linear-gradient(45deg, #aab2bd 25%, transparent 25%),
-        linear-gradient(-45deg, #aab2bd 25%, transparent 25%),
-        linear-gradient(45deg, transparent 75%, #aab2bd 75%),
-        linear-gradient(-45deg, transparent 75%, #aab2bd 75%);
-      background-size: 28px 28px;
-      background-position: 0 0, 0 14px, 14px -14px, -14px 0;
-      box-shadow: inset 0 0 0 1px rgba(23, 33, 43, 0.18);
+        linear-gradient(45deg, #a8b0ba 25%, transparent 25%),
+        linear-gradient(-45deg, #a8b0ba 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #a8b0ba 75%),
+        linear-gradient(-45deg, transparent 75%, #a8b0ba 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
     }
 
     canvas {
       display: block;
       width: min(100%, 528px);
       height: auto;
-      max-height: calc(100vh - 190px);
+      max-height: calc(100vh - 250px);
       object-fit: contain;
       background: transparent;
       box-shadow: 0 0 0 1px rgba(23, 33, 43, 0.28);
@@ -236,34 +326,53 @@
     .hidden { display: none; }
 
     @media (max-width: 840px) {
-      main { grid-template-columns: 1fr; padding: 14px; }
-      .language { width: 100%; }
+      body { padding: 14px; }
+      .site-header { flex-direction: column; }
+      .language { align-self: flex-end; }
+      .workspace { grid-template-columns: 1fr; }
       .previewPanel { min-height: auto; }
       .previewHeader, .previewFooter { align-items: flex-start; flex-direction: column; }
-      canvas { max-height: 70vh; }
+      canvas { max-height: 68vh; }
+    }
+
+    @media (max-width: 520px) {
+      body { padding: 10px; }
+      .panel, .previewPanel { border-radius: 8px; }
+      .flow { display: none; }
+      .previewStage { padding: 12px; }
+      .checker { padding: 8px; }
     }
   </style>
 </head>
 <body>
   <main>
-    <section class="panel">
-      <div class="topbar">
-        <div>
-          <p class="eyebrow" data-i18n="eyebrow"></p>
-          <h1 data-i18n="title"></h1>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow" data-i18n="eyebrow"></p>
+        <h1 data-i18n="title"></h1>
+        <p class="lead" data-i18n="intro"></p>
+        <div class="flow" aria-hidden="true">
+          <span data-i18n="flowPick"></span>
+          <span class="arrow">→</span>
+          <span data-i18n="flowDevice"></span>
+          <span class="arrow">→</span>
+          <span data-i18n="flowPreview"></span>
+          <span class="arrow">→</span>
+          <span data-i18n="flowDownload"></span>
         </div>
-        <label class="language">
-          <span data-i18n="language"></span>
-          <select id="language">
-            <option value="vi">Tiếng Việt</option>
-            <option value="en">English</option>
-            <option value="zh">简体中文</option>
-          </select>
-        </label>
       </div>
+      <label class="language">
+        <span data-i18n="language"></span>
+        <select id="language">
+          <option value="vi">Tiếng Việt</option>
+          <option value="en">English</option>
+          <option value="zh">简体中文</option>
+        </select>
+      </label>
+    </header>
 
-      <p data-i18n="intro"></p>
-
+    <div class="workspace">
+    <section class="panel">
       <label for="file" data-i18n="fileLabel"></label>
       <input id="file" type="file" accept="image/*">
       <p class="hint" data-i18n="fileHint"></p>
@@ -284,28 +393,6 @@
           </select>
         </div>
       </div>
-
-      <section id="transparentOptions" class="advanced">
-        <strong data-i18n="cleanTitle"></strong>
-        <p class="hint" data-i18n="cleanHint"></p>
-
-        <label class="option">
-          <input id="removeWhite" type="checkbox">
-          <span data-i18n="removeWhite"></span>
-        </label>
-
-        <label for="threshold">
-          <span data-i18n="whiteAmount"></span>
-          <output id="thresholdOut">245</output>
-        </label>
-        <input id="threshold" type="range" min="200" max="255" value="245">
-        <p class="hint" data-i18n="whiteAmountHint"></p>
-
-        <label class="option">
-          <input id="edgeOnly" type="checkbox" checked>
-          <span data-i18n="edgeOnly"></span>
-        </label>
-      </section>
 
       <section id="normalOptions" class="advanced hidden">
         <strong data-i18n="smoothTitle"></strong>
@@ -340,6 +427,7 @@
         <span data-i18n="checkerHint"></span>
       </div>
     </section>
+    </div>
   </main>
 
   <script>
@@ -348,6 +436,10 @@
         title: "Tạo ảnh ngủ CrossVi",
         eyebrow: "Công cụ ảnh ngủ",
         intro: "Chọn ảnh, xem trước đúng kích thước màn hình, rồi tải file đã sẵn sàng để copy vào thẻ SD.",
+        flowPick: "Chọn ảnh",
+        flowDevice: "Chọn máy",
+        flowPreview: "Xem kết quả",
+        flowDownload: "Tải file",
         language: "Ngôn ngữ",
         fileLabel: "1. Chọn ảnh",
         fileHint: "Dùng PNG, JPG, BMP hoặc WebP. Ảnh không được gửi lên mạng.",
@@ -357,18 +449,8 @@
         modeLabel: "3. Chọn cách dùng",
         modeTransparent: "Phủ lên màn hình đang có",
         modeNormal: "Thay toàn bộ màn hình ngủ",
-        cleanTitle: "Nếu ảnh có nền trắng",
-        cleanHint: "Bật mục này khi bạn muốn phần nền trắng biến mất, ví dụ logo hoặc sticker nền trắng.",
-        removeWhite: "Làm nền trắng biến mất",
-        whiteAmount: "Mức xóa nền trắng:",
-        whiteAmountHint: "Kéo sang phải để xóa cả vùng gần trắng. Nếu mất chi tiết sáng, kéo sang trái.",
-        whiteLevelGentle: "Nhẹ",
-        whiteLevelNormal: "Vừa",
-        whiteLevelStrong: "Mạnh",
-        whiteLevelVeryStrong: "Rất mạnh",
-        edgeOnly: "Chỉ xóa nền trắng ở mép ngoài ảnh",
-        smoothTitle: "Ảnh đen trắng cho màn ngủ thường",
-        smoothHint: "File BMP không có phần trong suốt. Vùng trống sẽ là màu trắng.",
+        smoothTitle: "Tối ưu ảnh đen trắng",
+        smoothHint: "Dùng cho ảnh ngủ thường. Ảnh sẽ được resize đúng màn hình và chuyển thành đen trắng.",
         dither: "Làm vùng xám nhìn mịn hơn trên màn e‑ink",
         downloadIdle: "Chọn ảnh để tải file",
         downloadWorking: "Đang chuẩn bị file…",
@@ -393,6 +475,10 @@
         title: "CrossVi Sleep Image Maker",
         eyebrow: "Sleep screen tool",
         intro: "Pick an image, preview it at device size, then download a file ready for the SD card.",
+        flowPick: "Choose image",
+        flowDevice: "Choose device",
+        flowPreview: "Preview result",
+        flowDownload: "Download",
         language: "Language",
         fileLabel: "1. Choose an image",
         fileHint: "PNG, JPG, BMP, or WebP works. Your image stays in this browser.",
@@ -402,18 +488,8 @@
         modeLabel: "3. Choose how to use it",
         modeTransparent: "Place over the current screen",
         modeNormal: "Replace the whole sleep screen",
-        cleanTitle: "If the image has a white background",
-        cleanHint: "Turn this on when the white paper around a logo or sticker should disappear.",
-        removeWhite: "Make the white background disappear",
-        whiteAmount: "White background removal:",
-        whiteAmountHint: "Move right to remove off-white areas too. Move left if bright details disappear.",
-        whiteLevelGentle: "Gentle",
-        whiteLevelNormal: "Normal",
-        whiteLevelStrong: "Strong",
-        whiteLevelVeryStrong: "Very strong",
-        edgeOnly: "Only remove white connected to the image edge",
-        smoothTitle: "Black-and-white sleep picture",
-        smoothHint: "BMP files do not have see-through areas. Empty space becomes white.",
+        smoothTitle: "Optimize black-and-white image",
+        smoothHint: "For a full sleep picture. The image is resized to the screen and converted to black and white.",
         dither: "Make gray areas look smoother on e‑ink",
         downloadIdle: "Choose an image to download",
         downloadWorking: "Preparing file…",
@@ -438,6 +514,10 @@
         title: "CrossVi 睡眠图片制作器",
         eyebrow: "睡眠画面工具",
         intro: "选择图片，按设备尺寸预览，然后下载可直接放到 SD 卡的文件。",
+        flowPick: "选择图片",
+        flowDevice: "选择设备",
+        flowPreview: "预览结果",
+        flowDownload: "下载文件",
         language: "语言",
         fileLabel: "1. 选择图片",
         fileHint: "支持 PNG、JPG、BMP 或 WebP。图片只在浏览器中处理，不会上传。",
@@ -447,18 +527,8 @@
         modeLabel: "3. 选择用途",
         modeTransparent: "叠加在当前画面上",
         modeNormal: "替换整个睡眠画面",
-        cleanTitle: "如果图片有白色背景",
-        cleanHint: "当 logo 或贴纸周围的白底需要消失时，打开这个选项。",
-        removeWhite: "让白色背景消失",
-        whiteAmount: "白底去除强度：",
-        whiteAmountHint: "向右会连浅白也去掉；如果亮部细节消失，请向左调。",
-        whiteLevelGentle: "轻",
-        whiteLevelNormal: "普通",
-        whiteLevelStrong: "强",
-        whiteLevelVeryStrong: "很强",
-        edgeOnly: "只去掉连接到图片边缘的白色",
-        smoothTitle: "黑白睡眠图片",
-        smoothHint: "BMP 文件没有透明区域，空白处会变成白色。",
+        smoothTitle: "优化黑白图片",
+        smoothHint: "用于普通睡眠图。图片会调整到屏幕尺寸并转成黑白。",
         dither: "让灰色区域在墨水屏上更平滑",
         downloadIdle: "选择图片后下载",
         downloadWorking: "正在准备文件…",
@@ -497,12 +567,7 @@
       language: document.getElementById("language"),
       device: document.getElementById("device"),
       mode: document.getElementById("mode"),
-      threshold: document.getElementById("threshold"),
-      thresholdOut: document.getElementById("thresholdOut"),
-      removeWhite: document.getElementById("removeWhite"),
-      edgeOnly: document.getElementById("edgeOnly"),
       dither: document.getElementById("dither"),
-      transparentOptions: document.getElementById("transparentOptions"),
       normalOptions: document.getElementById("normalOptions"),
       download: document.getElementById("download"),
       status: document.getElementById("status"),
@@ -559,13 +624,6 @@
       els.status.textContent = text || "";
     }
 
-    function whiteLevelLabel(value) {
-      if (value >= 250) return t("whiteLevelVeryStrong");
-      if (value >= 240) return t("whiteLevelStrong");
-      if (value >= 220) return t("whiteLevelNormal");
-      return t("whiteLevelGentle");
-    }
-
     function refreshStatus() {
       if (sourceError) {
         setStatus(t("statusError"));
@@ -595,71 +653,6 @@
       }
       const total = data.length / 4;
       return { has: transparent > 0, percent: Math.round((transparent * 1000) / total) / 10 };
-    }
-
-    function hasTransparency(imageData) {
-      return transparencyStats(imageData).has;
-    }
-
-    function nearWhite(data, i, threshold) {
-      return data[i + 3] > 0 && data[i] >= threshold && data[i + 1] >= threshold && data[i + 2] >= threshold;
-    }
-
-    function alphaBox(data, width, height) {
-      let left = width, right = -1, top = height, bottom = -1;
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          if (data[(y * width + x) * 4 + 3] > 4) {
-            if (x < left) left = x;
-            if (x > right) right = x;
-            if (y < top) top = y;
-            if (y > bottom) bottom = y;
-          }
-        }
-      }
-      return right < left ? null : { left, right, top, bottom };
-    }
-
-    function removeWhiteBackground(imageData, threshold, edgeOnly) {
-      const { width, height, data } = imageData;
-      if (!edgeOnly) {
-        for (let i = 0; i < data.length; i += 4) {
-          if (nearWhite(data, i, threshold)) data[i + 3] = 0;
-        }
-        return;
-      }
-
-      const box = alphaBox(data, width, height);
-      if (!box) return;
-      const seen = new Uint8Array(width * height);
-      const queue = [];
-      const push = (x, y) => {
-        if (x < box.left || x > box.right || y < box.top || y > box.bottom) return;
-        const p = y * width + x;
-        if (seen[p]) return;
-        const i = p * 4;
-        if (!nearWhite(data, i, threshold)) return;
-        seen[p] = 1;
-        queue.push(p);
-      };
-      for (let x = box.left; x <= box.right; x++) {
-        push(x, box.top);
-        push(x, box.bottom);
-      }
-      for (let y = box.top; y <= box.bottom; y++) {
-        push(box.left, y);
-        push(box.right, y);
-      }
-      for (let qi = 0; qi < queue.length; qi++) {
-        const p = queue[qi];
-        data[p * 4 + 3] = 0;
-        const x = p % width;
-        const y = Math.floor(p / width);
-        push(x + 1, y);
-        push(x - 1, y);
-        push(x, y + 1);
-        push(x, y - 1);
-      }
     }
 
     function ditherCanvasToBlackWhite(canvas) {
@@ -699,11 +692,6 @@
       ctx.drawImage(sourceImage, x, y, drawWidth, drawHeight);
       const sourceRect = { x, y, width: drawWidth, height: drawHeight };
 
-      if (els.mode.value === "transparent" && els.removeWhite.checked) {
-        const imageData = ctx.getImageData(0, 0, t.width, t.height);
-        removeWhiteBackground(imageData, Number(els.threshold.value), els.edgeOnly.checked);
-        ctx.putImageData(imageData, 0, 0);
-      }
       if (els.mode.value === "normal") ditherCanvasToBlackWhite(els.canvas);
       return sourceRect;
     }
@@ -800,9 +788,7 @@
     }
 
     function render() {
-      els.transparentOptions.classList.toggle("hidden", els.mode.value !== "transparent");
       els.normalOptions.classList.toggle("hidden", els.mode.value !== "normal");
-      els.thresholdOut.textContent = whiteLevelLabel(Number(els.threshold.value));
       drawSource();
       updatePreviewState();
       updateDownload();
@@ -828,9 +814,6 @@
       const img = new Image();
       img.onload = () => {
         sourceImage = img;
-        const sourceRect = drawSource();
-        const imageData = ctx.getImageData(sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height);
-        els.removeWhite.checked = els.mode.value === "transparent" && !hasTransparency(imageData);
         sourceInfo = {
           width: img.naturalWidth,
           height: img.naturalHeight,
@@ -851,7 +834,7 @@
       img.src = URL.createObjectURL(file);
     });
 
-    for (const el of [els.device, els.mode, els.threshold, els.removeWhite, els.edgeOnly, els.dither]) {
+    for (const el of [els.device, els.mode, els.dither]) {
       el.addEventListener("input", render);
       el.addEventListener("change", render);
     }
