@@ -669,6 +669,7 @@
     };
     const ctx = els.canvas.getContext("2d", { willReadFrequently: true });
     let sourceImage = null;
+    let sourceRect = null;
     let sourceInfo = null;
     let sourceError = false;
     let downloadUrl = null;
@@ -754,11 +755,41 @@
     }
 
     function placementScale(profile) {
-      const widthScale = profile.width / sourceImage.naturalWidth;
-      const heightScale = profile.height / sourceImage.naturalHeight;
+      const widthScale = profile.width / sourceRect.width;
+      const heightScale = profile.height / sourceRect.height;
       if (els.fit.value === "width") return widthScale;
       if (els.fit.value === "height") return heightScale;
       return Math.max(widthScale, heightScale);
+    }
+
+    function detectSourceRect(image) {
+      const full = { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight };
+      try {
+        const sample = document.createElement("canvas");
+        sample.width = image.naturalWidth;
+        sample.height = image.naturalHeight;
+        const sampleCtx = sample.getContext("2d", { willReadFrequently: true });
+        sampleCtx.drawImage(image, 0, 0);
+        const data = sampleCtx.getImageData(0, 0, sample.width, sample.height).data;
+        let left = sample.width, right = -1, top = sample.height, bottom = -1;
+        let transparent = false;
+        for (let y = 0; y < sample.height; y++) {
+          for (let x = 0; x < sample.width; x++) {
+            const alpha = data[(y * sample.width + x) * 4 + 3];
+            if (alpha < 250) transparent = true;
+            if (alpha > 4) {
+              if (x < left) left = x;
+              if (x > right) right = x;
+              if (y < top) top = y;
+              if (y > bottom) bottom = y;
+            }
+          }
+        }
+        if (!transparent || right < left) return full;
+        return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+      } catch {
+        return full;
+      }
     }
 
     function transparencyStats(imageData) {
@@ -799,17 +830,27 @@
       if (!sourceImage) return null;
 
       const scale = placementScale(t) * (zoomPercent() / 100);
-      const drawWidth = Math.max(1, Math.round(sourceImage.naturalWidth * scale));
-      const drawHeight = Math.max(1, Math.round(sourceImage.naturalHeight * scale));
+      const drawWidth = Math.max(1, Math.round(sourceRect.width * scale));
+      const drawHeight = Math.max(1, Math.round(sourceRect.height * scale));
       const x = Math.floor((t.width - drawWidth) / 2);
       const y = Math.floor((t.height - drawHeight) / 2);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(sourceImage, x, y, drawWidth, drawHeight);
-      const sourceRect = { x, y, width: drawWidth, height: drawHeight };
+      ctx.drawImage(
+        sourceImage,
+        sourceRect.x,
+        sourceRect.y,
+        sourceRect.width,
+        sourceRect.height,
+        x,
+        y,
+        drawWidth,
+        drawHeight
+      );
+      const drawnRect = { x, y, width: drawWidth, height: drawHeight };
 
       if (els.mode.value === "normal") ditherCanvasToBlackWhite(els.canvas);
-      return sourceRect;
+      return drawnRect;
     }
 
     function makeBmpBlob(canvas) {
@@ -923,6 +964,7 @@
       const file = els.file.files && els.file.files[0];
       revokeDownload();
       sourceImage = null;
+      sourceRect = null;
       sourceInfo = null;
       sourceError = false;
       if (!file) {
@@ -933,6 +975,7 @@
       const img = new Image();
       img.onload = () => {
         sourceImage = img;
+        sourceRect = detectSourceRect(img);
         sourceInfo = {
           width: img.naturalWidth,
           height: img.naturalHeight,
