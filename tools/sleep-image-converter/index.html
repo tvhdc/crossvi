@@ -851,7 +851,7 @@
       function paletteIndex(key, gray, alpha) {
         let idx = lookup.get(key);
         if (idx !== undefined) return idx;
-        idx = palette.length;
+        idx = alphas.length;
         lookup.set(key, idx);
         palette.push(gray, gray, gray);
         alphas.push(alpha);
