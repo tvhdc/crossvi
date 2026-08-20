@@ -340,9 +340,6 @@
     }
 
     .checker {
-      padding: 14px;
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
       background-color: #f5f7fa;
       background-image:
         linear-gradient(45deg, #a8b0ba 25%, transparent 25%),
@@ -360,7 +357,6 @@
       max-height: calc(100vh - 250px);
       object-fit: contain;
       background: transparent;
-      box-shadow: 0 0 0 1px rgba(23, 33, 43, 0.28);
     }
 
     .hidden { display: none; }
@@ -380,7 +376,6 @@
       .panel, .previewPanel { border-radius: 8px; }
       .flow { display: none; }
       .previewStage { padding: 12px; }
-      .checker { padding: 8px; }
     }
   </style>
 </head>
@@ -690,12 +685,6 @@
     function initialLanguage() {
       const saved = localStorage.getItem(LANGUAGE_KEY);
       if (saved && TEXT[saved]) return saved;
-      const browserLanguages = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""];
-      for (const item of browserLanguages) {
-        const low = item.toLowerCase();
-        if (low.startsWith("vi")) return "vi";
-        if (low.startsWith("zh")) return "zh";
-      }
       return "en";
     }
 
