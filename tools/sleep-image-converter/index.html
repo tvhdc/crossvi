@@ -512,9 +512,9 @@
         zoomOut: "Thu nhỏ",
         zoomIn: "Phóng to",
         zoomHint: "100% là đúng theo kiểu đặt ảnh đã chọn. Với “lấp đầy”, 100% là mức nhỏ nhất để không bị viền.",
-        smoothTitle: "Tối ưu ảnh đen trắng",
-        smoothHint: "Dùng cho ảnh ngủ thường. Ảnh sẽ được resize đúng màn hình và chuyển thành đen trắng.",
-        dither: "Làm vùng xám nhìn mịn hơn trên màn e‑ink",
+        smoothTitle: "Tối ưu ảnh BMP thường",
+        smoothHint: "Dùng cho ảnh ngủ toàn màn hình. File BMP sẽ dùng 4 mức xám mà CrossVi hỗ trợ, nên ảnh mềm hơn kiểu chỉ đen/trắng.",
+        dither: "Làm chuyển sắc mịn hơn",
         downloadIdle: "Chọn ảnh để tải file",
         downloadWorking: "Đang chuẩn bị file…",
         downloadReady: "Tải {name} ({size})",
@@ -560,9 +560,9 @@
         zoomOut: "Zoom out",
         zoomIn: "Zoom in",
         zoomHint: "100% follows the selected placement. In Fill mode, 100% is the minimum to avoid borders.",
-        smoothTitle: "Optimize black-and-white image",
-        smoothHint: "For a full sleep picture. The image is resized to the screen and converted to black and white.",
-        dither: "Make gray areas look smoother on e‑ink",
+        smoothTitle: "Optimize normal BMP",
+        smoothHint: "For a full sleep picture. The BMP uses the four gray levels supported by CrossVi, so it looks smoother than plain black and white.",
+        dither: "Smooth gradients",
         downloadIdle: "Choose an image to download",
         downloadWorking: "Preparing file…",
         downloadReady: "Download {name} ({size})",
@@ -608,9 +608,9 @@
         zoomOut: "缩小",
         zoomIn: "放大",
         zoomHint: "100% 表示按当前摆放方式显示。铺满模式下，100% 是避免白边的最小值。",
-        smoothTitle: "优化黑白图片",
-        smoothHint: "用于普通睡眠图。图片会调整到屏幕尺寸并转成黑白。",
-        dither: "让灰色区域在墨水屏上更平滑",
+        smoothTitle: "优化普通 BMP",
+        smoothHint: "用于全屏睡眠图。BMP 会使用 CrossVi 支持的 4 级灰度，比纯黑白更细腻。",
+        dither: "让渐变更平滑",
         downloadIdle: "选择图片后下载",
         downloadWorking: "正在准备文件…",
         downloadReady: "下载 {name}（{size}）",
@@ -776,15 +776,18 @@
       return { has: transparent > 0, percent: Math.round((transparent * 1000) / total) / 10 };
     }
 
-    function ditherCanvasToBlackWhite(canvas) {
+    function quantizeCanvasToFourGrayLevels(canvas) {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imageData.data;
       for (let y = 0; y < canvas.height; y++) {
         for (let x = 0; x < canvas.width; x++) {
           const i = (y * canvas.width + x) * 4;
-          const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-          const threshold = els.dither.checked ? (bayer[y & 3][x & 3] + 0.5) * 16 : 145;
-          const v = gray < threshold ? 0 : 255;
+          let gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          if (els.dither.checked) {
+            gray += (bayer[y & 3][x & 3] - 7.5) * (85 / 16);
+          }
+          const level = Math.max(0, Math.min(3, Math.round((gray * 3) / 255)));
+          const v = level * 85;
           data[i] = data[i + 1] = data[i + 2] = v;
           data[i + 3] = 255;
         }
@@ -961,40 +964,41 @@
       );
       const drawnRect = { x, y, width: drawWidth, height: drawHeight };
 
-      if (els.mode.value === "normal") ditherCanvasToBlackWhite(els.canvas);
+      if (els.mode.value === "normal") quantizeCanvasToFourGrayLevels(els.canvas);
       return drawnRect;
     }
 
     function makeBmpBlob(canvas) {
       const width = canvas.width;
       const height = canvas.height;
-      const rowStride = Math.ceil(width / 32) * 4;
+      const rowStride = Math.ceil(width / 16) * 4;
       const pixelBytes = rowStride * height;
-      const fileSize = 14 + 40 + 8 + pixelBytes;
+      const fileSize = 14 + 40 + 16 + pixelBytes;
       const bytes = new Uint8Array(fileSize);
       const view = new DataView(bytes.buffer);
       bytes[0] = 0x42; bytes[1] = 0x4d;
       view.setUint32(2, fileSize, true);
-      view.setUint32(10, 14 + 40 + 8, true);
+      view.setUint32(10, 14 + 40 + 16, true);
       view.setUint32(14, 40, true);
       view.setInt32(18, width, true);
       view.setInt32(22, height, true);
       view.setUint16(26, 1, true);
-      view.setUint16(28, 1, true);
+      view.setUint16(28, 2, true);
       view.setUint32(34, pixelBytes, true);
-      view.setUint32(46, 2, true);
-      view.setUint32(50, 2, true);
-      bytes.set([0, 0, 0, 0, 255, 255, 255, 0], 54);
+      view.setUint32(46, 4, true);
+      view.setUint32(50, 4, true);
+      bytes.set([0, 0, 0, 0, 85, 85, 85, 0, 170, 170, 170, 0, 255, 255, 255, 0], 54);
 
       const imageData = ctx.getImageData(0, 0, width, height).data;
-      const offset = 14 + 40 + 8;
+      const offset = 14 + 40 + 16;
       for (let y = 0; y < height; y++) {
         const srcY = height - 1 - y;
         const row = offset + y * rowStride;
         for (let x = 0; x < width; x++) {
           const i = (srcY * width + x) * 4;
           const gray = imageData[i] * 0.299 + imageData[i + 1] * 0.587 + imageData[i + 2] * 0.114;
-          if (gray >= 128) bytes[row + (x >> 3)] |= 0x80 >> (x & 7);
+          const level = Math.max(0, Math.min(3, Math.round((gray * 3) / 255)));
+          bytes[row + (x >> 2)] |= level << (6 - ((x & 3) * 2));
         }
       }
       return new Blob([bytes], { type: "image/bmp" });
