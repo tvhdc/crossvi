@@ -1022,11 +1022,19 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("UIIcon::Trophy", menu)
         self.assertIn("return TrophyIcon;", theme)
 
-    def test_all_readers_record_the_per_book_daily_breakdown_at_session_commit(self):
+    def test_all_readers_record_the_per_book_daily_breakdown_after_canonical_stats_save(self):
         for filename in ("EpubReaderActivity.cpp", "TxtReaderActivity.cpp", "XtcReaderActivity.cpp"):
             reader = (REPO_ROOT / "src/activities/reader" / filename).read_text(encoding="utf-8")
-            self.assertIn("DailyBookReadingHistory::record", reader, filename)
-            self.assertIn("pendingGlobalReadingSpans.pendingDailyHistory", reader, filename)
+            commit_start = reader.index("::commitReadingSession()")
+            save_start = reader.index("::saveReadingStats()", commit_start)
+            next_function = reader.index("::markBookCompleted()", save_start)
+            commit = reader[commit_start:save_start]
+            save = reader[save_start:next_function]
+            self.assertIn("dailyBookHistoryPending =", commit, filename)
+            self.assertNotIn("DailyBookReadingHistory::record", commit, filename)
+            self.assertIn("!bookReadingStatsDirty && !globalReadingStatsDirty", save, filename)
+            self.assertIn("DailyBookReadingHistory::record", save, filename)
+            self.assertIn("pendingGlobalReadingSpans.pendingDailyHistory", save, filename)
 
     def test_file_browser_guards_rendered_list_mutations(self):
         browser = (REPO_ROOT / "src/activities/home/FileBrowserActivity.cpp").read_text(encoding="utf-8")

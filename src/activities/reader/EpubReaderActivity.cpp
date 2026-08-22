@@ -907,10 +907,7 @@ void EpubReaderActivity::commitReadingSession() {
   }
 
   if (sessionReadingSeconds >= 10) {
-    if (epub && !DailyBookReadingHistory::record(epub->getPath(), epub->getTitle(),
-                                                 pendingGlobalReadingSpans.pendingDailyHistory)) {
-      LOG_ERR("ERS", "Failed to save the per-book daily reading breakdown");
-    }
+    dailyBookHistoryPending = epub && bookReadingStatsWritable && globalReadingStatsWritable;
     if (bookReadingStatsWritable) {
       bookReadingStats.totalReadingSeconds =
           addReadingStatsSaturated(bookReadingStats.totalReadingSeconds, sessionReadingSeconds);
@@ -955,6 +952,13 @@ void EpubReaderActivity::saveReadingStats() {
       if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("ERS", "Failed to reconcile reading achievements");
     } else {
       LOG_ERR("ERS", "Failed to save global reading statistics");
+    }
+  }
+  if (dailyBookHistoryPending && !bookReadingStatsDirty && !globalReadingStatsDirty && epub) {
+    dailyBookHistoryPending = false;
+    if (!DailyBookReadingHistory::record(epub->getPath(), epub->getTitle(),
+                                         pendingGlobalReadingSpans.pendingDailyHistory)) {
+      LOG_ERR("ERS", "Failed to save the per-book daily reading breakdown");
     }
   }
 }

@@ -78,6 +78,7 @@ class XtcReaderActivity final : public Activity {
   bool readingSessionCommitted = false;
   bool bookReadingStatsDirty = false;
   bool globalReadingStatsDirty = false;
+  bool dailyBookHistoryPending = false;
   std::atomic<int8_t> pendingReadingViewSignal{0};
   std::atomic<uint32_t> pendingReadingViewAtMs{0};
   bool ignoreNextConfirmRelease = false;

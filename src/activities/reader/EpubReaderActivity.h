@@ -199,6 +199,7 @@ class EpubReaderActivity final : public Activity {
   bool readingSessionCommitted = false;
   bool bookReadingStatsDirty = false;
   bool globalReadingStatsDirty = false;
+  bool dailyBookHistoryPending = false;
   // render() runs on the display task; loop()/lifecycle own the tracker and
   // consume this tiny last-event-wins handoff on the main task.
   std::atomic<int8_t> pendingReadingViewSignal{0};  // -1 hidden, +1 visible

@@ -1524,10 +1524,7 @@ void TxtReaderActivity::commitReadingSession() {
 
   if (sessionReadingSeconds < 10) return;
 
-  if (txt && !DailyBookReadingHistory::record(txt->getPath(), txt->getTitle(),
-                                              pendingGlobalReadingSpans.pendingDailyHistory)) {
-    LOG_ERR("TRS", "Failed to save the per-book daily reading breakdown");
-  }
+  dailyBookHistoryPending = txt && bookReadingStatsWritable && globalReadingStatsWritable;
 
   if (bookReadingStatsWritable) {
     bookReadingStats.totalReadingSeconds =
@@ -1571,6 +1568,13 @@ void TxtReaderActivity::saveReadingStats() {
       if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("TRS", "Failed to reconcile reading achievements");
     } else {
       LOG_ERR("TRS", "Failed to save global reading statistics");
+    }
+  }
+  if (dailyBookHistoryPending && !bookReadingStatsDirty && !globalReadingStatsDirty && txt) {
+    dailyBookHistoryPending = false;
+    if (!DailyBookReadingHistory::record(txt->getPath(), txt->getTitle(),
+                                         pendingGlobalReadingSpans.pendingDailyHistory)) {
+      LOG_ERR("TRS", "Failed to save the per-book daily reading breakdown");
     }
   }
 }

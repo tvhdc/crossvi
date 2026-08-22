@@ -1044,10 +1044,7 @@ void XtcReaderActivity::commitReadingSession() {
   }
   if (sessionReadingSeconds < 10) return;
 
-  if (xtc && !DailyBookReadingHistory::record(xtc->getPath(), xtc->getTitle(),
-                                              pendingGlobalReadingSpans.pendingDailyHistory)) {
-    LOG_ERR("XTR", "Failed to save the per-book daily reading breakdown");
-  }
+  dailyBookHistoryPending = xtc && bookReadingStatsWritable && globalReadingStatsWritable;
 
   if (bookReadingStatsWritable) {
     bookReadingStats.totalReadingSeconds =
@@ -1091,6 +1088,13 @@ void XtcReaderActivity::saveReadingStats() {
       if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("XRS", "Failed to reconcile reading achievements");
     } else {
       LOG_ERR("XRS", "Failed to save global reading statistics");
+    }
+  }
+  if (dailyBookHistoryPending && !bookReadingStatsDirty && !globalReadingStatsDirty && xtc) {
+    dailyBookHistoryPending = false;
+    if (!DailyBookReadingHistory::record(xtc->getPath(), xtc->getTitle(),
+                                         pendingGlobalReadingSpans.pendingDailyHistory)) {
+      LOG_ERR("XRS", "Failed to save the per-book daily reading breakdown");
     }
   }
 }
