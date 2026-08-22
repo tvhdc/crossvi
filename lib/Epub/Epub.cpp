@@ -2212,6 +2212,14 @@ Epub::ThumbnailStatus Epub::ensureThumbnail(const int width, const int height, c
   return embeddedPresent ? ThumbnailStatus::Invalid : ThumbnailStatus::Missing;
 }
 
+bool Epub::hasVerifiedNoCoverThumbnail(const int height) {
+  if (height <= 0 || !ensureSourceIdentitySnapshot()) return false;
+  const std::string markerPath = getThumbBmpPath(height) + ".nocover";
+  ZipFile::SourceIdentity proof;
+  return validateNoCoverMarker(markerPath.c_str(), nullptr) &&
+         readThumbIdentity((markerPath + ".identity").c_str(), proof) && proof == sourceIdentitySnapshot;
+}
+
 bool Epub::generateThumbBmp(const int height) const {
   return generateThumbBmp(static_cast<int>(height * 0.6f), height, true);
 }

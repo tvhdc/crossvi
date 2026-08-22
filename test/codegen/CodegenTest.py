@@ -2530,20 +2530,26 @@ class CodegenTest(unittest.TestCase):
         self.assertLess(render.index("renderer.displayBuffer();"), render.index('LOG_DBG("LIBT",\n              "nav_visible'))
         self.assertNotIn('LOG_DBG("LIBT", "path=', recent)
 
-    def test_library_no_cover_marker_settles_without_reopening_the_epub(self):
+    def test_library_no_cover_result_is_source_bound_and_persisted_in_catalog(self):
         recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        epub = (REPO_ROOT / "lib/Epub/Epub.cpp").read_text(encoding="utf-8")
+        catalog = (REPO_ROOT / "src/LibraryCatalogStore.cpp").read_text(encoding="utf-8")
         epub_reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
         queue = recent[recent.index("void RecentBooksActivity::processCoverQueue") :
                        recent.index("void RecentBooksActivity::processSelectedSourcePreparation")]
         cover_grid = recent[recent.index("} else if (viewMode() == CrossPointSettings::LIBRARY_COVERS)") :
                             recent.index("  } else {", recent.index("} else if (viewMode() == CrossPointSettings::LIBRARY_COVERS)"))]
 
-        self.assertIn("hasCachedNoCoverMarker", recent)
+        self.assertNotIn('".nocover"', recent)
+        self.assertIn("hasVerifiedNoCoverThumbnail", epub)
+        self.assertIn("hasVerifiedNoCoverThumbnail", catalog)
+        self.assertIn("LibraryCatalogStore::markDirtyPath(book.path);", queue)
+        self.assertIn("RECENT_BOOKS.updateBook(book.path, book.title, book.author, {});", queue)
         self.assertIn("coverQueueAbsentMask", recent)
         self.assertIn("coverQueueShownMask |= coverQueueAbsentMask", cover_grid)
         self.assertIn("renderPage[offset].coverBmpPath.clear();", cover_grid)
         self.assertIn("recentBooks[recentIndex].coverBmpPath.clear();", cover_grid)
-        self.assertLess(queue.index("const bool cachedNoCover"),
+        self.assertLess(queue.index("const bool coverKnownAbsent"),
                         queue.index("if (book.format == LibraryBookFormat::Epub)"))
         self.assertGreaterEqual(
             epub_reader.count("epub->getCoverItemHref().empty() ? std::string{} : epub->getThumbBmpPath()"),

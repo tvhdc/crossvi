@@ -464,7 +464,9 @@ void enrichRecord(LibraryBookRecord& record) {
     if (!epub.readCoreMetadata(metadata)) return;
     if (!metadata.title.empty()) record.title = metadata.title;
     record.author = metadata.author;
-    record.coverBmpPath = metadata.coverItemHref.empty() ? std::string{} : epub.getThumbBmpPath();
+    record.coverBmpPath = metadata.coverItemHref.empty() || epub.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT)
+                              ? std::string{}
+                              : epub.getThumbBmpPath();
     return;
   }
   if (record.format != LibraryBookFormat::Xtc && record.format != LibraryBookFormat::Xtch) return;
@@ -712,7 +714,10 @@ void LibraryCatalogStore::stepUpdate() {
     if (result == Epub::CoreMetadataStepResult::Loaded) {
       if (!metadata.title.empty()) updateRecord_.title = metadata.title;
       updateRecord_.author = metadata.author;
-      updateRecord_.coverBmpPath = metadata.coverItemHref.empty() ? std::string{} : updateEpub_->getThumbBmpPath();
+      updateRecord_.coverBmpPath =
+          metadata.coverItemHref.empty() || updateEpub_->hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT)
+              ? std::string{}
+              : updateEpub_->getThumbBmpPath();
     }
     updateEpub_.reset();
     if (!beginUpdateLocate()) rebuild();
@@ -1026,7 +1031,9 @@ void LibraryCatalogStore::enrichOne() {
       if (!metadata.title.empty()) enrichmentRecord_.title = metadata.title;
       enrichmentRecord_.author = metadata.author;
       enrichmentRecord_.coverBmpPath =
-          metadata.coverItemHref.empty() ? std::string{} : enrichmentEpub_->getThumbBmpPath();
+          metadata.coverItemHref.empty() || enrichmentEpub_->hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT)
+              ? std::string{}
+              : enrichmentEpub_->getThumbBmpPath();
       if (!writeRecord(enrichmentRecord_)) {
         phase_ = Phase::Error;
         return;

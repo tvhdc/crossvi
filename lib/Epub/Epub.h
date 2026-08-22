@@ -194,6 +194,9 @@ class Epub {
   bool generateCoverBmp(bool cropped, const ThumbnailRequest& thumbnails);
   std::string getThumbBmpPath() const;
   std::string getThumbBmpPath(int height) const;
+  // A no-cover marker is derived data and is usable only when its source proof
+  // matches the EPUB currently bound to this object.
+  bool hasVerifiedNoCoverThumbnail(int height);
   // Materialize the optimized EPUB thumbnail once at the canonical size. The
   // fallback mode retains the existing JPG/PNG converter for direct-SD books.
   ThumbnailStatus ensureSharedThumbnail(ThumbnailMode mode = ThumbnailMode::EmbeddedThenCover);

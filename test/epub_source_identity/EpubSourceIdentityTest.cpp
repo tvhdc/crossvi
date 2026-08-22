@@ -1826,6 +1826,21 @@ TEST_F(EpubSourceIdentityTest, FastMetadataWithoutCoverWritesVerifiedNoCoverMark
   constexpr int thumbnailHeight = 120;
   EXPECT_FALSE(epub.generateThumbBmp(thumbnailHeight));
   EXPECT_TRUE(Storage.exists((epub.getThumbBmpPath(thumbnailHeight) + ".nocover").c_str()));
+  EXPECT_FALSE(epub.hasVerifiedNoCoverThumbnail(thumbnailHeight));
+
+  EXPECT_EQ(epub.ensureSharedThumbnail(), Epub::ThumbnailStatus::NoCover);
+  EXPECT_TRUE(epub.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT));
+}
+
+TEST_F(EpubSourceIdentityTest, NoCoverMarkerIsRejectedAfterTheBookAtTheSamePathChanges) {
+  identify(makeCssTestEpub());
+  Epub original(EPUB_PATH, "/.crosspoint");
+  EXPECT_EQ(original.ensureSharedThumbnail(), Epub::ThumbnailStatus::NoCover);
+  EXPECT_TRUE(original.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT));
+
+  identify(makeCssTestEpub("replacement"));
+  Epub replacement(EPUB_PATH, "/.crosspoint");
+  EXPECT_FALSE(replacement.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT));
 }
 
 TEST_F(EpubSourceIdentityTest, CoreMetadataReadYieldsAndCanBeCancelledBeforeRetry) {

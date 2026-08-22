@@ -176,12 +176,6 @@ LibraryBookFormat formatForPath(const std::string& path) {
   return LibraryBookFormat::Epub;
 }
 
-bool hasCachedNoCoverMarker(const LibraryBookRecord& book) {
-  if (book.format != LibraryBookFormat::Epub || book.coverBmpPath.empty()) return false;
-  const std::string sharedPath = UITheme::getCoverThumbPath(book.coverBmpPath, Epub::SHARED_THUMB_HEIGHT);
-  return Storage.exists((sharedPath + ".nocover").c_str());
-}
-
 const char* formatLabel(const LibraryBookFormat format) {
   switch (format) {
     case LibraryBookFormat::Text:
@@ -1030,8 +1024,8 @@ void RecentBooksActivity::processCoverQueue() {
     }
 
     const uint8_t coverBit = static_cast<uint8_t>(1U << offset);
-    const bool cachedNoCover = book.coverBmpPath.empty() || hasCachedNoCoverMarker(book);
-    if (cachedNoCover) {
+    const bool coverKnownAbsent = book.coverBmpPath.empty();
+    if (coverKnownAbsent) {
       if (drawsCovers) {
         coverQueueShownMask |= coverBit;
         coverQueueAbsentMask |= coverBit;
@@ -1047,6 +1041,7 @@ void RecentBooksActivity::processCoverQueue() {
     // already ready and can share the same refresh batch as cached covers.
     bool generated =
         !drawsCovers || book.format == LibraryBookFormat::Text || book.format == LibraryBookFormat::Markdown;
+    bool verifiedNoCover = false;
     bool cachedBefore = true;
     if (!coverPreparationPath.empty() && coverPreparationPath != book.path) cancelCoverPreparation();
     if (book.format == LibraryBookFormat::Epub) {
@@ -1072,12 +1067,9 @@ void RecentBooksActivity::processCoverQueue() {
       const std::string carouselPath = epub.getThumbBmpPath(carouselHeight);
       const uint8_t readyBit = static_cast<uint8_t>(1U << offset);
       const bool sharedBitmapPresent = Storage.exists(sharedPath.c_str());
-      const bool sharedNoCover = Storage.exists((sharedPath + ".nocover").c_str());
       const bool sharedRendered = (coverQueueShownMask & readyBit) != 0;
-      const bool sharedCached =
-          !needsShared || sharedNoCover || (sharedBitmapPresent && (!drawsCovers || sharedRendered));
-      const bool carouselCached =
-          !needsCarousel || Storage.exists(carouselPath.c_str()) || Storage.exists((carouselPath + ".nocover").c_str());
+      const bool sharedCached = !needsShared || (sharedBitmapPresent && (!drawsCovers || sharedRendered));
+      const bool carouselCached = !needsCarousel || Storage.exists(carouselPath.c_str());
       cachedBefore = sharedCached && carouselCached;
 
       // The first page render already attempts every library-sized cache in a
@@ -1161,6 +1153,8 @@ void RecentBooksActivity::processCoverQueue() {
         } else if (preparation == Epub::ThumbnailPreparationStatus::Ready && !preparationWasActive) {
           // beginThumbnailPreparation() already validated both requested caches.
           generated = true;
+          verifiedNoCover = (needsShared && epub.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT)) ||
+                            (needsCarousel && epub.hasVerifiedNoCoverThumbnail(carouselHeight));
           finishEpubPreparation();
         } else {
           const Epub::ThumbnailSetStatus thumbnails =
@@ -1169,6 +1163,8 @@ void RecentBooksActivity::processCoverQueue() {
             return status == Epub::ThumbnailStatus::Ready || status == Epub::ThumbnailStatus::NoCover;
           };
           generated = (!needsShared || ready(thumbnails.shared)) && (!needsCarousel || ready(thumbnails.carousel));
+          verifiedNoCover = (needsShared && thumbnails.shared == Epub::ThumbnailStatus::NoCover) ||
+                            (needsCarousel && thumbnails.carousel == Epub::ThumbnailStatus::NoCover);
           capturePreparedIdentity();
 #if defined(CROSSVI_COVER_DEBUG)
           LOG_INF("COVDBG", "EPUB thumbnails path=%s shared=%u carousel=%u", book.path.c_str(),
@@ -1272,12 +1268,24 @@ void RecentBooksActivity::processCoverQueue() {
 #else
     (void)generated;
 #endif
+    if (verifiedNoCover && !book.coverBmpPath.empty()) {
+      LibraryCatalogStore::markDirtyPath(book.path);
+      RECENT_BOOKS.updateBook(book.path, book.title, book.author, {});
+      if (offset < renderPage.size()) renderPage[offset].coverBmpPath.clear();
+      for (auto& recent : recentBooks) {
+        if (recent.path == book.path) {
+          recent.coverBmpPath.clear();
+          break;
+        }
+      }
+    }
+
     // A failed attempt is still consumed so a broken cover cannot retry forever
     // and starve input. Cached covers are grouped into one refresh; a missing
     // cover still yields immediately after its bounded generation attempt.
     if (drawsCovers) {
       const uint8_t readyBit = static_cast<uint8_t>(1U << offset);
-      if (!generated) coverQueueAbsentMask |= readyBit;
+      if (!generated || verifiedNoCover) coverQueueAbsentMask |= readyBit;
       if ((coverQueueShownMask & readyBit) == 0) {
         coverQueueReadyMask |= readyBit;
         coverQueueShownMask |= readyBit;
@@ -2274,8 +2282,7 @@ void RecentBooksActivity::render(RenderLock&&) {
       coverQueueShownMask |= coverQueueAbsentMask;
       for (size_t offset = 0; offset < renderPage.size() && offset < 8; ++offset) {
         const uint8_t coverBit = static_cast<uint8_t>(1U << offset);
-        const bool noCover = (coverQueueAbsentMask & coverBit) != 0 || renderPage[offset].coverBmpPath.empty() ||
-                             ((coverQueueShownMask & coverBit) == 0 && hasCachedNoCoverMarker(renderPage[offset]));
+        const bool noCover = (coverQueueAbsentMask & coverBit) != 0 || renderPage[offset].coverBmpPath.empty();
         if (noCover) {
           coverQueueAbsentMask |= coverBit;
           if (!renderPage[offset].coverBmpPath.empty()) {
