@@ -60,10 +60,26 @@ void operator delete[](void* ptr, const std::nothrow_t&) noexcept { ::operator d
 class ImageDimensionValidator final : public ImageToFramebufferDecoder {
  public:
   bool validate(const int width, const int height) { return validateImageDimensions(width, height, "test"); }
+  bool validateAndStore(const int64_t width, const int64_t height, ImageDimensions& out) {
+    return validateAndStoreDimensions(width, height, out, "test");
+  }
   bool decodeToFramebuffer(const std::string&, GfxRenderer&, const RenderConfig&) override { return false; }
   bool getDimensions(const std::string&, ImageDimensions&) const override { return false; }
   const char* getFormatName() const override { return "test"; }
 };
+
+TEST(ImageDimensionValidatorTest, RejectsDimensionsBeforeNarrowingToLayoutStorage) {
+  ImageDimensionValidator validator;
+  ImageDimensions dimensions{123, 456};
+
+  EXPECT_FALSE(validator.validateAndStore(static_cast<int64_t>(INT16_MAX) + 1, 1, dimensions));
+  EXPECT_EQ(dimensions.width, 123);
+  EXPECT_EQ(dimensions.height, 456);
+
+  EXPECT_TRUE(validator.validateAndStore(2048, 1536, dimensions));
+  EXPECT_EQ(dimensions.width, 2048);
+  EXPECT_EQ(dimensions.height, 1536);
+}
 
 namespace {
 class ByteSink final : public Print {

@@ -34,9 +34,11 @@ struct DirectPixelWriter {
 
   // Row-precomputed: the Y-dependent portion of the physical coords
   int rowPhyXBase, rowPhyYBase;
+  bool writeWhiteInBw = false;
 
-  void init(GfxRenderer& renderer) {
+  void init(GfxRenderer& renderer, const bool writeWhite = false) {
     fb = renderer.getWriteTarget();
+    writeWhiteInBw = writeWhite;
     originY = renderer.getWriteOriginY();
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
@@ -150,8 +152,13 @@ struct DirectPixelWriter {
     bool state;
     switch (mode) {
       case GfxRenderer::BW:
-        draw = (pixelValue < 3);
-        state = true;
+        if (pixelValue < 3) {
+          draw = true;
+          state = true;
+        } else {
+          draw = writeWhiteInBw;
+          state = false;
+        }
         break;
       case GfxRenderer::GRAYSCALE_MSB:
         draw = (pixelValue == 1 || pixelValue == 2);

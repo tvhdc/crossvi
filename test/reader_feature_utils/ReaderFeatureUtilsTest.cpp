@@ -14,6 +14,7 @@
 #include "MemoryBudget.h"
 #include "PowerButtonGesture.h"
 #include "QrCapacity.h"
+#include "activities/boot_sleep/SleepImagePlacement.h"
 #include "UrlUtils.h"
 #include "Utf8.h"
 #include "VietnameseTelex.h"
@@ -99,6 +100,58 @@ TEST(MemoryBudget, ProtectsCssGrowthAndDynamicContiguousReservations) {
   EXPECT_TRUE(MemoryBudget::hasContiguousHeadroom(32U * 1024U, 16U * 1024U, 16U * 1024U));
   EXPECT_FALSE(MemoryBudget::hasContiguousHeadroom(32U * 1024U - 1U, 16U * 1024U, 16U * 1024U));
   EXPECT_FALSE(MemoryBudget::hasContiguousHeadroom(UINT32_MAX, UINT32_MAX, 1U));
+}
+
+TEST(SleepImagePlacement, FitsAroundTheCenter) {
+  const SleepImagePlacement fit = calculateSleepImagePlacement(480, 800, 600, 600, 100, 0, 0);
+  EXPECT_EQ(fit.width, 480);
+  EXPECT_EQ(fit.height, 480);
+  EXPECT_EQ(fit.x, 0);
+  EXPECT_EQ(fit.y, 160);
+}
+
+TEST(SleepImagePlacement, AppliesZoomAndPixelOffsetWithoutChangingAspectRatio) {
+  const SleepImagePlacement placement = calculateSleepImagePlacement(480, 800, 600, 600, 150, 40, -30);
+  EXPECT_EQ(placement.width, 720);
+  EXPECT_EQ(placement.height, 720);
+  EXPECT_EQ(placement.x, -80);
+  EXPECT_EQ(placement.y, 10);
+}
+
+TEST(SleepImagePlacement, MovesAnImageThatAlreadyMatchesTheScreen) {
+  const SleepImagePlacement placement = calculateSleepImagePlacement(480, 800, 480, 800, 100, 40, 30);
+  EXPECT_EQ(placement.x, 40);
+  EXPECT_EQ(placement.y, 30);
+}
+
+TEST(SleepImagePlacement, DoesNotUpscaleFitAtOneHundredPercentAndClampsSettings) {
+  const SleepImagePlacement normal = calculateSleepImagePlacement(528, 792, 100, 100, 100, 0, 0);
+  EXPECT_EQ(normal.width, 100);
+  EXPECT_EQ(normal.height, 100);
+  EXPECT_EQ(normal.x, 214);
+  EXPECT_EQ(normal.y, 346);
+
+  const SleepImagePlacement enlarged = calculateSleepImagePlacement(528, 792, 100, 100, 200, 0, 0);
+  EXPECT_EQ(enlarged.width, 200);
+  EXPECT_EQ(enlarged.height, 200);
+  EXPECT_EQ(enlarged.x, 164);
+  EXPECT_EQ(enlarged.y, 296);
+
+  const SleepImagePlacement clamped = calculateSleepImagePlacement(480, 800, 600, 600, 0, 9999, -9999);
+  EXPECT_EQ(clamped.width, 240);
+  EXPECT_EQ(clamped.height, 240);
+  EXPECT_EQ(clamped.x, 360);
+  EXPECT_EQ(clamped.y, -120);
+}
+
+TEST(SleepImagePlacement, HeldMovementUsesTheFastStepAfterTheThreshold) {
+  EXPECT_EQ(sleepImageMoveStep(0), SLEEP_IMAGE_MOVE_STEP);
+  EXPECT_EQ(sleepImageMoveStep(SLEEP_IMAGE_FAST_MOVE_HOLD_MS - 1), SLEEP_IMAGE_MOVE_STEP);
+  EXPECT_EQ(sleepImageMoveStep(SLEEP_IMAGE_FAST_MOVE_HOLD_MS), SLEEP_IMAGE_FAST_MOVE_STEP);
+  EXPECT_EQ(SLEEP_IMAGE_FRONT_ZOOM_STEP, 1);
+  EXPECT_EQ(SLEEP_IMAGE_SIDE_ZOOM_STEP, 5);
+  EXPECT_FALSE(shouldResetSleepImageTransform(SLEEP_IMAGE_RESET_HOLD_MS - 1));
+  EXPECT_TRUE(shouldResetSleepImageTransform(SLEEP_IMAGE_RESET_HOLD_MS));
 }
 
 TEST(WifiNetworkSelection, KeepsStrongestResultForDuplicateSsid) {

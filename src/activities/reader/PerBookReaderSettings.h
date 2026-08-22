@@ -29,7 +29,7 @@ struct PerBookReaderSettings {
   uint8_t focusReadingEnabled = 0;
   uint8_t hyphenationEnabled = 0;
   uint8_t extraParagraphSpacing = 1;
-  uint8_t textAntiAliasing = 1;
+  uint8_t textAntiAliasing = 0;
   uint8_t imageRendering = 0;
   uint8_t forceParagraphIndents = 0;
   EpubRenderMode renderMode = EpubRenderMode::Balanced;

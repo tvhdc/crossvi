@@ -9,6 +9,7 @@
 
 #include "CrossPointSettings.h"
 #include "HalDisplay.h"
+#include "ReadingAchievements.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -70,6 +71,10 @@ void VCodexStatsImportActivity::setImportResult(const VCodexStatsImporter::Impor
   state_ = result == VCodexStatsImporter::ImportResult::Imported   ? State::Success
            : result == VCodexStatsImporter::ImportResult::NotEmpty ? State::NotEmpty
                                                                    : State::Failed;
+  if (result == VCodexStatsImporter::ImportResult::Imported) {
+    ReadingAchievementNotification notification;
+    if (ReadingAchievements::takePendingNotification(notification)) unlockedAchievements_ = notification.count;
+  }
 }
 
 void VCodexStatsImportActivity::continueAfterResult() {
@@ -153,6 +158,13 @@ void VCodexStatsImportActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, contentX, y, line.c_str(), true,
                       state_ == State::Prompt ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
     y += renderer.getLineHeight(UI_10_FONT_ID);
+  }
+  if (state_ == State::Success && unlockedAchievements_ != 0) {
+    y += metrics.verticalSpacing * 2;
+    char unlocked[96];
+    snprintf(unlocked, sizeof(unlocked), tr(STR_ACHIEVEMENTS_HISTORY_UNLOCKED_FORMAT),
+             static_cast<unsigned>(unlockedAchievements_));
+    renderer.drawText(UI_10_FONT_ID, contentX, y, unlocked, true, EpdFontFamily::BOLD);
   }
 
   if (state_ == State::Prompt) {

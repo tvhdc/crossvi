@@ -6,6 +6,7 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <new>
@@ -25,17 +26,21 @@ constexpr uint8_t DEFAULT_AUTO_PAGE_TURN_SECONDS = 30;
 constexpr int8_t MAX_QUEUED_PAGE_TURNS = 8;
 constexpr size_t GRAYSCALE_STRIP_SCRATCH_BYTES = 13U * 1024U;
 
-inline void queuePageTurns(int8_t& pending, const int delta) {
-  pending = static_cast<int8_t>(std::clamp(static_cast<int>(pending) + delta, -static_cast<int>(MAX_QUEUED_PAGE_TURNS),
-                                           static_cast<int>(MAX_QUEUED_PAGE_TURNS)));
+inline int queuedPageTurns(const std::atomic<int8_t>& pending) { return pending.load(std::memory_order_relaxed); }
+
+inline void clearQueuedPageTurns(std::atomic<int8_t>& pending) { pending.store(0, std::memory_order_relaxed); }
+
+inline void queuePageTurns(std::atomic<int8_t>& pending, const int delta) {
+  int8_t current = pending.load(std::memory_order_relaxed);
+  while (true) {
+    const int8_t replacement =
+        static_cast<int8_t>(std::clamp(static_cast<int>(current) + delta, -static_cast<int>(MAX_QUEUED_PAGE_TURNS),
+                                       static_cast<int>(MAX_QUEUED_PAGE_TURNS)));
+    if (pending.compare_exchange_weak(current, replacement, std::memory_order_relaxed)) return;
+  }
 }
 
-inline bool takeQueuedPageTurn(int8_t& pending, bool& forward) {
-  if (pending == 0) return false;
-  forward = pending > 0;
-  pending += forward ? -1 : 1;
-  return true;
-}
+inline int takeQueuedPageTurns(std::atomic<int8_t>& pending) { return pending.exchange(0, std::memory_order_acq_rel); }
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
 inline void logPageTurnMetric(const char* format, const char* phase, const uint32_t sequence, const int direction,
@@ -96,6 +101,11 @@ inline uint8_t autoPageTurnShortcutSeconds(const uint8_t previousSeconds) {
   return previousSeconds == 0 ? DEFAULT_AUTO_PAGE_TURN_SECONDS : previousSeconds;
 }
 
+inline bool shouldSkipInitialEpubCover(const bool settingEnabled, const bool hasProgress,
+                                       const bool hasExplicitTarget) {
+  return settingEnabled && !hasProgress && !hasExplicitTarget;
+}
+
 inline bool consumeInitialRelease(bool& armed, const bool wasReleased, const bool isPressed) {
   if (!armed) return false;
   if (wasReleased || !isPressed) armed = false;
@@ -121,6 +131,30 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   }
 }
 
+struct X3ReaderWaveformState {
+  bool transitionPending = false;
+  bool cleanupAfterPageVisible = false;
+
+  void beginTransition() {
+    transitionPending = true;
+    cleanupAfterPageVisible = false;
+  }
+
+  void leaveReader() {
+    transitionPending = false;
+    cleanupAfterPageVisible = false;
+  }
+
+  void requestCleanupAfterPageVisible() { cleanupAfterPageVisible = true; }
+
+  void pageVisible() {
+    if (!transitionPending && !cleanupAfterPageVisible) return;
+    transitionPending = false;
+    cleanupAfterPageVisible = false;
+    display.cleanX3GhostingNow();
+  }
+};
+
 struct PageTurnGestureResult {
   bool prev;
   bool next;
@@ -136,15 +170,6 @@ inline PageTurnGestureResult detectPageTurnGesture(const MappedInputManager& inp
   const auto nextButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
   const bool powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                          input.wasReleased(MappedInputManager::Button::Power);
-
-  if (SETTINGS.longPressButtonBehavior == SETTINGS.OFF) {
-    state.reset();
-    return {input.wasPressed(MappedInputManager::Button::PageBack) || input.wasPressed(prevButton) || tiltPrev,
-            input.wasPressed(MappedInputManager::Button::PageForward) || input.wasPressed(nextButton) || tiltNext ||
-                powerTurn,
-            false};
-  }
-
   const bool previousPressed = input.wasPressed(MappedInputManager::Button::PageBack) || input.wasPressed(prevButton);
   const bool nextPressed = input.wasPressed(MappedInputManager::Button::PageForward) || input.wasPressed(nextButton);
   const bool previousHeld = input.isPressed(MappedInputManager::Button::PageBack) || input.isPressed(prevButton);
@@ -153,22 +178,51 @@ inline PageTurnGestureResult detectPageTurnGesture(const MappedInputManager& inp
       input.wasReleased(MappedInputManager::Button::PageBack) || input.wasReleased(prevButton);
   const bool nextReleased = input.wasReleased(MappedInputManager::Button::PageForward) || input.wasReleased(nextButton);
 
+  const auto logGesture = [&](const PageTurnGestureResult& result) {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+    if (previousPressed || nextPressed || previousReleased || nextReleased || tiltPrev || tiltNext || powerTurn ||
+        result.prev || result.next) {
+      LOG_DBG("INP",
+              "stage=gesture press_prev=%u press_next=%u release_prev=%u release_next=%u held_prev=%u held_next=%u "
+              "out_prev=%u out_next=%u long=%u",
+              previousPressed ? 1U : 0U, nextPressed ? 1U : 0U, previousReleased ? 1U : 0U, nextReleased ? 1U : 0U,
+              previousHeld ? 1U : 0U, nextHeld ? 1U : 0U, result.prev ? 1U : 0U, result.next ? 1U : 0U,
+              result.longPress ? 1U : 0U);
+    }
+#else
+    (void)result;
+#endif
+  };
+
+  if (SETTINGS.longPressButtonBehavior == SETTINGS.OFF) {
+    state.reset();
+    const PageTurnGestureResult result{previousPressed || tiltPrev, nextPressed || tiltNext || powerTurn, false};
+    logGesture(result);
+    return result;
+  }
+
   if (previousPressed) state.previous.onPress();
   if (nextPressed) state.next.onPress();
 
   const auto heldPreviousButton = input.isPressed(prevButton) ? prevButton : MappedInputManager::Button::PageBack;
   const auto heldNextButton = input.isPressed(nextButton) ? nextButton : MappedInputManager::Button::PageForward;
   if (previousHeld && state.previous.onHold(input.getHeldTime(heldPreviousButton), SKIP_HOLD_MS)) {
-    return {true, false, true};
+    const PageTurnGestureResult result{true, false, true};
+    logGesture(result);
+    return result;
   }
   if (nextHeld && state.next.onHold(input.getHeldTime(heldNextButton), SKIP_HOLD_MS)) {
-    return {false, true, true};
+    const PageTurnGestureResult result{false, true, true};
+    logGesture(result);
+    return result;
   }
 
   const HoldRelease previousRelease = previousReleased ? state.previous.onRelease() : HoldRelease::None;
   const HoldRelease nextRelease = nextReleased ? state.next.onRelease() : HoldRelease::None;
-  return {tiltPrev || previousRelease == HoldRelease::Short, tiltNext || powerTurn || nextRelease == HoldRelease::Short,
-          false};
+  const PageTurnGestureResult result{tiltPrev || previousRelease == HoldRelease::Short,
+                                     tiltNext || powerTurn || nextRelease == HoldRelease::Short, false};
+  logGesture(result);
+  return result;
 }
 
 inline bool isLongPageTurnRelease(const MappedInputManager& input, const PageTurnGestureState& state) {
@@ -181,9 +235,15 @@ inline bool isLongPageTurnRelease(const MappedInputManager& input, const PageTur
           (input.wasReleased(MappedInputManager::Button::PageForward) || input.wasReleased(nextButton)));
 }
 
-inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh) {
+inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh,
+                                    X3ReaderWaveformState& waveform) {
   if (pagesUntilFullRefresh <= 1) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    if (display.supportsX3GhostCleanup()) {
+      renderer.displayBuffer();
+      waveform.requestCleanupAfterPageVisible();
+    } else {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
     renderer.displayBuffer();

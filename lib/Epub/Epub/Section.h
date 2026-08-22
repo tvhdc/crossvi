@@ -149,9 +149,11 @@ class Section {
                   uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
                   uint8_t imageRendering, bool focusReadingEnabled, uint8_t wordSpacing, EpubRenderMode renderMode,
                   bool forceParagraphIndents, const std::function<void()>& popupFn = nullptr);
-  // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
-  // false on error (the build is abandoned). Sets isBuildComplete() when finished.
-  bool buildSomeMore(int maxPages);
+  // Lay out up to maxPages more pages (maxPages <= 0 = build to completion).
+  // maxParseSteps optionally bounds 1 KiB parser chunks even when no page was
+  // completed, so a background tick cannot scan arbitrarily far before yielding.
+  // Returns false on error (the build is abandoned). Sets isBuildComplete() when finished.
+  bool buildSomeMore(int maxPages, int maxParseSteps = 0);
   bool isBuilding() const { return static_cast<bool>(build_); }
   bool isBuildComplete() const { return buildComplete_; }
   EpubBuildStatus lastBuildStatus() const { return lastBuildStatus_; }

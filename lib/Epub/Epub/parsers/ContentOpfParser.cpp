@@ -183,37 +183,37 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
 
   if (self->ioFailed) return;
 
-  if (self->state == START && (strcmp(name, "package") == 0 || strcmp(name, "opf:package") == 0)) {
+  if (self->state == START && xmlLocalNameEquals(name, "package")) {
     self->state = IN_PACKAGE;
     return;
   }
 
-  if (self->state == IN_PACKAGE && (strcmp(name, "metadata") == 0 || strcmp(name, "opf:metadata") == 0)) {
+  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "metadata")) {
     self->state = IN_METADATA;
     return;
   }
 
-  if (self->state == IN_METADATA && strcmp(name, "dc:title") == 0) {
-    // Only capture the first dc:title element; subsequent ones are subtitles
+  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "title")) {
+    // Only capture the first title element; subsequent ones are subtitles
     if (self->title.empty()) {
       self->state = IN_BOOK_TITLE;
     }
     return;
   }
 
-  if (self->state == IN_METADATA && strcmp(name, "dc:creator") == 0) {
+  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "creator")) {
     self->currentAuthor.clear();
     self->state = IN_BOOK_AUTHOR;
     return;
   }
 
-  if (self->state == IN_METADATA && strcmp(name, "dc:language") == 0) {
+  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "language")) {
     self->currentLanguage.clear();
     self->state = IN_BOOK_LANGUAGE;
     return;
   }
 
-  if (self->state == IN_PACKAGE && (strcmp(name, "manifest") == 0 || strcmp(name, "opf:manifest") == 0)) {
+  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "manifest")) {
     self->state = IN_MANIFEST;
     if (self->cache && !Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
       LOG_ERR("COF", "Couldn't open temp items file for writing");
@@ -222,7 +222,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_PACKAGE && (strcmp(name, "spine") == 0 || strcmp(name, "opf:spine") == 0)) {
+  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "spine")) {
     self->state = IN_SPINE;
     if (self->cache && !Storage.openFileForRead("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
       LOG_ERR("COF", "Couldn't open temp items file for reading");
@@ -243,12 +243,12 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_PACKAGE && (strcmp(name, "guide") == 0 || strcmp(name, "opf:guide") == 0)) {
+  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "guide")) {
     self->state = IN_GUIDE;
     return;
   }
 
-  if (self->state == IN_METADATA && (strcmp(name, "meta") == 0 || strcmp(name, "opf:meta") == 0)) {
+  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "meta")) {
     bool isCover = false;
     std::string coverItemId;
 
@@ -270,7 +270,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_MANIFEST && (strcmp(name, "item") == 0 || strcmp(name, "opf:item") == 0)) {
+  if (self->state == IN_MANIFEST && xmlLocalNameEquals(name, "item")) {
     if (++self->manifestItemCount > MAX_MANIFEST_ITEMS) {
       LOG_ERR("COF", "Manifest exceeds %u items", static_cast<unsigned>(MAX_MANIFEST_ITEMS));
       self->ioFailed = true;
@@ -298,8 +298,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       self->ioFailed = true;
       return;
     }
-    const std::string href =
-        FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + rawHref));
+    const std::string href = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->baseContentPath + rawHref));
     if (href.empty() || href.size() > MAX_RESOURCE_PATH_BYTES) {
       LOG_ERR("COF", "Normalized manifest path exceeds limit");
       self->ioFailed = true;
@@ -370,7 +369,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   // NOTE: This relies on spine appearing after item manifest (which is pretty safe as it's part of the EPUB spec)
   // Only run the spine parsing if there's a cache to add it to
   if (self->cache) {
-    if (self->state == IN_SPINE && (strcmp(name, "itemref") == 0 || strcmp(name, "opf:itemref") == 0)) {
+    if (self->state == IN_SPINE && xmlLocalNameEquals(name, "itemref")) {
       if (++self->spineItemCount > MAX_SPINE_ITEMS) {
         LOG_ERR("COF", "Spine exceeds %u items", static_cast<unsigned>(MAX_SPINE_ITEMS));
         self->ioFailed = true;
@@ -395,11 +394,11 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
       bool found = false;
       const uint32_t targetHash = fnvHash(idref);
       const uint16_t targetLen = static_cast<uint16_t>(idref.size());
-      auto it = std::lower_bound(self->itemIndex.begin(), self->itemIndex.end(),
-                                 ItemIndexEntry{targetHash, targetLen, 0},
-                                 [](const ItemIndexEntry& a, const ItemIndexEntry& b) {
-                                   return a.idHash < b.idHash || (a.idHash == b.idHash && a.idLen < b.idLen);
-                                 });
+      auto it =
+          std::lower_bound(self->itemIndex.begin(), self->itemIndex.end(), ItemIndexEntry{targetHash, targetLen, 0},
+                           [](const ItemIndexEntry& a, const ItemIndexEntry& b) {
+                             return a.idHash < b.idHash || (a.idHash == b.idHash && a.idLen < b.idLen);
+                           });
       while (it != self->itemIndex.end() && it->idHash == targetHash) {
         std::string itemId;
         std::string candidateHref;
@@ -429,7 +428,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     }
   }
   // parse the guide
-  if (self->state == IN_GUIDE && (strcmp(name, "reference") == 0 || strcmp(name, "opf:reference") == 0)) {
+  if (self->state == IN_GUIDE && xmlLocalNameEquals(name, "reference")) {
     std::string type;
     std::string guideHref;
     for (int i = 0; atts[i]; i += 2) {
@@ -488,29 +487,29 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
 
   if (self->ioFailed) return;
 
-  if (self->state == IN_SPINE && (strcmp(name, "spine") == 0 || strcmp(name, "opf:spine") == 0)) {
+  if (self->state == IN_SPINE && xmlLocalNameEquals(name, "spine")) {
     self->state = IN_PACKAGE;
     if (self->cache && !self->closeItemStore()) self->ioFailed = true;
     return;
   }
 
-  if (self->state == IN_GUIDE && (strcmp(name, "guide") == 0 || strcmp(name, "opf:guide") == 0)) {
+  if (self->state == IN_GUIDE && xmlLocalNameEquals(name, "guide")) {
     self->state = IN_PACKAGE;
     return;
   }
 
-  if (self->state == IN_MANIFEST && (strcmp(name, "manifest") == 0 || strcmp(name, "opf:manifest") == 0)) {
+  if (self->state == IN_MANIFEST && xmlLocalNameEquals(name, "manifest")) {
     self->state = IN_PACKAGE;
     if (self->cache && !self->closeItemStore()) self->ioFailed = true;
     return;
   }
 
-  if (self->state == IN_BOOK_TITLE && strcmp(name, "dc:title") == 0) {
+  if (self->state == IN_BOOK_TITLE && xmlLocalNameEquals(name, "title")) {
     self->state = IN_METADATA;
     return;
   }
 
-  if (self->state == IN_BOOK_AUTHOR && strcmp(name, "dc:creator") == 0) {
+  if (self->state == IN_BOOK_AUTHOR && xmlLocalNameEquals(name, "creator")) {
     if (!self->currentAuthor.empty()) {
       const size_t separatorBytes = self->author.empty() ? 0 : 2;
       if (self->author.size() > MAX_METADATA_TEXT_BYTES - separatorBytes ||
@@ -526,19 +525,19 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
     return;
   }
 
-  if (self->state == IN_BOOK_LANGUAGE && strcmp(name, "dc:language") == 0) {
+  if (self->state == IN_BOOK_LANGUAGE && xmlLocalNameEquals(name, "language")) {
     if (self->language.empty()) self->language = trimAsciiWhitespace(self->currentLanguage);
     self->currentLanguage.clear();
     self->state = IN_METADATA;
     return;
   }
 
-  if (self->state == IN_METADATA && (strcmp(name, "metadata") == 0 || strcmp(name, "opf:metadata") == 0)) {
+  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "metadata")) {
     self->state = IN_PACKAGE;
     return;
   }
 
-  if (self->state == IN_PACKAGE && (strcmp(name, "package") == 0 || strcmp(name, "opf:package") == 0)) {
+  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "package")) {
     self->state = START;
     return;
   }

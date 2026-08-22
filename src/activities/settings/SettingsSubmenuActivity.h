@@ -41,6 +41,10 @@ class SettingsSubmenuActivity final : public Activity {
   void rebuildSettings();
   void handleSelection();
   void openSleepTimeoutPicker();
+  void openSleepImageZoomPicker();
+  void showSleepImageDialog(uint8_t mode);
+  void openSleepImagePicker(uint8_t mode);
+  void applySleepImageSelection(uint8_t mode, const std::string& path);
   void openAction(SettingAction action);
   std::string valueLabel(int index) const;
 };

@@ -5,6 +5,7 @@
 
 CrossPointSettings testSettings;
 HalTiltSensor halTiltSensor;
+HalDisplay display;
 
 TEST(ReaderGesture, FiresConfirmHoldAtFiveHundredMillisecondsOnce) {
   ReaderUtils::HoldGestureState state;
@@ -97,34 +98,78 @@ TEST(ReaderGesture, UsesThirtySecondsOnlyWhenNoPreviousAutoTurnIntervalExists) {
   EXPECT_EQ(ReaderUtils::autoPageTurnShortcutSeconds(45), 45);
 }
 
-TEST(ReaderGesture, BoundsAndCoalescesQueuedPageTurns) {
-  int8_t pending = 0;
-  for (int i = 0; i < 12; ++i) ReaderUtils::queuePageTurns(pending, 1);
-  EXPECT_EQ(pending, ReaderUtils::MAX_QUEUED_PAGE_TURNS);
-
-  ReaderUtils::queuePageTurns(pending, -3);
-  EXPECT_EQ(pending, ReaderUtils::MAX_QUEUED_PAGE_TURNS - 3);
-
-  ReaderUtils::queuePageTurns(pending, -20);
-  EXPECT_EQ(pending, -ReaderUtils::MAX_QUEUED_PAGE_TURNS);
+TEST(ReaderGesture, SkipsTheEpubCoverOnlyForAnOrdinaryFirstOpen) {
+  EXPECT_TRUE(ReaderUtils::shouldSkipInitialEpubCover(true, false, false));
+  EXPECT_FALSE(ReaderUtils::shouldSkipInitialEpubCover(false, false, false));
+  EXPECT_FALSE(ReaderUtils::shouldSkipInitialEpubCover(true, true, false));
+  EXPECT_FALSE(ReaderUtils::shouldSkipInitialEpubCover(true, false, true));
 }
 
-TEST(ReaderGesture, DrainsOneVisiblePageAtATime) {
-  int8_t pending = 0;
+TEST(ReaderGesture, CleansTheReaderTransitionWithoutSchedulingIdleWork) {
+  display = {};
+  ReaderUtils::X3ReaderWaveformState state;
+
+  state.beginTransition();
+  state.pageVisible();
+  EXPECT_EQ(display.immediateGhostCleanupCalls, 1);
+  state.pageVisible();
+  EXPECT_EQ(display.immediateGhostCleanupCalls, 1);
+  state.leaveReader();
+}
+
+TEST(ReaderRendering, UsesFastCleanupForThePeriodicX3Refresh) {
+  display = {};
+  GfxRenderer renderer;
+  ReaderUtils::X3ReaderWaveformState state;
+  int pagesUntilRefresh = 1;
+
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilRefresh, state);
+  EXPECT_EQ(renderer.fastDisplayCalls, 1);
+  EXPECT_EQ(renderer.halfDisplayCalls, 0);
+  EXPECT_EQ(display.immediateGhostCleanupCalls, 0);
+
+  state.pageVisible();
+  EXPECT_EQ(display.immediateGhostCleanupCalls, 1);
+  EXPECT_EQ(pagesUntilRefresh, 1);
+}
+
+TEST(ReaderRendering, KeepsBalancedPeriodicRefreshWhenFastCleanupIsUnsupported) {
+  display = {};
+  display.x3GhostCleanupSupported = false;
+  GfxRenderer renderer;
+  ReaderUtils::X3ReaderWaveformState state;
+  int pagesUntilRefresh = 1;
+
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilRefresh, state);
+  EXPECT_EQ(renderer.fastDisplayCalls, 0);
+  EXPECT_EQ(renderer.halfDisplayCalls, 1);
+  state.pageVisible();
+  EXPECT_EQ(display.immediateGhostCleanupCalls, 0);
+}
+
+TEST(ReaderGesture, BoundsAndCoalescesQueuedPageTurns) {
+  std::atomic<int8_t> pending{0};
+  for (int i = 0; i < 12; ++i) ReaderUtils::queuePageTurns(pending, 1);
+  EXPECT_EQ(ReaderUtils::queuedPageTurns(pending), ReaderUtils::MAX_QUEUED_PAGE_TURNS);
+
+  ReaderUtils::queuePageTurns(pending, -3);
+  EXPECT_EQ(ReaderUtils::queuedPageTurns(pending), ReaderUtils::MAX_QUEUED_PAGE_TURNS - 3);
+
+  ReaderUtils::queuePageTurns(pending, -20);
+  EXPECT_EQ(ReaderUtils::queuedPageTurns(pending), -ReaderUtils::MAX_QUEUED_PAGE_TURNS);
+}
+
+TEST(ReaderGesture, TakesTheWholeCoalescedBurstAtOnce) {
+  std::atomic<int8_t> pending{0};
   ReaderUtils::queuePageTurns(pending, 3);
 
-  bool forward = false;
-  EXPECT_TRUE(ReaderUtils::takeQueuedPageTurn(pending, forward));
-  EXPECT_TRUE(forward);
-  EXPECT_EQ(pending, 2);
+  EXPECT_EQ(ReaderUtils::takeQueuedPageTurns(pending), 3);
+  EXPECT_EQ(ReaderUtils::queuedPageTurns(pending), 0);
 
   ReaderUtils::queuePageTurns(pending, -4);
-  EXPECT_TRUE(ReaderUtils::takeQueuedPageTurn(pending, forward));
-  EXPECT_FALSE(forward);
-  EXPECT_EQ(pending, -1);
-  EXPECT_TRUE(ReaderUtils::takeQueuedPageTurn(pending, forward));
-  EXPECT_EQ(pending, 0);
-  EXPECT_FALSE(ReaderUtils::takeQueuedPageTurn(pending, forward));
+  ReaderUtils::queuePageTurns(pending, 1);
+  EXPECT_EQ(ReaderUtils::takeQueuedPageTurns(pending), -3);
+  EXPECT_EQ(ReaderUtils::takeQueuedPageTurns(pending), 0);
 }
 
 TEST(ReaderRendering, SkipsEveryGrayscaleOperationWhenDriverDoesNotSupportIt) {

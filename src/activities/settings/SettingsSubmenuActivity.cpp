@@ -9,15 +9,29 @@
 #include <cstdio>
 #include <memory>
 
+#include "Bitmap.h"
 #include "CrossPointSettings.h"
+#include "Epub/converters/PngToFramebufferConverter.h"
+#include "FsHelpers.h"
+#include "HalStorage.h"
 #include "OtaUpdateActivity.h"
+#include "PngToBmpConverter.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
+#include "SleepImagePositionActivity.h"
+#include "activities/ActivityResult.h"
+#include "activities/boot_sleep/SleepFrameStore.h"
+#include "activities/boot_sleep/SleepImagePlacement.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
+constexpr const char* SLEEP_BMP_PATH = "/sleep.bmp";
+constexpr const char* SLEEP_OVERLAY_BMP_PATH = "/sleep-overlay.bmp";
+constexpr const char* SLEEP_OVERLAY_PNG_PATH = "/sleep-overlay.png";
+
 SettingInfo showTxtBooksSetting() {
   return SettingInfo::DynamicEnum(
       StrId::STR_SHOW_TXT_BOOKS, {StrId::STR_STATE_OFF, StrId::STR_STATE_ON},
@@ -29,9 +43,171 @@ SettingInfo sleepScreenSetting() {
   return SettingInfo::DynamicEnum(
       StrId::STR_SLEEP_SCREEN,
       {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT, StrId::STR_READING_STATS,
-       StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS},
+       StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS, StrId::STR_TRANSPARENT_SLEEP},
       [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
       [](const uint8_t value) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(value); });
+}
+
+bool sleepModeUsesCustomImage(const uint8_t mode) {
+  return mode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+         mode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS ||
+         mode == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
+}
+
+bool sleepModeUsesSleepImagePlacement(const uint8_t mode) {
+  return mode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
+         mode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS || sleepModeUsesCustomImage(mode);
+}
+
+bool sleepModeUsesTransparentOverlay(const uint8_t mode) {
+  return mode == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
+}
+
+std::string fileNameFromPath(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string activeSleepImagePath(const uint8_t mode) {
+  if (sleepModeUsesTransparentOverlay(mode)) {
+    if (Storage.exists(SLEEP_OVERLAY_BMP_PATH)) return SLEEP_OVERLAY_BMP_PATH;
+    if (Storage.exists(SLEEP_OVERLAY_PNG_PATH)) return SLEEP_OVERLAY_PNG_PATH;
+    return {};
+  }
+  return Storage.exists(SLEEP_BMP_PATH) ? SLEEP_BMP_PATH : std::string{};
+}
+
+bool validBmpFile(const std::string& path) {
+  HalFile file;
+  if (!Storage.openFileForRead("SLP", path, file)) return false;
+  Bitmap bitmap(file, true);
+  const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
+  file.close();
+  return valid;
+}
+
+bool validPngFile(const std::string& path) {
+  ImageDimensions dimensions{};
+  return PngToFramebufferConverter::getDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
+         dimensions.height > 0;
+}
+
+bool removeIfPresent(const char* path) { return !Storage.exists(path) || Storage.remove(path); }
+
+bool publishTempFile(const std::string& tempPath, const char* finalPath) {
+  const std::string backupPath = std::string(finalPath) + ".bak";
+  if (!removeIfPresent(backupPath.c_str())) return false;
+
+  bool hadFinal = Storage.exists(finalPath);
+  if (hadFinal && !Storage.rename(finalPath, backupPath.c_str())) return false;
+
+  if (Storage.rename(tempPath.c_str(), finalPath)) {
+    if (hadFinal) removeIfPresent(backupPath.c_str());
+    return true;
+  }
+
+  if (hadFinal) Storage.rename(backupPath.c_str(), finalPath);
+  return false;
+}
+
+bool copyFileToTemp(const std::string& sourcePath, const std::string& tempPath) {
+  if (!removeIfPresent(tempPath.c_str())) return false;
+
+  HalFile input;
+  HalFile output;
+  if (!Storage.openFileForRead("SLP", sourcePath, input)) return false;
+  if (!Storage.openFileForWrite("SLP", tempPath, output)) {
+    input.close();
+    return false;
+  }
+
+  char buffer[2048];
+  const uint64_t expected = input.fileSize64();
+  uint64_t copied = 0;
+  bool ok = true;
+  while (copied < expected) {
+    const size_t wanted = static_cast<size_t>(std::min<uint64_t>(sizeof(buffer), expected - copied));
+    const int bytesRead = input.read(buffer, wanted);
+    if (bytesRead <= 0) {
+      ok = false;
+      break;
+    }
+    if (output.write(buffer, static_cast<size_t>(bytesRead)) != static_cast<size_t>(bytesRead)) {
+      ok = false;
+      break;
+    }
+    copied += static_cast<uint64_t>(bytesRead);
+  }
+  output.flush();
+  ok = ok && copied == expected && output.sync();
+  const bool outputClosed = output.close();
+  input.close();
+  if (!ok || !outputClosed) {
+    removeIfPresent(tempPath.c_str());
+    return false;
+  }
+  return true;
+}
+
+bool convertPngToSleepBmpTemp(const std::string& sourcePath, const std::string& tempPath, const int width,
+                              const int height) {
+  if (!removeIfPresent(tempPath.c_str())) return false;
+
+  HalFile input;
+  HalFile output;
+  if (!Storage.openFileForRead("SLP", sourcePath, input)) return false;
+  if (!Storage.openFileForWrite("SLP", tempPath, output)) {
+    input.close();
+    return false;
+  }
+  bool ok = PngToBmpConverter::pngFileToBmpStreamWithSize(input, output, width, height, false);
+  output.flush();
+  ok = ok && output.sync();
+  const bool outputClosed = output.close();
+  input.close();
+  if (!ok || !outputClosed || !validBmpFile(tempPath)) {
+    removeIfPresent(tempPath.c_str());
+    return false;
+  }
+  return true;
+}
+
+bool saveNormalSleepImage(const std::string& sourcePath, const int width, const int height) {
+  const std::string tempPath = std::string(SLEEP_BMP_PATH) + ".tmp";
+  const bool wroteTemp =
+      FsHelpers::hasBmpExtension(sourcePath)
+          ? (validBmpFile(sourcePath) && copyFileToTemp(sourcePath, tempPath))
+          : (FsHelpers::hasPngExtension(sourcePath) &&
+             convertPngToSleepBmpTemp(sourcePath, tempPath, width, height));
+  return wroteTemp && publishTempFile(tempPath, SLEEP_BMP_PATH);
+}
+
+bool saveTransparentSleepImage(const std::string& sourcePath) {
+  if (FsHelpers::hasBmpExtension(sourcePath)) {
+    if (!validBmpFile(sourcePath)) return false;
+    const std::string tempPath = std::string(SLEEP_OVERLAY_BMP_PATH) + ".tmp";
+    if (!copyFileToTemp(sourcePath, tempPath) || !publishTempFile(tempPath, SLEEP_OVERLAY_BMP_PATH)) return false;
+    removeIfPresent(SLEEP_OVERLAY_PNG_PATH);
+    return true;
+  }
+
+  if (!FsHelpers::hasPngExtension(sourcePath) || !validPngFile(sourcePath)) return false;
+
+  const std::string oldBmpBackup = std::string(SLEEP_OVERLAY_BMP_PATH) + ".pickbak";
+  if (!removeIfPresent(oldBmpBackup.c_str())) return false;
+  const bool hadOldBmp = Storage.exists(SLEEP_OVERLAY_BMP_PATH);
+  if (hadOldBmp && !Storage.rename(SLEEP_OVERLAY_BMP_PATH, oldBmpBackup.c_str())) return false;
+
+  const std::string tempPath = std::string(SLEEP_OVERLAY_PNG_PATH) + ".tmp";
+  const bool ok = copyFileToTemp(sourcePath, tempPath) && publishTempFile(tempPath, SLEEP_OVERLAY_PNG_PATH);
+  if (ok) {
+    removeIfPresent(oldBmpBackup.c_str());
+    return true;
+  }
+
+  removeIfPresent(tempPath.c_str());
+  if (hadOldBmp) Storage.rename(oldBmpBackup.c_str(), SLEEP_OVERLAY_BMP_PATH);
+  return false;
 }
 }  // namespace
 
@@ -95,12 +271,18 @@ void SettingsSubmenuActivity::rebuildSettings() {
       settings_.push_back(SettingInfo::Toggle(StrId::STR_QUICK_RESUME, &CrossPointSettings::quickResumeSleepScreen));
       const bool quickResume =
           SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
+      settings_.push_back(SettingInfo::Enum(StrId::STR_SLEEP_GHOSTING_TREATMENT,
+                                            &CrossPointSettings::sleepGhostingTreatment,
+                                            sleepGhostingTreatmentLabels()));
       if (!quickResume) {
         settings_.push_back(sleepScreenSetting());
+        if (sleepModeUsesSleepImagePlacement(SETTINGS.sleepScreen)) {
+          settings_.push_back(SettingInfo::Value(StrId::STR_SLEEP_IMAGE_ZOOM, &CrossPointSettings::sleepScreenImageZoom,
+                                                 {SLEEP_IMAGE_MIN_ZOOM, SLEEP_IMAGE_MAX_ZOOM, 1}));
+          settings_.push_back(SettingInfo::Action(StrId::STR_SLEEP_IMAGE_POSITION, SettingAction::SleepImagePosition));
+        }
         if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
             SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS) {
-          settings_.push_back(SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
-                                                {StrId::STR_FIT, StrId::STR_CROP}));
           settings_.push_back(
               SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
                                 {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED}));
@@ -217,6 +399,10 @@ void SettingsSubmenuActivity::handleSelection() {
     openSleepTimeoutPicker();
     return;
   }
+  if (setting.nameId == StrId::STR_SLEEP_IMAGE_ZOOM) {
+    openSleepImageZoomPicker();
+    return;
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr) {
     SETTINGS.*(setting.valuePtr) = !(SETTINGS.*(setting.valuePtr));
     SETTINGS.saveToFile();
@@ -228,7 +414,9 @@ void SettingsSubmenuActivity::handleSelection() {
     const uint8_t current = setting.valueGetter ? setting.valueGetter()
                             : setting.valuePtr  ? SETTINGS.*(setting.valuePtr)
                                                 : 0;
-    const auto select = [this, valuePtr = setting.valuePtr, setter = setting.valueSetter](const int index) {
+    const bool sleepScreenSetting = page_ == Page::Sleep && setting.nameId == StrId::STR_SLEEP_SCREEN;
+    const auto select = [this, valuePtr = setting.valuePtr, setter = setting.valueSetter, sleepScreenSetting](
+                            const int index) {
       if (setter) {
         setter(static_cast<uint8_t>(index));
       } else if (valuePtr) {
@@ -236,6 +424,10 @@ void SettingsSubmenuActivity::handleSelection() {
       }
       SETTINGS.saveToFile();
       rebuildSettings();
+      if (sleepScreenSetting && sleepModeUsesCustomImage(SETTINGS.sleepScreen)) {
+        showSleepImageDialog(SETTINGS.sleepScreen);
+        return;
+      }
       requestUpdate();
     };
     if (!setting.enumStringValues.empty()) {
@@ -265,7 +457,75 @@ void SettingsSubmenuActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsSubmenuActivity::openSleepImageZoomPicker() {
+  startActivityForResult(
+      std::make_unique<SleepImagePositionActivity>(renderer, mappedInput, SleepImagePositionActivity::Mode::Zoom),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled) SETTINGS.saveToFile();
+        rebuildSettings();
+        requestUpdate();
+      });
+}
+
+void SettingsSubmenuActivity::showSleepImageDialog(const uint8_t mode) {
+  std::string title = std::string(tr(STR_SLEEP_SCREEN)) + ": ";
+  const std::string currentPath = activeSleepImagePath(mode);
+  title += currentPath.empty() ? tr(STR_NOT_SET) : fileNameFromPath(currentPath);
+
+  const std::string choose = std::string(tr(STR_SELECT)) + " BMP/PNG";
+  const std::string cancel = tr(STR_CANCEL);
+  const char* options[] = {choose.c_str(), cancel.c_str()};
+  optionPopup_.show(title.c_str(), options, 2, 0, [this, mode](const int index) {
+    if (index == 0) {
+      openSleepImagePicker(mode);
+    } else {
+      requestUpdate();
+    }
+  });
+  requestUpdate();
+}
+
+void SettingsSubmenuActivity::openSleepImagePicker(const uint8_t mode) {
+  startActivityForResult(
+      std::make_unique<FileBrowserActivity>(renderer, mappedInput, "/", FileBrowserActivity::Mode::PickImage),
+      [this, mode](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          const std::string& path = std::get<FilePathResult>(result.data).path;
+          applySleepImageSelection(mode, path);
+          return;
+        }
+        requestUpdate();
+      });
+}
+
+void SettingsSubmenuActivity::applySleepImageSelection(const uint8_t mode, const std::string& path) {
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  const bool ok = sleepModeUsesTransparentOverlay(mode)
+                      ? saveTransparentSleepImage(path)
+                      : saveNormalSleepImage(path, renderer.getScreenWidth(), renderer.getScreenHeight());
+  if (ok) {
+    SETTINGS.sleepScreen = mode;
+    SETTINGS.saveToFile();
+    SleepFrameStore::discard();
+  }
+  rebuildSettings();
+  GUI.drawPopup(renderer, ok ? tr(STR_DONE) : tr(STR_FAILED_LOWER));
+  delay(800);
+  requestUpdate();
+}
+
 void SettingsSubmenuActivity::openAction(const SettingAction action) {
+  if (action == SettingAction::SleepImagePosition) {
+    startActivityForResult(
+        std::make_unique<SleepImagePositionActivity>(renderer, mappedInput, SleepImagePositionActivity::Mode::Position),
+        [this](const ActivityResult& result) {
+          if (!result.isCancelled) SETTINGS.saveToFile();
+          rebuildSettings();
+          requestUpdate();
+        });
+    return;
+  }
+
   std::unique_ptr<Activity> activity;
   switch (action) {
     case SettingAction::CheckForUpdates:
@@ -299,6 +559,12 @@ std::string SettingsSubmenuActivity::valueLabel(const int index) const {
     if (value < setting.enumValues.size()) return I18N.get(setting.enumValues[value]);
   }
   if (setting.type == SettingType::VALUE && setting.valuePtr) {
+    if (setting.nameId == StrId::STR_SLEEP_IMAGE_ZOOM) {
+      char value[12]{};
+      snprintf(value, sizeof(value), tr(STR_PERCENT_VALUE_FORMAT),
+               static_cast<unsigned>(SETTINGS.*(setting.valuePtr)));
+      return value;
+    }
     if (SETTINGS.*(setting.valuePtr) >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) {
       return I18N.get(StrId::STR_SLEEP_NEVER);
     }
@@ -306,6 +572,10 @@ std::string SettingsSubmenuActivity::valueLabel(const int index) const {
     snprintf(value, sizeof(value), tr(STR_SLEEP_TIMER_VALUE_FORMAT),
              static_cast<unsigned>(SETTINGS.*(setting.valuePtr)));
     return value;
+  }
+  if (setting.type == SettingType::ACTION && setting.nameId == StrId::STR_SLEEP_IMAGE_POSITION) {
+    return SETTINGS.sleepScreenImageOffsetX == 0 && SETTINGS.sleepScreenImageOffsetY == 0 ? tr(STR_CENTER)
+                                                                                          : tr(STR_CUSTOM);
   }
   return {};
 }

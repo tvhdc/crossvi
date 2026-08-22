@@ -13,6 +13,8 @@ struct RenderConfig {
   bool useDithering = true;
   bool performanceMode = false;
   bool useExactDimensions = false;
+  bool preserveAlpha = false;
+  bool writeWhiteInBw = false;
   std::string cachePath;
 };
 

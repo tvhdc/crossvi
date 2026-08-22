@@ -210,7 +210,7 @@ void BookStatsSelectionActivity::openSelectedBook() {
   }
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, displayTitle(record), std::move(presentation),
-                                             ReadingStatsActivity::Page::Book, false, false),
+                                             ReadingStatsActivity::Page::Book, false, false, record.path),
       [this](const ActivityResult&) { requestUpdate(); });
 }
 

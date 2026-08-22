@@ -1,6 +1,8 @@
 add_executable(ReadingStatsTest
+  DailyBookReadingHistoryTest.cpp
   DailyReadingHistoryTest.cpp
   ReadingCalendarModelTest.cpp
+  ReadingAchievementsTest.cpp
   ReadingStatsTest.cpp
   ReadingStatsPresentationTest.cpp
   VCodexStatsImporterTest.cpp
@@ -8,6 +10,7 @@ add_executable(ReadingStatsTest
   ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp
   ${REPO_ROOT}/src/activities/network/NearbyStatsStorage.cpp
   ${REPO_ROOT}/src/activities/reader/BookReadingStats.cpp
+  ${REPO_ROOT}/src/activities/reader/DailyBookReadingHistory.cpp
   ${REPO_ROOT}/src/activities/reader/DailyReadingHistory.cpp
   ${REPO_ROOT}/src/activities/reader/GlobalReadingStats.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsCodec.cpp
@@ -15,6 +18,7 @@ add_executable(ReadingStatsTest
   ${REPO_ROOT}/src/activities/reader/ReadingStatsEnvelope.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsModels.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingCalendarModel.cpp
+  ${REPO_ROOT}/src/activities/reader/ReadingAchievements.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsPresentation.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsStorage.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsVersionGuard.cpp

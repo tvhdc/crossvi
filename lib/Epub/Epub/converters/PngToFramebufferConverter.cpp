@@ -10,11 +10,13 @@
 #include <PNGdec.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <new>
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
+#include "ImageDimsProbe.h"
 #include "PixelCache.h"
 
 namespace {
@@ -40,6 +42,8 @@ struct PngContext {
   bool caching{false};
 
   uint8_t* grayLineBuffer{nullptr};
+  uint8_t* alphaLineBuffer{nullptr};
+  uint32_t transparentColor{0};
 };
 
 // File I/O callbacks use pFile->fHandle to access the HalFile*,
@@ -135,19 +139,42 @@ uint8_t expandSampleToByte(uint8_t sample, int bitsPerSample) {
   return static_cast<uint8_t>((sample * 255U) / maxSample);
 }
 
-// Convert entire source line to grayscale with alpha blending to white background.
+bool alphaCoveragePasses(const uint8_t alpha, const int x, const int y) {
+  if (alpha == 0) return false;
+  if (alpha == 255) return true;
+  return alpha > static_cast<uint8_t>(bayer4x4[y & 3][x & 3] * 16U);
+}
+
+void writeSample(uint8_t* grayLine, uint8_t* alphaLine, const int x, const uint8_t gray, const uint8_t alpha,
+                 const bool preserveAlpha) {
+  if (preserveAlpha) {
+    grayLine[x] = gray;
+    alphaLine[x] = alpha;
+    return;
+  }
+  grayLine[x] = static_cast<uint8_t>((gray * alpha + 255U * (255U - alpha)) / 255U);
+}
+
+// Convert entire source line to grayscale, optionally preserving alpha for an overlay.
 // Low-bit-depth grayscale/indexed scanlines are packed most-significant sample first.
 // For indexed PNGs with tRNS chunk, alpha values are stored at palette[768] onwards.
 // Processing the whole line at once improves cache locality and reduces per-pixel overhead.
-void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, int width, int pixelType, int bitsPerSample,
-                       uint8_t* palette, int hasAlpha) {
+void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, uint8_t* alphaLine, int width, int pixelType,
+                       int bitsPerSample, uint8_t* palette, int hasAlpha, uint32_t transparentColor,
+                       bool preserveAlpha) {
   switch (pixelType) {
     case PNG_PIXEL_GRAYSCALE:
       if (bitsPerSample == 8) {
-        memcpy(grayLine, pPixels, width);
+        for (int x = 0; x < width; x++) {
+          const uint8_t gray = pPixels[x];
+          const uint8_t alpha = hasAlpha && gray == static_cast<uint8_t>(transparentColor) ? 0 : 255;
+          writeSample(grayLine, alphaLine, x, gray, alpha, preserveAlpha);
+        }
       } else {
         for (int x = 0; x < width; x++) {
-          grayLine[x] = expandSampleToByte(readPackedSample(pPixels, x, bitsPerSample), bitsPerSample);
+          const uint8_t gray = expandSampleToByte(readPackedSample(pPixels, x, bitsPerSample), bitsPerSample);
+          const uint8_t alpha = hasAlpha && gray == static_cast<uint8_t>(transparentColor) ? 0 : 255;
+          writeSample(grayLine, alphaLine, x, gray, alpha, preserveAlpha);
         }
       }
       break;
@@ -155,53 +182,49 @@ void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, int width, int
     case PNG_PIXEL_TRUECOLOR:
       for (int x = 0; x < width; x++) {
         const uint8_t* p = &pPixels[x * 3];
-        grayLine[x] = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
+        const uint8_t gray = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
+        const uint32_t rgb = (static_cast<uint32_t>(p[0]) << 16U) | (static_cast<uint32_t>(p[1]) << 8U) | p[2];
+        const uint8_t alpha = hasAlpha && rgb == transparentColor ? 0 : 255;
+        writeSample(grayLine, alphaLine, x, gray, alpha, preserveAlpha);
       }
       break;
 
     case PNG_PIXEL_INDEXED:
       if (palette) {
-        if (hasAlpha) {
-          for (int x = 0; x < width; x++) {
-            uint8_t idx = readPackedSample(pPixels, x, bitsPerSample);
-            uint8_t* p = &palette[idx * 3];
-            uint8_t gray = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
-            uint8_t alpha = palette[768 + idx];
-            grayLine[x] = (uint8_t)((gray * alpha + 255 * (255 - alpha)) / 255);
-          }
-        } else {
-          for (int x = 0; x < width; x++) {
-            uint8_t idx = readPackedSample(pPixels, x, bitsPerSample);
-            uint8_t* p = &palette[idx * 3];
-            grayLine[x] = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
-          }
+        for (int x = 0; x < width; x++) {
+          const uint8_t idx = readPackedSample(pPixels, x, bitsPerSample);
+          uint8_t* p = &palette[idx * 3];
+          const uint8_t gray = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
+          const uint8_t alpha = hasAlpha ? palette[768 + idx] : 255;
+          writeSample(grayLine, alphaLine, x, gray, alpha, preserveAlpha);
         }
       } else {
         for (int x = 0; x < width; x++) {
-          grayLine[x] = expandSampleToByte(readPackedSample(pPixels, x, bitsPerSample), bitsPerSample);
+          const uint8_t gray = expandSampleToByte(readPackedSample(pPixels, x, bitsPerSample), bitsPerSample);
+          writeSample(grayLine, alphaLine, x, gray, 255, preserveAlpha);
         }
       }
       break;
 
     case PNG_PIXEL_GRAY_ALPHA:
       for (int x = 0; x < width; x++) {
-        uint8_t gray = pPixels[x * 2];
-        uint8_t alpha = pPixels[x * 2 + 1];
-        grayLine[x] = (uint8_t)((gray * alpha + 255 * (255 - alpha)) / 255);
+        const uint8_t gray = pPixels[x * 2];
+        const uint8_t alpha = pPixels[x * 2 + 1];
+        writeSample(grayLine, alphaLine, x, gray, alpha, preserveAlpha);
       }
       break;
 
     case PNG_PIXEL_TRUECOLOR_ALPHA:
       for (int x = 0; x < width; x++) {
         const uint8_t* p = &pPixels[x * 4];
-        uint8_t gray = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
-        uint8_t alpha = p[3];
-        grayLine[x] = (uint8_t)((gray * alpha + 255 * (255 - alpha)) / 255);
+        const uint8_t gray = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
+        writeSample(grayLine, alphaLine, x, gray, p[3], preserveAlpha);
       }
       break;
 
     default:
       memset(grayLine, 128, width);
+      if (preserveAlpha) memset(alphaLine, 255, width);
       break;
   }
 }
@@ -209,6 +232,7 @@ void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, int width, int
 int pngDrawCallback(PNGDRAW* pDraw) {
   PngContext* ctx = reinterpret_cast<PngContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer || !ctx->grayLineBuffer) return 0;
+  if (ctx->config->preserveAlpha && !ctx->alphaLineBuffer) return 0;
 
   int srcY = pDraw->y;
   int srcWidth = ctx->srcWidth;
@@ -229,22 +253,23 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   if (endDstY > ctx->dstHeight) endDstY = ctx->dstHeight;
 
   // Convert entire source line to grayscale (improves cache locality)
-  convertLineToGray(pDraw->pPixels, ctx->grayLineBuffer, srcWidth, pDraw->iPixelType, pDraw->iBpp, pDraw->pPalette,
-                    pDraw->iHasAlpha);
+  convertLineToGray(pDraw->pPixels, ctx->grayLineBuffer, ctx->alphaLineBuffer, srcWidth, pDraw->iPixelType, pDraw->iBpp,
+                    pDraw->pPalette, pDraw->iHasAlpha, ctx->transparentColor, ctx->config->preserveAlpha);
 
   // Render scaled rows using Bresenham-style integer stepping (no floating-point division)
   int dstWidth = ctx->dstWidth;
   int outXBase = ctx->config->x;
   int screenWidth = ctx->screenWidth;
   bool useDithering = ctx->config->useDithering;
+  const bool oneBitDither = ctx->config->preserveAlpha && ctx->renderer->getRenderMode() == GfxRenderer::BW;
   // Pre-compute orientation and render-mode state once per callback.
   DirectPixelWriter pw;
-  pw.init(*ctx->renderer);
+  pw.init(*ctx->renderer, ctx->config->writeWhiteInBw);
 
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
     ctx->lastDstY = dstY;
     int outY = ctx->config->y + dstY;
-    if (outY >= ctx->screenHeight) continue;
+    if (outY < 0 || outY >= ctx->screenHeight) continue;
 
     pw.beginRow(outY);
 
@@ -269,11 +294,21 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 
     for (int dstX = 0; dstX < dstWidth; dstX++) {
       int outX = outXBase + dstX;
-      if (outX < screenWidth) {
+      if (outX >= 0 && outX < screenWidth) {
         uint8_t gray = ctx->grayLineBuffer[srcX];
+        if (ctx->config->preserveAlpha && !alphaCoveragePasses(ctx->alphaLineBuffer[srcX], outX, outY)) {
+          error += srcWidth;
+          while (error >= dstWidth) {
+            error -= dstWidth;
+            srcX++;
+          }
+          continue;
+        }
 
         uint8_t ditheredGray;
-        if (useDithering) {
+        if (oneBitDither) {
+          ditheredGray = applyBayerDither1Bit(gray, outX, outY) ? 0 : 3;
+        } else if (useDithering) {
           ditheredGray = applyBayerDither4Level(gray, outX, outY);
         } else {
           ditheredGray = gray / 85;
@@ -298,31 +333,23 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 }  // namespace
 
 bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
-  const auto memory = MemoryBudget::snapshot();
-  if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::PNG_DECODE)) {
-    LOG_ERR("PNG", "Not enough heap for PNG decoder (free=%u maxalloc=%u)", memory.freeHeap, memory.maxAllocHeap);
-    return false;
+  HalFile file;
+  if (!Storage.openFileForRead("PNG", imagePath, file)) return false;
+
+  ImageDimsProbe probe;
+  uint8_t buffer[64];
+  while (true) {
+    const int read = file.read(buffer, sizeof(buffer));
+    if (read <= 0) break;
+    const size_t consumed = probe.write(buffer, static_cast<size_t>(read));
+    if (probe.getDimensions(out)) {
+      file.close();
+      return true;
+    }
+    if (consumed < static_cast<size_t>(read)) break;
   }
-
-  std::unique_ptr<PNG> png(new (std::nothrow) PNG());
-  if (!png) {
-    LOG_ERR("PNG", "Failed to allocate PNG decoder for dimensions");
-    return false;
-  }
-
-  int rc = png->open(imagePath.c_str(), pngOpenWithHandle, pngCloseWithHandle, pngReadWithHandle, pngSeekWithHandle,
-                     nullptr);
-  const ScopedCleanup cleanup{[&png]() { png->close(); }};
-
-  if (rc != 0) {
-    LOG_ERR("PNG", "Failed to open PNG for dimensions: %d", rc);
-    return false;
-  }
-
-  out.width = png->getWidth();
-  out.height = png->getHeight();
-
-  return true;
+  file.close();
+  return false;
 }
 
 bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
@@ -367,6 +394,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   // Calculate output dimensions
   ctx.srcWidth = png->getWidth();
   ctx.srcHeight = png->getHeight();
+  ctx.transparentColor = png->getTransparentColor();
 
   if (config.useExactDimensions && config.maxWidth > 0 && config.maxHeight > 0) {
     // Use exact dimensions as specified (avoids rounding mismatches with pre-calculated sizes)
@@ -423,6 +451,15 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     return false;
   }
   ctx.grayLineBuffer = grayLineBuffer.get();
+  std::unique_ptr<uint8_t[]> alphaLineBuffer;
+  if (config.preserveAlpha) {
+    alphaLineBuffer = makeUniqueNoThrow<uint8_t[]>(grayBufSize);
+    if (!alphaLineBuffer) {
+      LOG_ERR("PNG", "Failed to allocate PNG alpha line buffer");
+      return false;
+    }
+    ctx.alphaLineBuffer = alphaLineBuffer.get();
+  }
 
   // Stream the pixel cache to disk. PNGdec delivers source scanlines top to
   // bottom and we emit at most one (downscaled) output row per callback, so the
@@ -430,7 +467,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   // unlike the old full-image buffer it neither competes with the ~44KB decoder
   // nor forces larger images to skip caching - which previously meant a full
   // re-decode on every one of an image page's ~14 render passes.
-  ctx.caching = !config.cachePath.empty();
+  ctx.caching = !config.cachePath.empty() && !config.preserveAlpha;
   if (ctx.caching) {
     if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, config.x, config.y, 1)) {
       LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
@@ -443,6 +480,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   unsigned long decodeTime = millis() - decodeStart;
 
   ctx.grayLineBuffer = nullptr;
+  ctx.alphaLineBuffer = nullptr;
 
   if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Decode failed: %d", rc);

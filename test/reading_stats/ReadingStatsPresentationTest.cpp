@@ -177,6 +177,48 @@ TEST(ReadingStatsPresentation, TextReaderKeepsRecordedCompletionFacts) {
   EXPECT_EQ(model.book.finishDate.value, readingStatsMinuteIndex(book.finishedDate, book.finishedMinuteOfDay));
 }
 
+TEST(ReadingStatsPresentation, CompletedBookExposesUsefulSummaryAndCompactReadingPattern) {
+  BookReadingStats book;
+  book.isCompleted = true;
+  book.totalReadingSeconds = 7u * 3600u + 42u * 60u;
+  book.sessionCount = 18;
+  book.totalPagesTurned = 682;
+  book.avgSecondsPerForwardPage = 42;
+  book.paceSampleCount = 20;
+  book.startDate = {2026, 8, 12};
+  book.startMinuteOfDay = 8u * 60u;
+  book.finishedDate = {2026, 8, 18};
+  book.finishedMinuteOfDay = 21u * 60u;
+  book.timeOfDaySeconds = {30, 60, 300, 90};
+  book.dayOfWeekSeconds = {10, 20, 30, 40, 50, 60, 400};
+  const GlobalReadingStats device;
+  const GlobalReadingStatsAggregation aggregate{device, 0, 0};
+  const ReadingStatsDateTime now{{2026, 8, 19}, 12, 0, 0};
+
+  const ReadingStatsPresentation model =
+      build(book, true, device, true, aggregate, &now, ReadingStatsMetric::known(100), true);
+
+  EXPECT_EQ(model.book.completionDays.state, ReadingStatsMetricState::Known);
+  EXPECT_EQ(model.book.completionDays.value, 7u);
+  EXPECT_EQ(model.book.preferredTimeBucket.state, ReadingStatsMetricState::Known);
+  EXPECT_EQ(model.book.preferredTimeBucket.value, 2u);
+  EXPECT_EQ(model.book.preferredWeekday.state, ReadingStatsMetricState::Known);
+  EXPECT_EQ(model.book.preferredWeekday.value, 6u);
+}
+
+TEST(ReadingStatsPresentation, CompactReadingPatternStaysUnavailableWithoutDatedActivity) {
+  BookReadingStats book;
+  book.isCompleted = true;
+  const GlobalReadingStats device;
+  const GlobalReadingStatsAggregation aggregate{device, 0, 0};
+
+  const ReadingStatsPresentation model = build(book, true, device, true, aggregate);
+
+  EXPECT_EQ(model.book.completionDays.state, ReadingStatsMetricState::Unavailable);
+  EXPECT_EQ(model.book.preferredTimeBucket.state, ReadingStatsMetricState::Unavailable);
+  EXPECT_EQ(model.book.preferredWeekday.state, ReadingStatsMetricState::Unavailable);
+}
+
 TEST(ReadingStatsPresentation, EstimatedProgressCannotClaimCompletion) {
   BookReadingStats book;
   const GlobalReadingStats device;

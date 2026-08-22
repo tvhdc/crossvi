@@ -18,6 +18,8 @@
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
+#include "reader/ReadingAchievementNotificationActivity.h"
+#include "reader/ReadingAchievements.h"
 #include "reader/SavedClippingsActivity.h"
 #include "reader/VCodexStatsImportActivity.h"
 #include "settings/OpdsServerListActivity.h"
@@ -136,12 +138,21 @@ void ActivityManager::loop() {
       RenderLock lock;
 
       if (pendingAction == PendingAction::Replace) {
+        const bool leavingReader = hasReaderActivity();
+        const bool enteringReader = pendingActivity->isReaderActivity();
+        const bool enteringSleep = pendingActivity->name == "Sleep";
         // Destroy the current activity
         exitActivity(lock);
         // Clear the stack
         while (!stackActivities.empty()) {
           stackActivities.back()->onExit();
           stackActivities.pop_back();
+        }
+        ReadingAchievementNotification notification;
+        if (leavingReader && !enteringReader && !enteringSleep &&
+            ReadingAchievements::takePendingNotification(notification)) {
+          pendingActivity = std::make_unique<ReadingAchievementNotificationActivity>(
+              renderer, mappedInput, notification, std::move(pendingActivity));
         }
       } else if (pendingAction == PendingAction::Push) {
         // The current activity stays alive, but is no longer visible while the
@@ -326,9 +337,12 @@ void ActivityManager::cancelReaderOpenMetric(const char* const reason) {
   LOG_DBG("ROPM", "cancel reason=%s total_ms=%u", reason, static_cast<unsigned>(now - openStarted));
 }
 
-void ActivityManager::goToSleep() {
-  replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput));
+bool ActivityManager::goToSleep() {
+  auto sleepActivity = std::make_unique<SleepActivity>(renderer, mappedInput);
+  SleepActivity* const sleep = sleepActivity.get();
+  replaceActivity(std::move(sleepActivity));
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
+  return currentActivity.get() == sleep && sleep->wakeFrameReplayable();
 }
 
 void ActivityManager::goToBoot(const bool minimalWakeScreen) {

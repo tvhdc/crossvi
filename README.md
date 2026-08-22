@@ -23,6 +23,7 @@ additional safeguards for data stored on the SD card.
 
 **[Download v1.1.2](https://github.com/tvhdc/crossvi/releases/download/v1.1.2/firmware.bin) ·
 [Installation](#installation) · [User Guide](USER_GUIDE.md) ·
+[Sleep Image Converter](https://tvhdc.github.io/crossvi/tools/sleep-image-converter/) ·
 [Report a Bug](https://github.com/tvhdc/crossvi/issues/new?template=bug_report.yml) ·
 [Contributing](docs/contributing/README.md)**
 
@@ -91,6 +92,7 @@ power use, buttons, and sleep/wake must be tested on a physical device.
 ## Documentation
 
 - [User Guide](USER_GUIDE.md)
+- [Sleep Image Converter](https://tvhdc.github.io/crossvi/tools/sleep-image-converter/) ([source](docs/tools/sleep-image-converter/))
 - [Contributing](docs/contributing/README.md)
 - [Supported file formats](docs/file-formats.md)
 - [Wi-Fi file transfer](docs/webserver.md)

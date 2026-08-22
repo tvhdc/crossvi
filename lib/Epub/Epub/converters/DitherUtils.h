@@ -25,3 +25,8 @@ inline uint8_t applyBayerDither4Level(uint8_t gray, int x, int y) {
   if (adjusted < 192) return 2;
   return 3;
 }
+
+inline bool applyBayerDither1Bit(uint8_t gray, int x, int y) {
+  const uint8_t threshold = static_cast<uint8_t>(bayer4x4[y & 3][x & 3] * 16U + 8U);
+  return gray < threshold;
+}

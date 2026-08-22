@@ -44,6 +44,9 @@ struct BookReadingStatsPresentation {
   ReadingStatsMetric completed;
   ReadingStatsMetric startDate;
   ReadingStatsMetric finishDate;
+  ReadingStatsMetric completionDays;
+  ReadingStatsMetric preferredTimeBucket;
+  ReadingStatsMetric preferredWeekday;
   ReadingStatsChart<READING_TIME_BUCKET_COUNT> timeOfDay;
   ReadingStatsChart<READING_DAY_OF_WEEK_COUNT> dayOfWeek;
 };

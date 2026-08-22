@@ -16,7 +16,10 @@ class FinishedBooksActivity final : public Activity {
 
  private:
   void move(int delta);
+  void openSelectedStatistics();
 
   ButtonNavigator navigator_;
   size_t selected_ = 0;
+  bool statsLoadFailed_ = false;
+  bool suppressInitialConfirmRelease_ = false;
 };

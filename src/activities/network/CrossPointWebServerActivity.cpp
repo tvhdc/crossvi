@@ -2,6 +2,7 @@
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
@@ -292,14 +293,19 @@ void CrossPointWebServerActivity::startAccessPoint() {
 void CrossPointWebServerActivity::startWebServer() {
   LOG_DBG("WEBACT", "Starting web server...");
 
+  // Keep rendering from repopulating the glyph cache during heap-critical server setup.
+  RenderLock lock(*this);
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearCache();
   // Create the web server instance
   webServer.reset(new (std::nothrow) CrossPointWebServer());
+  if (webServer) webServer->begin();
+  lock.unlock();
+
   if (!webServer) {
     LOG_ERR("WEBACT", "Out of memory starting web server");
     onGoHome();
     return;
   }
-  webServer->begin();
 
   if (webServer->isRunning()) {
     state = WebServerActivityState::SERVER_RUNNING;

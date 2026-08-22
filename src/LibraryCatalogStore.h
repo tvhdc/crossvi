@@ -72,6 +72,7 @@ class LibraryCatalogStore final {
            phase_ == Phase::Updating;
   }
   bool isOrderBuilding() const { return orderPhase_ != OrderPhase::Idle; }
+  OrderPhase orderPhase() const { return orderPhase_; }
   bool isTruncated() const { return truncated_; }
   Phase phase() const { return phase_; }
   uint32_t count() const { return count_; }

@@ -4,6 +4,10 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+#include <array>
+#include <utility>
+
 #include "CrossPointSettings.h"
 #include "ReaderUtils.h"
 // ReaderUtils.h pulls in ActivityManager.h, which only forward-declares Activity while holding
@@ -21,6 +25,62 @@ std::string displayName(const std::string& filename) {
   const auto pos = filename.rfind('.');
   return filename.substr(0, pos);
 }
+
+std::string metricValue(const bool available, const uint32_t value) {
+  return available ? std::to_string(value) : "--";
+}
+
+void drawMetric(const GfxRenderer& renderer, const Rect& rect, const std::string& value, const char* label) {
+  const int valueHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int labelHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  const int top = rect.y + std::max(2, (rect.height - valueHeight - labelHeight - 2) / 2);
+  const std::string displayedValue = renderer.truncatedText(UI_10_FONT_ID, value.c_str(), rect.width - 8,
+                                                            EpdFontFamily::BOLD);
+  const std::string displayedLabel = renderer.truncatedText(SMALL_FONT_ID, label, rect.width - 8);
+  UITheme::drawCenteredText(renderer, rect, UI_10_FONT_ID, top, displayedValue.c_str(), true, EpdFontFamily::BOLD);
+  UITheme::drawCenteredText(renderer, rect, SMALL_FONT_ID, top + valueHeight + 2, displayedLabel.c_str());
+}
+
+void drawSummaryMetrics(const GfxRenderer& renderer, const Rect& rect, const EndOfBookSummary& summary,
+                        const int columns) {
+  char duration[28] = "--";
+  if (summary.statsTrusted && !summary.stats.readingTimeUnavailable) {
+    BookReadingStats::formatDuration(summary.stats.totalReadingSeconds, duration, sizeof(duration));
+  }
+
+  std::string completionDays = "--";
+  if (summary.statsTrusted && summary.stats.isCompleted && summary.stats.startDate.isValid() &&
+      summary.stats.finishedDate.isValid() &&
+      compareReadingStatsDate(summary.stats.finishedDate, summary.stats.startDate) >= 0) {
+    completionDays = std::to_string(readingSpanDaysInclusive(summary.stats.startDate, summary.stats.finishedDate));
+  }
+
+  const std::array<std::pair<std::string, const char*>, 4> metrics = {{
+      {duration, tr(STR_STATS_READING_TIME)},
+      {metricValue(summary.statsTrusted && !summary.stats.sessionsUnavailable, summary.stats.sessionCount),
+       tr(STR_STATS_SESSIONS)},
+      {metricValue(summary.statsTrusted && !summary.stats.pageTurnsUnavailable, summary.stats.totalPagesTurned),
+       tr(STR_STATS_PAGES_TURNED)},
+      {completionDays, tr(STR_STATS_DAYS_TO_FINISH)},
+  }};
+
+  const int rows = static_cast<int>((metrics.size() + columns - 1) / columns);
+  const int rowHeight = rect.height / rows;
+  renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 5, true);
+  for (size_t index = 0; index < metrics.size(); ++index) {
+    const int row = static_cast<int>(index) / columns;
+    const int column = static_cast<int>(index) % columns;
+    const int cellWidth = rect.width / columns;
+    const Rect cell{rect.x + column * cellWidth, rect.y + row * rowHeight,
+                    column == columns - 1 ? rect.width - column * cellWidth : cellWidth,
+                    row == rows - 1 ? rect.height - row * rowHeight : rowHeight};
+    if (column > 0) renderer.drawLine(cell.x, cell.y, cell.x, cell.y + cell.height - 1);
+    if (row > 0 && column == 0) {
+      renderer.drawLine(rect.x, cell.y, rect.x + rect.width - 1, cell.y);
+    }
+    drawMetric(renderer, cell, metrics[index].first, metrics[index].second);
+  }
+}
 }  // namespace
 
 void EndOfBookOptions::loadOnce(const std::string& currentBookPath) {
@@ -35,7 +95,7 @@ void EndOfBookOptions::loadOnce(const std::string& currentBookPath) {
   isLoaded.store(true, std::memory_order_release);
 }
 
-bool EndOfBookOptions::menuActive() const { return isLoaded.load(std::memory_order_acquire) && !names.empty(); }
+bool EndOfBookOptions::menuActive() const { return isLoaded.load(std::memory_order_acquire); }
 
 std::string EndOfBookOptions::fullPath(const size_t index) const {
   if (index >= names.size()) {
@@ -52,7 +112,8 @@ EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputMana
       }
       return Action::OpenBook;
     }
-    return Action::GoHome;  // "Home" entry selected
+    if (selector == static_cast<int>(names.size())) return Action::ViewStats;
+    return Action::GoHome;
   }
 
   // Short-press Back returns to the last page; a long press falls through to the
@@ -72,7 +133,7 @@ EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputMana
   const auto triggered = [&](const MappedInputManager::Button button) {
     return usePress ? input.wasPressed(button) : input.wasReleased(button);
   };
-  const int itemCount = static_cast<int>(names.size()) + 1;  // + "Home" entry
+  const int itemCount = static_cast<int>(names.size()) + 2;  // + statistics and Home
   if (triggered(MappedInputManager::Button::NavPrevious)) {
     selector = ButtonNavigator::previousIndex(selector, itemCount);  // wraps to the bottom
     return Action::Redraw;
@@ -84,35 +145,46 @@ EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputMana
   return Action::None;
 }
 
-void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& input) const {
+void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& input,
+                              const EndOfBookSummary& summary) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  if (!menuActive()) {
-    // No suggestions: the historical plain end screen. 3/8 of the screen height matches
-    // the previous fixed position on the 480x800 panel and scales to other resolutions.
-    renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() * 3 / 8, tr(STR_END_OF_BOOK), true,
-                              EpdFontFamily::BOLD);
-    return;
-  }
-
-  // Suggestion menu: title, list (+ Home entry) and button hints. The hints are drawn at
+  // Summary, actions and optional next-book suggestions. The hints are drawn at
   // the physical front buttons, which is a logical side/top edge in the rotated
   // orientations — lay out inside the safe area so nothing hides behind them. Vertical
   // positions derive from the safe-area height and font line heights so other panel
   // resolutions scale (review request on #2532).
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-  const int titleY = safe.y + safe.height / 8;
-  const int subtitleY = titleY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
-  const int listTop = subtitleY + renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing * 2;
+  const int titleY = safe.y + metrics.verticalSpacing;
+  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, titleY, tr(STR_STATS_FINISHED), true,
+                            EpdFontFamily::BOLD);
 
-  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, titleY, tr(STR_END_OF_BOOK), true, EpdFontFamily::BOLD);
-  UITheme::drawCenteredText(renderer, safe, UI_10_FONT_ID, subtitleY, tr(STR_EOB_CONTINUE_WITH));
+  const int bookTitleY = titleY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
+  const std::string bookTitle = renderer.truncatedText(UI_12_FONT_ID,
+                                                       summary.title.empty() ? tr(STR_END_OF_BOOK) : summary.title.c_str(),
+                                                       safe.width - 16, EpdFontFamily::BOLD);
+  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, bookTitleY, bookTitle.c_str(), true,
+                            EpdFontFamily::BOLD);
+
+  int summaryTop = bookTitleY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
+  if (!summary.author.empty()) {
+    const std::string author = renderer.truncatedText(UI_10_FONT_ID, summary.author.c_str(), safe.width - 16);
+    UITheme::drawCenteredText(renderer, safe, UI_10_FONT_ID, summaryTop, author.c_str());
+    summaryTop += renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+  }
+
+  const bool landscape = safe.width > safe.height;
+  const int summaryHeight = landscape ? 54 : 96;
+  drawSummaryMetrics(renderer, Rect{safe.x + 4, summaryTop, safe.width - 8, summaryHeight}, summary,
+                     landscape ? 4 : 2);
+  const int listTop = summaryTop + summaryHeight + metrics.verticalSpacing * 2;
 
   const int listHeight = safe.y + safe.height - listTop - metrics.verticalSpacing;
-  GUI.drawList(renderer, Rect{safe.x, listTop, safe.width, listHeight}, static_cast<int>(names.size()) + 1, selector,
+  GUI.drawList(renderer, Rect{safe.x, listTop, safe.width, listHeight}, static_cast<int>(names.size()) + 2, selector,
                [this](const int index) {
-                 return index < static_cast<int>(names.size()) ? displayName(names[index])
-                                                               : std::string(tr(STR_EOB_HOME));
+                 if (index < static_cast<int>(names.size())) return displayName(names[index]);
+                 return index == static_cast<int>(names.size()) ? std::string(tr(STR_READING_STATS))
+                                                                 : std::string(tr(STR_EOB_HOME));
                });
 
   const auto labels = input.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

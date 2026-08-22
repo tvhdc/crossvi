@@ -11,6 +11,7 @@
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <JsonSettingsIO.h>
@@ -25,12 +26,14 @@
 #include "BookSavedItemsActivity.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "DailyBookReadingHistory.h"
 #include "EpubReaderMenuActivity.h"
 #include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
 #include "ProgressFile.h"
 #include "ProgressFileCodec.h"
 #include "ReaderUtils.h"
+#include "ReadingAchievements.h"
 #include "ReadingStatsActivity.h"
 #include "ReadingStatsCompletionTransaction.h"
 #include "ReadingStatsDateEditActivity.h"
@@ -101,6 +104,7 @@ xtc::XtcError streamXtchRenderPass(const Xtc& book, const uint32_t page, const x
 
 void XtcReaderActivity::onEnter() {
   Activity::onEnter();
+  readerWaveform.beginTransition();
 
   // Fixed-layout books do not use the reflowable reader font.
   sdFontSystem.releaseLoadedFont(renderer);
@@ -178,6 +182,7 @@ void XtcReaderActivity::onEnter() {
 
 void XtcReaderActivity::onExit() {
   Activity::onExit();
+  readerWaveform.leaveReader();
 
   pendingPageTurnDelta = 0;
   commitReadingSession();
@@ -193,6 +198,7 @@ void XtcReaderActivity::onExit() {
 }
 
 void XtcReaderActivity::onPause() {
+  readerWaveform.leaveReader();
   pendingPageTurnDelta = 0;
   clearBlockingFeedback();
   if (xtc) xtc->cancelThumbnailPreparation();
@@ -202,6 +208,7 @@ void XtcReaderActivity::onPause() {
 }
 
 void XtcReaderActivity::onResume() {
+  readerWaveform.beginTransition();
   pendingReadingViewSignal.store(0, std::memory_order_release);
   lastPageTurnTime = millis();
   pageTurnGesture.reset();
@@ -485,6 +492,9 @@ void XtcReaderActivity::loop() {
       case EndOfBookOptions::Action::OpenBook:
         activityManager.goToReader(openPath);
         return;
+      case EndOfBookOptions::Action::ViewStats:
+        openReadingStats();
+        return;
       case EndOfBookOptions::Action::GoHome:
         onGoHome();
         return;
@@ -529,14 +539,13 @@ void XtcReaderActivity::loop() {
   bool prevTriggered = pageGesture.prev;
   bool nextTriggered = pageGesture.next;
   bool drainingQueuedTurn = false;
-  if (!prevTriggered && !nextTriggered && pendingPageTurnDelta != 0 && !inputEdge && !readerInputHeld &&
-      !activityManager.hasPendingRender()) {
-    bool forward = false;
-    if (pendingPageTurnDelta < 0 && pageSnapshot == 0) {
-      pendingPageTurnDelta = 0;
-    } else if (ReaderUtils::takeQueuedPageTurn(pendingPageTurnDelta, forward)) {
-      prevTriggered = !forward;
-      nextTriggered = forward;
+  int queuedDelta = 0;
+  if (!prevTriggered && !nextTriggered && ReaderUtils::queuedPageTurns(pendingPageTurnDelta) != 0 && !inputEdge &&
+      !readerInputHeld && !activityManager.hasPendingRender()) {
+    queuedDelta = ReaderUtils::takeQueuedPageTurns(pendingPageTurnDelta);
+    if (queuedDelta != 0) {
+      prevTriggered = queuedDelta < 0;
+      nextTriggered = queuedDelta > 0;
       drainingQueuedTurn = true;
     }
   }
@@ -578,24 +587,26 @@ void XtcReaderActivity::loop() {
     return;
   }
 
-  const int skipAmount = drainingQueuedTurn ? 1 : (pageGesture.longPress ? 10 : 1);
-  const int requestedDelta = nextTriggered ? skipAmount : -skipAmount;
+  const int skipAmount =
+      drainingQueuedTurn ? (queuedDelta > 0 ? queuedDelta : -queuedDelta) : (pageGesture.longPress ? 10 : 1);
+  const int requestedDelta = drainingQueuedTurn ? queuedDelta : (nextTriggered ? skipAmount : -skipAmount);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   uint32_t turnSequence = debugTurnSequence.load(std::memory_order_relaxed);
   if (!drainingQueuedTurn) {
     turnSequence = debugTurnSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     ReaderUtils::logPageTurnMetric("xtc", "input", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
                                    static_cast<int32_t>(lastSuccessfullyRenderedPage.load(std::memory_order_acquire)),
-                                   pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+                                   ReaderUtils::queuedPageTurns(pendingPageTurnDelta), static_cast<uint32_t>(millis()));
   }
 #endif
-  if (!drainingQueuedTurn && pendingPageTurnDelta != 0) {
+  if (!drainingQueuedTurn && ReaderUtils::queuedPageTurns(pendingPageTurnDelta) != 0) {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     ReaderUtils::logPageTurnMetric("xtc", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
                                    static_cast<int32_t>(lastSuccessfullyRenderedPage.load(std::memory_order_acquire)),
-                                   pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+                                   ReaderUtils::queuedPageTurns(pendingPageTurnDelta), static_cast<uint32_t>(millis()));
 #endif
+    requestUpdate();
     return;
   }
 
@@ -606,9 +617,10 @@ void XtcReaderActivity::loop() {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     ReaderUtils::logPageTurnMetric("xtc", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
                                    static_cast<int32_t>(lastSuccessfullyRenderedPage.load(std::memory_order_acquire)),
-                                   pendingPageTurnDelta, static_cast<uint32_t>(millis()));
+                                   ReaderUtils::queuedPageTurns(pendingPageTurnDelta), static_cast<uint32_t>(millis()));
 #endif
     lastPageTurnTime = millis();
+    requestUpdate();
     return;
   }
 
@@ -647,6 +659,30 @@ void XtcReaderActivity::loop() {
     if (completionFailed) return;
     requestUpdate();
   }
+}
+
+bool XtcReaderActivity::retargetQueuedPageTurns() {
+  if (!xtc || xtc->getPageCount() == 0 || currentPage >= xtc->getPageCount()) return false;
+  const int delta = ReaderUtils::takeQueuedPageTurns(pendingPageTurnDelta);
+  if (delta == 0) return false;
+
+  const uint32_t previousPage = currentPage;
+  const uint32_t lastPage = xtc->getPageCount() - 1;
+  const int64_t requested = static_cast<int64_t>(currentPage) + delta;
+  currentPage = static_cast<uint32_t>(std::clamp<int64_t>(requested, 0, lastPage));
+  const int applied = static_cast<int>(currentPage) - static_cast<int>(previousPage);
+  if (delta - applied > 0) {
+    // The end-of-book screen is entered only after the last real page is visible.
+    ReaderUtils::queuePageTurns(pendingPageTurnDelta, 1);
+  }
+  if (applied == 0) return false;
+
+  consumeReadingViewSignal();
+  stopReadingPage(applied > 0, static_cast<uint32_t>(millis()), false);
+  completionAttemptBlocked = false;
+  lastPageTurnTime = millis();
+  if (applied > 0) refreshEstimatedTimeLeft();
+  return true;
 }
 
 bool XtcReaderActivity::handleReaderShortcut(const uint8_t function) {
@@ -688,6 +724,7 @@ void XtcReaderActivity::render(RenderLock&&) {
   if (renderReaderExitOverlay()) return;
   if (renderBlockingFeedbackOverlay()) return;
   const std::shared_ptr<Xtc> book = xtc;
+  retargetQueuedPageTurns();
   const uint32_t page = currentPage;
   if (!book) {
     return;
@@ -699,8 +736,16 @@ void XtcReaderActivity::render(RenderLock&&) {
     // Show end of book screen. Sole load site: runs on the render task (serialized by
     // RenderLock); the main task only reads the suggestions once the flag is published.
     endOfBookOptions.loadOnce(book->getPath());
+    BookReadingStats displayBookStats = bookReadingStats;
+    if (!readingSessionCommitted) {
+      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr,
+                                 sessionReadingSeconds, pendingBookReadingSpans, pendingGlobalReadingSpans,
+                                 hasSessionStartLocalDateTime ? &sessionStartLocalDateTime : nullptr);
+    }
     renderer.clearScreen();
-    endOfBookOptions.render(renderer, mappedInput);
+    endOfBookOptions.render(
+        renderer, mappedInput,
+        EndOfBookSummary{book->getTitle(), book->getAuthor(), displayBookStats, bookReadingStatsTrusted});
     if (pendingBookmarkStorageError.exchange(false)) {
       GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
     } else if (pendingShortcutUnsupportedNotice.exchange(false)) {
@@ -718,7 +763,8 @@ void XtcReaderActivity::render(RenderLock&&) {
                                  static_cast<int32_t>(page), 0, static_cast<uint32_t>(millis()));
 #endif
   const uint32_t renderStartedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
-  if (renderPage(book, page)) {
+  const PageRenderResult result = renderPage(book, page);
+  if (result == PageRenderResult::Displayed) {
     lastSuccessfullyRenderedPage = page;
     lastPageTurnTime = millis();
     if (readerOpenStagesPending) {
@@ -730,9 +776,11 @@ void XtcReaderActivity::render(RenderLock&&) {
     if (pendingScreenshot.exchange(false)) {
       ScreenshotUtil::takeScreenshot(renderer);
     }
-  } else {
+  } else if (result == PageRenderResult::Error) {
     lastSuccessfullyRenderedPage = std::numeric_limits<uint32_t>::max();
     signalReadingPageHidden();
+  } else {
+    return;
   }
   if (pendingStatsCompletionError.exchange(false)) {
     signalReadingPageHidden();
@@ -862,6 +910,7 @@ void XtcReaderActivity::signalReadingPageVisible() {
                                  static_cast<int32_t>(currentPage), 0, visibleAtMs);
 #endif
   activityManager.finishReaderOpenMetric("xtc", visibleAtMs);
+  readerWaveform.pageVisible();
   pendingReadingViewAtMs.store(visibleAtMs, std::memory_order_relaxed);
   pendingReadingViewSignal.store(1, std::memory_order_release);
 }
@@ -995,6 +1044,11 @@ void XtcReaderActivity::commitReadingSession() {
   }
   if (sessionReadingSeconds < 10) return;
 
+  if (xtc && !DailyBookReadingHistory::record(xtc->getPath(), xtc->getTitle(),
+                                              pendingGlobalReadingSpans.pendingDailyHistory)) {
+    LOG_ERR("XTR", "Failed to save the per-book daily reading breakdown");
+  }
+
   if (bookReadingStatsWritable) {
     bookReadingStats.totalReadingSeconds =
         addReadingStatsSaturated(bookReadingStats.totalReadingSeconds, sessionReadingSeconds);
@@ -1034,6 +1088,7 @@ void XtcReaderActivity::saveReadingStats() {
   if (globalReadingStatsWritable && globalReadingStatsDirty) {
     if (globalReadingStats.save()) {
       globalReadingStatsDirty = false;
+      if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("XRS", "Failed to reconcile reading achievements");
     } else {
       LOG_ERR("XRS", "Failed to save global reading statistics");
     }
@@ -1083,6 +1138,7 @@ void XtcReaderActivity::markBookCompleted() {
   }
   bookReadingStats = completedBookStats;
   globalReadingStats = completedGlobalStats;
+  if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("XRS", "Failed to reconcile reading achievements");
   FINISHED_BOOKS.markCompleted(
       xtc->getPath(), xtc->getTitle(), xtc->getAuthor(),
       completedBookStats.finishedDate.isValid() ? readingStatsDayIndex(completedBookStats.finishedDate) : 0);
@@ -1125,7 +1181,8 @@ void XtcReaderActivity::openReadingStats() {
                                     globalReadingStatsTrusted, allSyncedStats, currentDateTime, progress, false);
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, xtc->getTitle(), std::move(presentation),
-                                             ReadingStatsActivity::Page::Book, bookReadingStatsWritable, false),
+                                             ReadingStatsActivity::Page::Book, bookReadingStatsWritable, false,
+                                             xtc->getPath()),
       [this](const ActivityResult& result) {
         const auto* action = std::get_if<ReadingStatsActionResult>(&result.data);
         if (!action || action->action != ReadingStatsActionResult::Action::EditBookDates || !xtc ||
@@ -1221,18 +1278,19 @@ void XtcReaderActivity::renderStatusBarOverlay(const std::shared_ptr<Xtc>& book,
   GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom);
 }
 
-bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint32_t page) {
+XtcReaderActivity::PageRenderResult XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book,
+                                                                  const uint32_t page) {
   const uint16_t pageWidth = book->getPageWidth();
   const uint16_t pageHeight = book->getPageHeight();
   const uint8_t bitDepth = book->getBitDepth();
 
   xtc::PageLayout pageLayout;
-  if (!xtc::calculatePageLayout(pageWidth, pageHeight, bitDepth, pageLayout)) return false;
+  if (!xtc::calculatePageLayout(pageWidth, pageHeight, bitDepth, pageLayout)) return PageRenderResult::Error;
 
   xtc::Viewport viewport;
   if (!xtc::calculateFitViewport(pageWidth, pageHeight, renderer.getScreenWidth(), renderer.getScreenHeight(),
                                  viewport)) {
-    return false;
+    return PageRenderResult::Error;
   }
 
   const bool nativeX4Portrait = pageWidth == renderer.getScreenWidth() && pageHeight == renderer.getScreenHeight() &&
@@ -1326,16 +1384,18 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
                                          XtchRenderPass::Base);
     }
     if (streamError != xtc::XtcError::OK) {
+      if (retargetQueuedPageTurns()) return PageRenderResult::Superseded;
       showStreamError(streamError);
-      return false;
+      return PageRenderResult::Error;
     }
     renderStatusBar();
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t baseRenderedMs = static_cast<uint32_t>(millis());
 #endif
 
+    if (retargetQueuedPageTurns()) return PageRenderResult::Superseded;
     if (!renderer.supportsStripGrayscale()) {
-      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, readerWaveform);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
       const uint32_t renderFinishedMs = static_cast<uint32_t>(millis());
       const uint32_t renderFreeHeap = ESP.getFreeHeap();
@@ -1349,15 +1409,17 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
               static_cast<unsigned>(renderFreeHeap), static_cast<unsigned>(ESP.getMaxAllocHeap()));
 #endif
       LOG_DBG("XTR", "Rendered page %lu/%lu (2-bit as 1-bit)", page + 1, book->getPageCount());
-      return true;
+      return PageRenderResult::Displayed;
     }
 
     if (pagesUntilFullRefresh <= 1) {
-      // Periodic ghost cleanup: scrub via the normal path, then run the
-      // settle flavor of the grayscale base pass (DTM planes are equal after
-      // the display sync, so only the gentle reinforcement cells fire).
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      renderer.preconditionGrayscale();
+      if (display.supportsX3GhostCleanup()) {
+        renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+        readerWaveform.requestCleanupAfterPageVisible();
+      } else {
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        renderer.preconditionGrayscale();
+      }
       pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
     } else {
       // OEM grayscale pipeline base: differential "AA-pre-BW(mid)" update as
@@ -1380,7 +1442,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
           });
       if (streamError != xtc::XtcError::OK) {
         showStreamError(streamError);
-        return false;
+        return PageRenderResult::Error;
       }
     } else if (scaledPairedXtch) {
       uint8_t* const lsbScratch = xtchPlaneScratch.get();
@@ -1423,7 +1485,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
       if (streamError == xtc::XtcError::OK && !composed) streamError = xtc::XtcError::SIZE_MISMATCH;
       if (streamError != xtc::XtcError::OK) {
         showStreamError(streamError);
-        return false;
+        return PageRenderResult::Error;
       }
     } else {
       renderer.clearScreen(0x00);
@@ -1431,7 +1493,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
           streamXtchRenderPass(*book, page, pageLayout, pageWidth, pageHeight, viewport, renderer, XtchRenderPass::Lsb);
       if (streamError != xtc::XtcError::OK) {
         showStreamError(streamError);
-        return false;
+        return PageRenderResult::Error;
       }
       renderer.copyGrayscaleLsbBuffers();
 
@@ -1440,7 +1502,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
           streamXtchRenderPass(*book, page, pageLayout, pageWidth, pageHeight, viewport, renderer, XtchRenderPass::Msb);
       if (streamError != xtc::XtcError::OK) {
         showStreamError(streamError);
-        return false;
+        return PageRenderResult::Error;
       }
       renderer.copyGrayscaleMsbBuffers();
     }
@@ -1458,7 +1520,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
                                          XtchRenderPass::Base);
       if (streamError != xtc::XtcError::OK) {
         showStreamError(streamError);
-        return false;
+        return PageRenderResult::Error;
       }
       renderStatusBar();
     }
@@ -1481,7 +1543,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
             static_cast<unsigned>(renderFreeHeap), static_cast<unsigned>(ESP.getMaxAllocHeap()));
 #endif
     LOG_DBG("XTR", "Rendered page %lu/%lu (2-bit grayscale)", page + 1, book->getPageCount());
-    return true;
+    return PageRenderResult::Displayed;
   }
 
   if (nativeX4Portrait) {
@@ -1497,20 +1559,22 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
         },
         pageLayout.rowBytes * 8U);
     if (streamError != xtc::XtcError::OK || !rotated) {
+      if (retargetQueuedPageTurns()) return PageRenderResult::Superseded;
       LOG_ERR("XTR", "Failed to stream native XTC page %lu: %s", page, xtc::errorToString(streamError));
       renderer.clearScreen();
       renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
       renderer.displayBuffer();
-      return false;
+      return PageRenderResult::Error;
     }
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t pageLoadedMs = static_cast<uint32_t>(millis());
 #endif
     renderStatusBar();
+    if (retargetQueuedPageTurns()) return PageRenderResult::Superseded;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t pageRasterizedMs = static_cast<uint32_t>(millis());
 #endif
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, readerWaveform);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t renderFinishedMs = static_cast<uint32_t>(millis());
     const uint32_t renderFreeHeap = ESP.getFreeHeap();
@@ -1525,11 +1589,11 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
             static_cast<unsigned>(renderFreeHeap), static_cast<unsigned>(ESP.getMaxAllocHeap()));
 #endif
     LOG_DBG("XTR", "Rendered page %lu/%lu (1-bit)", page + 1, book->getPageCount());
-    return true;
+    return PageRenderResult::Displayed;
   }
 
   std::array<uint16_t, xtc::DISPLAY_WIDTH> sourceXByDestination{};
-  if (viewport.width > sourceXByDestination.size()) return false;
+  if (viewport.width > sourceXByDestination.size()) return PageRenderResult::Error;
   for (uint16_t destinationX = 0; destinationX < viewport.width; ++destinationX) {
     sourceXByDestination[destinationX] = xtc::mapViewportCoordinate(destinationX, viewport.width, pageWidth);
   }
@@ -1569,21 +1633,23 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
       },
       sourceRowBytes * 8U);
   if (streamError != xtc::XtcError::OK || !rasterValid) {
+    if (retargetQueuedPageTurns()) return PageRenderResult::Superseded;
     LOG_ERR("XTR", "Failed to stream XTC page %lu: error=%s raster_valid=%d", page, xtc::errorToString(streamError),
             rasterValid ? 1 : 0);
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
-    return false;
+    return PageRenderResult::Error;
   }
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t pageStreamedMs = static_cast<uint32_t>(millis());
 #endif
   renderStatusBar();
+  if (retargetQueuedPageTurns()) return PageRenderResult::Superseded;
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t pageRasterizedMs = static_cast<uint32_t>(millis());
 #endif
-  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, readerWaveform);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t renderFinishedMs = static_cast<uint32_t>(millis());
   const uint32_t renderFreeHeap = ESP.getFreeHeap();
@@ -1599,7 +1665,7 @@ bool XtcReaderActivity::renderPage(const std::shared_ptr<Xtc>& book, const uint3
           static_cast<unsigned>(renderFreeHeap), static_cast<unsigned>(ESP.getMaxAllocHeap()));
 #endif
   LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit)", page + 1, book->getPageCount(), bitDepth);
-  return true;
+  return PageRenderResult::Displayed;
 }
 
 bool XtcReaderActivity::saveProgress(const std::shared_ptr<Xtc>& book, const uint32_t page) {

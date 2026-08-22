@@ -130,6 +130,8 @@ bool FileBrowserActivity::stepFileLoad(const size_t maxEntries) {
     bool supported = isDirectory;
     if (!isDirectory && mode == Mode::PickFirmware) {
       supported = FsHelpers::checkFileExtension(filename, ".bin");
+    } else if (!isDirectory && mode == Mode::PickImage) {
+      supported = FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename);
     } else if (!isDirectory) {
       supported = FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
                   FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
@@ -185,7 +187,10 @@ void FileBrowserActivity::launchSearch() {
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_BOOKS),
                                                                  searchQuery, BOOK_SEARCH_QUERY_BYTES),
                          [this](const ActivityResult& result) {
-                           if (!result.isCancelled) applySearch(std::get<KeyboardResult>(result.data).text);
+                           if (!result.isCancelled) {
+                             RenderLock lock(*this);
+                             applySearch(std::get<KeyboardResult>(result.data).text);
+                           }
                            requestUpdate();
                          });
 }
@@ -371,6 +376,7 @@ void FileBrowserActivity::promptDelete(const std::string& fullPath, const std::s
       LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
       return;
     }
+    RenderLock lock(*this);
     loadFiles({}, selectorIndex);
   };
 
@@ -508,7 +514,7 @@ void FileBrowserActivity::loop() {
         if (basepath.empty()) basepath = "/";
         const auto pos = oldPath.find_last_of('/');
         loadFiles(oldPath.substr(pos + 1) + "/");
-      } else if (mode == Mode::PickFirmware) {
+      } else if (mode != Mode::Books) {
         ActivityResult result;
         result.isCancelled = true;
         setResult(std::move(result));
@@ -551,6 +557,7 @@ void FileBrowserActivity::loop() {
   if (mode == Mode::Books && mappedInput.isPressed(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime(MappedInputManager::Button::Back) >= GO_HOME_MS && basepath != "/" &&
       !lockLongPressBack) {
+    RenderLock lock(*this);
     basepath = "/";
     loadFiles();
     return;
@@ -584,18 +591,20 @@ void FileBrowserActivity::loop() {
       launchSearch();
       return;
     }
+    RenderLock lock(*this);
     const std::string* selectedEntry = visibleEntry(selectorIndex);
     if (!selectedEntry) return;
 
-    const std::string& entry = *selectedEntry;
-    bool isDirectory = (entry.back() == '/');
+    const std::string entry = *selectedEntry;
+    const bool isDirectory = (entry.back() == '/');
 
-    // Firmware picker: select file -> return path; navigate into directories normally.
-    if (mode == Mode::PickFirmware && !isDirectory) {
+    // Picker modes: select file -> return path; navigate into directories normally.
+    if (mode != Mode::Books && !isDirectory) {
       std::string cleanBasePath = basepath;
       if (cleanBasePath.back() != '/') cleanBasePath += "/";
       ActivityResult res{FilePathResult{cleanBasePath + entry}};
       res.isCancelled = false;
+      lock.unlock();
       setResult(std::move(res));
       finish();
       return;
@@ -608,21 +617,27 @@ void FileBrowserActivity::loop() {
       basepath += entry.substr(0, entry.length() - 1);
       loadFiles();
     } else {
-      openPreparedBook(basepath + entry);
+      const std::string fullPath = basepath + entry;
+      lock.unlock();
+      openPreparedBook(fullPath);
     }
     return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (searchActive) {
-      clearSearch(true);
-      selectorIndex = files.empty() ? 0 : 1;
+      {
+        RenderLock lock(*this);
+        clearSearch(true);
+        selectorIndex = files.empty() ? 0 : 1;
+      }
       requestUpdate();
       return;
     }
     // Short press: go up one directory, or go home if at root
     if (mappedInput.getHeldTime(MappedInputManager::Button::Back) < GO_HOME_MS) {
       if (basepath != "/") {
+        RenderLock lock(*this);
         const std::string oldPath = basepath;
 
         basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
@@ -631,8 +646,8 @@ void FileBrowserActivity::loop() {
         const auto pos = oldPath.find_last_of('/');
         const std::string dirName = oldPath.substr(pos + 1) + "/";
         loadFiles(dirName);
-      } else if (mode == Mode::PickFirmware) {
-        // Firmware picker at root: cancel back to caller instead of going home.
+      } else if (mode != Mode::Books) {
+        // Picker at root: cancel back to caller instead of going home.
         ActivityResult res;
         res.isCancelled = true;
         setResult(std::move(res));
@@ -702,6 +717,8 @@ void FileBrowserActivity::render(RenderLock&&) {
     folderName = searchTitle;
   } else if (mode == Mode::PickFirmware) {
     folderName = tr(STR_SELECT_FIRMWARE_FILE);
+  } else if (mode == Mode::PickImage) {
+    folderName = tr(STR_SLEEP_SCREEN);
   } else {
     folderName = basepath == "/" ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1);
   }
@@ -717,9 +734,11 @@ void FileBrowserActivity::render(RenderLock&&) {
   if (filesLoading) {
     renderer.drawCenteredText(UI_10_FONT_ID, contentTop + contentHeight / 2, tr(STR_LOADING));
   } else if (itemCount == 0) {
-    const char* emptyMsg = searchActive
-                               ? tr(STR_NO_SEARCH_RESULTS)
-                               : ((mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND));
+    const char* emptyMsg =
+        searchActive
+            ? tr(STR_NO_SEARCH_RESULTS)
+            : (mode == Mode::PickFirmware ? tr(STR_NO_BIN_FILES)
+                                          : tr(STR_NO_FILES_FOUND));
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyMsg);
   } else {
     GUI.drawList(
@@ -775,15 +794,15 @@ void FileBrowserActivity::render(RenderLock&&) {
   }
 
   // Help text
-  const char* backLabel = (basepath == "/") ? (mode == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
-  // In PickFirmware mode, Confirm on a .bin returns the path to the caller (not "open"); show
+  const char* backLabel = (basepath == "/") ? (mode != Mode::Books ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
+  // In picker modes, Confirm on a file returns the path to the caller (not "open"); show
   // STR_SELECT instead. Directories in the same picker still descend, so keep STR_OPEN there.
   const std::string* selectedEntry = visibleEntry(selectorIndex);
-  const bool selectingFirmwareFile = mode == Mode::PickFirmware && selectedEntry && selectedEntry->back() != '/';
+  const bool selectingPickerFile = mode != Mode::Books && selectedEntry && selectedEntry->back() != '/';
   const char* confirmLabel =
       itemCount == 0
           ? ""
-          : (isSearchRow(selectorIndex) ? tr(STR_SEARCH) : (selectingFirmwareFile ? tr(STR_SELECT) : tr(STR_OPEN)));
+          : (isSearchRow(selectorIndex) ? tr(STR_SEARCH) : (selectingPickerFile ? tr(STR_SELECT) : tr(STR_OPEN)));
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, itemCount == 0 ? "" : tr(STR_DIR_UP),
                                             itemCount == 0 ? "" : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

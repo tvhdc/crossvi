@@ -374,6 +374,8 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
             CrossPointSettings::SLEEP_SCREEN_COVER_STATS);
   EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::CUSTOM_STATS),
             CrossPointSettings::SLEEP_SCREEN_CUSTOM_STATS);
+  EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::TRANSPARENT_CUSTOM),
+            CrossPointSettings::SLEEP_SCREEN_TRANSPARENT);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_DEFAULT), CrossPointSettings::LIGHT);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_BLANK), CrossPointSettings::BLANK);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_READING_CALENDAR),
@@ -382,6 +384,8 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
             CrossPointSettings::COVER_STATS);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_CUSTOM_STATS),
             CrossPointSettings::CUSTOM_STATS);
+  EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_TRANSPARENT),
+            CrossPointSettings::TRANSPARENT_CUSTOM);
 
   needsResave = false;
   ASSERT_TRUE(
@@ -396,6 +400,60 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
   ASSERT_TRUE(
       JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":9})", &needsResave));
   EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::CUSTOM_STATS);
+
+  needsResave = false;
+  ASSERT_TRUE(
+      JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":10})", &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::TRANSPARENT_CUSTOM);
+
+  needsResave = false;
+  ASSERT_TRUE(
+      JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepScreen":11})", &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreen, CrossPointSettings::DARK);
+  EXPECT_TRUE(needsResave);
+}
+
+TEST(SettingsJsonIntegration, PersistsAndClampsSleepGhostingTreatment) {
+  resetFakes();
+  SETTINGS.sleepGhostingTreatment = CrossPointSettings::SLEEP_GHOST_FULL_THREE_TIMES;
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.sleepGhostingTreatment = CrossPointSettings::SLEEP_GHOST_FULL_ONLY;
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.sleepGhostingTreatment, CrossPointSettings::SLEEP_GHOST_FULL_THREE_TIMES);
+
+  SETTINGS.sleepGhostingTreatment = CrossPointSettings::SLEEP_GHOST_FAST_CLEAN_FULL;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"statusBarChapterPageCount":1,"sleepGhostingTreatment":99})",
+                                           &needsResave));
+  EXPECT_EQ(SETTINGS.sleepGhostingTreatment, CrossPointSettings::SLEEP_GHOST_FAST_CLEAN_FULL);
+}
+
+TEST(SettingsJsonIntegration, PersistsAndClampsSleepImageTransform) {
+  resetFakes();
+  SETTINGS.sleepScreenImageZoom = 175;
+  SETTINGS.sleepScreenImageOffsetX = -96;
+  SETTINGS.sleepScreenImageOffsetY = 144;
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+
+  SETTINGS.sleepScreenImageZoom = 100;
+  SETTINGS.sleepScreenImageOffsetX = 0;
+  SETTINGS.sleepScreenImageOffsetY = 0;
+  bool needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreenImageZoom, 175);
+  EXPECT_EQ(SETTINGS.sleepScreenImageOffsetX, -96);
+  EXPECT_EQ(SETTINGS.sleepScreenImageOffsetY, 144);
+
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(
+      SETTINGS,
+      R"({"statusBarChapterPageCount":1,"sleepScreenImageZoom":1,"sleepScreenImageOffsetX":5000,"sleepScreenImageOffsetY":-5000})",
+      &needsResave));
+  EXPECT_EQ(SETTINGS.sleepScreenImageZoom, 50);
+  EXPECT_EQ(SETTINGS.sleepScreenImageOffsetX, 1024);
+  EXPECT_EQ(SETTINGS.sleepScreenImageOffsetY, -1024);
+  EXPECT_TRUE(needsResave);
 }
 
 TEST(LegacySettingsMigrationIntegration, InvalidBinaryDoesNotPublishArchiveOrMutateSettings) {

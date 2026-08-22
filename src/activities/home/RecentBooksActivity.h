@@ -113,9 +113,6 @@ class RecentBooksActivity final : public Activity {
   bool catalogOpenPending = false;
   StrId popupMessage = StrId::STR_NONE_OPT;
   unsigned long popupTime = 0;
-  uint32_t lastCatalogCount = 0;
-  LibraryCatalogStore::Phase lastCatalogPhase = LibraryCatalogStore::Phase::Idle;
-  unsigned long lastCatalogRedrawMs = 0;
   bool storageAvailable = false;
   std::optional<YourBooksReturnState> pendingReturnState;
   bool restoreReturnAfterSearch = false;
@@ -124,6 +121,7 @@ class RecentBooksActivity final : public Activity {
   size_t coverQueueSelected = 0;
   uint8_t coverQueueReadyMask = 0;
   uint8_t coverQueueShownMask = 0;
+  uint8_t coverQueueAbsentMask = 0;
   uint32_t coverQueueLastInputAt = 0;
   std::unique_ptr<Epub> coverPreparationEpub;
   std::unique_ptr<Xtc> coverPreparationXtc;
@@ -133,6 +131,24 @@ class RecentBooksActivity final : public Activity {
   std::string coverPreparationPath;
   std::optional<RawSourceIdentityHandoff> preparedEpubSourceIdentity;
   std::optional<RawSourceIdentityHandoff> preparedXtcSourceIdentity;
+
+#if defined(ENABLE_SERIAL_LOG)
+  uint32_t libraryTraceActivityStartedAt = 0;
+  uint32_t libraryTraceTabStartedAt = 0;
+  uint32_t libraryTracePhaseStartedAt = 0;
+  uint32_t libraryTraceOrderStartedAt = 0;
+  uint32_t libraryTraceOrderPhaseStartedAt = 0;
+  uint32_t libraryTraceNextNavigationId = 0;
+  uint32_t libraryTraceQueuedFirstId = 0;
+  uint32_t libraryTraceQueuedLastId = 0;
+  uint32_t libraryTraceQueuedAt = 0;
+  uint32_t libraryTraceVisibleFirstId = 0;
+  uint32_t libraryTraceVisibleLastId = 0;
+  uint32_t libraryTraceVisibleInputAt = 0;
+  LibraryCatalogStore::Phase libraryTraceCatalogPhase = LibraryCatalogStore::Phase::Idle;
+  LibraryCatalogStore::OrderPhase libraryTraceOrderPhase = LibraryCatalogStore::OrderPhase::Idle;
+  bool libraryTraceFirstVisiblePending = false;
+#endif
 
   size_t tabIndex() const { return static_cast<size_t>(tab); }
   bool allTab() const { return tab == Tab::All; }
@@ -175,6 +191,10 @@ class RecentBooksActivity final : public Activity {
   void processCoverQueue();
   void processSelectedSourcePreparation();
   void loadRenderPage(size_t pageStart, size_t count);
+#if defined(ENABLE_SERIAL_LOG)
+  void traceCatalogState(const char* event);
+  void traceNavigationQueued(const char* kind, int delta);
+#endif
   void rememberCurrentBook();
   void restoreRememberedBook(bool locateByPath = false);
   void captureReaderReturnContext(const LibraryBookRecord& book) const;

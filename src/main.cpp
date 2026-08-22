@@ -23,6 +23,8 @@
 #ifndef SIMULATOR
 #include <driver/gpio.h>
 #include <esp_ota_ops.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
 #endif
 
 #include <cstring>
@@ -37,6 +39,7 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SafeBootActivity.h"
+#include "activities/boot_sleep/SleepFrameStore.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -173,9 +176,6 @@ void waitForPowerRelease() {
   }
 }
 
-constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
-constexpr uint64_t X3_SLEEP_FRAME_BYTES = 792ULL * 528ULL / 8ULL;
-constexpr uint64_t X4_SLEEP_FRAME_BYTES = 800ULL * 480ULL / 8ULL;
 constexpr char WAKE_NVS_NAMESPACE[] = "crosspoint";
 constexpr char WAKE_SHORT_PRESS_KEY[] = "wakeShortPr";
 
@@ -203,74 +203,6 @@ static void mirrorWakeShortPressToNvs() {
 #endif
 }
 
-// Grayscale sleep rendering leaves the single framebuffer holding only the
-// final gray plane, not the composite image retained by the panel. Such a
-// frame must never be replayed later as if it were a complete one-bit image.
-static bool sleepScreenMayUseGrayscale() {
-  const bool unfilteredCover =
-      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
-  switch (SETTINGS.sleepScreen) {
-    case CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM:
-    case CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS:
-      return true;
-    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER:
-    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS:
-      return unfilteredCover;
-    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM:
-      return !APP_STATE.lastSleepFromReader || unfilteredCover;
-    default:
-      return false;
-  }
-}
-
-static bool saveSleepFrameBuffer() {
-  const uint8_t* buffer = renderer.getFrameBuffer();
-  const size_t bufferSize = renderer.getBufferSize();
-  if (!buffer || bufferSize == 0) {
-    Storage.remove(SLEEP_FRAME_FILE);
-    return false;
-  }
-  HalFile file;
-  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_FILE, file)) {
-    Storage.remove(SLEEP_FRAME_FILE);
-    return false;
-  }
-  bool saved = file.write(buffer, bufferSize) == bufferSize;
-  saved = file.sync() && saved;
-  saved = file.close() && saved;
-  if (!saved) Storage.remove(SLEEP_FRAME_FILE);
-  return saved;
-}
-
-static bool sleepFrameBufferReady() {
-  HalFile file;
-  if (!Storage.openFileForRead("SLP", SLEEP_FRAME_FILE, file)) return false;
-  const uint64_t expectedSize = gpio.deviceIsX3() ? X3_SLEEP_FRAME_BYTES : X4_SLEEP_FRAME_BYTES;
-  const bool valid = file.fileSize64() == expectedSize;
-  const bool closed = file.close();
-  if (!valid || !closed) Storage.remove(SLEEP_FRAME_FILE);
-  return valid && closed;
-}
-
-static bool loadSleepFrameBuffer(const bool consume = true) {
-  HalFile file;
-  if (!Storage.openFileForRead("SLP", SLEEP_FRAME_FILE, file)) return false;
-  const size_t bufferSize = display.getBufferSize();
-  if (file.fileSize64() != bufferSize) {
-    file.close();
-    Storage.remove(SLEEP_FRAME_FILE);
-    return false;
-  }
-  const size_t bytesRead = file.read(display.getFrameBuffer(), bufferSize);
-  const bool closed = file.close();
-  if (bytesRead != bufferSize || !closed) {
-    Storage.remove(SLEEP_FRAME_FILE);
-    return false;
-  }
-  if (consume) Storage.remove(SLEEP_FRAME_FILE);
-  return true;
-}
-
 static void drawBundledDefaultSleepScreen() {
   renderer.clearScreen();
   const int pageWidth = renderer.getScreenWidth();
@@ -293,60 +225,71 @@ void enterStartupDeepSleep(const bool tryRestoreSleepFrame) {
   constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 2;
   constexpr bool TURN_OFF_SCREEN_AFTER_REFRESH = true;
 
+  const unsigned long startedAt = millis();
+  LOG_INF("SLW", "startup-sleep begin restore_requested=%u", static_cast<unsigned>(tryRestoreSleepFrame));
   display.begin(false);
   renderer.begin();
   const bool quickResumeFrame =
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
   const bool canRestoreFrame = tryRestoreSleepFrame && !APP_STATE.showBootScreen && !quickResumeFrame &&
-                               !sleepScreenMayUseGrayscale() && sleepFrameBufferReady();
-  if (!canRestoreFrame || !loadSleepFrameBuffer(false)) {
+                               SleepFrameStore::ready(gpio.deviceIsX3());
+  if (!canRestoreFrame || !SleepFrameStore::load(display, false)) {
     drawBundledDefaultSleepScreen();
   }
   display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);
   display.triggerDisplay(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_REFRESH);
   display.deepSleep();
+  LOG_INF("SLW", "startup-sleep panel parked elapsed_ms=%lu", millis() - startedAt);
   powerManager.startDeepSleep(gpio);
 }
 
 // Enter deep sleep mode
 void enterDeepSleep() {
+  const unsigned long sleepStartedAt = millis();
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.hasReaderActivity();
 
   const bool rendersLastScreen =
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-  const bool mayRenderGrayscale = !rendersLastScreen && sleepScreenMayUseGrayscale();
   bool savedWakeFrame = false;
+  LOG_INF("SLW", "sleep-request screen=%u quick_resume=%u from_reader=%u", static_cast<unsigned>(SETTINGS.sleepScreen),
+          static_cast<unsigned>(rendersLastScreen), static_cast<unsigned>(APP_STATE.lastSleepFromReader));
 
   // Detect a removed card once up front so all subsequent writes fail
   // immediately. Last-screen mode must preserve the outgoing frame before the
   // moon marker is drawn; normal sleep modes are captured after their refresh
   // has started so the saved controller baseline matches the frame being sent.
   {
+    const unsigned long frameStartedAt = millis();
     RenderLock lock;
     Storage.probeMedia();
-    if (rendersLastScreen) savedWakeFrame = saveSleepFrameBuffer();
+    if (rendersLastScreen) savedWakeFrame = SleepFrameStore::save(renderer);
+    LOG_INF("SLW", "sleep pre-render frame_saved=%u elapsed_ms=%lu", static_cast<unsigned>(savedWakeFrame),
+            millis() - frameStartedAt);
   }
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
   deepSleepInProgress = true;
-  activityManager.goToSleep();
+  const unsigned long activitySleepStartedAt = millis();
+  LOG_INF("SLW", "sleep activity transition begin");
+  const bool wakeFrameReplayable = activityManager.goToSleep();
+  LOG_INF("SLW", "sleep activity transition complete elapsed_ms=%lu", millis() - activitySleepStartedAt);
 
   {
+    const unsigned long persistenceStartedAt = millis();
     RenderLock lock;
-    // A custom BMP may use the multi-plane grayscale pipeline, whose physical
-    // panel state cannot be represented by the one-bit sleep-frame file. Keep
-    // the conservative splash wake for that mode instead of diffing against a
-    // false baseline.
-    if (!rendersLastScreen && !mayRenderGrayscale) savedWakeFrame = saveSleepFrameBuffer();
+    if (!rendersLastScreen && wakeFrameReplayable) savedWakeFrame = SleepFrameStore::save(renderer);
     APP_STATE.showBootScreen = !savedWakeFrame;
     if (!APP_STATE.saveToFile()) {
       // Never advertise a frame that was not durably paired with its one-shot
       // state. A normal splash is slower but cannot diff against stale pixels.
-      Storage.remove(SLEEP_FRAME_FILE);
+      SleepFrameStore::discard();
       APP_STATE.showBootScreen = true;
     }
+    LOG_INF("SLW", "sleep persistence complete frame_saved=%u show_boot=%u elapsed_ms=%lu",
+            static_cast<unsigned>(savedWakeFrame), static_cast<unsigned>(APP_STATE.showBootScreen),
+            millis() - persistenceStartedAt);
   }
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
@@ -357,9 +300,12 @@ void enterDeepSleep() {
   }
 
   halTiltSensor.deepSleep();
+  const unsigned long panelSleepStartedAt = millis();
+  LOG_INF("SLW", "sleep controller shutdown begin total_elapsed_ms=%lu", millis() - sleepStartedAt);
   display.deepSleep();
+  LOG_INF("SLW", "sleep controller shutdown complete elapsed_ms=%lu", millis() - panelSleepStartedAt);
   mirrorWakeShortPressToNvs();
-  LOG_DBG("MAIN", "Entering deep sleep");
+  LOG_INF("SLW", "deep-sleep entry total_elapsed_ms=%lu", millis() - sleepStartedAt);
 
   powerManager.startDeepSleep(gpio);
 }
@@ -412,6 +358,12 @@ void setup() {
 #endif
 
   HalSystem::begin();
+#ifndef SIMULATOR
+  LOG_INF("SLW", "wake-entry serial_ms=%lu reset_reason=%u raw_wakeup=%u", millis(),
+          static_cast<unsigned>(esp_reset_reason()), static_cast<unsigned>(esp_sleep_get_wakeup_cause()));
+#else
+  LOG_INF("SLW", "wake-entry simulator serial_ms=%lu", millis());
+#endif
 
   // Read-and-clear so a panic later in setup() doesn't loop into silent reboot.
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
@@ -427,8 +379,10 @@ void setup() {
   halClock.begin();
 
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
+  LOG_INF("SLW", "wake hardware ready model=%s elapsed_ms=%lu", gpio.deviceIsX3() ? "X3" : "X4", millis());
 
   const auto wakeupReason = gpio.getWakeupReason();
+  LOG_INF("SLW", "wake logical_reason=%u", static_cast<unsigned>(wakeupReason));
   bool recoveryFirmwareMode = false;
   bool manualSafeBoot = false;
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
@@ -460,11 +414,17 @@ void setup() {
                                                       : CrossPointSettings::POWER_BUTTON_WAKE_LONG_MS;
     LOG_DBG("MAIN", "Verifying power button press duration (%u ms)", requiredDuration);
     powerWakeRejected = !gpio.verifyPowerButtonWakeup(requiredDuration, shortPressWakes);
+    LOG_INF("SLW", "wake power validation short=%u required_ms=%u rejected=%u", static_cast<unsigned>(shortPressWakes),
+            static_cast<unsigned>(requiredDuration), static_cast<unsigned>(powerWakeRejected));
   }
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
-  if (!Storage.begin()) {
+  const unsigned long storageStartedAt = millis();
+  const bool storageReady = Storage.begin();
+  LOG_INF("SLW", "wake SD mount ready=%u elapsed_ms=%lu", static_cast<unsigned>(storageReady),
+          millis() - storageStartedAt);
+  if (!storageReady) {
     if (powerWakeRejected) {
       enterStartupDeepSleep(true);
       return;
@@ -497,6 +457,9 @@ void setup() {
     BootRecovery::StageGuard stage(BootStage::AppState);
     APP_STATE.loadFromFile();
   }
+  LOG_INF("SLW", "wake settings/state ready show_boot=%u last_reader=%u open_path=%u elapsed_ms=%lu",
+          static_cast<unsigned>(APP_STATE.showBootScreen), static_cast<unsigned>(APP_STATE.lastSleepFromReader),
+          static_cast<unsigned>(!APP_STATE.openEpubPath.empty()), millis());
   mirrorWakeShortPressToNvs();
   if (powerWakeRejected) {
     enterStartupDeepSleep(true);
@@ -527,8 +490,8 @@ void setup() {
   // clean presentation and must never expose an old sleep frame.
   const bool recoveryBlocksSavedFrame =
       isSilentReboot || recoveryFirmwareMode || BootRecovery::active() || HalSystem::isRebootFromPanic();
-  const bool frameReady = !recoveryBlocksSavedFrame && !APP_STATE.showBootScreen && !sleepScreenMayUseGrayscale() &&
-                          sleepFrameBufferReady();
+  const bool frameReady =
+      !recoveryBlocksSavedFrame && !APP_STATE.showBootScreen && SleepFrameStore::ready(gpio.deviceIsX3());
   const bool canRestoreSavedFrame =
       canRestoreSavedSleepFrame(wakeupReason == HalGPIO::WakeupReason::PowerButton, !APP_STATE.showBootScreen,
                                 frameReady, recoveryBlocksSavedFrame);
@@ -539,8 +502,11 @@ void setup() {
   const bool quickResumeWake =
       resume == BootResume::SavedFrame &&
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
+  LOG_INF("SLW", "wake resume decision mode=%u frame_ready=%u quick=%u recovery_block=%u",
+          static_cast<unsigned>(resume), static_cast<unsigned>(frameReady), static_cast<unsigned>(quickResumeWake),
+          static_cast<unsigned>(recoveryBlocksSavedFrame));
   if (resume != BootResume::SavedFrame) {
-    Storage.remove(SLEEP_FRAME_FILE);
+    SleepFrameStore::discard();
     if (!APP_STATE.showBootScreen) {
       APP_STATE.showBootScreen = true;
       APP_STATE.saveToFile();
@@ -557,9 +523,13 @@ void setup() {
   // reboot (for example when leaving WiFi) still establishes a clean frame.
   // Quick Resume is the sole wake path that intentionally keeps the saved
   // baseline and skips the strong full-panel cleanup.
+  const unsigned long displaySetupStartedAt = millis();
+  LOG_INF("SLW", "wake display init begin seamless=%u", static_cast<unsigned>(resume == BootResume::SavedFrame));
   setupDisplayAndFonts(resume == BootResume::SavedFrame);
+  LOG_INF("SLW", "wake display init complete elapsed_ms=%lu", millis() - displaySetupStartedAt);
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !quickResumeWake) {
     display.requestResync(WAKE_CONDITION_PASSES);
+    LOG_INF("SLW", "wake strong resync armed passes=%u", static_cast<unsigned>(WAKE_CONDITION_PASSES));
   }
 
   switch (resume) {
@@ -571,13 +541,16 @@ void setup() {
       // painting so a hang cannot strand us in a resume-with-no-frame loop.
       APP_STATE.showBootScreen = true;
       APP_STATE.saveToFile();
-      if (loadSleepFrameBuffer()) {
+      if (SleepFrameStore::load(display)) {
         const auto pageHeight = renderer.getScreenHeight();
         renderer.drawImage(LoadingIcon, 0, pageHeight - LOADINGICON_HEIGHT, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
         // Normal wake visibly cleans the complete panel before partial updates
         // resume. Quick Resume deliberately keeps its seamless saved-frame
         // paint and lets the first reader frame stay fast on both devices.
+        const unsigned long wakeRefreshStartedAt = millis();
+        LOG_INF("SLW", "wake saved-frame refresh begin mode=%s", quickResumeWake ? "fast" : "full");
         renderer.displayBuffer(quickResumeWake ? HalDisplay::FAST_REFRESH : HalDisplay::FULL_REFRESH);
+        LOG_INF("SLW", "wake saved-frame refresh complete elapsed_ms=%lu", millis() - wakeRefreshStartedAt);
         allowFastInitialReaderRefresh = quickResumeWake || gpio.deviceIsX3();
       } else {
         display.requestResync(1);
@@ -593,6 +566,7 @@ void setup() {
   // data afterwards so slow SD access or font discovery cannot leave an old
   // WiFi/sleep frame progressively darkening on the powered panel.
   LOG_DBG("MAIN", "Initial boot frame ready at %lu ms", millis());
+  LOG_INF("SLW", "wake initial frame ready resume=%u elapsed_ms=%lu", static_cast<unsigned>(resume), millis());
   const bool deferReaderStores = resume == BootResume::SavedFrame && !APP_STATE.openEpubPath.empty() &&
                                  APP_STATE.lastSleepFromReader && APP_STATE.readerActivityLoadCount == 0 &&
                                  !mappedInputManager.isPressed(MappedInputManager::Button::Back) &&
@@ -629,25 +603,31 @@ void setup() {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+    LOG_INF("SLW", "wake route=recovery-firmware");
   } else if (safeStartup) {
     activityManager.replaceActivity(
         std::make_unique<SafeBootActivity>(renderer, mappedInputManager, manualSafeStartup));
+    LOG_INF("SLW", "wake route=safe-boot");
   } else if (HalSystem::isRebootFromPanic()) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
+    LOG_INF("SLW", "wake route=crash-report");
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);
+    LOG_INF("SLW", "wake route=silent-reader");
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
     // openEpubPath + lastSleepFromReader from a prior session.
     activityManager.goHome();
+    LOG_INF("SLW", "wake route=silent-home");
   } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
              mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
     // crashed (indicated by readerActivityLoadCount > 0)
     activityManager.goHome();
+    LOG_INF("SLW", "wake route=home");
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
@@ -655,6 +635,7 @@ void setup() {
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path, allowFastInitialReaderRefresh);
+    LOG_INF("SLW", "wake route=reader fast_initial=%u", static_cast<unsigned>(allowFastInitialReaderRefresh));
   }
 
   // Recovery, Safe Boot and crash-report routes remain authoritative. Only a
@@ -686,6 +667,7 @@ void setup() {
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
   allowSleepAt = millis() + 2000;
+  LOG_INF("SLW", "wake setup complete elapsed_ms=%lu", millis());
 }
 
 #ifndef SIMULATOR
@@ -787,11 +769,34 @@ void loop() {
   markOtaValidOnceHealthy();
 #endif
   static unsigned long maxLoopDuration = 0;
+  constexpr unsigned long READER_DEBOUNCE_REPOLL_MS = 6;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  static uint32_t lastInputPollAtMs = 0;
+  const bool readerVisibleBeforeInput = activityManager.isReaderActivity();
+  const uint32_t inputPollAtMs = static_cast<uint32_t>(millis());
+  const uint32_t inputPollGapMs = inputPollAtMs - lastInputPollAtMs;
+#endif
   gpio.update();
   const bool readerVisible = activityManager.isReaderActivity();
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  if (lastInputPollAtMs != 0 && (readerVisibleBeforeInput || readerVisible) && inputPollGapMs > 25) {
+    LOG_DBG("INP", "stage=poll_gap elapsed_ms=%u cpu_mhz=%u debounce=%u pending_render=%u busy=%u",
+            static_cast<unsigned>(inputPollGapMs), static_cast<unsigned>(getCpuFrequencyMhz()),
+            gpio.isDebouncePending() ? 1U : 0U, activityManager.hasPendingRender() ? 1U : 0U,
+            activityManager.skipLoopDelay() ? 1U : 0U);
+  }
+  lastInputPollAtMs = inputPollAtMs;
+#endif
+  // A raw reader-button edge is not yet visible to the mapped input layer.
+  // Give the 5 ms debouncer its second sample before any SD, pagination, or
+  // post-visible work can monopolize the main loop and erase the candidate.
+  if (readerVisible && gpio.isDebouncePending()) {
+    delay(READER_DEBOUNCE_REPOLL_MS);
+    return;
+  }
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, readerVisible);
 
   renderer.setFadingFix(SETTINGS.fadingFix);
@@ -922,6 +927,13 @@ void loop() {
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   const unsigned long activityDuration = millis() - activityStartTime;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  if (readerVisible && activityDuration > 25) {
+    LOG_DBG("INP", "stage=main_work elapsed_ms=%lu cpu_mhz=%u pending_render=%u busy=%u", activityDuration,
+            static_cast<unsigned>(getCpuFrequencyMhz()), activityManager.hasPendingRender() ? 1U : 0U,
+            activityManager.skipLoopDelay() ? 1U : 0U);
+  }
+#endif
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {
@@ -934,6 +946,7 @@ void loop() {
   // Add delay at the end of the loop to prevent tight spinning
   // When an activity requests skip loop delay (e.g., webserver running), use yield() for faster response
   // Otherwise, use longer delay to save power
+  const unsigned long responsiveLoopDelay = readerVisible && gpio.isDebouncePending() ? READER_DEBOUNCE_REPOLL_MS : 10;
   if (activityManager.skipLoopDelay()) {
     powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
     yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
@@ -943,10 +956,10 @@ void loop() {
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
       // A raw edge inside the debounce window needs a second sample promptly;
       // otherwise the 50 ms idle cadence can swallow a short tap entirely.
-      delay(gpio.isDebouncePending() ? 10 : 50);
+      delay(gpio.isDebouncePending() || readerVisible ? responsiveLoopDelay : 50);
     } else {
       // Short delay to prevent tight loop while still being responsive
-      delay(10);
+      delay(responsiveLoopDelay);
     }
   }
 }

@@ -48,6 +48,18 @@ inline std::vector<std::string> dateFormatPatternLabels() {
   return labels;
 }
 
+inline std::vector<StrId> sleepGhostingTreatmentLabels() {
+  return {StrId::STR_SLEEP_GHOST_FULL_ONLY,
+          StrId::STR_SLEEP_GHOST_FAST_FULL,
+          StrId::STR_SLEEP_GHOST_FAST_TWICE_FULL,
+          StrId::STR_SLEEP_GHOST_FAST_CLEAN_FULL,
+          StrId::STR_SLEEP_GHOST_FAST_CLEAN_TWICE_FULL,
+          StrId::STR_SLEEP_GHOST_HALF_FULL,
+          StrId::STR_SLEEP_GHOST_HALF_TWICE_FULL,
+          StrId::STR_SLEEP_GHOST_FULL_TWICE,
+          StrId::STR_SLEEP_GHOST_FULL_THREE_TIMES};
+}
+
 inline SettingInfo buildScreenMarginSetting() {
   SettingInfo setting;
   setting.nameId = StrId::STR_SCREEN_MARGIN;
@@ -277,15 +289,16 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::DynamicEnum(
             StrId::STR_SLEEP_SCREEN,
             {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT,
-             StrId::STR_READING_STATS, StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS},
+             StrId::STR_READING_STATS, StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS,
+             StrId::STR_TRANSPARENT_SLEEP},
             [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
             [](const uint8_t selection) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(selection); },
             "sleepScreen", StrId::STR_CAT_DISPLAY),
-        SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
-                          {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
                           {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
                           "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_SLEEP_GHOSTING_TREATMENT, &CrossPointSettings::sleepGhostingTreatment,
+                          sleepGhostingTreatmentLabels(), "sleepGhostingTreatment", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(
             StrId::STR_SHOW_BATTERY_PERCENTAGE, &CrossPointSettings::hideBatteryPercentage,
             {StrId::STR_BATTERY_ALWAYS_SHOW, StrId::STR_BATTERY_HIDE_WHILE_READING, StrId::STR_BATTERY_ALWAYS_HIDE},

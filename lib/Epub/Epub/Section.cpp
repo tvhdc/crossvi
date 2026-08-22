@@ -254,6 +254,7 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
                               const uint8_t imageRendering, const bool focusReadingEnabled, const uint8_t wordSpacing,
                               const EpubRenderMode renderMode, const bool forceParagraphIndents) {
   if (committedReadFile_) committedReadFile_.close();
+  buildComplete_ = false;
   cacheLayout_ = {};
   cacheLayoutValid_ = false;
   partial_ = false;
@@ -349,6 +350,7 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
     partial_ = true;
     partialPageCount_ = pageCount;
   }
+  buildComplete_ = !filePartial;
 
   // Explicit close() required: member variable persists beyond function scope
   file.close();
@@ -359,6 +361,7 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
 // Your updated class method (assuming you are using the 'SD' object, which is a wrapper for a specific filesystem)
 bool Section::clearCache() {
   if (committedReadFile_) committedReadFile_.close();
+  buildComplete_ = false;
   cacheLayout_ = {};
   cacheLayoutValid_ = false;
   partial_ = false;
@@ -463,8 +466,7 @@ bool Section::startBuild(const int fontId, const float lineCompression, const bo
     if (cachedHtml.fileSize64() > MAX_CHAPTER_UNCOMPRESSED_BYTES) {
       cachedHtml.close();
       LOG_ERR("SCT", "Cached chapter exceeds the processing limit");
-      lastBuildStatus_ = Storage.remove(htmlPath.c_str()) ? EpubBuildStatus::StaleHtmlCache
-                                                          : EpubBuildStatus::IoError;
+      lastBuildStatus_ = Storage.remove(htmlPath.c_str()) ? EpubBuildStatus::StaleHtmlCache : EpubBuildStatus::IoError;
       return false;
     }
     if (!cachedHtml.close()) {
@@ -615,7 +617,7 @@ bool Section::beginParser() {
                            : (failure == ChapterParseFailure::IoError
                                   ? EpubBuildStatus::IoError
                                   : (build_->startedWithCachedHtml ? EpubBuildStatus::StaleHtmlCache
-                                                                  : EpubBuildStatus::InvalidContent));
+                                                                   : EpubBuildStatus::InvalidContent));
     return false;
   }
   build_->parserStarted = true;
@@ -700,7 +702,7 @@ Section::HtmlExtractionStep Section::stepHtmlExtraction() {
   return HtmlExtractionStep::Ready;
 }
 
-bool Section::buildSomeMore(const int maxPages) {
+bool Section::buildSomeMore(const int maxPages, const int maxParseSteps) {
   if (!build_) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
@@ -731,8 +733,10 @@ bool Section::buildSomeMore(const int maxPages) {
   // pageCount stays pinned at the partial's watermark until the build passes it, which
   // would otherwise turn one "small" chunk into a blocking rebuild of the whole watermark.
   const int startCount = builtPageCount_;
+  int parseSteps = 0;
   for (;;) {
     const auto status = build_->parser->parseStep();
+    ++parseSteps;
     if (build_->callbackFailure != EpubBuildStatus::Ok) {
       lastBuildStatus_ = build_->callbackFailure;
       LOG_ERR("SCT", "Page table or page output failed during incremental build");
@@ -747,7 +751,7 @@ bool Section::buildSomeMore(const int maxPages) {
                              : (failure == ChapterParseFailure::IoError
                                     ? EpubBuildStatus::IoError
                                     : (build_->startedWithCachedHtml ? EpubBuildStatus::StaleHtmlCache
-                                                                    : EpubBuildStatus::InvalidContent));
+                                                                     : EpubBuildStatus::InvalidContent));
       abandonBuild();
       return false;
     }
@@ -756,6 +760,10 @@ bool Section::buildSomeMore(const int maxPages) {
     }
     // ParseStatus::More: yield once we've laid out the requested number of pages.
     if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
+      build_->bytesConsumed = build_->parser->parseBytesConsumed();
+      return true;
+    }
+    if (maxParseSteps > 0 && parseSteps >= maxParseSteps) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
       return true;
     }

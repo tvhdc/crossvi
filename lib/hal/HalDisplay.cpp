@@ -1,16 +1,35 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <Logging.h>
 
 // Global HalDisplay instance
 HalDisplay display;
 
 #define SD_SPI_MISO 7
 
+namespace {
+const char* halRefreshModeName(const HalDisplay::RefreshMode mode) {
+  switch (mode) {
+    case HalDisplay::FULL_REFRESH:
+      return "FULL";
+    case HalDisplay::HALF_REFRESH:
+      return "HALF";
+    case HalDisplay::FAST_REFRESH:
+    default:
+      return "FAST";
+  }
+}
+}  // namespace
+
 HalDisplay::HalDisplay() : einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_RST, EPD_BUSY) {}
 
 HalDisplay::~HalDisplay() {}
 
 void HalDisplay::begin(bool seamless) {
+  const auto wakeupReason = gpio.getWakeupReason();
+  LOG_DBG("EPD", "hal_begin seamless=%u x3=%u wake=%u", static_cast<unsigned>(seamless),
+          static_cast<unsigned>(gpio.deviceIsX3()), static_cast<unsigned>(wakeupReason));
+
   // Set X3-specific panel mode before initializing.
   if (gpio.deviceIsX3()) {
     einkDisplay.setDisplayX3();
@@ -26,13 +45,13 @@ void HalDisplay::begin(bool seamless) {
     return;
   }
   // Request resync after specific wakeup events to ensure clean display state.
-  const auto wakeupReason = gpio.getWakeupReason();
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton || wakeupReason == HalGPIO::WakeupReason::AfterFlash ||
       wakeupReason == HalGPIO::WakeupReason::Other) {
     // The retained sleep frame can remain visible through parts of the first
     // X3 wake paint. One post-condition pass settles the newly displayed frame
     // before normal differential updates resume. Other controllers ignore the
     // pass count and keep their existing resync behavior.
+    LOG_DBG("EPD", "hal_begin request_resync passes=1 wake=%u", static_cast<unsigned>(wakeupReason));
     einkDisplay.requestResync(1);
   }
 }
@@ -62,7 +81,11 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 }
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-  if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
+  const bool x3HalfResync = gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH;
+  LOG_DBG("EPD", "hal_display req=%s off=%u x3=%u x3_half_resync=%u", halRefreshModeName(mode),
+          static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(gpio.deviceIsX3()),
+          static_cast<unsigned>(x3HalfResync));
+  if (x3HalfResync) {
     einkDisplay.requestResync(1);
   }
 
@@ -70,11 +93,16 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 }
 
 void HalDisplay::triggerDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+  LOG_DBG("EPD", "hal_trigger req=%s off=%u", halRefreshModeName(mode), static_cast<unsigned>(turnOffScreen));
   einkDisplay.triggerDisplay(convertRefreshMode(mode), turnOffScreen);
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-  if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
+  const bool x3HalfResync = gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH;
+  LOG_DBG("EPD", "hal_refresh req=%s off=%u x3=%u x3_half_resync=%u", halRefreshModeName(mode),
+          static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(gpio.deviceIsX3()),
+          static_cast<unsigned>(x3HalfResync));
+  if (x3HalfResync) {
     einkDisplay.requestResync(1);
   }
 
@@ -130,6 +158,10 @@ void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, ui
 }
 
 bool HalDisplay::supportsStripGrayscale() const { return einkDisplay.supportsStripGrayscale(); }
+
+bool HalDisplay::supportsX3GhostCleanup() const { return einkDisplay.supportsFastLutProfiles(); }
+
+bool HalDisplay::cleanX3GhostingNow() { return einkDisplay.cleanFastGhosting(); }
 
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 

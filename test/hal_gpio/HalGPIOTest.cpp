@@ -247,4 +247,15 @@ TEST_F(HalGPIOTest, FailedFreshWakeReadUsesLastKnownUsbState) {
   EXPECT_TRUE(subject.isUsbConnected());
   EXPECT_EQ(WireFake::transactionCount, 2U);
 }
+
+TEST_F(HalGPIOTest, DeepSleepGpioWakeIsPowerButtonEvenWhenX3ChargeCurrentIsZero) {
+  HalGPIO subject;
+  PreferencesFake::cachedDevice = 2;
+  subject.begin();
+  EspFake::wakeupCause = ESP_SLEEP_WAKEUP_GPIO;
+  EspFake::resetReason = ESP_RST_DEEPSLEEP;
+  WireFake::currentMa = 0;
+
+  EXPECT_EQ(subject.getWakeupReason(), HalGPIO::WakeupReason::PowerButton);
+}
 }  // namespace

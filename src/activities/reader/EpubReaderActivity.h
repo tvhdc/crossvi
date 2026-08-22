@@ -26,8 +26,7 @@ class EpubReaderActivity final : public Activity {
   std::unique_ptr<Section> section = nullptr;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
-  enum class CoverSkipDirection : uint8_t { Forward, Backward };
-  CoverSkipDirection coverSkipDirection = CoverSkipDirection::Forward;
+  std::atomic<bool> initialCoverSkipPending{false};
   uint8_t coverSkipHops = 0;
   static constexpr uint8_t MAX_COVER_SKIP_HOPS = 8;
   std::optional<uint16_t> pendingPageJump;
@@ -35,6 +34,7 @@ class EpubReaderActivity final : public Activity {
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
   int pagesUntilFullRefresh = 0;
+  ReaderUtils::X3ReaderWaveformState readerWaveform;
   // Image pages use a dedicated double-FAST path, so retain a manual refresh
   // request until renderContents can issue its clean base pass.
   bool forcedRefreshPending = false;
@@ -228,7 +228,7 @@ class EpubReaderActivity final : public Activity {
   // Page-turn input can arrive while a requested page is still being laid
   // out. Keep the net turn request instead of mutating the placeholder page
   // (which finishSectionLanding() would overwrite) or silently dropping it.
-  int8_t pendingPageTurnDelta = 0;
+  std::atomic<int8_t> pendingPageTurnDelta{0};
   uint32_t sectionPrepareStartedMs = 0;
 
   // Reused by every grayscale page once pagination is stable. Keeping one
@@ -271,7 +271,9 @@ class EpubReaderActivity final : public Activity {
     int page = -1;
     int pageCount = -1;
     std::optional<uint32_t> visibleTextOffset;
+    uint32_t stagedAtMs = 0;
   } pendingProgressSave;
+  static constexpr uint32_t PROGRESS_SAVE_IDLE_MS = 1000;
 
   // Last position successfully persisted, used to skip no-op re-renders.
   int lastSavedSpineIndex = -1;
@@ -279,14 +281,15 @@ class EpubReaderActivity final : public Activity {
   int lastSavedPageCount = -1;
   ProgressFile::WriteSession progressWriteSession;
 
-  bool renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
-                      int orientedMarginBottom, int orientedMarginLeft, uint32_t* pageFingerprintOut);
+  std::optional<bool> renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
+                                     int orientedMarginBottom, int orientedMarginLeft, uint32_t* pageFingerprintOut);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump. Kept at one so a build chunk
   // never noticeably delays input or a pending render; fresh landings wait for
   // their target-relative buffer cooperatively instead of building it in one
   // render callback.
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
+  static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
   // Background parsing grows vectors/strings through throwing allocation
   // paths. Defer optional build ticks before fragmented heap reaches OOM.
   static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
@@ -319,6 +322,7 @@ class EpubReaderActivity final : public Activity {
   // Restore the cached content position after a settings change re-paginates a chapter.
   // Falls back to the old page ratio only when the visible page has no stable text anchor.
   bool applyDeferredReposition();
+  void clearDeferredReposition();
   bool sectionTurnBufferReady(int targetPage) const;
   std::optional<int> sectionLandingTargetPage() const;
   bool sectionLandingReady() const;
@@ -329,8 +333,7 @@ class EpubReaderActivity final : public Activity {
   void rememberCurrentContentOffset();
   void stageProgressSave(int spineIndex, int currentPage, int pageCount);
   bool flushPendingProgressSave();
-  bool writeProgress(int spineIndex, int currentPage, int pageCount,
-                     const std::optional<uint32_t>& visibleTextOffset);
+  bool writeProgress(int spineIndex, int currentPage, int pageCount, const std::optional<uint32_t>& visibleTextOffset);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
@@ -364,6 +367,7 @@ class EpubReaderActivity final : public Activity {
   void applyAutoPageTurnRuntime(uint8_t seconds, bool active);
   void updateAutoPageTurnPreference(uint8_t seconds, bool active);
   void pageTurn(bool isForwardTurn, bool queueWhileWaiting = true, bool drainingQueuedTurn = false);
+  bool retargetQueuedPageTurns();
   bool moveOnePageWithoutRendering(bool forward);
   bool skipCoverPageIfNeeded(const Page& page);
   void loadCachedBookmarks();

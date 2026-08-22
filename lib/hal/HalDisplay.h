@@ -85,6 +85,11 @@ class HalDisplay {
   void writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
   bool supportsStripGrayscale() const;
 
+  // X3/UC8253 reader ghost-cleanup waveform. Other panel drivers return false
+  // and keep the balanced refresh fallback.
+  bool supportsX3GhostCleanup() const;
+  bool cleanX3GhostingNow();
+
   // Runtime geometry passthrough
   uint16_t getDisplayWidth() const;
   uint16_t getDisplayHeight() const;

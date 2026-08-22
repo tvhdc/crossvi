@@ -534,12 +534,10 @@
     const quickResume = getControlValue('quickResumeSleepScreen') === 1;
     const sleepScreen = getControlValue('sleepScreen');
     const sleepScreenRow = document.getElementById('row-setting-sleepScreen');
-    const coverModeRow = document.getElementById('row-setting-sleepScreenCoverMode');
     const coverFilterRow = document.getElementById('row-setting-sleepScreenCoverFilter');
     if (sleepScreenRow) sleepScreenRow.style.display = quickResume ? 'none' : '';
-    const showCoverOptions = !quickResume && (sleepScreen === 1 || sleepScreen === 5);
-    if (coverModeRow) coverModeRow.style.display = showCoverOptions ? '' : 'none';
-    if (coverFilterRow) coverFilterRow.style.display = showCoverOptions ? '' : 'none';
+    const showCoverFilter = !quickResume && (sleepScreen === 1 || sleepScreen === 5);
+    if (coverFilterRow) coverFilterRow.style.display = showCoverFilter ? '' : 'none';
 
     const paragraphAlignment = getControl('paragraphAlignment');
     if (paragraphAlignment && paragraphAlignment.options.length > 4) {

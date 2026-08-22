@@ -108,26 +108,57 @@ class CodegenTest(unittest.TestCase):
 
     def test_every_sleep_screen_uses_the_strong_full_panel_refresh(self):
         sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        driver = (REPO_ROOT / "freeink-sdk/libs/display/FreeInkDisplay/src/driver/Uc8253X3Driver.cpp").read_text(
+            encoding="utf-8"
+        )
         helper = sleep[sleep.index("void displayStrongSleepFrame") : sleep.index("void SleepActivity::onEnter")]
         self.assertIn("constexpr uint8_t X3_SLEEP_CONDITION_PASSES = 1;", sleep)
-        self.assertIn("prepareStrongSleepRefresh();", helper)
+        self.assertNotIn("prepareStrongSleepRefresh();", helper)
+        self.assertIn("applySleepGhostingTreatment();", helper)
         self.assertIn("display.displayBuffer(HalDisplay::FULL_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);", helper)
+        self.assertLess(helper.index("applySleepGhostingTreatment();"),
+                        helper.index("display.displayBuffer(HalDisplay::FULL_REFRESH"))
         self.assertNotIn("display.triggerDisplay(", helper)
-        self.assertEqual(sleep.count("displayStrongSleepFrame();"), 6)
+        finish = driver[driver.index("void Uc8253X3Driver::displayFinish") :
+                        driver.index("void Uc8253X3Driver::setFastLutFrameCount")]
+        self.assertIn("const bool finalSleepParking = turnOff && doFullSync;", finish)
+        parking = finish[finish.index("if (finalSleepParking)") : finish.index("if (turnOff)")]
+        self.assertIn("bus.cmd(CMD_POWER_OFF);", parking)
+        self.assertIn("bus.waitBusy(\" X3_POF\");", parking)
+        self.assertIn("return;", parking)
+        self.assertNotIn("loadProfiledFastBank", parking)
+        self.assertNotIn("triggerRefresh", parking)
+        self.assertLess(finish.index("waitRefreshComplete"), finish.index("if (finalSleepParking)"))
+        self.assertGreaterEqual(sleep.count("displayStrongSleepFrame();"), 7)
         quick_resume = sleep[sleep.index("if (renderQuickResume)") : sleep.index("switch (SETTINGS.sleepScreen)")]
         self.assertIn("renderLastScreenSleepScreen()", quick_resume)
+        self.assertIn("renderTransparentSleepScreen(transparentBaseSaved)", sleep)
+        transparent = sleep[
+            sleep.index("void SleepActivity::renderTransparentSleepScreen") :
+            sleep.index("void SleepActivity::renderBitmapSleepScreen")
+        ]
+        self.assertIn("findTransparentSleepOverlay()", transparent)
+        self.assertIn("renderOverlayImage(overlay.path, renderer)", transparent)
+        self.assertIn("SleepFrameStore::load(display, false)", transparent)
+        self.assertIn("displayStrongSleepFrame();", transparent)
+        self.assertNotIn("displayGrayscaleBase", transparent)
+        self.assertNotIn("displayGrayBuffer", transparent)
         last_screen = sleep[sleep.index("void SleepActivity::renderLastScreenSleepScreen") :]
         self.assertIn("displayStrongSleepFrame();", last_screen)
         grayscale = sleep[sleep.index("if (hasGreyscale)") : sleep.index("void SleepActivity::renderCoverSleepScreen")]
+        self.assertIn("applySleepGhostingTreatment();", grayscale)
         self.assertIn("prepareStrongSleepRefresh();", grayscale)
         self.assertIn("renderer.displayGrayscaleBase(HalDisplay::FULL_REFRESH);", grayscale)
+        self.assertLess(grayscale.index("applySleepGhostingTreatment();"),
+                        grayscale.index("renderer.displayGrayscaleBase(HalDisplay::FULL_REFRESH);"))
         self.assertGreaterEqual(grayscale.count("renderer.fillRect(statsCard.x"), 2)
         bitmap = sleep[
             sleep.index("void SleepActivity::renderBitmapSleepScreen") :
             sleep.index("void SleepActivity::renderCoverSleepScreen")
         ]
-        self.assertIn("drawSleepBookStatsOverlay(renderer)", bitmap)
-        self.assertLess(bitmap.index("drawSleepBookStatsOverlay(renderer)"), bitmap.index("displayStrongSleepFrame();"))
+        self.assertIn("drawSleepBookStatsOverlay(renderer, statsSummary)", bitmap)
+        self.assertLess(bitmap.index("drawSleepBookStatsOverlay(renderer, statsSummary)"),
+                        bitmap.index("displayStrongSleepFrame();"))
         summary = sleep[sleep.index("struct SleepBookSummary") : sleep.index("Rect drawSleepBookStatsOverlay")]
         self.assertIn("std::string chapter;", summary)
         self.assertIn("loadSleepBookPosition(recent, summary);", summary)
@@ -156,6 +187,122 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("displayStrongSleepFrame();", calendar)
         self.assertNotIn("displayBuffer", calendar)
 
+    def test_sleep_ghosting_menu_exposes_bounded_pre_refresh_sequences(self):
+        sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        settings_header = (REPO_ROOT / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+        settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
+
+        treatment = sleep[sleep.index("void applySleepGhostingTreatment") :
+                          sleep.index("void displayStrongSleepFrame")]
+        for mode in (
+            "SLEEP_GHOST_FULL_ONLY",
+            "SLEEP_GHOST_FAST_FULL",
+            "SLEEP_GHOST_FAST_TWICE_FULL",
+            "SLEEP_GHOST_FAST_CLEAN_FULL",
+            "SLEEP_GHOST_FAST_CLEAN_TWICE_FULL",
+            "SLEEP_GHOST_HALF_FULL",
+            "SLEEP_GHOST_HALF_TWICE_FULL",
+            "SLEEP_GHOST_FULL_TWICE",
+            "SLEEP_GHOST_FULL_THREE_TIMES",
+        ):
+            self.assertIn(mode, settings_header)
+            self.assertIn(mode, treatment)
+        self.assertIn("sleepGhostingTreatment = SLEEP_GHOST_FAST_CLEAN_FULL", settings_header)
+        self.assertIn('"sleepGhostingTreatment"', settings)
+        self.assertIn("STR_SLEEP_GHOSTING_TREATMENT", settings)
+        self.assertIn("sleepGhostingTreatmentLabels()", settings)
+        self.assertIn("STR_SLEEP_GHOSTING_TREATMENT", submenu)
+        self.assertIn("sleepGhostingTreatmentLabels()", submenu)
+        self.assertIn("if (!display.supportsX3GhostCleanup())", sleep)
+        self.assertIn("display.displayBuffer(HalDisplay::HALF_REFRESH, false);", sleep)
+        self.assertIn("display.cleanX3GhostingNow()", sleep)
+        self.assertNotIn("TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH", treatment)
+
+    def test_transparent_sleep_overlay_is_append_only_and_alpha_preserving(self):
+        settings_header = (REPO_ROOT / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+        settings = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
+        sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        decoder = (REPO_ROOT / "lib/Epub/Epub/converters/PngToFramebufferConverter.cpp").read_text(encoding="utf-8")
+        sleep_tool = (REPO_ROOT / "docs/tools/sleep-image-converter/index.html").read_text(encoding="utf-8")
+        render_config = (REPO_ROOT / "lib/Epub/Epub/converters/ImageToFramebufferDecoder.h").read_text(
+            encoding="utf-8"
+        )
+        pixel_writer = (REPO_ROOT / "lib/Epub/Epub/converters/DirectPixelWriter.h").read_text(encoding="utf-8")
+
+        enum_block = settings_header[settings_header.index("enum SLEEP_SCREEN_MODE") :
+                                     settings_header.index("enum SLEEP_SCREEN_COVER_MODE")]
+        self.assertLess(enum_block.index("READING_CALENDAR = 7"), enum_block.index("TRANSPARENT_CUSTOM = 10"))
+        self.assertIn("SLEEP_SCREEN_TRANSPARENT = 7", enum_block)
+        self.assertIn("case TRANSPARENT_CUSTOM:", enum_block)
+        self.assertIn("case SLEEP_SCREEN_TRANSPARENT:", enum_block)
+        for source in (settings, submenu):
+            self.assertIn("StrId::STR_TRANSPARENT_SLEEP", source)
+
+        self.assertIn('rootOverlayCandidate("/sleep-overlay.bmp")', sleep)
+        self.assertIn('rootOverlayCandidate("/sleep-overlay.png")', sleep)
+        self.assertIn('directoryOverlayCandidate("/.sleep-overlay")', sleep)
+        self.assertIn('directoryOverlayCandidate("/sleep-overlay")', sleep)
+        self.assertIn("filename.size() <= 256", sleep)
+        self.assertIn("APP_STATE.pushRecentSleep", sleep)
+        self.assertIn("capturePopupSnapshot", sleep)
+        self.assertIn("restorePopupSnapshot", sleep)
+        self.assertIn("SleepFrameStore::save(renderer)", sleep)
+        self.assertIn("config.preserveAlpha = true;", sleep)
+        self.assertIn("config.writeWhiteInBw = true;", sleep)
+
+        self.assertIn("bool preserveAlpha = false", render_config)
+        self.assertIn("bool writeWhiteInBw = false", render_config)
+        self.assertIn("alphaCoveragePasses", decoder)
+        self.assertIn("ctx.caching = !config.cachePath.empty() && !config.preserveAlpha;", decoder)
+        self.assertIn("ctx.transparentColor = png->getTransparentColor();", decoder)
+        self.assertIn("if (outY < 0 || outY >= ctx->screenHeight) continue;", decoder)
+        self.assertIn("if (outX >= 0 && outX < screenWidth)", decoder)
+        self.assertIn("pw.init(*ctx->renderer, ctx->config->writeWhiteInBw);", decoder)
+        self.assertIn("writeWhiteInBw", pixel_writer)
+        self.assertIn("function detectSourceRect(image)", sleep_tool)
+        self.assertIn("return { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight };", sleep_tool)
+        self.assertIn("idx = alphas.length;", sleep_tool)
+        self.assertNotIn("idx = palette.length;", sleep_tool)
+        self.assertIn('const LANGUAGE_KEY = "crossvi.sleepConverter.language.v2";', sleep_tool)
+        placement_select = sleep_tool[sleep_tool.index('<select id="fit">') : sleep_tool.index("</select>", sleep_tool.index('<select id="fit">'))]
+        self.assertLess(placement_select.index('value="fill" selected'), placement_select.index('value="height"'))
+        self.assertLess(placement_select.index('value="height"'), placement_select.index('value="width"'))
+        language_init = sleep_tool[sleep_tool.index("function initialLanguage") : sleep_tool.index("function t(key")]
+        self.assertIn('return "en";', language_init)
+        self.assertNotIn("navigator.languages", language_init)
+        checker_css = sleep_tool[sleep_tool.index(".checker {") : sleep_tool.index("canvas {")]
+        self.assertNotIn("padding:", checker_css)
+        self.assertNotIn("border:", checker_css)
+        canvas_css = sleep_tool[sleep_tool.index("canvas {") : sleep_tool.index(".hidden")]
+        self.assertNotIn("box-shadow", canvas_css)
+        self.assertIn("function quantizeCanvasToFourGrayLevels(canvas)", sleep_tool)
+        self.assertIn("view.setUint16(28, 4, true);", sleep_tool)
+        self.assertIn("const rowStride = Math.ceil(width / 8) * 4;", sleep_tool)
+        self.assertIn("const paletteBytes = 16 * 4;", sleep_tool)
+        self.assertIn("const v = i < 4 ? i * 85 : 255;", sleep_tool)
+        self.assertNotIn("view.setUint16(28, 1, true);", sleep_tool)
+
+    def test_panel_refresh_wait_distinguishes_completion_start_failure_and_timeout(self):
+        bus_header = (
+            REPO_ROOT / "freeink-sdk/libs/display/FreeInkDisplay/src/bus/EpdBus.h"
+        ).read_text(encoding="utf-8")
+        bus = (REPO_ROOT / "freeink-sdk/libs/display/FreeInkDisplay/src/bus/EpdBus.cpp").read_text(
+            encoding="utf-8"
+        )
+        driver = (
+            REPO_ROOT / "freeink-sdk/libs/display/FreeInkDisplay/src/driver/Uc8253X3Driver.cpp"
+        ).read_text(encoding="utf-8")
+
+        for status in ("Completed", "NeverStarted", "TimedOut"):
+            self.assertIn(status, bus_header)
+            self.assertIn(f"RefreshWaitResult::{status}", bus)
+        finish = driver[driver.index("void Uc8253X3Driver::displayFinish") :
+                        driver.index("void Uc8253X3Driver::setFastLutFrameCount")]
+        self.assertIn("_pendingRefreshStarted", finish)
+        self.assertIn("const RefreshWaitResult refreshResult", finish)
+
     def test_markdown_uses_the_text_sleep_cover_and_cache_clear_paths(self):
         sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
         cache = (REPO_ROOT / "src/util/BookCacheUtils.cpp").read_text(encoding="utf-8")
@@ -171,7 +318,7 @@ class CodegenTest(unittest.TestCase):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
         helper = main[main.index("void enterStartupDeepSleep(") : main.index("// Enter deep sleep mode")]
         self.assertIn("display.begin(false);", helper)
-        self.assertIn("loadSleepFrameBuffer(false)", helper)
+        self.assertIn("SleepFrameStore::load(display, false)", helper)
         self.assertIn("drawBundledDefaultSleepScreen();", helper)
         self.assertIn("constexpr uint8_t STARTUP_SLEEP_CONDITION_PASSES = 2;", helper)
         self.assertIn("display.requestResync(STARTUP_SLEEP_CONDITION_PASSES);", helper)
@@ -182,7 +329,8 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("enterStartupDeepSleep(true);", main)
         self.assertIn("enterStartupDeepSleep(false);", main)
 
-        loader = main[main.index("static bool loadSleepFrameBuffer(") : main.index("// Some wake checks")]
+        frame_store = (REPO_ROOT / "src/activities/boot_sleep/SleepFrameStore.cpp").read_text(encoding="utf-8")
+        loader = frame_store[frame_store.index("bool load(") :]
         self.assertIn("const bool consume", loader)
         self.assertIn("if (consume) Storage.remove(SLEEP_FRAME_FILE);", loader)
 
@@ -197,16 +345,37 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("POWER_BUTTON_WAKE_SHORT_MS = 10", settings)
         self.assertIn("POWER_BUTTON_WAKE_LONG_MS = 200", settings)
 
-    def test_grayscale_sleep_frames_are_never_replayed_as_one_bit_frames(self):
+    def test_grayscale_sleep_frames_are_rebuilt_as_one_bit_wake_surrogates(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
-        guard = main[main.index("static bool sleepScreenMayUseGrayscale") : main.index("static bool saveSleepFrameBuffer")]
-        self.assertIn("SLEEP_SCREEN_MODE::CUSTOM", guard)
-        self.assertIn("SLEEP_SCREEN_MODE::CUSTOM_STATS", guard)
-        self.assertIn("SLEEP_SCREEN_MODE::COVER", guard)
-        self.assertIn("SLEEP_SCREEN_MODE::COVER_STATS", guard)
-        self.assertIn("SLEEP_SCREEN_MODE::COVER_CUSTOM", guard)
-        self.assertIn("SLEEP_SCREEN_COVER_FILTER::NO_FILTER", guard)
-        self.assertGreaterEqual(main.count("sleepScreenMayUseGrayscale()"), 3)
+        sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        sleep_header = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.h").read_text(encoding="utf-8")
+        frame_store = (REPO_ROOT / "src/activities/boot_sleep/SleepFrameStore.cpp").read_text(encoding="utf-8")
+        manager = (REPO_ROOT / "src/activities/ActivityManager.cpp").read_text(encoding="utf-8")
+        bitmap = sleep[sleep.index("void SleepActivity::renderBitmapSleepScreen") :
+                       sleep.index("void SleepActivity::renderCoverSleepScreen")]
+        deep_sleep = main[main.index("void enterDeepSleep") : main.index("void setupDisplayAndFonts")]
+
+        self.assertNotIn("sleepScreenMayUseGrayscale", main)
+        self.assertIn("bool wakeFrameReplayable() const", sleep_header)
+        self.assertIn("bool ActivityManager::goToSleep()", manager)
+        self.assertIn("const bool wakeFrameReplayable = activityManager.goToSleep();", deep_sleep)
+        self.assertIn("renderer.displayGrayBuffer(TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);", bitmap)
+        self.assertIn("renderer.setRenderMode(GfxRenderer::BW);", bitmap)
+        self.assertGreaterEqual(bitmap.count("bitmap.rewindToData()"), 3)
+        self.assertGreaterEqual(bitmap.count("renderer.drawBitmap(bitmap"), 4)
+        self.assertIn("wakeFrameReplayable_ =", bitmap)
+        self.assertLess(bitmap.index("renderer.displayGrayBuffer(TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);"),
+                        bitmap.rindex("renderer.drawBitmap(bitmap"))
+        self.assertIn("SleepFrameStore::save(renderer)", main)
+        self.assertIn("StagedFileTransaction::publishAndVerify", frame_store)
+        discard = frame_store[frame_store.index("void discard()") :
+                              frame_store.index("bool save(")]
+        self.assertIn("Storage.remove(SLEEP_FRAME_TEMP_FILE);", discard)
+        self.assertIn("Storage.remove(SLEEP_FRAME_BACKUP_FILE);", discard)
+        self.assertIn("Storage.remove(SLEEP_FRAME_FILE);", discard)
+        state_failure = deep_sleep[deep_sleep.index("if (!APP_STATE.saveToFile())") :
+                                   deep_sleep.index("LOG_INF(\"SLW\", \"sleep persistence complete")]
+        self.assertIn("SleepFrameStore::discard();", state_failure)
 
     def test_date_outside_reader_does_not_depend_on_clock_visibility(self):
         theme = (REPO_ROOT / "src/components/themes/crossvi/CrossViTheme.cpp").read_text(encoding="utf-8")
@@ -344,6 +513,25 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("out.file(CROSSVI_THUMB_PATH, coverThumbnailData, { compression: 'STORE'", files_page)
         self.assertIn("out.file(CROSSVI_CAROUSEL_THUMB_PATH, carouselThumbnailData, { compression: 'STORE'", files_page)
         self.assertIn("out.file(CROSSVI_CAROUSEL_X4_THUMB_PATH, carouselX4ThumbnailData", files_page)
+
+    def test_file_transfer_auto_optimizes_standalone_image_uploads(self):
+        files_page = (REPO_ROOT / "src/network/html/FilesPage.html").read_text(encoding="utf-8")
+        self.assertIn("function isStandaloneImageUpload(file)", files_page)
+        self.assertIn("async function optimizeStandaloneImageUpload(file)", files_page)
+        self.assertIn("function detectStandaloneImageSource(file, img, width, height)", files_page)
+        self.assertNotIn("if (alpha > 16) {", files_page)
+        self.assertIn("idx = alphas.length;", files_page)
+        self.assertNotIn("idx = palette.length;", files_page)
+        self.assertIn("const hasAlpha = source.hasAlpha || imageDataHasTransparency", files_page)
+        self.assertIn("const scale = Math.min(profile.width / rect.width, profile.height / rect.height, 1);", files_page)
+        self.assertIn("return hasAlpha ? `${base}.png` : `${base}.bmp`;", files_page)
+        self.assertIn("function makeCrossViSleepBmp(canvas)", files_page)
+        self.assertIn("writeLe16(view, 28, 4);", files_page)
+        self.assertIn("const rowBytes = Math.ceil(width / 8) * 4;", files_page)
+        self.assertIn("const bmp = makeCrossViSleepBmp(canvas);", files_page)
+        self.assertIn("const needsImageOptimization = isUploadImage && convertEnabled;", files_page)
+        self.assertIn("file = await optimizeStandaloneImageUpload(file);", files_page)
+        self.assertIn("await uploadFileHTTP(file, onProgress, null, null);", files_page)
 
     def test_file_transfer_uses_only_the_bounded_http_upload_path(self):
         files_page = (REPO_ROOT / "src/network/html/FilesPage.html").read_text(encoding="utf-8")
@@ -508,10 +696,18 @@ class CodegenTest(unittest.TestCase):
 
     def test_epub_cover_skip_requires_the_declared_cover_resource(self):
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
         cover_skip = reader[reader.index("bool EpubReaderActivity::skipCoverPageIfNeeded") :
                             reader.index("bool EpubReaderActivity::sectionLandingReady")]
+        page_turn = reader[reader.index("void EpubReaderActivity::pageTurn") :
+                           reader.index("bool EpubReaderActivity::retargetQueuedPageTurns")]
 
+        self.assertIn("std::atomic<bool> initialCoverSkipPending{false};", header)
+        self.assertIn("initialCoverSkipPending", cover_skip)
         self.assertIn("page.isCoverOnly(epub->getCoverItemHref())", cover_skip)
+        self.assertIn("moveOnePageWithoutRendering(true)", cover_skip)
+        self.assertNotIn("moveOnePageWithoutRendering(false)", cover_skip)
+        self.assertIn("initialCoverSkipPending.store(false", page_turn)
         self.assertNotIn("leadingImageOnly", cover_skip)
         self.assertNotIn("page.isImageOnly()", cover_skip)
 
@@ -625,7 +821,7 @@ class CodegenTest(unittest.TestCase):
                                 render.index("if (!pageReused && pageIndexScratchOffset)")]
         self.assertIn("releasePageIndexScratch();", reused_scratch)
         stale_scratch = render[render.index("if (!pageReused && pageIndexScratchOffset)") :
-                               render.index("if (!pageReused && !loadPageAtOffset")]
+                               render.index("const bool pageLoadFailed")]
         self.assertIn("releasePageIndexScratch();", stale_scratch)
 
     def test_txt_long_builtin_lines_use_single_pass_shaped_wrap(self):
@@ -730,6 +926,148 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("stepLoad(", preparation)
         self.assertNotIn("preparedXtc", preparation)
         self.assertNotIn("preparedTxt", preparation)
+
+    def test_sleep_screen_custom_image_picker_uses_existing_sleep_paths(self):
+        browser = (REPO_ROOT / "src/activities/home/FileBrowserActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/home/FileBrowserActivity.h").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("PickImage", header)
+        self.assertIn("FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)", browser)
+        self.assertIn("mode != Mode::Books && !isDirectory", browser)
+        self.assertIn("FileBrowserActivity::Mode::PickImage", submenu)
+        self.assertIn("showSleepImageDialog(SETTINGS.sleepScreen)", submenu)
+        self.assertIn('SLEEP_BMP_PATH = "/sleep.bmp"', submenu)
+        self.assertIn('SLEEP_OVERLAY_BMP_PATH = "/sleep-overlay.bmp"', submenu)
+        self.assertIn('SLEEP_OVERLAY_PNG_PATH = "/sleep-overlay.png"', submenu)
+        self.assertIn("PngToBmpConverter::pngFileToBmpStreamWithSize", submenu)
+        self.assertIn("pngFileToBmpStreamWithSize(input, output, width, height, false)", submenu)
+        self.assertIn("validPngFile(sourcePath)", submenu)
+        self.assertIn("SleepFrameStore::discard();", submenu)
+
+    def test_sleep_image_placement_applies_to_cover_custom_and_overlay(self):
+        sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
+        placement = (REPO_ROOT / "src/activities/boot_sleep/SleepImagePlacement.h").read_text(encoding="utf-8")
+        position = (REPO_ROOT / "src/activities/settings/SleepImagePositionActivity.cpp").read_text(encoding="utf-8")
+        position_header = (REPO_ROOT / "src/activities/settings/SleepImagePositionActivity.h").read_text(encoding="utf-8")
+        submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
+        settings_list = (REPO_ROOT / "src/SettingsList.h").read_text(encoding="utf-8")
+        web_page = (REPO_ROOT / "src/network/html/SettingsPage.html").read_text(encoding="utf-8")
+        renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("sleepModeUsesSleepImagePlacement(SETTINGS.sleepScreen)", submenu)
+        self.assertIn("const showCoverFilter = !quickResume && (sleepScreen === 1 || sleepScreen === 5);", web_page)
+        self.assertNotIn("sleepScreenCoverMode", sleep)
+        self.assertNotIn("STR_SLEEP_COVER_MODE", submenu)
+        self.assertNotIn("STR_SLEEP_COVER_MODE", settings_list)
+        self.assertNotIn("row-setting-sleepScreenCoverMode", web_page)
+        self.assertIn("SleepImagePlacement placeSleepImage", sleep)
+        self.assertIn("calculateSleepImagePlacement", sleep)
+        self.assertIn("sleepScreenImageZoom", submenu)
+        self.assertIn("SettingAction::SleepImagePosition", submenu)
+        self.assertIn("SLEEP_IMAGE_MIN_ZOOM = 50", placement)
+        self.assertIn("SLEEP_IMAGE_MAX_ZOOM = 200", placement)
+        self.assertIn("SLEEP_IMAGE_FRONT_ZOOM_STEP = 1", placement)
+        self.assertIn("SLEEP_IMAGE_SIDE_ZOOM_STEP = 5", placement)
+        self.assertIn("sleepImageMoveStep", placement)
+        self.assertIn("shouldResetSleepImageTransform", placement)
+        self.assertIn("enum class Mode { Zoom, Position }", position_header)
+        self.assertIn("resetTransform();", position)
+        self.assertIn("offsetX_", position)
+        self.assertIn("offsetY_", position)
+        self.assertIn("drawDashedRect", position)
+        self.assertIn("renderer.drawBitmap(bitmap, placement.x, placement.y, placement.width, placement.height, 0, 0, true)", sleep)
+        self.assertIn("fitScale < 1.0f || allowUpscale", renderer)
+        self.assertIn("return drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight, allowUpscale);", renderer)
+
+        cover = sleep[
+            sleep.index("void SleepActivity::renderCoverSleepScreen") :
+            sleep.index("void SleepActivity::renderLastScreenSleepScreen")
+        ]
+        self.assertIn("renderBitmapSleepScreen(bitmap, true, withBookStats);", cover)
+
+    def test_finished_books_open_statistics_instead_of_the_reader(self):
+        menu = (REPO_ROOT / "src/activities/reader/ReadingStatsMenuActivity.cpp").read_text(encoding="utf-8")
+        finished = (REPO_ROOT / "src/activities/reader/FinishedBooksActivity.cpp").read_text(encoding="utf-8")
+        stats = (REPO_ROOT / "src/activities/reader/ReadingStatsActivity.cpp").read_text(encoding="utf-8")
+        history = (REPO_ROOT / "src/activities/reader/BookReadingHistoryActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("StrId::STR_FINISHED_BOOKS", menu)
+        self.assertIn("StrId::STR_STATS_FINISHED_BOOKS_SUBTITLE", menu)
+        self.assertIn("std::make_unique<FinishedBooksActivity>", menu)
+        self.assertIn("loadBookStatsPresentation", finished)
+        self.assertIn("ReadingStatsActivity", finished)
+        self.assertNotIn("openBookWithFeedback", finished)
+        self.assertIn("renderCompletedBookSummary", stats)
+        self.assertIn("BookReadingHistoryActivity", stats)
+        self.assertIn("openNextFile", history)
+        self.assertIn("DailyBookReadingHistory::load", history)
+
+    def test_reading_achievements_paginate_open_details_and_use_trophy_icon(self):
+        activity = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.cpp").read_text(
+            encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.h").read_text(encoding="utf-8")
+        achievements = (REPO_ROOT / "src/activities/reader/ReadingAchievements.cpp").read_text(encoding="utf-8")
+        menu = (REPO_ROOT / "src/activities/reader/ReadingStatsMenuActivity.cpp").read_text(encoding="utf-8")
+        theme = (REPO_ROOT / "src/components/themes/crossvi/CrossViTheme.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("STR_ACHIEVEMENT_PAGE_FORMAT", activity)
+        self.assertIn("CATEGORY_TITLES.size()", activity)
+        self.assertIn("mappedInput.wasReleased(MappedInputManager::Button::Confirm)", activity)
+        self.assertIn("showDetail_ = true;", activity)
+        self.assertIn("showDetail_ = false;", activity)
+        self.assertIn("unlockRecognitionDay", activity)
+        self.assertIn("bool showDetail_ = false;", header)
+        self.assertIn("PAYLOAD_VERSION = 2", achievements)
+        self.assertIn("LEGACY_PAYLOAD_VERSION = 1", achievements)
+        self.assertIn("UIIcon::Trophy", menu)
+        self.assertIn("return TrophyIcon;", theme)
+
+    def test_all_readers_record_the_per_book_daily_breakdown_at_session_commit(self):
+        for filename in ("EpubReaderActivity.cpp", "TxtReaderActivity.cpp", "XtcReaderActivity.cpp"):
+            reader = (REPO_ROOT / "src/activities/reader" / filename).read_text(encoding="utf-8")
+            self.assertIn("DailyBookReadingHistory::record", reader, filename)
+            self.assertIn("pendingGlobalReadingSpans.pendingDailyHistory", reader, filename)
+
+    def test_file_browser_guards_rendered_list_mutations(self):
+        browser = (REPO_ROOT / "src/activities/home/FileBrowserActivity.cpp").read_text(encoding="utf-8")
+        loop = browser[browser.index("void FileBrowserActivity::loop()") : browser.index("std::string getFileName")]
+        long_back_start = loop.index("// Long press BACK")
+        long_back = loop[long_back_start : loop.index("const int pathReserved", long_back_start)]
+        confirm_start = loop.index("if (mappedInput.wasReleased(MappedInputManager::Button::Confirm))",
+                                   long_back_start)
+        back_start = loop.index("if (mappedInput.wasReleased(MappedInputManager::Button::Back))", confirm_start)
+        confirm = loop[confirm_start : back_start]
+        back = loop[back_start : loop.index("int listSize", back_start)]
+        search_handler = browser[browser.index("void FileBrowserActivity::launchSearch()") :
+                                 browser.index("void FileBrowserActivity::applySearch")]
+        delete_handler = browser[browser.index("void FileBrowserActivity::promptDelete") :
+                                 browser.index("void FileBrowserActivity::showBookActions")]
+
+        self.assertLess(long_back.index("RenderLock lock(*this)"), long_back.index('basepath = "/"'))
+        self.assertLess(confirm.index("RenderLock lock(*this)"), confirm.index("visibleEntry(selectorIndex)"))
+        self.assertLess(confirm.index("lock.unlock()"), confirm.index("openPreparedBook(fullPath)"))
+        self.assertLess(back.index("RenderLock lock(*this)"), back.index("clearSearch(true)"))
+        self.assertLess(back.rindex("RenderLock lock(*this)"), back.rindex("loadFiles(dirName)"))
+        self.assertLess(search_handler.index("RenderLock lock(*this)"), search_handler.index("applySearch("))
+        self.assertLess(delete_handler.index("RenderLock lock(*this)"), delete_handler.index("loadFiles("))
+
+    def test_network_servers_release_font_caches_before_allocation(self):
+        cases = (
+            ("src/activities/network/CalibreConnectActivity.cpp",
+             "void CalibreConnectActivity::startWebServer()",
+             "makeUniqueNoThrow<CrossPointWebServer>()"),
+            ("src/activities/network/CrossPointWebServerActivity.cpp",
+             "void CrossPointWebServerActivity::startWebServer()",
+             "webServer.reset(new (std::nothrow) CrossPointWebServer())"),
+        )
+        for relative_path, signature, allocation in cases:
+            source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+            start = source[source.index(signature) :]
+            start = start[:start.index("\n}")]
+            self.assertLess(start.index("RenderLock lock(*this)"), start.index("clearCache()"))
+            self.assertLess(start.index("clearCache()"), start.index(allocation))
+            self.assertLess(start.index(allocation), start.index("webServer->begin()"))
+            self.assertLess(start.index("webServer->begin()"), start.index("lock.unlock()"))
 
     def test_bmp_viewer_displays_before_bounded_cooperative_sibling_scan(self):
         viewer = (REPO_ROOT / "src/activities/util/BmpViewerActivity.cpp").read_text(encoding="utf-8")
@@ -1078,6 +1416,24 @@ class CodegenTest(unittest.TestCase):
             self.assertLess(branch.index(notice), branch.index("renderer.displayBuffer()"))
             self.assertLess(branch.index("renderer.displayBuffer()"), branch.index("ScreenshotUtil::takeScreenshot"))
 
+    def test_end_of_book_shows_live_book_summary_and_opens_detailed_stats(self):
+        options = (REPO_ROOT / "src/activities/reader/EndOfBookOptions.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/EndOfBookOptions.h").read_text(encoding="utf-8")
+
+        self.assertIn("const EndOfBookSummary& summary", header)
+        self.assertIn("Action::ViewStats", options)
+        self.assertIn("STR_STATS_READING_TIME", options)
+        self.assertIn("STR_STATS_SESSIONS", options)
+        self.assertIn("STR_STATS_PAGES_TURNED", options)
+        self.assertIn("STR_STATS_DAYS_TO_FINISH", options)
+        self.assertNotIn("cover", options.lower())
+
+        for reader_name in ("EpubReaderActivity", "XtcReaderActivity"):
+            reader = (REPO_ROOT / f"src/activities/reader/{reader_name}.cpp").read_text(encoding="utf-8")
+            self.assertIn("case EndOfBookOptions::Action::ViewStats:", reader)
+            self.assertIn("previewReadingStatsSession", reader)
+            self.assertIn("EndOfBookSummary{", reader)
+
     def test_sd_font_discovery_caps_allocations_while_scanning(self):
         registry = (REPO_ROOT / "lib/EpdFont/SdCardFontRegistry.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "lib/EpdFont/SdCardFontRegistry.h").read_text(encoding="utf-8")
@@ -1355,7 +1711,7 @@ class CodegenTest(unittest.TestCase):
         queue_visible = reader[reader.index("void EpubReaderActivity::queueVisiblePageImagePreparation") :
                                reader.index("bool EpubReaderActivity::pumpImagePreparation")]
         render = reader[reader.index("void EpubReaderActivity::render(RenderLock&&") :]
-        render_contents = reader[reader.index("bool EpubReaderActivity::renderContents") :]
+        render_contents = reader[reader.index("std::optional<bool> EpubReaderActivity::renderContents") :]
         self.assertIn("imageStreamJob->beginCooperativeLookup", preparation)
         self.assertIn("4096", preparation)
         self.assertIn("StagedFileTransaction::beginPendingPublish", preparation)
@@ -1442,13 +1798,14 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("cancelImagePreparation()", page_turn)
         loop = reader[reader.index("void EpubReaderActivity::loop()") :
                       reader.index("void EpubReaderActivity::pageTurn")]
-        self.assertIn("pendingPageTurnDelta != 0", loop)
+        self.assertIn("ReaderUtils::queuedPageTurns(pendingPageTurnDelta) != 0", loop)
         self.assertIn("RenderLock lock(std::try_to_lock)", loop)
         self.assertIn("!activityManager.hasPendingRender()", loop)
         self.assertIn("pageTurn(forward, true, true);", loop)
         self.assertIn("pageTurn(true, false);", loop)
-        self.assertIn("pendingPageTurnDelta = 0", loop)
-        self.assertIn("int8_t pendingPageTurnDelta", header)
+        self.assertIn("ReaderUtils::clearQueuedPageTurns(pendingPageTurnDelta)", loop)
+        self.assertIn("std::atomic<int8_t> pendingPageTurnDelta", header)
+        self.assertIn("retargetQueuedPageTurns()", loop)
         automatic = loop[loop.index("if (automaticPageTurnActive)") :
                          loop.index("if (showBookmarkMessage")]
         self.assertIn("if (!section || RenderLock::peek())", automatic)
@@ -1481,6 +1838,8 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("pendingPageTurnDelta == 0", loop)
         self.assertIn("pendingProgressSave.active", loop)
         self.assertIn("!pendingProgressSave.retryBlocked", loop)
+        self.assertIn("PROGRESS_SAVE_IDLE_MS", header)
+        self.assertIn("pendingProgressSave.stagedAtMs", loop)
         self.assertIn("flushPendingProgressSave()", loop)
         self.assertIn("flushPendingProgressSave()", pause)
         self.assertIn("flushPendingProgressSave()", exit_path)
@@ -1492,11 +1851,34 @@ class CodegenTest(unittest.TestCase):
             navigation = reader[reader.index("const auto pageGesture") :
                                 reader.index(f"bool {name}::handleReaderShortcut")]
 
-            self.assertIn("int8_t pendingPageTurnDelta", header)
+            self.assertIn("std::atomic<int8_t> pendingPageTurnDelta", header)
             self.assertIn("ReaderUtils::queuePageTurns(pendingPageTurnDelta", navigation)
-            self.assertIn("ReaderUtils::takeQueuedPageTurn(pendingPageTurnDelta", navigation)
+            self.assertIn("ReaderUtils::takeQueuedPageTurns(pendingPageTurnDelta", navigation)
+            self.assertIn("retargetQueuedPageTurns()", reader)
             self.assertIn("RenderLock lock(std::try_to_lock)", navigation)
             self.assertNotIn("RenderLock lock(*this)", navigation)
+
+    def test_page_renderers_abandon_stale_work_before_the_first_panel_refresh(self):
+        epub = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        txt = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
+        xtc = (REPO_ROOT / "src/activities/reader/XtcReaderActivity.cpp").read_text(encoding="utf-8")
+
+        epub_contents = epub[epub.index("EpubReaderActivity::renderContents") :
+                             epub.index("#undef EPUB_RENDER_TIMESTAMP")]
+        self.assertLess(epub_contents.index("retargetQueuedPageTurns()"),
+                        epub_contents.index("renderer.displayBuffer"))
+        self.assertIn("return std::nullopt", epub_contents)
+
+        txt_page = txt[txt.index("bool TxtReaderActivity::renderPage") :
+                       txt.index("void TxtReaderActivity::renderStatusBar")]
+        self.assertLess(txt_page.index("retargetQueuedPageTurns()"),
+                        txt_page.index("ReaderUtils::displayWithRefreshCycle"))
+
+        xtc_page = xtc[xtc.index("XtcReaderActivity::PageRenderResult XtcReaderActivity::renderPage") :
+                       xtc.index("bool XtcReaderActivity::saveProgress")]
+        self.assertIn("PageRenderResult::Superseded", xtc_page)
+        self.assertLess(xtc_page.index("retargetQueuedPageTurns()"),
+                        xtc_page.index("ReaderUtils::displayWithRefreshCycle"))
 
     def test_readers_trace_input_queue_render_and_visible_page_boundaries(self):
         utils = (REPO_ROOT / "src/activities/reader/ReaderUtils.h").read_text(encoding="utf-8")
@@ -1575,6 +1957,9 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("sectionLandingPending = true;", render)
         self.assertIn("sectionRenderWaiting = true;", render)
         self.assertIn("requestedSectionPageReady()", reader)
+        self.assertIn("BACKGROUND_BUILD_PARSE_STEPS_PER_TICK", reader)
+        self.assertIn("maxParseSteps", section)
+        self.assertIn("parseSteps >= maxParseSteps", section)
 
     def test_epub_cold_section_stream_does_not_borrow_the_framebuffer_across_ticks(self):
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
@@ -1587,12 +1972,22 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)", initial_build)
         self.assertNotIn("FrameBufferLoan", initial_build)
 
+    def test_finalized_epub_section_cache_is_a_complete_landing_target(self):
+        section = (REPO_ROOT / "lib/Epub/Epub/Section.cpp").read_text(encoding="utf-8")
+        load = section[section.index("bool Section::loadSectionFile") : section.index("bool Section::clearCache")]
+
+        # Backward chapter navigation uses UINT16_MAX as a last-page sentinel.
+        # A finalized cache must therefore satisfy isBuildComplete(); otherwise
+        # the reader waits forever for a build that was never started.
+        self.assertIn("buildComplete_ = false;", load)
+        self.assertIn("buildComplete_ = !filePartial;", load)
+
     def test_epub_font_prewarm_collects_text_without_a_discarded_render_pass(self):
         reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
         page_header = (REPO_ROOT / "lib/Epub/Epub/Page.h").read_text(encoding="utf-8")
         page = (REPO_ROOT / "lib/Epub/Epub/Page.cpp").read_text(encoding="utf-8")
         text_block = (REPO_ROOT / "lib/Epub/Epub/blocks/TextBlock.cpp").read_text(encoding="utf-8")
-        render_contents = reader[reader.index("bool EpubReaderActivity::renderContents") :
+        render_contents = reader[reader.index("std::optional<bool> EpubReaderActivity::renderContents") :
                                  reader.index("void EpubReaderActivity::renderStatusBar")]
 
         prewarm = render_contents[:render_contents.index("scope.endScanAndPrewarm()")]
@@ -1703,10 +2098,133 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("row-setting-textDarkness", web_page)
         self.assertIn("bookAlignment.hidden", web_page)
 
+    def test_x3_periodic_refresh_uses_fast_cleanup_without_lut_or_idle_cleanup_settings(self):
+        settings = (REPO_ROOT / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        reader_utils = (REPO_ROOT / "src/activities/reader/ReaderUtils.h").read_text(encoding="utf-8")
+        settings_header = (REPO_ROOT / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+        settings_json = (REPO_ROOT / "src/JsonSettingsIO.cpp").read_text(encoding="utf-8")
+        display = (REPO_ROOT / "freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp").read_text(
+            encoding="utf-8"
+        )
+        driver = (REPO_ROOT / "freeink-sdk/libs/display/FreeInkDisplay/src/driver/Uc8253X3Driver.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        for removed in (
+            "STR_X3_FAST_LUT",
+            "STR_X3_IDLE_GHOST_CLEANUP",
+            "STR_X3_GHOST_CLEANUP_DELAY",
+            "x3FastLutFrames",
+            "x3IdleGhostCleanup",
+            "x3IdleGhostCleanupDelayMs",
+        ):
+            self.assertNotIn(removed, settings)
+            self.assertNotIn(removed, settings_header)
+            self.assertNotIn(removed, settings_json)
+            self.assertNotIn(removed, main)
+        self.assertNotIn("scheduleX3GhostCleanup", reader_utils)
+        self.assertNotIn("runScheduledX3GhostCleanup", main)
+
+        cycle = reader_utils[
+            reader_utils.index("inline void displayWithRefreshCycle") : reader_utils.index(
+                "// Grayscale anti-aliasing pass"
+            )
+        ]
+        self.assertIn("display.supportsX3GhostCleanup()", cycle)
+        self.assertIn("waveform.requestCleanupAfterPageVisible();", cycle)
+        self.assertIn("renderer.displayBuffer(HalDisplay::HALF_REFRESH);", cycle)
+        self.assertIn("X3_FAST_CLEANUP_FRAMES = 10", driver)
+        cleanup_driver = driver[driver.index("bool Uc8253X3Driver::cleanFastGhosting") :
+                                driver.index("void Uc8253X3Driver::displayGrayscaleBase")]
+        self.assertIn("loadProfiledFastBank(bus, false, X3_FAST_CLEANUP_FRAMES)", cleanup_driver)
+        self.assertIn("loadProfiledFastBank(bus, true, X3_FAST_CLEANUP_FRAMES)", cleanup_driver)
+        self.assertNotIn("sendPlaneFlipped", cleanup_driver)
+        self.assertNotIn("triggerRefresh", cleanup_driver)
+        self.assertIn("_pendingGhostCleanup = true", cleanup_driver)
+        finish = driver[driver.index("void Uc8253X3Driver::displayFinish") :
+                        driver.index("void Uc8253X3Driver::setFastLutFrameCount")]
+        self.assertLess(finish.index("if (ghostCleanup)"), finish.index("sendPlaneFlipped(CMD_DTM1"))
+        display_cleanup = display[display.index("bool FreeInkDisplay::cleanFastGhosting") :
+                                  display.index("bool FreeInkDisplay::refreshBusy")]
+        self.assertIn("_refreshPending = cleaned", display_cleanup)
+        self.assertIn("_fastGhostCleanupEligible = fastMode && !doFullSync && !turnOff", driver)
+
+        waveform = reader_utils[
+            reader_utils.index("struct X3ReaderWaveformState") : reader_utils.index(
+                "struct PageTurnGestureResult"
+            )
+        ]
+        self.assertIn("void beginTransition()", waveform)
+        self.assertIn("void leaveReader()", waveform)
+        self.assertIn("void pageVisible()", waveform)
+        self.assertIn("display.cleanX3GhostingNow();", waveform)
+        self.assertNotIn("schedule", waveform.lower())
+
+        for reader_name in ("EpubReaderActivity", "TxtReaderActivity", "XtcReaderActivity"):
+            reader = (REPO_ROOT / f"src/activities/reader/{reader_name}.cpp").read_text(encoding="utf-8")
+            self.assertGreaterEqual(reader.count("readerWaveform.beginTransition();"), 2)
+            self.assertGreaterEqual(reader.count("readerWaveform.leaveReader();"), 2)
+            self.assertIn("readerWaveform.pageVisible();", reader)
+
+    def test_sunlight_fading_fix_does_not_turn_off_ordinary_refreshes(self):
+        renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")
+        display_buffer = renderer[renderer.index("void GfxRenderer::displayBuffer") :
+                                  renderer.index("size_t GfxRenderer::readFramebufferRegion")]
+
+        self.assertIn("const bool actualTurnOff = turnOffScreen;", display_buffer)
+        self.assertIn("display.displayBuffer(refreshMode, actualTurnOff);", display_buffer)
+        self.assertNotIn("fadingFix || turnOffScreen", display_buffer)
+        self.assertIn("display.displayGrayscaleBase(fallback, turnOffScreen);", renderer)
+        self.assertIn("display.displayGrayBuffer(turnOffScreen);", renderer)
+        self.assertNotIn("displayGrayscaleBase(fallback, fadingFix || turnOffScreen)", renderer)
+        self.assertNotIn("displayGrayBuffer(fadingFix || turnOffScreen)", renderer)
+
+    def test_reader_exit_does_not_inject_cleanup_into_destination_ui(self):
+        hal_header = (REPO_ROOT / "lib/hal/HalDisplay.h").read_text(encoding="utf-8")
+        hal = (REPO_ROOT / "lib/hal/HalDisplay.cpp").read_text(encoding="utf-8")
+        manager = (REPO_ROOT / "src/activities/ActivityManager.cpp").read_text(encoding="utf-8")
+
+        for removed in (
+            "requestX3CleanupAfterNextRefresh",
+            "x3CleanupAfterNextRefresh",
+            "pendingReaderExitCleanupAllowed",
+        ):
+            self.assertNotIn(removed, hal_header)
+        self.assertNotIn(removed, hal)
+        self.assertNotIn(removed, manager)
+        self.assertIn("replaceActivity(std::move(sleepActivity));", manager)
+
+    def test_reader_input_debug_trace_covers_poll_debounce_and_gesture_layers(self):
+        main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        gpio = (REPO_ROOT / "lib/hal/HalGPIO.cpp").read_text(encoding="utf-8")
+        reader_utils = (REPO_ROOT / "src/activities/reader/ReaderUtils.h").read_text(encoding="utf-8")
+
+        self.assertIn('LOG_DBG("INP", "stage=poll_gap', main)
+        self.assertIn('LOG_DBG("INP", "stage=main_work', main)
+        self.assertIn("READER_DEBOUNCE_REPOLL_MS = 6", main)
+        debounce_gate = main[main.index("gpio.update();") : main.index("halTiltSensor.update")]
+        self.assertIn("readerVisible && gpio.isDebouncePending()", debounce_gate)
+        self.assertIn("delay(READER_DEBOUNCE_REPOLL_MS);", debounce_gate)
+        self.assertIn("return;", debounce_gate)
+        self.assertIn("readerVisible && gpio.isDebouncePending() ? READER_DEBOUNCE_REPOLL_MS : 10", main)
+        self.assertIn("gpio.isDebouncePending() || readerVisible ? responsiveLoopDelay : 50", main)
+        self.assertIn("inputMgr.readButtonAdc", gpio)
+        self.assertIn('"stage=adc adc1=', gpio)
+        self.assertIn('LOG_DBG("INP", "stage=%s pending=', gpio)
+        self.assertIn('"stage=gesture press_prev=', reader_utils)
+        self.assertNotIn("beginAsync", main)
+
+    def test_text_antialiasing_defaults_off_without_changing_the_persisted_field(self):
+        settings_header = (REPO_ROOT / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+        per_book = (REPO_ROOT / "src/activities/reader/PerBookReaderSettings.h").read_text(encoding="utf-8")
+        self.assertIn("uint8_t textAntiAliasing = 0;", settings_header)
+        self.assertIn("uint8_t textAntiAliasing = 0;", per_book)
+
     def test_quick_resume_and_serial_screenshot_use_a_stable_framebuffer(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
         sleep = main[main.index("void enterDeepSleep") : main.index("void setupDisplayAndFonts")]
-        self.assertLess(sleep.index("saveSleepFrameBuffer();"), sleep.index("activityManager.goToSleep"))
+        self.assertLess(sleep.index("SleepFrameStore::save(renderer)"), sleep.index("activityManager.goToSleep"))
         screenshot = main[main.index("void handleSerialCommand") : main.index("void pumpSerialCommands")]
         self.assertLess(screenshot.index("RenderLock lock;"), screenshot.index("display.getFrameBuffer()"))
         self.assertIn("if (buf)", screenshot)
@@ -1759,6 +2277,69 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("panicReset && panicCaptureMagic == PANIC_CAPTURE_MAGIC", reboot_check)
         clear = system[system.index("void clearPanic()") : system.index("std::string getPanicInfo")]
         self.assertIn("panicCaptureMagic = 0;", clear)
+
+    def test_riscv_crash_report_preserves_fault_registers(self):
+        system = (REPO_ROOT / "lib" / "hal" / "HalSystem.cpp").read_text(encoding="utf-8")
+        self.assertIn("struct RiscvPanicRegisters", system)
+        self.assertIn("captureRiscvPanicRegisters(frame);", system)
+        self.assertIn("exceptionFrame->mepc", system)
+        self.assertIn("exceptionFrame->mcause", system)
+        self.assertIn("exceptionFrame->mtval", system)
+        self.assertIn("MEPC (faulting instruction)", system)
+        self.assertIn("MTVAL (fault address/value)", system)
+        clear = system[system.index("void clearPanic()") : system.index("std::string getPanicInfo")]
+        self.assertIn("panicRiscvRegisters.captured = 0;", clear)
+
+    def test_epub_navigation_clears_deferred_resume_only_after_a_real_move(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.h").read_text(encoding="utf-8")
+        self.assertIn("void clearDeferredReposition();", header)
+
+        page_turn = reader[reader.index("void EpubReaderActivity::pageTurn") :
+                           reader.index("bool EpubReaderActivity::retargetQueuedPageTurns")]
+        no_move = page_turn.index("if (!moved)")
+        cleared = page_turn.index("clearDeferredReposition();")
+        self.assertGreater(cleared, no_move)
+
+        retarget = reader[reader.index("bool EpubReaderActivity::retargetQueuedPageTurns") :
+                          reader.index("bool EpubReaderActivity::moveOnePageWithoutRendering")]
+        self.assertGreater(retarget.index("clearDeferredReposition();"), retarget.index("if (!moved)"))
+
+        for start, end in (
+            ("void EpubReaderActivity::jumpToPercent", "void EpubReaderActivity::onReaderMenuConfirm"),
+            ("void EpubReaderActivity::applyBookmarkJump", "bool EpubReaderActivity::launchKOReaderSync"),
+            ("void EpubReaderActivity::navigateToHref", "void EpubReaderActivity::restoreSavedPosition"),
+            ("void EpubReaderActivity::restoreSavedPosition", "void EpubReaderActivity::loadCachedBookmarks"),
+        ):
+            navigation = reader[reader.index(start) : reader.index(end)]
+            self.assertIn("clearDeferredReposition();", navigation)
+
+    def test_epub_parser_accepts_only_trailing_data_after_closed_html(self):
+        parser = (REPO_ROOT / "lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp").read_text(encoding="utf-8")
+        header = (REPO_ROOT / "lib/Epub/Epub/parsers/ChapterHtmlSlimParser.h").read_text(encoding="utf-8")
+        self.assertIn("bool htmlEnded_ = false;", header)
+        end_element = parser[parser.index("void XMLCALL ChapterHtmlSlimParser::endElement") :
+                             parser.index("ChapterHtmlSlimParser::~ChapterHtmlSlimParser")]
+        self.assertIn('strcmp(name, "html") == 0', end_element)
+        self.assertIn("htmlEnded_ = true;", end_element)
+        parse_step = parser[parser.index("ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep") :
+                            parser.index("void ChapterHtmlSlimParser::abortParse")]
+        error_branch = parse_step[parse_step.index("XML_STATUS_ERROR") :]
+        self.assertIn("if (htmlEnded_)", error_branch)
+        self.assertIn("return ParseStatus::Done;", error_branch)
+
+    def test_epub_entity_table_includes_xml_apostrophe(self):
+        entities = (REPO_ROOT / "lib/Epub/Epub/htmlEntities.cpp").read_text(encoding="utf-8")
+        self.assertIn('{"&apos;", "\'"}', entities)
+        self.assertLess(entities.index('{"&ang;",'), entities.index('{"&apos;",'))
+        self.assertLess(entities.index('{"&apos;",'), entities.index('{"&aring;",'))
+
+    def test_button_navigation_uses_fixed_storage_for_one_logical_button(self):
+        header = (REPO_ROOT / "src/util/ButtonNavigator.h").read_text(encoding="utf-8")
+        self.assertIn("using Buttons = std::array<MappedInputManager::Button, 1>;", header)
+        self.assertNotIn("#include <vector>", header)
+        self.assertIn("static constexpr Buttons getNextButtons()", header)
+        self.assertIn("static constexpr Buttons getPreviousButtons()", header)
 
     def test_reading_stats_confirm_hint_matches_its_action(self):
         activity = (REPO_ROOT / "src/activities/reader/ReadingStatsActivity.cpp").read_text(encoding="utf-8")
@@ -1886,7 +2467,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("renderer.drawText(cachedFontId, 0, 0, line.c_str())", prewarm)
 
         render_lines = reader[reader.index("void TxtReaderActivity::renderCurrentPageLines") :
-                              reader.index("void TxtReaderActivity::renderPage")]
+                              reader.index("bool TxtReaderActivity::renderPage")]
         self.assertEqual(render_lines.count("renderer.getTextAdvanceX"), 2)
 
         interactive = reader[reader.index("int lineX = cachedOrientedMarginLeft;") :
@@ -1905,6 +2486,108 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn("validateOrder(ORDER_PATH", find)
         self.assertIn("validateOrderEntry", find)
         self.assertIn("orderHeader.entriesCrc == ~crc", find)
+
+    def test_library_debug_trace_covers_cold_catalog_to_first_visible(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        render = recent[recent.index("void RecentBooksActivity::render(RenderLock&&") :]
+
+        for marker in (
+                "recent_projection",
+                "tab_request",
+                "catalog_open",
+                "catalog_phase",
+                "order_phase",
+                "projection ready=",
+                "page_load",
+                "render_visible",
+                "first_visible",
+                "nav_input",
+                "nav_apply",
+                "nav_visible",
+        ):
+            self.assertIn(f'"{marker}', recent)
+        self.assertIn('traceCatalogState("step")', recent)
+        self.assertLess(render.index("renderer.displayBuffer();"), render.index('LOG_DBG("LIBT", "first_visible'))
+        self.assertLess(render.index("renderer.displayBuffer();"), render.index('LOG_DBG("LIBT",\n              "nav_visible'))
+        self.assertNotIn('LOG_DBG("LIBT", "path=', recent)
+
+    def test_library_no_cover_marker_settles_without_reopening_the_epub(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        epub_reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        queue = recent[recent.index("void RecentBooksActivity::processCoverQueue") :
+                       recent.index("void RecentBooksActivity::processSelectedSourcePreparation")]
+        cover_grid = recent[recent.index("} else if (viewMode() == CrossPointSettings::LIBRARY_COVERS)") :
+                            recent.index("  } else {", recent.index("} else if (viewMode() == CrossPointSettings::LIBRARY_COVERS)"))]
+
+        self.assertIn("hasCachedNoCoverMarker", recent)
+        self.assertIn("coverQueueAbsentMask", recent)
+        self.assertIn("coverQueueShownMask |= coverQueueAbsentMask", cover_grid)
+        self.assertIn("renderPage[offset].coverBmpPath.clear();", cover_grid)
+        self.assertIn("recentBooks[recentIndex].coverBmpPath.clear();", cover_grid)
+        self.assertLess(queue.index("const bool cachedNoCover"),
+                        queue.index("if (book.format == LibraryBookFormat::Epub)"))
+        self.assertGreaterEqual(
+            epub_reader.count("epub->getCoverItemHref().empty() ? std::string{} : epub->getThumbBmpPath()"),
+            2,
+        )
+
+    def test_library_cover_grid_tab_previous_moves_to_current_page_tail(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        navigation = recent[recent.index("void RecentBooksActivity::applyPendingNavigation") :
+                            recent.index("void RecentBooksActivity::invalidateRenderPage")]
+
+        self.assertIn("viewMode() == CrossPointSettings::LIBRARY_COVERS && count > 0", navigation)
+        self.assertIn("LibraryGridModel::lastIndexOnPage(anchor, count, pageCapacity())", navigation)
+        self.assertIn("selectorIndex = controlCount() + target;", navigation)
+
+    def test_library_cover_preparation_preserves_snapshot_and_refreshes_only_new_pixels(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        snapshot = recent[recent.index("bool RecentBooksActivity::storeGridSnapshot") :
+                          recent.index("void RecentBooksActivity::freeGridSnapshot")]
+        queue = recent[recent.index("void RecentBooksActivity::processCoverQueue") :
+                       recent.index("void RecentBooksActivity::processSelectedSourcePreparation")]
+
+        self.assertNotIn("coverPreparationEpub || coverPreparationXtc", snapshot)
+        self.assertNotIn("freeGridSnapshot();", queue)
+        self.assertIn("if (drawsCovers && coverQueueReadyMask != 0) requestUpdate();", queue)
+
+    def test_cold_library_catalog_keeps_one_loading_frame_until_content_is_ready(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        catalog_open_start = recent.index("if (catalogOpenPending && allTab()")
+        catalog_open = recent[catalog_open_start : recent.index("constexpr size_t allIndex", catalog_open_start)]
+        ready_projection_start = recent.index("if (allTab() && LIBRARY_CATALOG.isReady()", catalog_open_start)
+        ready_projection = recent[ready_projection_start :
+                                  recent.index("if (searchActive[allIndex]", ready_projection_start)]
+        build = recent[recent.index("if (LIBRARY_CATALOG.isBuilding() || LIBRARY_CATALOG.isOrderBuilding())") :
+                       recent.index("if (LIBRARY_CATALOG.consumeLastBuildFailed())")]
+
+        self.assertIn("if (!LIBRARY_CATALOG.isBuilding() && !LIBRARY_CATALOG.isOrderBuilding()) requestUpdate();",
+                      catalog_open)
+        self.assertIn("!LIBRARY_CATALOG.isOrderBuilding()", ready_projection)
+        self.assertIn("if (!LIBRARY_CATALOG.isOrderBuilding()) {", ready_projection)
+        self.assertNotIn("progressDue", build)
+        self.assertNotIn("requestUpdate();", build)
+
+    def test_warm_all_books_skips_the_loading_only_panel_refresh(self):
+        recent = (REPO_ROOT / "src/activities/home/RecentBooksActivity.cpp").read_text(encoding="utf-8")
+        select_tab = recent[recent.index("void RecentBooksActivity::selectTab") :
+                            recent.index("bool RecentBooksActivity::refreshStorageAvailability")]
+        on_enter = recent[recent.index("void RecentBooksActivity::onEnter()") :
+                          recent.index("void RecentBooksActivity::onExit()")]
+
+        self.assertIn("const bool warmAllBooks", select_tab)
+        self.assertIn("if (!warmAllBooks) requestUpdate();", select_tab)
+        self.assertIn("if (!warmAllBooks) requestUpdate();", on_enter)
+
+    def test_one_bit_bitmap_fast_path_decodes_palette_once_per_packed_byte(self):
+        renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")
+        one_bit = renderer[renderer.index("bool GfxRenderer::drawBitmap1Bit") :
+                           renderer.index("void GfxRenderer::fillPolygon")]
+
+        self.assertIn("zeroIsInk", one_bit)
+        self.assertIn("oneIsInk", one_bit)
+        self.assertIn("inkBits", one_bit)
+        self.assertIn("if (!isScaled)", one_bit)
 
     def test_safe_hot_paths_avoid_repeated_work(self):
         renderer = (REPO_ROOT / "lib/GfxRenderer/GfxRenderer.cpp").read_text(encoding="utf-8")

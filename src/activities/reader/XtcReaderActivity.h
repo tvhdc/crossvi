@@ -31,7 +31,7 @@ class XtcReaderActivity final : public Activity {
   std::shared_ptr<Xtc> xtc;
 
   uint32_t currentPage = 0;
-  int8_t pendingPageTurnDelta = 0;
+  std::atomic<int8_t> pendingPageTurnDelta{0};
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   std::atomic<uint32_t> debugTurnSequence{0};
 #endif
@@ -40,6 +40,7 @@ class XtcReaderActivity final : public Activity {
   ProgressFile::WriteSession progressWriteSession;
   std::atomic<uint32_t> lastSuccessfullyRenderedPage{std::numeric_limits<uint32_t>::max()};
   int pagesUntilFullRefresh = 0;
+  ReaderUtils::X3ReaderWaveformState readerWaveform;
   bool deferredCoverRequested = false;
   bool deferredCoverFinished = false;
   uint32_t deferredCoverLastInputAt = 0;
@@ -103,7 +104,9 @@ class XtcReaderActivity final : public Activity {
     std::string title;
   };
 
-  bool renderPage(const std::shared_ptr<Xtc>& book, uint32_t page);
+  enum class PageRenderResult : uint8_t { Displayed, Superseded, Error };
+  bool retargetQueuedPageTurns();
+  PageRenderResult renderPage(const std::shared_ptr<Xtc>& book, uint32_t page);
   // Opens chapter selection when the book has chapters (short-press Confirm); no-op otherwise
   void openChapterSelection();
   void openReaderMenu();

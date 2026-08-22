@@ -12,6 +12,22 @@ bool ImageToFramebufferDecoder::validateImageDimensions(int width, int height, c
   return true;
 }
 
+bool ImageToFramebufferDecoder::validateAndStoreDimensions(const int64_t width, const int64_t height,
+                                                           ImageDimensions& out, const char* format) {
+  if (width <= 0 || height <= 0 || width > MAX_SOURCE_DIMENSION || height > MAX_SOURCE_DIMENSION) {
+    LOG_ERR("IMG", "Invalid %s dimensions: %lldx%lld (max %lld per dimension)", format,
+            static_cast<long long>(width), static_cast<long long>(height),
+            static_cast<long long>(MAX_SOURCE_DIMENSION));
+    return false;
+  }
+
+  if (!validateImageDimensions(static_cast<int>(width), static_cast<int>(height), format)) return false;
+
+  out.width = static_cast<int16_t>(width);
+  out.height = static_cast<int16_t>(height);
+  return true;
+}
+
 void ImageToFramebufferDecoder::warnUnsupportedFeature(const std::string& feature, const std::string& imagePath) {
   LOG_ERR("IMG", "Warning: Unsupported feature '%s' in image '%s'. Image may not display correctly.", feature.c_str(),
           imagePath.c_str());

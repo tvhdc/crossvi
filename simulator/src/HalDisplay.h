@@ -80,6 +80,11 @@ public:
                                 uint16_t yStart, uint16_t numRows);
   bool supportsStripGrayscale() const;
 
+  // Waveform quality is hardware-only. Keep the production capability API
+  // available to Activity code without pretending SDL can validate it.
+  bool supportsX3GhostCleanup() const { return false; }
+  bool cleanX3GhostingNow() { return false; }
+
   // Simulator only: call from main thread to push rendered pixels to SDL.
   void presentIfNeeded();
   // Simulator only: returns true once a hard shutdown has been requested.

@@ -29,12 +29,13 @@ class TxtReaderActivity final : public Activity {
   int lastSavedPage = -1;
   ProgressFile::WriteSession progressWriteSession;
   std::atomic<int> lastSuccessfullyRenderedPage{-1};
-  int8_t pendingPageTurnDelta = 0;
+  std::atomic<int8_t> pendingPageTurnDelta{0};
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   std::atomic<uint32_t> debugTurnSequence{0};
 #endif
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
+  ReaderUtils::X3ReaderWaveformState readerWaveform;
 
   // Streaming text reader - stores file offsets for each page
   // Bounded, no-throw storage: firmware is built with -fno-exceptions, so an
@@ -143,10 +144,11 @@ class TxtReaderActivity final : public Activity {
 
   using TextWordAnchor = ClippingPageTools::SourceWordAnchor;
 
-  void renderCurrentPage();
+  bool retargetQueuedPageTurns();
+  bool renderCurrentPage();
   void prewarmCurrentPageFont();
   void renderCurrentPageLines() const;
-  void renderPage();
+  bool renderPage();
   void renderStatusBar() const;
 
   void initializeReader();

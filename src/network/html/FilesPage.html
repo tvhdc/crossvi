@@ -1676,7 +1676,7 @@
           <div class="convert-row">
             <label class="convert-checkbox">
               <input type="checkbox" id="convertBeforeUpload" checked onchange="toggleConvertOptions()">
-              <span data-i18n="optimizeEpub">Optimize EPUB</span>
+              <span data-i18n="optimizeEpub">Optimize EPUB/Image</span>
             </label>
           </div>
           <div id="convertInfo" style="display:none; margin-bottom: 10px; font-size: 0.9em;"></div>
@@ -1839,9 +1839,9 @@
       sendInbox: '📥 Send to Inbox', upload: '📤 Upload', newFolder: '📁 New Folder',
       deleteSelected: '🗑️ Delete Selected', uploadFile: '📤 Upload file',
       selectFile: 'Select a file to upload to', dropHint: '⬇ Drop files here — or click to browse',
-      optimizeEpub: 'Optimize EPUB', trueGrayscale: '⚫ True-Grayscale',
+      optimizeEpub: 'Optimize EPUB/Image', trueGrayscale: '⚫ True-Grayscale',
       jpegQuality: '📦 85% JPEG', fixSvg: '🔧 Fix SVG', cancel: 'Cancel',
-      optimizeInfo: 'Preparing an X3/X4-ready copy in your browser.',
+      optimizeInfo: 'Preparing an X3/X4-ready EPUB/image copy in your browser.',
       optimizeButton: 'Optimize & Upload', uploadButton: 'Upload',
       homeBreadcrumb: '🏠 Home', name: 'Name', type: 'Type', size: 'Size', actions: 'Actions',
       folder: 'folder', folders: 'folders', file: 'file', files: 'files',
@@ -1875,9 +1875,9 @@
       sendInbox: '📥 Gửi vào Inbox', upload: '📤 Tải lên', newFolder: '📁 Thư mục mới',
       deleteSelected: '🗑️ Xóa đã chọn', uploadFile: '📤 Tải tệp lên',
       selectFile: 'Chọn tệp để tải vào', dropHint: '⬇ Thả tệp vào đây — hoặc bấm để chọn',
-      optimizeEpub: 'Tối ưu EPUB', trueGrayscale: '⚫ Thang xám chuẩn',
+      optimizeEpub: 'Tối ưu EPUB/Ảnh', trueGrayscale: '⚫ Thang xám chuẩn',
       jpegQuality: '📦 JPEG 85%', fixSvg: '🔧 Sửa SVG', cancel: 'Hủy',
-      optimizeInfo: 'Đang chuẩn bị bản phù hợp cho X3/X4 trên trình duyệt.',
+      optimizeInfo: 'Đang chuẩn bị bản EPUB/ảnh phù hợp cho X3/X4 trên trình duyệt.',
       optimizeButton: 'Tối ưu và tải lên', uploadButton: 'Tải lên',
       homeBreadcrumb: '🏠 Trang chủ', name: 'Tên', type: 'Loại', size: 'Kích thước', actions: 'Thao tác',
       folder: 'thư mục', folders: 'thư mục', file: 'tệp', files: 'tệp',
@@ -3433,9 +3433,10 @@
     const convertOptions = document.getElementById('convertOptions');
     fileInput.classList.toggle('has-files', files.length > 0);
 
-    // Show convert options only when at least one selected file is an EPUB.
+    // Show convert options when at least one selected file can be optimized in-browser.
     const hasEpub = Array.from(files).some(f => f.name.toLowerCase().endsWith('.epub'));
-    if (files.length > 0 && hasEpub) {
+    const hasStandaloneImage = Array.from(files).some(f => isStandaloneImageUpload(f));
+    if (files.length > 0 && (hasEpub || hasStandaloneImage)) {
       convertOptions.style.display = 'block';
       toggleConvertOptions();
     } else {
@@ -3456,8 +3457,9 @@
       // If multiple files with conversion, inform user about batch mode
       if (files.length > 1 && convertEnabled) {
         const epubCount = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.epub')).length;
-        if (epubCount > 0) {
-          console.log(`Batch mode: ${epubCount} EPUB(s) will use auto settings`);
+        const imageCount = Array.from(files).filter(f => isStandaloneImageUpload(f)).length;
+        if (epubCount > 0 || imageCount > 0) {
+          console.log(`Batch mode: ${epubCount} EPUB(s), ${imageCount} image(s) will use auto settings`);
         }
       }
 
@@ -4207,6 +4209,312 @@ function makeCrossViCoverThumbnail(canvas, targetWidth, targetHeight, fitWithin 
     }
   }
   return result;
+}
+
+const CROSSVI_SLEEP_BAYER_4X4 = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5]
+];
+
+function makeCrossViSleepBmp(canvas) {
+  if (!canvas || !canvas.width || !canvas.height) return null;
+  const width = canvas.width;
+  const height = canvas.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const pixels = ctx.getImageData(0, 0, width, height).data;
+  const rowBytes = Math.ceil(width / 8) * 4;
+  const imageSize = rowBytes * height;
+  const paletteBytes = 16 * 4;
+  const result = new Uint8Array(14 + 40 + paletteBytes + imageSize);
+  const view = new DataView(result.buffer);
+  view.setUint16(0, 0x4D42, true);
+  writeLe32(view, 2, result.length);
+  writeLe32(view, 10, 14 + 40 + paletteBytes);
+  writeLe32(view, 14, 40);
+  writeLeSigned32(view, 18, width);
+  writeLeSigned32(view, 22, -height);
+  writeLe16(view, 26, 1);
+  writeLe16(view, 28, 4);
+  writeLe32(view, 34, imageSize);
+  writeLe32(view, 38, 2835);
+  writeLe32(view, 42, 2835);
+  writeLe32(view, 46, 16);
+  writeLe32(view, 50, 4);
+  for (let i = 0; i < 16; i++) {
+    const v = i < 4 ? i * 85 : 255;
+    result.set([v, v, v, 0], 54 + i * 4);
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const p = (y * width + x) * 4;
+      const alpha = pixels[p + 3] / 255;
+      let gray = (0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2]) * alpha + 255 * (1 - alpha);
+      gray += (CROSSVI_SLEEP_BAYER_4X4[y & 3][x & 3] - 7.5) * (85 / 16);
+      const level = Math.max(0, Math.min(3, Math.round((gray * 3) / 255)));
+      result[14 + 40 + paletteBytes + y * rowBytes + (x >> 1)] |= level << ((x & 1) ? 0 : 4);
+    }
+  }
+  return result;
+}
+
+const STANDALONE_IMAGE_UPLOAD_RE = /\.(?:png|jpe?g|bmp|gif|webp)$/i;
+
+function isStandaloneImageUpload(file) {
+  if (!file) return false;
+  if (file.type && file.type.startsWith('image/')) return true;
+  return STANDALONE_IMAGE_UPLOAD_RE.test(file.name || '');
+}
+
+function imageUploadOutputName(name, hasAlpha) {
+  const cleanName = String(name || '').split('/').pop() || (hasAlpha ? 'sleep-overlay.png' : 'sleep.bmp');
+  const dot = cleanName.lastIndexOf('.');
+  const base = dot > 0 ? cleanName.substring(0, dot) : cleanName;
+  return hasAlpha ? `${base}.png` : `${base}.bmp`;
+}
+
+function imageDataHasTransparency(imageData) {
+  const data = imageData.data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 250) return true;
+  }
+  return false;
+}
+
+function uploadImageMayHaveAlpha(file) {
+  const type = String(file && file.type || '').toLowerCase();
+  const name = String(file && file.name || '').toLowerCase();
+  return type === 'image/png' || type === 'image/webp' || type === 'image/gif' || type === 'image/bmp' ||
+         /\.(?:png|webp|gif|bmp)$/i.test(name);
+}
+
+function detectStandaloneImageSource(file, img, width, height) {
+  const full = { x: 0, y: 0, width, height };
+  if (!uploadImageMayHaveAlpha(file)) return { hasAlpha: false, rect: full };
+  try {
+    const sample = document.createElement('canvas');
+    sample.width = width;
+    sample.height = height;
+    const sampleCtx = sample.getContext('2d', { willReadFrequently: true });
+    sampleCtx.drawImage(img, 0, 0);
+    return { hasAlpha: imageDataHasTransparency(sampleCtx.getImageData(0, 0, width, height)), rect: full };
+  } catch (_) {
+    return { hasAlpha: false, rect: full };
+  }
+}
+
+const STANDALONE_OVERLAY_PALETTE_CANDIDATES = [
+  { gray: 8, alpha: 8 },
+  { gray: 12, alpha: 10 },
+  { gray: 16, alpha: 12 },
+  { gray: 24, alpha: 10 },
+  { gray: 32, alpha: 8 },
+  { gray: 48, alpha: 5 },
+  { gray: 64, alpha: 4 },
+  { gray: 85, alpha: 4 }
+];
+const STANDALONE_OVERLAY_TARGET_PNG_BYTES = 24 * 1024;
+
+function crc32(bytes) {
+  if (!crc32.table) {
+    crc32.table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      crc32.table[n] = c >>> 0;
+    }
+  }
+  let c = 0xffffffff;
+  for (const b of bytes) c = crc32.table[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, payload = new Uint8Array()) {
+  const out = new Uint8Array(12 + payload.length);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, payload.length, false);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(payload, 8);
+  view.setUint32(8 + payload.length, crc32(out.subarray(4, 8 + payload.length)), false);
+  return out;
+}
+
+async function deflateBytes(bytes) {
+  if (typeof CompressionStream !== 'function') return null;
+  try {
+    const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+function quantizeStandaloneOverlay(imageData, grayLevels, alphaLevels) {
+  const data = imageData.data;
+  const palette = [];
+  const alphas = [];
+  const lookup = new Map();
+  const indexes = new Uint8Array(imageData.width * imageData.height);
+  let visibleWeight = 0;
+  let visibleLumaError = 0;
+  let activeAlphaError = 0;
+  let activeAlphaCount = 0;
+
+  function paletteIndex(key, gray, alpha) {
+    let idx = lookup.get(key);
+    if (idx !== undefined) return idx;
+    idx = alphas.length;
+    lookup.set(key, idx);
+    palette.push(gray, gray, gray);
+    alphas.push(alpha);
+    return idx;
+  }
+
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const alpha = data[i + 3];
+    const luma = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+    let idx;
+    let outLuma = 255;
+    let outAlpha = 0;
+    if (alpha < 4) {
+      idx = paletteIndex('t', 255, 0);
+    } else {
+      const grayBucket = Math.round((luma * (grayLevels - 1)) / 255);
+      const alphaBucket = Math.max(1, Math.round((alpha * (alphaLevels - 1)) / 255));
+      outLuma = Math.round((grayBucket * 255) / (grayLevels - 1));
+      outAlpha = Math.round((alphaBucket * 255) / (alphaLevels - 1));
+      idx = paletteIndex(`${grayBucket},${alphaBucket}`, outLuma, outAlpha);
+      activeAlphaError += Math.abs(alpha - outAlpha);
+      activeAlphaCount++;
+    }
+    const weight = alpha / 255;
+    visibleLumaError += Math.abs(luma - outLuma) * weight;
+    visibleWeight += weight;
+    indexes[p] = idx;
+  }
+
+  return {
+    palette: new Uint8Array(palette),
+    alphas: new Uint8Array(alphas),
+    indexes,
+    colorCount: alphas.length,
+    visibleLumaError: visibleWeight ? visibleLumaError / visibleWeight : 0,
+    activeAlphaError: activeAlphaCount ? activeAlphaError / activeAlphaCount : 0
+  };
+}
+
+function standaloneOverlayPaletteLooksGood(quantized) {
+  return quantized.visibleLumaError <= 2 && quantized.activeAlphaError <= 2.5;
+}
+
+async function makeStandaloneIndexedPngBlob(canvas, quantized) {
+  const stride = canvas.width + 1;
+  const scanlines = new Uint8Array(stride * canvas.height);
+  for (let y = 0; y < canvas.height; y++) {
+    const row = y * stride;
+    scanlines[row] = 0;
+    scanlines.set(quantized.indexes.subarray(y * canvas.width, (y + 1) * canvas.width), row + 1);
+  }
+  const compressed = await deflateBytes(scanlines);
+  if (!compressed) return null;
+
+  const ihdr = new Uint8Array(13);
+  const view = new DataView(ihdr.buffer);
+  view.setUint32(0, canvas.width, false);
+  view.setUint32(4, canvas.height, false);
+  ihdr[8] = 8;
+  ihdr[9] = 3;
+  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  return new Blob([
+    signature,
+    pngChunk('IHDR', ihdr),
+    pngChunk('PLTE', quantized.palette),
+    pngChunk('tRNS', quantized.alphas),
+    pngChunk('IDAT', compressed),
+    pngChunk('IEND')
+  ], { type: 'image/png' });
+}
+
+async function makeOptimizedStandaloneOverlayPngBlob(canvas, ctx) {
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let firstQualityBlob = null;
+  let fallbackBlob = null;
+  for (const candidate of STANDALONE_OVERLAY_PALETTE_CANDIDATES) {
+    const quantized = quantizeStandaloneOverlay(imageData, candidate.gray, candidate.alpha);
+    if (quantized.colorCount > 256) continue;
+    const blob = await makeStandaloneIndexedPngBlob(canvas, quantized);
+    if (!blob) return null;
+    fallbackBlob = blob;
+    if (standaloneOverlayPaletteLooksGood(quantized)) {
+      if (!firstQualityBlob) firstQualityBlob = blob;
+      if (blob.size <= STANDALONE_OVERLAY_TARGET_PNG_BYTES) return blob;
+    }
+  }
+  return firstQualityBlob || fallbackBlob;
+}
+
+function loadBrowserImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Image load failed'));
+    };
+    img.src = url;
+  });
+}
+
+function canvasToBlob(canvas, type) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Image encode failed')), type);
+  });
+}
+
+async function optimizeStandaloneImageUpload(file) {
+  const img = await loadBrowserImage(file);
+  const profile = DEVICE_PROFILES[ACTIVE_DEVICE] || DEVICE_PROFILES[DEFAULT_DEVICE];
+  const canvas = document.createElement('canvas');
+  canvas.width = profile.width;
+  canvas.height = profile.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const sourceWidth = img.naturalWidth || img.width;
+  const sourceHeight = img.naturalHeight || img.height;
+  if (!sourceWidth || !sourceHeight) throw new Error('Invalid image dimensions');
+  const source = detectStandaloneImageSource(file, img, sourceWidth, sourceHeight);
+  const rect = source.rect;
+  const scale = Math.min(profile.width / rect.width, profile.height / rect.height, 1);
+  const drawWidth = Math.max(1, Math.round(rect.width * scale));
+  const drawHeight = Math.max(1, Math.round(rect.height * scale));
+  const x = Math.floor((profile.width - drawWidth) / 2);
+  const y = Math.floor((profile.height - drawHeight) / 2);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, rect.x, rect.y, rect.width, rect.height, x, y, drawWidth, drawHeight);
+
+  const hasAlpha = source.hasAlpha || imageDataHasTransparency(ctx.getImageData(0, 0, canvas.width, canvas.height));
+  const outputName = imageUploadOutputName(file.name, hasAlpha);
+  let blob;
+  if (hasAlpha) {
+    blob = await makeOptimizedStandaloneOverlayPngBlob(canvas, ctx);
+    if (!blob) blob = await canvasToBlob(canvas, 'image/png');
+  } else {
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = 'source-over';
+    const bmp = makeCrossViSleepBmp(canvas);
+    if (!bmp) throw new Error('BMP encode failed');
+    blob = new Blob([bmp], { type: 'image/bmp' });
+  }
+  return new File([blob], outputName, { type: blob.type, lastModified: Date.now() });
 }
 
 function reserveAvailableUploadFilename(fileName, usedFileNames) {
@@ -5690,7 +5998,7 @@ async function uploadFile() {
   let currentIndex = 0;
   const failedFiles = [];
   const useAggregateProgress = files.length > 1 && convertEnabled &&
-    files.some(file => file.name.toLowerCase().endsWith('.epub'));
+    files.some(file => file.name.toLowerCase().endsWith('.epub') || isStandaloneImageUpload(file));
 
   function setAggregateProgress(fileProgress) {
     const clampedProgress = Math.max(0, Math.min(1, fileProgress));
@@ -5789,9 +6097,11 @@ async function uploadFile() {
     // Re-enable transition after a brief delay
     setTimeout(() => progressFill.classList.remove('no-transition'), 50);
 
-    // Check if file is an EPUB and conversion is enabled
+    // Check if file can be optimized in-browser and conversion is enabled
     const isEpub = file.name.toLowerCase().endsWith('.epub');
+    const isUploadImage = !isEpub && isStandaloneImageUpload(file);
     const needsConversion = isEpub && convertEnabled && originalFile.size <= MAX_AUTO_OPTIMIZE_EPUB_BYTES;
+    const needsImageOptimization = isUploadImage && convertEnabled;
     const optimizationSkippedForSize = isEpub && convertEnabled && !needsConversion;
     let conversionSucceeded = false;
     let conversionFailed = false;  // Track if conversion actually failed
@@ -5817,7 +6127,10 @@ async function uploadFile() {
     if (optimizationSkippedForSize) {
       console.log(`[Upload] Skipping EPUB optimization above 10 MB: ${originalFile.name} (${originalFile.size} bytes)`);
     }
-    const stageText = needsConversion ? `${webText('converting')} & ${webText('uploading').toLowerCase()}` : webText('uploading');
+    const willConvertBeforeUpload = needsConversion || needsImageOptimization;
+    const stageText = willConvertBeforeUpload
+      ? `${webText('converting')} & ${webText('uploading').toLowerCase()}`
+      : webText('uploading');
     progressText.style.color = '';
     progressText.textContent = useAggregateProgress
       ? `${stageText} ${currentIndex + 1}/${files.length}${methodText} — ${setAggregateProgress(0)}%`
@@ -5893,15 +6206,15 @@ async function uploadFile() {
     };
 
     try {
-      // Convert EPUB if needed
-      if (needsConversion) {
+      // Convert EPUB or standalone image if needed.
+      if (willConvertBeforeUpload) {
         progressFill.style.backgroundColor = '#9b59b6'; // Purple for conversion
         progressText.textContent = useAggregateProgress
           ? `${webText('converting')} ${currentIndex + 1}/${files.length} — ${setAggregateProgress(0)}%`
           : `${webText('converting')} ${file.name} (${currentIndex + 1}/${files.length})...`;
 
-        // Clear log for single file mode, or just add separator for batch mode
-        if (!useBatchLog) {
+        // Clear log for single EPUB mode, or just add separator for batch mode.
+        if (needsConversion && !useBatchLog) {
           clearLog();
           showLog();
         }
@@ -5911,27 +6224,35 @@ async function uploadFile() {
         const origFileSize = file.size;
 
         try {
-          const convertedBlob = await convertEpubFile(file, (percent) => {
-            // Pass current quality setting to converter
-            if (useAggregateProgress) {
-              const overallPercent = setAggregateProgress(percent / 200);
-              progressText.textContent = `${webText('converting')} ${currentIndex + 1}/${files.length} — ${overallPercent}%`;
-            } else {
-              progressFill.style.width = (percent * 0.5) + '%'; // Conversion takes first 50%
+          if (needsConversion) {
+            const convertedBlob = await convertEpubFile(file, (percent) => {
+              // Pass current quality setting to converter
+              if (useAggregateProgress) {
+                const overallPercent = setAggregateProgress(percent / 200);
+                progressText.textContent =
+                  `${webText('converting')} ${currentIndex + 1}/${files.length} — ${overallPercent}%`;
+              } else {
+                progressFill.style.width = (percent * 0.5) + '%'; // Conversion takes first 50%
+              }
+            });
+            file = new File([convertedBlob], file.name, { type: 'application/epub+zip' });
+          } else {
+            file = await optimizeStandaloneImageUpload(file);
+            const imageUploadName = reserveAvailableUploadFilename(file.name, usedFileNames);
+            if (!imageUploadName) throw new Error('Too many files with the same name');
+            if (imageUploadName !== file.name) {
+              file = new File([file], imageUploadName, { type: file.type, lastModified: file.lastModified });
             }
-          });
-
-          // Create new File from converted blob
-          file = new File([convertedBlob], file.name, { type: 'application/epub+zip' });
+          }
           progressFill.style.backgroundColor = '#27ae60'; // Back to green for upload
           conversionSucceeded = true;
           convOriginalSize = origFileSize;
-          convNewSize = convertedBlob.size;
+          convNewSize = file.size;
         } catch (convError) {
           if (operationCancelled) { if (uploadGeneration === myGeneration) restoreAfterCancel(); return; }
           console.error('Conversion error:', convError);
           // Log the error
-          logError(`Conversion failed: ${convError.message}`);
+          if (needsConversion) logError(`Conversion failed: ${convError.message}`);
           if (requireConversionForUpload) {
             // A device-copy request must never silently upload an unchanged
             // EPUB under the optimized name. Keep the source untouched and
@@ -5939,7 +6260,7 @@ async function uploadFile() {
             onError(`EPUB optimization failed: ${convError.message}`);
             return;
           }
-          log('Uploading original file instead...', 'warning', 'INFO');
+          if (needsConversion) log('Uploading original file instead...', 'warning', 'INFO');
           conversionFailed = true;
 
           // In single file mode, export error log

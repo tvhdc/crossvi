@@ -200,9 +200,8 @@ class Epub {
   // Materialize the larger Home carousel cover without replacing the shared
   // library thumbnail.
   ThumbnailStatus ensureCarouselThumbnail(int width, int height, ThumbnailMode mode = ThumbnailMode::EmbeddedThenCover);
-  // Once a UI requests either derived thumbnail, materialize both canonical
-  // variants for this device so changing between Library covers and Home style
-  // 4 never requires extracting the EPUB cover again.
+  // Materialize only the variants requested by the current UI. Callers that
+  // need both can request both and still share one cover extraction.
   ThumbnailSetStatus ensureThumbnails(const ThumbnailRequest& request,
                                       ThumbnailMode mode = ThumbnailMode::EmbeddedThenCover);
   bool generateThumbBmp(int height) const;
@@ -272,10 +271,6 @@ class Epub {
   uint32_t indexingPhaseStartedMs = 0;
   std::unique_ptr<CoreMetadataReadState> coreMetadataReadState;
 
-  static constexpr ThumbnailRequest allThumbnailVariants(ThumbnailRequest request) {
-    if (request.shared || request.carousel) request.shared = request.carousel = true;
-    return request;
-  }
   bool generateJpegThumbnailPair(int carouselWidth, int carouselHeight, ThumbnailSetStatus& result);
   ThumbnailStatus ensureThumbnail(int width, int height, const char* embeddedEntry, ThumbnailMode mode, bool fitWithin);
 };

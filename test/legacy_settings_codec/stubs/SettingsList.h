@@ -48,6 +48,8 @@ inline const std::vector<SettingInfo>& getBaseSettingsList() {
       statusSetting("outsideReaderClock", &CrossPointSettings::outsideReaderClock, SettingType::TOGGLE),
       statusSetting("outsideReaderDateTimeOrder", &CrossPointSettings::outsideReaderDateTimeOrder, SettingType::ENUM,
                     CrossPointSettings::OUTSIDE_READER_DATE_TIME_ORDER_COUNT),
+      statusSetting("sleepGhostingTreatment", &CrossPointSettings::sleepGhostingTreatment, SettingType::ENUM,
+                    CrossPointSettings::SLEEP_GHOSTING_TREATMENT_COUNT),
       statusSetting("readerDarkMode", &CrossPointSettings::readerDarkMode, SettingType::TOGGLE),
   };
   return settings;

@@ -3,8 +3,18 @@
 #include <cstdint>
 
 struct HalDisplay {
-  enum RefreshMode { HALF_REFRESH };
+  enum RefreshMode { HALF_REFRESH, FAST_REFRESH };
+  bool supportsX3GhostCleanup() const { return x3GhostCleanupSupported; }
+  bool cleanX3GhostingNow() {
+    immediateGhostCleanupCalls++;
+    return true;
+  }
+
+  bool x3GhostCleanupSupported = true;
+  int immediateGhostCleanupCalls = 0;
 };
+
+extern HalDisplay display;
 
 class GfxRenderer {
  public:
@@ -12,8 +22,13 @@ class GfxRenderer {
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
 
   void setOrientation(Orientation) {}
-  void displayBuffer() const {}
-  void displayBuffer(HalDisplay::RefreshMode) const {}
+  void displayBuffer() const { fastDisplayCalls++; }
+  void displayBuffer(HalDisplay::RefreshMode mode) const {
+    if (mode == HalDisplay::HALF_REFRESH)
+      halfDisplayCalls++;
+    else
+      fastDisplayCalls++;
+  }
   bool supportsStripGrayscale() const { return stripGrayscaleSupported; }
   int getDisplayHeight() const { return 80; }
   int getDisplayWidthBytes() const { return 2; }
@@ -39,6 +54,8 @@ class GfxRenderer {
 
   bool stripGrayscaleSupported = true;
   bool storeBwBufferResult = true;
+  mutable int fastDisplayCalls = 0;
+  mutable int halfDisplayCalls = 0;
   int storeBwBufferCalls = 0;
   int clearScreenCalls = 0;
   int setRenderModeCalls = 0;

@@ -36,6 +36,7 @@
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
+#include "components/icons/trophy.h"
 #include "components/icons/wifi.h"
 #include "components/themes/HomeMenuLayout.h"
 #include "components/themes/crossvi/CrossViLayout.h"
@@ -90,6 +91,8 @@ const uint8_t* iconForName(const UIIcon icon, const int size = 32) {
       return WifiIcon;
     case UIIcon::Hotspot:
       return HotspotIcon;
+    case UIIcon::Trophy:
+      return TrophyIcon;
     default:
       return nullptr;
   }

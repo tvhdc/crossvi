@@ -32,7 +32,8 @@ class DailyReadingHistory {
  public:
   static constexpr uint32_t UNKNOWN_SECONDS = UINT32_MAX;
   static constexpr size_t DAY_COUNT = READING_HISTORY_DAYS;
-  static constexpr size_t FILE_SIZE = 12 + DAY_COUNT * sizeof(uint32_t) + sizeof(uint32_t);
+  static constexpr size_t LEGACY_FILE_SIZE = 12 + DAY_COUNT * sizeof(uint32_t) + sizeof(uint32_t);
+  static constexpr size_t FILE_SIZE = LEGACY_FILE_SIZE + sizeof(uint32_t);
 
   enum class LoadStatus : uint8_t {
     Ok,
@@ -63,11 +64,13 @@ class DailyReadingHistory {
   bool valueForDate(const ReadingStatsDate& date, uint32_t& seconds) const;
   bool hasAnchor() const { return hasAnchor_; }
   uint32_t anchorDay() const { return anchorDay_; }
+  uint32_t lifetimeReadingDays() const { return lifetimeReadingDays_; }
   bool empty() const;
 
   // Used by the codec and when migrating the exact latest-day summary that
   // predates the 730-day sidecar.
   void seedExactDay(uint32_t day, uint32_t seconds);
+  void raiseLifetimeReadingDaysTo(uint32_t days);
 
  private:
   void advanceTo(uint32_t day);
@@ -75,4 +78,5 @@ class DailyReadingHistory {
   bool hasAnchor_ = false;
   uint32_t anchorDay_ = 0;
   std::array<uint32_t, DAY_COUNT> seconds_{};
+  uint32_t lifetimeReadingDays_ = 0;
 };

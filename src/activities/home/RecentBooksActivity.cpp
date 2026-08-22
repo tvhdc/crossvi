@@ -117,6 +117,44 @@ constexpr unsigned long CACHED_COVER_BATCH_BUDGET_MS = 75;
 constexpr uint32_t COVER_WORK_IDLE_MS = 2000;
 static_assert(LibraryGridModel::pageSize(0) <= 8, "Cover-ready mask must fit the library page");
 
+#if defined(ENABLE_SERIAL_LOG)
+const char* libraryTabName(const bool all) { return all ? "all" : "recent"; }
+
+const char* catalogPhaseName(const LibraryCatalogStore::Phase phase) {
+  switch (phase) {
+    case LibraryCatalogStore::Phase::Idle:
+      return "idle";
+    case LibraryCatalogStore::Phase::Discovering:
+      return "discover";
+    case LibraryCatalogStore::Phase::Enriching:
+      return "metadata";
+    case LibraryCatalogStore::Phase::Sorting:
+      return "publish";
+    case LibraryCatalogStore::Phase::Ready:
+      return "ready";
+    case LibraryCatalogStore::Phase::Error:
+      return "error";
+    case LibraryCatalogStore::Phase::Updating:
+      return "update";
+  }
+  return "unknown";
+}
+
+const char* orderPhaseName(const LibraryCatalogStore::OrderPhase phase) {
+  switch (phase) {
+    case LibraryCatalogStore::OrderPhase::Idle:
+      return "idle";
+    case LibraryCatalogStore::OrderPhase::Initializing:
+      return "seed";
+    case LibraryCatalogStore::OrderPhase::Merging:
+      return "merge";
+    case LibraryCatalogStore::OrderPhase::Publishing:
+      return "publish";
+  }
+  return "unknown";
+}
+#endif
+
 std::string fallbackBookTitle(const std::string& path) {
   const size_t slash = path.find_last_of('/');
   std::string title = slash == std::string::npos ? path : path.substr(slash + 1);
@@ -132,6 +170,12 @@ LibraryBookFormat formatForPath(const std::string& path) {
   if (FsHelpers::checkFileExtension(path, ".xtch")) return LibraryBookFormat::Xtch;
   if (FsHelpers::checkFileExtension(path, ".xtc")) return LibraryBookFormat::Xtc;
   return LibraryBookFormat::Epub;
+}
+
+bool hasCachedNoCoverMarker(const LibraryBookRecord& book) {
+  if (book.format != LibraryBookFormat::Epub || book.coverBmpPath.empty()) return false;
+  const std::string sharedPath = UITheme::getCoverThumbPath(book.coverBmpPath, Epub::SHARED_THUMB_HEIGHT);
+  return Storage.exists((sharedPath + ".nocover").c_str());
 }
 
 const char* formatLabel(const LibraryBookFormat format) {
@@ -157,7 +201,58 @@ RecentBooksActivity::RecentBooksActivity(GfxRenderer& renderer, MappedInputManag
 
 RecentBooksActivity::~RecentBooksActivity() = default;
 
+#if defined(ENABLE_SERIAL_LOG)
+void RecentBooksActivity::traceCatalogState(const char* const event) {
+  const uint32_t now = static_cast<uint32_t>(millis());
+  const LibraryCatalogStore::Phase phase = LIBRARY_CATALOG.phase();
+  if (phase != libraryTraceCatalogPhase) {
+    LOG_DBG("LIBT", "catalog_phase event=%s from=%s to=%s phase_ms=%u tab_ms=%u count=%u", event,
+            catalogPhaseName(libraryTraceCatalogPhase), catalogPhaseName(phase),
+            static_cast<unsigned>(now - libraryTracePhaseStartedAt),
+            static_cast<unsigned>(now - libraryTraceTabStartedAt), static_cast<unsigned>(LIBRARY_CATALOG.count()));
+    libraryTraceCatalogPhase = phase;
+    libraryTracePhaseStartedAt = now;
+  }
+
+  const LibraryCatalogStore::OrderPhase order = LIBRARY_CATALOG.orderPhase();
+  if (order == libraryTraceOrderPhase) return;
+  if (libraryTraceOrderPhase == LibraryCatalogStore::OrderPhase::Idle) {
+    libraryTraceOrderStartedAt = now;
+    libraryTraceOrderPhaseStartedAt = now;
+  }
+  LOG_DBG("LIBT", "order_phase event=%s from=%s to=%s phase_ms=%u total_ms=%u count=%u sort=%u", event,
+          orderPhaseName(libraryTraceOrderPhase), orderPhaseName(order),
+          static_cast<unsigned>(now - libraryTraceOrderPhaseStartedAt),
+          static_cast<unsigned>(now - libraryTraceOrderStartedAt), static_cast<unsigned>(LIBRARY_CATALOG.count()),
+          static_cast<unsigned>(SETTINGS.librarySort));
+  libraryTraceOrderPhase = order;
+  libraryTraceOrderPhaseStartedAt = now;
+}
+
+void RecentBooksActivity::traceNavigationQueued(const char* const kind, const int delta) {
+  const uint32_t now = static_cast<uint32_t>(millis());
+  const uint32_t id = ++libraryTraceNextNavigationId;
+  if (libraryTraceQueuedFirstId == 0) {
+    libraryTraceQueuedFirstId = id;
+    libraryTraceQueuedAt = now;
+  }
+  libraryTraceQueuedLastId = id;
+  const size_t count = visibleBookCount();
+  const size_t capacity = pageCapacity();
+  const size_t selected =
+      LibraryGridModel::clampIndex(bookSelected() ? selectedBookIndex() : rememberedBookIndex[tabIndex()], count);
+  const size_t page = count == 0 ? 0 : LibraryGridModel::pageStart(selected, count, capacity);
+  LOG_DBG("LIBT", "nav_input id=%u kind=%s delta=%d tab=%s focus=%u page=%u pending=%d/%d/%d render_pending=%u",
+          static_cast<unsigned>(id), kind, delta, libraryTabName(allTab()), static_cast<unsigned>(selectorIndex),
+          static_cast<unsigned>(page), pendingNavigation, pendingTabSwitch, pendingPageSwitch,
+          activityManager.hasPendingRender() ? 1U : 0U);
+}
+#endif
+
 void RecentBooksActivity::loadRecentBooks() {
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t startedAt = static_cast<uint32_t>(millis());
+#endif
   recentBooks.clear();
   const auto& stored = RECENT_BOOKS.getBooks();
   recentBooks.reserve(stored.size());
@@ -175,9 +270,18 @@ void RecentBooksActivity::loadRecentBooks() {
   }
   invalidateRenderPage();
   resetCoverQueue();
+#if defined(ENABLE_SERIAL_LOG)
+  LOG_DBG("LIBT", "recent_projection count=%u stored=%u pinned=%u hide_txt=%u elapsed_ms=%u",
+          static_cast<unsigned>(recentBooks.size()), static_cast<unsigned>(stored.size()),
+          static_cast<unsigned>(RECENT_BOOKS.getPinnedPaths().size()), static_cast<unsigned>(SETTINGS.hideTxtBooks),
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - startedAt));
+#endif
 }
 
 void RecentBooksActivity::rebuildPinnedProjection() {
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t startedAt = static_cast<uint32_t>(millis());
+#endif
   pinnedSourceIndices.clear();
   allSourceIndices.clear();
   allSourceIndicesValid = false;
@@ -192,19 +296,33 @@ void RecentBooksActivity::rebuildPinnedProjection() {
   std::vector<size_t> resolved;
   if (!LIBRARY_CATALOG.loadOrderedIndices(SETTINGS.librarySort, excluded, allSourceIndices, paths, &resolved)) {
     pinnedProjectionValid = false;
+#if defined(ENABLE_SERIAL_LOG)
+    LOG_DBG("LIBT", "projection ready=0 order_building=%u catalog=%u visible=0 pinned=%u elapsed_ms=%u",
+            static_cast<unsigned>(LIBRARY_CATALOG.isOrderBuilding()), static_cast<unsigned>(LIBRARY_CATALOG.count()),
+            static_cast<unsigned>(paths.size()), static_cast<unsigned>(static_cast<uint32_t>(millis()) - startedAt));
+    traceCatalogState("projection");
+#endif
     return;
   }
   allSourceIndicesValid = true;
 
-  if (paths.empty()) return;
-  for (const size_t index : resolved) {
-    if (index == static_cast<size_t>(-1)) continue;
-    if (SETTINGS.hideTxtBooks &&
-        std::find(allSourceIndices.begin(), allSourceIndices.end(), index) == allSourceIndices.end()) {
-      continue;
+  if (!paths.empty()) {
+    for (const size_t index : resolved) {
+      if (index == static_cast<size_t>(-1)) continue;
+      if (SETTINGS.hideTxtBooks &&
+          std::find(allSourceIndices.begin(), allSourceIndices.end(), index) == allSourceIndices.end()) {
+        continue;
+      }
+      pinnedSourceIndices.push_back(index);
     }
-    pinnedSourceIndices.push_back(index);
   }
+#if defined(ENABLE_SERIAL_LOG)
+  LOG_DBG("LIBT", "projection ready=1 order_building=%u catalog=%u visible=%u pinned=%u elapsed_ms=%u",
+          static_cast<unsigned>(LIBRARY_CATALOG.isOrderBuilding()), static_cast<unsigned>(LIBRARY_CATALOG.count()),
+          static_cast<unsigned>(allSourceIndices.size()), static_cast<unsigned>(pinnedSourceIndices.size()),
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - startedAt));
+  traceCatalogState("projection");
+#endif
 }
 
 bool RecentBooksActivity::pinnedProjectionCurrent() const {
@@ -305,6 +423,9 @@ bool RecentBooksActivity::loadVisibleBook(const size_t visibleBookIndex, Library
 
 void RecentBooksActivity::loadRenderPage(const size_t pageStart, const size_t count) {
   if (renderPageValid && renderPageTab == tab && renderPageStart == pageStart && renderPageCount == count) return;
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t startedAt = static_cast<uint32_t>(millis());
+#endif
 
   // The all-books catalog is fixed-size records. Read one visible page with a
   // single file handle instead of opening/closing the catalog once per cover.
@@ -336,6 +457,11 @@ void RecentBooksActivity::loadRenderPage(const size_t pageStart, const size_t co
   renderPageStart = pageStart;
   renderPageCount = count;
   renderPageTab = tab;
+#if defined(ENABLE_SERIAL_LOG)
+  LOG_DBG("LIBT", "page_load tab=%s start=%u requested=%u loaded=%u ok=%u elapsed_ms=%u", libraryTabName(allTab()),
+          static_cast<unsigned>(pageStart), static_cast<unsigned>(count), static_cast<unsigned>(renderPage.size()),
+          static_cast<unsigned>(loaded), static_cast<unsigned>(static_cast<uint32_t>(millis()) - startedAt));
+#endif
 }
 
 uint8_t RecentBooksActivity::viewMode() const { return SETTINGS.libraryView; }
@@ -426,9 +552,19 @@ void RecentBooksActivity::restoreRememberedBook(const bool locateByPath) {
 
 void RecentBooksActivity::selectTab(const Tab next) {
   if (tab == next) return;
+#if defined(ENABLE_SERIAL_LOG)
+  const bool previousAll = allTab();
+#endif
   if (allTab()) cancelAllSearch();
   rememberCurrentBook();
   tab = next;
+#if defined(ENABLE_SERIAL_LOG)
+  libraryTraceTabStartedAt = static_cast<uint32_t>(millis());
+  libraryTraceFirstVisiblePending = true;
+  LOG_DBG("LIBT", "tab_request from=%s to=%s catalog_phase=%s count=%u", libraryTabName(previousAll),
+          libraryTabName(allTab()), catalogPhaseName(LIBRARY_CATALOG.phase()),
+          static_cast<unsigned>(LIBRARY_CATALOG.count()));
+#endif
   if (allTab()) pinnedProjectionValid = false;
   invalidateRenderPage();
   resetCoverQueue();
@@ -436,10 +572,11 @@ void RecentBooksActivity::selectTab(const Tab next) {
   // large or freshly rebuilt catalog can take seconds on X3, so paint the new
   // tab immediately and finish catalog setup in the next loop iteration.
   catalogOpenPending = allTab();
+  const bool warmAllBooks = catalogOpenPending && LIBRARY_CATALOG.isReady() && !LIBRARY_CATALOG.isOrderBuilding();
   preserveTabFocus = allTab();
   if (!allTab()) restoreRememberedBook();
   selectorIndex = 0;
-  requestUpdate();
+  if (!warmAllBooks) requestUpdate();
 }
 
 bool RecentBooksActivity::refreshStorageAvailability() {
@@ -520,18 +657,30 @@ void RecentBooksActivity::queueNavigationInput() {
 
   buttonNavigator_.onContinuous({MappedInputManager::Button::Up}, [this, upTabDelta] {
     pendingTabSwitch += upTabDelta;
+#if defined(ENABLE_SERIAL_LOG)
+    traceNavigationQueued("tab", upTabDelta);
+#endif
     requestUpdate();
   });
   buttonNavigator_.onContinuous({MappedInputManager::Button::Down}, [this, upTabDelta] {
     pendingTabSwitch -= upTabDelta;
+#if defined(ENABLE_SERIAL_LOG)
+    traceNavigationQueued("tab", -upTabDelta);
+#endif
     requestUpdate();
   });
   buttonNavigator_.onContinuous({MappedInputManager::Button::Right}, [this] {
     ++pendingPageSwitch;
+#if defined(ENABLE_SERIAL_LOG)
+    traceNavigationQueued("page", 1);
+#endif
     requestUpdate();
   });
   buttonNavigator_.onContinuous({MappedInputManager::Button::Left}, [this] {
     --pendingPageSwitch;
+#if defined(ENABLE_SERIAL_LOG)
+    traceNavigationQueued("page", -1);
+#endif
     requestUpdate();
   });
   if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
@@ -543,6 +692,9 @@ void RecentBooksActivity::queueNavigationInput() {
   const auto queueShortNavigation = [this](const int delta) {
     if (navigationReleaseGuard.accept(static_cast<uint32_t>(millis()), NAVIGATION_RELEASE_GUARD_MS)) {
       pendingNavigation += delta;
+#if defined(ENABLE_SERIAL_LOG)
+      traceNavigationQueued("cursor", delta);
+#endif
     }
   };
   if (mappedInput.wasReleased(MappedInputManager::Button::Up) &&
@@ -618,7 +770,13 @@ void RecentBooksActivity::queueNavigationInput() {
 }
 
 void RecentBooksActivity::applyPendingNavigation() {
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t traceFirstId = libraryTraceQueuedFirstId;
+  const uint32_t traceLastId = libraryTraceQueuedLastId;
+  const uint32_t traceInputAt = libraryTraceQueuedAt;
+#endif
   const Tab previousTab = tab;
+  const size_t previousFocus = selectorIndex;
   const size_t previousCount = visibleBookCount();
   const size_t previousCapacity = pageCapacity();
   const size_t previousIndex = LibraryGridModel::clampIndex(
@@ -667,6 +825,11 @@ void RecentBooksActivity::applyPendingNavigation() {
       if (selectorIndex > 0) {
         selectorIndex = std::max<size_t>(0, selectorIndex - 1);
         changed = true;
+      } else if (viewMode() == CrossPointSettings::LIBRARY_COVERS && count > 0) {
+        const size_t anchor = LibraryGridModel::clampIndex(rememberedBookIndex[tabIndex()], count);
+        const size_t target = LibraryGridModel::lastIndexOnPage(anchor, count, pageCapacity());
+        selectorIndex = controlCount() + target;
+        changed = true;
       }
       ++pendingNavigation;
     }
@@ -695,12 +858,41 @@ void RecentBooksActivity::applyPendingNavigation() {
     // page/cover snapshot avoids rereading or regenerating every cover for a
     // single button press; invalidate only when the visible page or tab truly
     // changes.
-    if (previousTab != tab || previousCount != currentCount || previousPage != currentPage) {
+    const bool pageInvalidated = previousTab != tab || previousCount != currentCount || previousPage != currentPage;
+    if (pageInvalidated) {
       invalidateRenderPage();
       resetCoverQueue();
     }
+#if defined(ENABLE_SERIAL_LOG)
+    if (traceFirstId != 0) {
+      const uint32_t appliedAt = static_cast<uint32_t>(millis());
+      LOG_DBG("LIBT", "nav_apply ids=%u-%u changed=1 wait_ms=%u tab=%s->%s focus=%u->%u page=%u->%u invalidate=%u",
+              static_cast<unsigned>(traceFirstId), static_cast<unsigned>(traceLastId),
+              static_cast<unsigned>(appliedAt - traceInputAt), libraryTabName(previousTab == Tab::All),
+              libraryTabName(allTab()), static_cast<unsigned>(previousFocus), static_cast<unsigned>(selectorIndex),
+              static_cast<unsigned>(previousPage), static_cast<unsigned>(currentPage), pageInvalidated ? 1U : 0U);
+      if (libraryTraceVisibleFirstId == 0) {
+        libraryTraceVisibleFirstId = traceFirstId;
+        libraryTraceVisibleInputAt = traceInputAt;
+      }
+      libraryTraceVisibleLastId = traceLastId;
+    }
+#endif
     requestUpdate();
   }
+#if defined(ENABLE_SERIAL_LOG)
+  else if (traceFirstId != 0) {
+    LOG_DBG("LIBT", "nav_apply ids=%u-%u changed=0 wait_ms=%u tab=%s focus=%u page=%u",
+            static_cast<unsigned>(traceFirstId), static_cast<unsigned>(traceLastId),
+            static_cast<unsigned>(static_cast<uint32_t>(millis()) - traceInputAt), libraryTabName(allTab()),
+            static_cast<unsigned>(selectorIndex), static_cast<unsigned>(previousPage));
+  }
+  if (traceFirstId != 0) {
+    libraryTraceQueuedFirstId = 0;
+    libraryTraceQueuedLastId = 0;
+    libraryTraceQueuedAt = 0;
+  }
+#endif
 }
 
 void RecentBooksActivity::invalidateRenderPage() {
@@ -772,6 +964,7 @@ void RecentBooksActivity::resetCoverQueue() {
   coverQueueCursor = 0;
   coverQueueReadyMask = 0;
   coverQueueShownMask = 0;
+  coverQueueAbsentMask = 0;
 }
 
 bool RecentBooksActivity::coverCachesRequested() const {
@@ -791,7 +984,7 @@ void RecentBooksActivity::processCoverQueue() {
   const bool needsShared = CrossPointSettings::needsSharedCoverThumbnail(SETTINGS.homeLayout, SETTINGS.libraryView);
   const bool needsCarousel = CrossPointSettings::needsCarouselCoverThumbnail(SETTINGS.homeLayout);
   if (catalogLoading() || (!needsShared && !needsCarousel) || visibleBookCount() == 0 ||
-      coverQueuePageStart == static_cast<size_t>(-1) || (drawsCovers && coverQueueReadyMask != 0)) {
+      coverQueuePageStart == static_cast<size_t>(-1)) {
     return;
   }
 
@@ -822,9 +1015,25 @@ void RecentBooksActivity::processCoverQueue() {
       LOG_INF("COVDBG", "cover record unavailable page_start=%u offset=%u catalog_building=%d",
               static_cast<unsigned>(pageStart), static_cast<unsigned>(offset), LIBRARY_CATALOG.isBuilding());
 #endif
-      if (drawsCovers) coverQueueReadyMask |= static_cast<uint8_t>(1U << offset);
+      if (drawsCovers) {
+        const uint8_t readyBit = static_cast<uint8_t>(1U << offset);
+        coverQueueReadyMask |= readyBit;
+        coverQueueShownMask |= readyBit;
+        coverQueueAbsentMask |= readyBit;
+      }
       ++coverQueueCursor;
       break;
+    }
+
+    const uint8_t coverBit = static_cast<uint8_t>(1U << offset);
+    const bool cachedNoCover = book.coverBmpPath.empty() || hasCachedNoCoverMarker(book);
+    if (cachedNoCover) {
+      if (drawsCovers) {
+        coverQueueShownMask |= coverBit;
+        coverQueueAbsentMask |= coverBit;
+      }
+      ++coverQueueCursor;
+      continue;
     }
 
 #if defined(CROSSVI_COVER_DEBUG)
@@ -841,7 +1050,12 @@ void RecentBooksActivity::processCoverQueue() {
         coverPreparationEpub.reset(new (std::nothrow) Epub(book.path, "/.crosspoint"));
         if (!coverPreparationEpub) {
           generated = false;
-          if (drawsCovers) coverQueueReadyMask |= static_cast<uint8_t>(1U << offset);
+          if (drawsCovers) {
+            const uint8_t readyBit = static_cast<uint8_t>(1U << offset);
+            coverQueueReadyMask |= readyBit;
+            coverQueueShownMask |= readyBit;
+            coverQueueAbsentMask |= readyBit;
+          }
           ++coverQueueCursor;
           break;
         }
@@ -964,7 +1178,12 @@ void RecentBooksActivity::processCoverQueue() {
         coverPreparationXtc.reset(new (std::nothrow) Xtc(book.path, "/.crosspoint"));
         if (!coverPreparationXtc) {
           generated = false;
-          if (drawsCovers) coverQueueReadyMask |= static_cast<uint8_t>(1U << offset);
+          if (drawsCovers) {
+            const uint8_t readyBit = static_cast<uint8_t>(1U << offset);
+            coverQueueReadyMask |= readyBit;
+            coverQueueShownMask |= readyBit;
+            coverQueueAbsentMask |= readyBit;
+          }
           ++coverQueueCursor;
           break;
         }
@@ -1054,13 +1273,16 @@ void RecentBooksActivity::processCoverQueue() {
     // cover still yields immediately after its bounded generation attempt.
     if (drawsCovers) {
       const uint8_t readyBit = static_cast<uint8_t>(1U << offset);
-      if (!cachedBefore || (coverQueueShownMask & readyBit) == 0) coverQueueReadyMask |= readyBit;
-      coverQueueShownMask |= readyBit;
+      if (!generated) coverQueueAbsentMask |= readyBit;
+      if ((coverQueueShownMask & readyBit) == 0) {
+        coverQueueReadyMask |= readyBit;
+        coverQueueShownMask |= readyBit;
+      }
     }
     ++coverQueueCursor;
     if (!cachedBefore || !generated || millis() - batchStarted >= CACHED_COVER_BATCH_BUDGET_MS) break;
   }
-  if (drawsCovers) requestUpdate();
+  if (drawsCovers && coverQueueReadyMask != 0) requestUpdate();
 }
 
 void RecentBooksActivity::processSelectedSourcePreparation() {
@@ -1319,13 +1541,36 @@ void RecentBooksActivity::processAllSearchStep() {
 }
 
 void RecentBooksActivity::onEnter() {
+#if defined(ENABLE_SERIAL_LOG)
+  libraryTraceActivityStartedAt = static_cast<uint32_t>(millis());
+  libraryTraceTabStartedAt = libraryTraceActivityStartedAt;
+  libraryTracePhaseStartedAt = libraryTraceActivityStartedAt;
+  libraryTraceOrderStartedAt = libraryTraceActivityStartedAt;
+  libraryTraceOrderPhaseStartedAt = libraryTraceActivityStartedAt;
+  libraryTraceNextNavigationId = 0;
+  libraryTraceQueuedFirstId = 0;
+  libraryTraceQueuedLastId = 0;
+  libraryTraceQueuedAt = 0;
+  libraryTraceVisibleFirstId = 0;
+  libraryTraceVisibleLastId = 0;
+  libraryTraceVisibleInputAt = 0;
+  libraryTraceCatalogPhase = LIBRARY_CATALOG.phase();
+  libraryTraceOrderPhase = LIBRARY_CATALOG.orderPhase();
+  libraryTraceFirstVisiblePending = true;
+#endif
   Activity::onEnter();
 #if defined(CROSSVI_COVER_DEBUG)
   LOG_INF("COVDBG", "cover diagnostic firmware enabled");
 #endif
   invalidateRenderPage();
   coverQueueLastInputAt = static_cast<uint32_t>(millis());
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t storageProbeStartedAt = static_cast<uint32_t>(millis());
+#endif
   storageAvailable = Storage.probeMedia();
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t storageProbeElapsed = static_cast<uint32_t>(millis()) - storageProbeStartedAt;
+#endif
   recentBooks.clear();
   if (storageAvailable) {
     // Keep activity entry independent of the number and location of recent or
@@ -1371,8 +1616,6 @@ void RecentBooksActivity::onEnter() {
   catalogOpenPending = false;
   restoreReturnAfterSearch = false;
   selectorIndex = 0;
-  lastCatalogCount = LIBRARY_CATALOG.count();
-  lastCatalogPhase = LIBRARY_CATALOG.phase();
   if (pendingReturnState.has_value()) {
     const YourBooksReturnState state = std::move(*pendingReturnState);
     pendingReturnState.reset();
@@ -1392,7 +1635,16 @@ void RecentBooksActivity::onEnter() {
       restoreRememberedBook(true);
     }
   }
-  requestUpdate();
+#if defined(ENABLE_SERIAL_LOG)
+  libraryTraceTabStartedAt = libraryTraceActivityStartedAt;
+  LOG_DBG("LIBT", "enter_ready tab=%s storage=%u recent=%u catalog_phase=%s catalog_count=%u probe_ms=%u total_ms=%u",
+          libraryTabName(allTab()), static_cast<unsigned>(storageAvailable), static_cast<unsigned>(recentBooks.size()),
+          catalogPhaseName(LIBRARY_CATALOG.phase()), static_cast<unsigned>(LIBRARY_CATALOG.count()),
+          static_cast<unsigned>(storageProbeElapsed),
+          static_cast<unsigned>(static_cast<uint32_t>(millis()) - libraryTraceActivityStartedAt));
+#endif
+  const bool warmAllBooks = catalogOpenPending && LIBRARY_CATALOG.isReady() && !LIBRARY_CATALOG.isOrderBuilding();
+  if (!warmAllBooks) requestUpdate();
 }
 
 void RecentBooksActivity::onExit() {
@@ -1554,11 +1806,24 @@ void RecentBooksActivity::loop() {
 
   if (catalogOpenPending && allTab() && !LIBRARY_CATALOG.isBuilding() && !LIBRARY_CATALOG.isOrderBuilding()) {
     catalogOpenPending = false;
+#if defined(ENABLE_SERIAL_LOG)
+    const uint32_t catalogSetupStartedAt = static_cast<uint32_t>(millis());
+#endif
     if (!refreshStorageAvailability()) {
+#if defined(ENABLE_SERIAL_LOG)
+      LOG_DBG("LIBT", "catalog_open ok=0 storage=0 phase=%s count=%u setup_ms=%u tab_ms=%u",
+              catalogPhaseName(LIBRARY_CATALOG.phase()), static_cast<unsigned>(LIBRARY_CATALOG.count()),
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - catalogSetupStartedAt),
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - libraryTraceTabStartedAt));
+#endif
       requestUpdate();
       return;
     }
-    if (!LIBRARY_CATALOG.open()) {
+#if defined(ENABLE_SERIAL_LOG)
+    const uint32_t catalogOpenStartedAt = static_cast<uint32_t>(millis());
+#endif
+    const bool catalogOpened = LIBRARY_CATALOG.open();
+    if (!catalogOpened) {
       const bool stillAvailable = refreshStorageAvailability();
       LIBRARY_CATALOG.consumeLastBuildFailed();
       if (stillAvailable) {
@@ -1574,7 +1839,7 @@ void RecentBooksActivity::loop() {
       rebuildPinnedProjection();
       invalidateRenderPage();
       resetCoverQueue();
-      if (!preserveTabFocus && !searchActive[tabIndex()]) {
+      if (!LIBRARY_CATALOG.isOrderBuilding() && !preserveTabFocus && !searchActive[tabIndex()]) {
         if (!searchQuery[tabIndex()].empty()) {
           allSearchPending = true;
           restoreReturnAfterSearch = true;
@@ -1583,23 +1848,38 @@ void RecentBooksActivity::loop() {
         }
       }
     }
-    requestUpdate();
+#if defined(ENABLE_SERIAL_LOG)
+    const uint32_t catalogOpenedAt = static_cast<uint32_t>(millis());
+    LOG_DBG("LIBT", "catalog_open ok=%u storage=1 phase=%s count=%u open_ms=%u setup_ms=%u tab_ms=%u",
+            static_cast<unsigned>(catalogOpened), catalogPhaseName(LIBRARY_CATALOG.phase()),
+            static_cast<unsigned>(LIBRARY_CATALOG.count()),
+            static_cast<unsigned>(catalogOpenedAt - catalogOpenStartedAt),
+            static_cast<unsigned>(catalogOpenedAt - catalogSetupStartedAt),
+            static_cast<unsigned>(catalogOpenedAt - libraryTraceTabStartedAt));
+    traceCatalogState("open");
+#endif
+    if (!LIBRARY_CATALOG.isBuilding() && !LIBRARY_CATALOG.isOrderBuilding()) requestUpdate();
     return;
   }
 
   constexpr size_t allIndex = static_cast<size_t>(Tab::All);
-  if (allTab() && LIBRARY_CATALOG.isReady() &&
+  if (allTab() && LIBRARY_CATALOG.isReady() && !LIBRARY_CATALOG.isOrderBuilding() &&
       (!pinnedProjectionCurrent() || pinnedProjectionGeneration != LIBRARY_CATALOG.generation())) {
     rememberCurrentBook();
     rebuildPinnedProjection();
-    if (searchActive[allIndex]) {
-      restoreReturnAfterSearch = true;
-    } else {
-      restoreRememberedBook(true);
+    // A missing order sidecar is built cooperatively. Keep the already-visible
+    // loading frame until that derived index is ready instead of refreshing a
+    // second loading-only frame just to change INDEXING to SORTING.
+    if (!LIBRARY_CATALOG.isOrderBuilding()) {
+      if (searchActive[allIndex]) {
+        restoreReturnAfterSearch = true;
+      } else {
+        restoreRememberedBook(true);
+      }
+      invalidateRenderPage();
+      resetCoverQueue();
+      requestUpdate();
     }
-    invalidateRenderPage();
-    resetCoverQueue();
-    requestUpdate();
   }
   if (searchActive[allIndex] && !allSearchJob.running && allSearchResultGeneration != LIBRARY_CATALOG.generation()) {
     searchActive[allIndex] = false;
@@ -1617,24 +1897,10 @@ void RecentBooksActivity::loop() {
     for (uint8_t step = 0;
          step < CATALOG_STEPS_PER_LOOP && (LIBRARY_CATALOG.isBuilding() || LIBRARY_CATALOG.isOrderBuilding()); ++step) {
       LIBRARY_CATALOG.step();
+#if defined(ENABLE_SERIAL_LOG)
+      traceCatalogState("step");
+#endif
       if (millis() - started >= CATALOG_LOOP_BUDGET_MS) break;
-    }
-    const bool phaseChanged = lastCatalogPhase != LIBRARY_CATALOG.phase();
-    const bool progressDue = lastCatalogCount != LIBRARY_CATALOG.count() && millis() - lastCatalogRedrawMs >= 1000;
-    if (phaseChanged || progressDue) {
-      lastCatalogCount = LIBRARY_CATALOG.count();
-      lastCatalogPhase = LIBRARY_CATALOG.phase();
-      lastCatalogRedrawMs = millis();
-      if (allTab() && phaseChanged && LIBRARY_CATALOG.phase() == LibraryCatalogStore::Phase::Ready &&
-          !allSearchPending && !preserveTabFocus) {
-        restoreRememberedBook(true);
-      }
-      if (phaseChanged && LIBRARY_CATALOG.phase() == LibraryCatalogStore::Phase::Ready) {
-        if (allTab()) rebuildPinnedProjection();
-        invalidateRenderPage();
-        resetCoverQueue();
-      }
-      requestUpdate();
     }
   }
   if (LIBRARY_CATALOG.consumeLastBuildFailed()) {
@@ -1777,7 +2043,7 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
             const std::string title = selected.title.empty() ? selected.path : selected.title;
             startActivityForResult(
                 std::make_unique<ReadingStatsActivity>(renderer, mappedInput, title, std::move(presentation),
-                                                       ReadingStatsActivity::Page::Book, false, false),
+                                                       ReadingStatsActivity::Page::Book, false, false, selected.path),
                 [this](const ActivityResult&) { requestUpdate(); });
             return;
           }
@@ -1911,6 +2177,15 @@ void RecentBooksActivity::promptRemoveBook(const std::string& path, const std::s
 }
 
 void RecentBooksActivity::render(RenderLock&&) {
+#if defined(ENABLE_SERIAL_LOG)
+  const uint32_t renderStartedAt = static_cast<uint32_t>(millis());
+  const uint32_t navigationFirstId = libraryTraceVisibleFirstId;
+  const uint32_t navigationLastId = libraryTraceVisibleLastId;
+  const uint32_t navigationInputAt = libraryTraceVisibleInputAt;
+  bool renderPageCacheHit = false;
+  int gridSnapshotHit = -1;
+  bool coverBatchRendered = false;
+#endif
   if (renderBookLoadingOverlay()) return;
   const bool redrawPopupBackground = optionPopup.isActive() && redrawBookActionsBackground;
   if (optionPopup.isActive() && !redrawPopupBackground && optionPopup.processRender(renderer, mappedInput)) return;
@@ -1973,15 +2248,46 @@ void RecentBooksActivity::render(RenderLock&&) {
         LibraryGridModel::clampIndex(bookSelected() ? selectedBookIndex() : rememberedBookIndex[tabIndex()], bookCount);
     const size_t pageStart = LibraryGridModel::pageStart(selected, bookCount, capacity);
     const size_t pageCount = std::min(capacity, bookCount - pageStart);
+    const uint8_t settledCoverMask =
+        pageCount >= 8 ? UINT8_MAX : static_cast<uint8_t>((static_cast<uint16_t>(1U) << pageCount) - 1U);
     const Rect gridRect{0, contentTop, pageWidth, contentHeight};
+#if defined(ENABLE_SERIAL_LOG)
+    renderPageCacheHit =
+        renderPageValid && renderPageTab == tab && renderPageStart == pageStart && renderPageCount == pageCount;
+#endif
     loadRenderPage(pageStart, pageCount);
-    if (!restoreGridSnapshot(gridRect, pageStart, pageCount, gridMode())) {
+    const bool restoredGridSnapshot = restoreGridSnapshot(gridRect, pageStart, pageCount, gridMode());
+#if defined(ENABLE_SERIAL_LOG)
+    gridSnapshotHit = restoredGridSnapshot ? 1 : 0;
+#endif
+    if (!restoredGridSnapshot) {
       // Cached covers are bounded 1-bit BMPs. Read the whole visible page into
       // one framebuffer so six books cost one panel refresh, not six sequential
       // refreshes after the screen is already visible. Missing caches remain
       // cheap placeholders and are generated later by the cooperative queue.
       const bool queueStarted = coverQueuePageStart == pageStart;
       coverQueueShownMask = LibraryGridView::drawStatic(renderer, gridRect, renderPage, gridMode(), true);
+      coverQueueShownMask |= coverQueueAbsentMask;
+      for (size_t offset = 0; offset < renderPage.size() && offset < 8; ++offset) {
+        const uint8_t coverBit = static_cast<uint8_t>(1U << offset);
+        const bool noCover = (coverQueueAbsentMask & coverBit) != 0 || renderPage[offset].coverBmpPath.empty() ||
+                             ((coverQueueShownMask & coverBit) == 0 && hasCachedNoCoverMarker(renderPage[offset]));
+        if (noCover) {
+          coverQueueAbsentMask |= coverBit;
+          if (!renderPage[offset].coverBmpPath.empty()) {
+            renderPage[offset].coverBmpPath.clear();
+            if (!allTab()) {
+              const size_t recentIndex = sourceIndex(pageStart + offset);
+              if (recentIndex < recentBooks.size()) recentBooks[recentIndex].coverBmpPath.clear();
+            }
+          }
+          coverQueueShownMask |= coverBit;
+        }
+        if (renderPage[offset].format == LibraryBookFormat::Text ||
+            renderPage[offset].format == LibraryBookFormat::Markdown) {
+          coverQueueShownMask |= coverBit;
+        }
+      }
       coverQueueReadyMask = 0;
       storeGridSnapshot(gridRect, pageStart, pageCount, gridMode());
       if (!queueStarted) {
@@ -1989,32 +2295,23 @@ void RecentBooksActivity::render(RenderLock&&) {
         coverQueueCursor = 0;
         coverQueueSelected = selected - pageStart;
       }
-      if (coverQueueCursor < pageCount &&
-          (!coverPreparationEpub || !coverPreparationEpub->thumbnailPreparationActive()) &&
-          (!coverPreparationXtc ||
-           (!coverPreparationXtc->isLoadInProgress() && !coverPreparationXtc->thumbnailPreparationActive()))) {
-        requestUpdate();
-      }
     } else if (!showCatalogLoading && coverQueuePageStart == pageStart && coverQueueReadyMask != 0) {
       // Draw every cache hit collected within the loop budget, then publish one
       // framebuffer refresh and one updated page snapshot for the whole batch.
       const uint8_t readyMask = coverQueueReadyMask;
       coverQueueReadyMask = 0;
+#if defined(ENABLE_SERIAL_LOG)
+      coverBatchRendered = true;
+#endif
       for (size_t offset = 0; offset < pageCount; ++offset) {
         if ((readyMask & (1U << offset)) != 0) {
           LibraryGridView::drawCoverAt(renderer, gridRect, renderPage, offset, gridMode());
         }
       }
       storeGridSnapshot(gridRect, pageStart, pageCount, gridMode());
-      if (coverQueueCursor < pageCount &&
-          (!coverPreparationEpub || !coverPreparationEpub->thumbnailPreparationActive()) &&
-          (!coverPreparationXtc ||
-           (!coverPreparationXtc->isLoadInProgress() && !coverPreparationXtc->thumbnailPreparationActive()))) {
-        requestUpdate();
-      }
     }
     const bool coversLoading = !showCatalogLoading && coverQueuePageStart == pageStart &&
-                               (coverQueueCursor < pageCount || coverQueueReadyMask != 0);
+                               (coverQueueShownMask & settledCoverMask) != settledCoverMask;
     if (coversLoading) {
       const int maxTextWidth = std::max(1, pageWidth - 48);
       const std::string loadingLabel = renderer.truncatedText(UI_12_FONT_ID, tr(STR_LOADING_COVER), maxTextWidth - 24);
@@ -2040,6 +2337,10 @@ void RecentBooksActivity::render(RenderLock&&) {
         selected >= 0 ? static_cast<size_t>(selected) : rememberedBookIndex[tabIndex()], bookCount);
     const size_t pageStart = anchor / static_cast<size_t>(pageItems) * static_cast<size_t>(pageItems);
     const size_t pageCount = std::min(static_cast<size_t>(pageItems), bookCount - pageStart);
+#if defined(ENABLE_SERIAL_LOG)
+    renderPageCacheHit =
+        renderPageValid && renderPageTab == tab && renderPageStart == pageStart && renderPageCount == pageCount;
+#endif
     loadRenderPage(pageStart, pageCount);
     if (coverCachesRequested() && coverQueuePageStart != pageStart) {
       coverQueuePageStart = pageStart;
@@ -2100,6 +2401,38 @@ void RecentBooksActivity::render(RenderLock&&) {
   if (popupMessage != StrId::STR_NONE_OPT) {
     GUI.drawPopup(renderer, I18N.get(popupMessage));
   } else {
+#if defined(ENABLE_SERIAL_LOG)
+    const uint32_t displayStartedAt = static_cast<uint32_t>(millis());
+#endif
     renderer.displayBuffer();
+#if defined(ENABLE_SERIAL_LOG)
+    const uint32_t visibleAt = static_cast<uint32_t>(millis());
+    const bool contentReady = !showCatalogLoading && !catalogOpenPending &&
+                              (!allTab() || (LIBRARY_CATALOG.isReady() && pinnedProjectionCurrent()));
+    LOG_DBG("LIBT", "render_visible tab=%s ready=%u loading=%u books=%u view=%u draw_ms=%u display_ms=%u total_ms=%u",
+            libraryTabName(allTab()), static_cast<unsigned>(contentReady), static_cast<unsigned>(showCatalogLoading),
+            static_cast<unsigned>(bookCount), static_cast<unsigned>(viewMode()),
+            static_cast<unsigned>(displayStartedAt - renderStartedAt),
+            static_cast<unsigned>(visibleAt - displayStartedAt), static_cast<unsigned>(visibleAt - renderStartedAt));
+    if (navigationFirstId != 0) {
+      LOG_DBG("LIBT",
+              "nav_visible ids=%u-%u input_to_render_ms=%u input_to_visible_ms=%u page_cache=%u snapshot=%d "
+              "cover_batch=%u draw_ms=%u display_ms=%u",
+              static_cast<unsigned>(navigationFirstId), static_cast<unsigned>(navigationLastId),
+              static_cast<unsigned>(renderStartedAt - navigationInputAt),
+              static_cast<unsigned>(visibleAt - navigationInputAt), renderPageCacheHit ? 1U : 0U, gridSnapshotHit,
+              coverBatchRendered ? 1U : 0U, static_cast<unsigned>(displayStartedAt - renderStartedAt),
+              static_cast<unsigned>(visibleAt - displayStartedAt));
+      libraryTraceVisibleFirstId = 0;
+      libraryTraceVisibleLastId = 0;
+      libraryTraceVisibleInputAt = 0;
+    }
+    if (libraryTraceFirstVisiblePending && contentReady) {
+      LOG_DBG("LIBT", "first_visible tab=%s books=%u tab_ms=%u activity_ms=%u", libraryTabName(allTab()),
+              static_cast<unsigned>(bookCount), static_cast<unsigned>(visibleAt - libraryTraceTabStartedAt),
+              static_cast<unsigned>(visibleAt - libraryTraceActivityStartedAt));
+      libraryTraceFirstVisiblePending = false;
+    }
+#endif
   }
 }

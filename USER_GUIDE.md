@@ -198,12 +198,12 @@ The Settings screen allows you to configure the device's behavior. There are a f
   - "Cover" - The book cover image (Note: this is experimental and may not work as expected)
   - "None" - A blank screen
   - "Cover + Custom" - The book cover image while actively reading, falls back to "Custom" behavior otherwise
+  - "Transparent sleep screen" - Keep the current screen and draw a transparent PNG/BMP overlay on top; see [Sleep Screen](#37-sleep-screen) below for file names
   - "Quick resume" - The text of the last page read will be displayed on the sleep screen and a moon icon is shown on the edge of the screen. Waking up the device will return to the same page of the opened book. This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book.
 
-- **Sleep Screen Cover Mode**: How to display the book cover when "Cover" sleep screen is selected:
-  
-  - "Fit" (default) - Scale the image down to fit centered on the screen, padding with white borders as necessary
-  - "Crop" - Scale the image down and crop as necessary to try to fill the screen (Note: this is experimental and may not work as expected)
+- **Sleep image size**: Scale a cover, custom image, or transparent overlay from 50% to 200%. Front buttons change by 1%; side buttons change by 5%.
+- **Move sleep image**: Preview the device and move the dashed image frame horizontally or vertically. Hold a direction to move faster.
+- Hold **Done** in either editor to restore the default 100% size and centered position.
 
 - **Sleep Screen Cover Filter**: What filter will be applied to the book cover when "Cover" sleep screen is selected:
   
@@ -514,13 +514,19 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 | **Custom**         | A custom image from the SD card (see below). Falls back to **Dark** if no custom image is found.                             |
 | **Cover**          | The cover of the currently open book. Falls back to **Dark** if no book is open.                                             |
 | **Cover + Custom** | The cover of the currently open book, shown only while actively reading. Falls back to **Custom** behavior when not reading. |
+| **Transparent**    | The current screen with a transparent PNG/BMP overlay. Falls back to the current screen with a moon icon if no valid overlay is found. |
 | **None**           | A blank screen.                                                                                                              |
 
 #### Cover settings
 
-When using **Cover** or **Cover + Custom**, two additional settings apply:
+Cover, custom and transparent sleep images start centered and fitted to the screen:
 
-- **Sleep Screen Cover Mode**: **Fit** (scale to fit, white borders) or **Crop** (scale and crop to fill the screen).
+- **Sleep image size**: choose 50–200%; front buttons change by 1% and side buttons by 5%.
+- **Move sleep image**: use Left/Right and Up/Down to move the dashed image frame. Holding a direction moves it faster.
+- Hold **Done** in either editor to restore the default 100% size and centered position.
+
+When using **Cover** or **Cover + Custom**, the cover filter setting also applies:
+
 - **Sleep Screen Cover Filter**: **None** (grayscale), **Contrast** (black & white), or **Inverted** (inverted black & white).
 
 #### Custom images
@@ -529,6 +535,15 @@ To use custom sleep images, set the sleep screen mode to **Custom** or **Cover +
 
 - **Multiple Images (recommended):** Create a `.sleep` directory in the root of the SD card and place any number of `.bmp` images inside. One will be randomly selected each time the device sleeps. (A directory named `sleep` is also accepted as a fallback.)
 - **Single Image:** Place a file named `sleep.bmp` in the root directory. This is used as a fallback if no valid images are found in the `.sleep`/`sleep` directory.
+
+To use **Transparent**, place overlay images on the SD card. CrossVi checks these locations in order:
+
+- `/sleep-overlay.bmp`
+- `/sleep-overlay.png`
+- a random `.bmp` or `.png` image from `/.sleep-overlay`
+- a random `.bmp` or `.png` image from `/sleep-overlay`
+
+Transparent sleep overlays use the same size and position controls. PNG alpha and 32-bit BMP alpha are supported; regular BMP files treat white as transparent.
 
 > [!TIP]
 > For best results:
@@ -708,9 +723,18 @@ For TXT/Markdown, page turns and progress are tracked, but the progress label is
 
 Time-of-day, day-of-week, and reading-streak views require a valid device date and time. Total active time and page-turn counts still work when the clock is unavailable. Nearby statistics are additive display snapshots; they do not modify local counters.
 
-On **This book**, press **Confirm** to edit the stored start timestamp and, for a completed book, the finish timestamp. The editor validates calendar dates and refuses a finish earlier than the start. On **This device**, press **Confirm** and choose **Reading calendar** to browse the retained 730-day local history by month. A filled marker means reading was recorded, an outlined cell is today, and a dash means that older date falls outside retained history; synced peer snapshots are not mixed into this calendar. An invalid clock or legacy totals without dated history are shown as unavailable rather than as empty days.
+On **This book**, press **Confirm** to edit the stored start timestamp and, for a completed book, the finish timestamp. The editor validates calendar dates and refuses a finish earlier than the start. The **Finished books** list opens a completion summary with total reading time, start and finish dates, sessions, page turns, pace, days to finish, and the most common reading time/day where those values are available. Press **Confirm** there to browse the retained daily reading time for that book. On **This device**, open **Reading calendar** to browse the retained 730-day local history by month. A filled marker means reading was recorded, an outlined cell is today, and a dash means that older date falls outside retained history; selecting a day lists each book recorded that day and its reading time. Per-book day details begin with the firmware version that records them, so older calendar totals cannot be split retroactively. Synced peer snapshots are not mixed into this calendar. An invalid clock or legacy totals without dated history are shown as unavailable rather than as empty days.
 
 When **This device** was opened from Home, the same Confirm menu also offers backup and restore for the local device aggregate. Restore requires confirmation and does not include per-book records, dictionary history, or Nearby snapshots. The verified backup is stored at `/.crosspoint/stats_backups/device_stats_v1.bin`; publication and restore use the same CRC/version checks and recoverable write rules as the live statistics store.
+
+Open **Reading achievements** from the Reading statistics menu to browse 38
+milestones grouped by sessions, total reading time, finished books, valid
+forward page turns, longest reading streak, and lifetime days with reading.
+Progress comes directly from this device's canonical statistics. Existing
+history is recognized retroactively in one summary instead of a sequence of
+popups; later milestones are announced after leaving the Reader, never during a
+page turn. A valid forward page turn means a forward turn after the page was
+actually visible long enough to count; it is not a unique-page counter.
 
 ### 5.5 Clippings
 

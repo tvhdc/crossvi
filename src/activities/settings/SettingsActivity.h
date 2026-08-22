@@ -36,6 +36,7 @@ enum class SettingAction {
   ConfirmButtonSettings,
   PowerButtonSettings,
   FirmwareUpdates,
+  SleepImagePosition,
 };
 
 struct SettingInfo {
@@ -163,6 +164,17 @@ struct SettingInfo {
     s.valueSetter = std::move(setter);
     s.key = key;
     s.category = category;
+    return s;
+  }
+
+  static SettingInfo DynamicEnumStrings(StrId nameId, std::vector<std::string> values, std::function<uint8_t()> getter,
+                                        std::function<void(uint8_t)> setter) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::ENUM;
+    s.enumStringValues = std::move(values);
+    s.valueGetter = std::move(getter);
+    s.valueSetter = std::move(setter);
     return s;
   }
 

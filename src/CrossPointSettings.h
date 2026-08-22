@@ -33,9 +33,8 @@ class CrossPointSettings {
 
   enum SLEEP_SCREEN_MODE {
     // Values 1, 4 and 6 are retained for compatibility with settings written
-    // by older firmware. The settings UI exposes only Default, Cover, Custom,
-    // Blank, Reading statistics and the two image-with-statistics variants
-    // through the compact selection helpers below.
+    // by older firmware. The settings UI exposes only the compact selections
+    // mapped by sleepScreenSelection()/sleepScreenMode() below.
     DARK = 0,
     LIGHT = 1,
     CUSTOM = 2,
@@ -46,6 +45,7 @@ class CrossPointSettings {
     READING_CALENDAR = 7,
     COVER_STATS = 8,
     CUSTOM_STATS = 9,
+    TRANSPARENT_CUSTOM = 10,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_SELECTION {
@@ -56,6 +56,7 @@ class CrossPointSettings {
     SLEEP_SCREEN_READING_CALENDAR = 4,
     SLEEP_SCREEN_COVER_STATS = 5,
     SLEEP_SCREEN_CUSTOM_STATS = 6,
+    SLEEP_SCREEN_TRANSPARENT = 7,
     SLEEP_SCREEN_SELECTION_COUNT
   };
   static constexpr uint8_t sleepScreenSelection(const uint8_t mode) {
@@ -73,6 +74,8 @@ class CrossPointSettings {
         return SLEEP_SCREEN_COVER_STATS;
       case CUSTOM_STATS:
         return SLEEP_SCREEN_CUSTOM_STATS;
+      case TRANSPARENT_CUSTOM:
+        return SLEEP_SCREEN_TRANSPARENT;
       case DARK:
       case LIGHT:
       case QUICK_RESUME:
@@ -94,6 +97,8 @@ class CrossPointSettings {
         return COVER_STATS;
       case SLEEP_SCREEN_CUSTOM_STATS:
         return CUSTOM_STATS;
+      case SLEEP_SCREEN_TRANSPARENT:
+        return TRANSPARENT_CUSTOM;
       case SLEEP_SCREEN_DEFAULT:
       default:
         return LIGHT;
@@ -105,6 +110,18 @@ class CrossPointSettings {
     BLACK_AND_WHITE = 1,
     INVERTED_BLACK_AND_WHITE = 2,
     SLEEP_SCREEN_COVER_FILTER_COUNT
+  };
+  enum SLEEP_GHOSTING_TREATMENT {
+    SLEEP_GHOST_FULL_ONLY = 0,
+    SLEEP_GHOST_FAST_FULL = 1,
+    SLEEP_GHOST_FAST_TWICE_FULL = 2,
+    SLEEP_GHOST_FAST_CLEAN_FULL = 3,
+    SLEEP_GHOST_FAST_CLEAN_TWICE_FULL = 4,
+    SLEEP_GHOST_HALF_FULL = 5,
+    SLEEP_GHOST_HALF_TWICE_FULL = 6,
+    SLEEP_GHOST_FULL_TWICE = 7,
+    SLEEP_GHOST_FULL_THREE_TIMES = 8,
+    SLEEP_GHOSTING_TREATMENT_COUNT
   };
 
   // Status bar enum - legacy
@@ -396,10 +413,18 @@ class CrossPointSettings {
 
   // Sleep screen settings
   uint8_t sleepScreen = LIGHT;
-  // Sleep screen cover mode settings
+  // Retained for legacy settings compatibility; sleep images now use Fit as
+  // their baseline and are adjusted with zoom/offset controls.
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
+  // Sleep image transform. Signed X/Y offsets are measured in pixels from the
+  // centered position and clamped to the current screen when rendered.
+  uint8_t sleepScreenImageZoom = 100;
+  int16_t sleepScreenImageOffsetX = 0;
+  int16_t sleepScreenImageOffsetY = 0;
+  // Extra panel conditioning before the mandatory terminal sleep refresh.
+  uint8_t sleepGhostingTreatment = SLEEP_GHOST_FAST_CLEAN_FULL;
   // Status bar settings (statusBar retained for migration only)
   uint8_t statusBar = FULL;
   uint8_t statusBarChapterPageCount = 1;
@@ -433,7 +458,7 @@ class CrossPointSettings {
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   uint8_t forceParagraphIndents = 0;
-  uint8_t textAntiAliasing = 1;
+  uint8_t textAntiAliasing = 0;
   // Reader-only inverse page mode. Menus and the rest of the UI stay light.
   uint8_t readerDarkMode = 0;
   // Short power button click behaviour

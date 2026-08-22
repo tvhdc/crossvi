@@ -8,7 +8,7 @@ The directory name is derived from the book path, not its content. CrossVi also
 stores non-disposable reader data in this tree: `progress.bin`,
 `crossvi_reader_settings.bin`, `stats_v6.bin`, `/.crosspoint/bookmarks/`,
 `/.crosspoint/clippings/`, `/.crosspoint/global_stats_v4.bin`, and
-`/.crosspoint/synced_stats/`. Do not treat the entire `/.crosspoint` directory
+`/.crosspoint/daily_books_v1/`, and `/.crosspoint/synced_stats/`. Do not treat the entire `/.crosspoint` directory
 as disposable cache.
 
 ## XTC/XTCH input contract
@@ -39,6 +39,7 @@ CrossVi stores canonical reading statistics in a small integrity envelope:
 - local device: `/.crosspoint/global_stats_v4.bin`
 - Nearby peer: `/.crosspoint/synced_stats/device_<mac>_v4.bin`
 - user-created local-device backup: `/.crosspoint/stats_backups/device_stats_v1.bin`
+- reading achievement unlocks: `/.crosspoint/achievements_v1.bin`
 
 The envelope is little-endian and has this exact layout:
 
@@ -46,7 +47,7 @@ The envelope is little-endian and has this exact layout:
 | ---: | ---: | --- |
 | 0 | 4 | magic `CVSE` |
 | 4 | 1 | envelope version (`1`) |
-| 5 | 1 | kind (`1` book, `2` global, `3` peer global) |
+| 5 | 1 | kind (`1` book, `2` global, `3` peer global, `4` daily global, `5` achievements) |
 | 6 | 2 | payload length |
 | 8 | N | versioned statistics payload |
 | 8 + N | 4 | CRC32 of the complete header and payload |
@@ -86,9 +87,28 @@ transaction temp is removable pre-publication debris; a committed marker or a
 newer/unreadable marker remains fail-closed.
 
 The explicit device backup contains only the verified local global payload,
-not per-book files or Nearby peer snapshots. It uses kind `2`, CRC/version
+not per-book files, per-book daily breakdowns, or Nearby peer snapshots. It uses kind `2`, CRC/version
 validation, `.tmp` publication and a retained `.bak`; restore republishes and
 verifies both live global primary/backup copies before reporting success.
+
+`/.crosspoint/daily_books_v1/<day>.bin` is a supplemental version-1 breakdown
+for calendar days recorded by this firmware. Each bounded file stores at most
+32 book paths/titles with their exact seconds for that day, followed by CRC32;
+publication retains `.bak` and can recover a valid `.tmp`. This sidecar does not
+change `stats_v6.bin`, the 730-day aggregate history, or Nearby Sync. Older days
+remain valid aggregate history but cannot be retroactively split by book.
+
+`/.crosspoint/daily_history_v1.bin` keeps the exact rolling 730-day history.
+Its internal version 2 appends a monotonic lifetime count of days with recorded
+reading; version 1 is accepted and initializes that count from the retained
+window. Advancing the rolling window never reduces the lifetime value.
+
+The achievement payload is version 1 and contains only an initialized flag and
+a 38-bit unlocked mask. Progress is always derived from canonical local reading
+statistics and the daily-history lifetime-day value. It does not duplicate
+session, duration, page-turn, completion, or streak counters. Publication uses
+the same envelope CRC, staged write, backup, and recovery rules as other reading
+statistics files.
 
 ## `book.bin`
 

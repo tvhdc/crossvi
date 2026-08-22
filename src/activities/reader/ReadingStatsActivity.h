@@ -13,7 +13,7 @@ class ReadingStatsActivity final : public Activity {
 
   ReadingStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string bookTitle,
                        ReadingStatsPresentation presentation, Page initialPage, bool allowBookDateEdit = false,
-                       bool allowDeviceBackup = false);
+                       bool allowDeviceBackup = false, std::string bookPath = {});
 
   void onEnter() override;
   void loop() override;
@@ -24,6 +24,7 @@ class ReadingStatsActivity final : public Activity {
 
  private:
   std::string bookTitle;
+  std::string bookPath;
   ReadingStatsPresentation presentation;
   OptionPopup optionPopup;
   Page page;

@@ -18,6 +18,7 @@
 #include "BookReadingStats.h"
 #include "DailyReadingHistory.h"
 #include "GlobalReadingStats.h"
+#include "ReadingAchievements.h"
 #include "ReadingStatsCodec.h"
 #include "ReadingStatsEnvelope.h"
 #include "ReadingStatsStorage.h"
@@ -631,7 +632,10 @@ bool globalStatsEmpty(const GlobalReadingStats& stats) {
 }
 
 bool historiesEqual(const DailyReadingHistory& left, const DailyReadingHistory& right) {
-  if (left.hasAnchor() != right.hasAnchor() || left.anchorDay() != right.anchorDay()) return false;
+  if (left.hasAnchor() != right.hasAnchor() || left.anchorDay() != right.anchorDay() ||
+      left.lifetimeReadingDays() != right.lifetimeReadingDays()) {
+    return false;
+  }
   if (!left.hasAnchor()) return true;
   for (size_t index = 0; index < DailyReadingHistory::DAY_COUNT; ++index) {
     if (index > left.anchorDay()) break;
@@ -870,6 +874,9 @@ VCodexStatsImporter::ImportResult performImport(const int16_t utcOffsetMinutes, 
   }
 
   if (written && saveMarker(MarkerState::Completed, sourceSize, sourceHash)) {
+    if (!ReadingAchievements::reconcileFromStorage()) {
+      LOG_ERR(LOG_TAG, "Imported reading stats but could not reconcile achievements yet");
+    }
     return VCodexStatsImporter::ImportResult::Imported;
   }
 

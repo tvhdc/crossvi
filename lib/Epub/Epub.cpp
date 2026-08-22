@@ -1969,7 +1969,7 @@ Epub::ThumbnailPreparationStatus Epub::beginThumbnailPreparation(const Thumbnail
   // Page rasters have reader-visible priority. The reader scheduler retries
   // optional cover work after the active image transaction has settled.
   if (imagePreparationActive()) return ThumbnailPreparationStatus::Error;
-  const ThumbnailRequest requested = allThumbnailVariants(request);
+  const ThumbnailRequest& requested = request;
   if (!requested.shared && !requested.carousel) return ThumbnailPreparationStatus::NotNeeded;
 
   const ThumbnailSetStatus available = ensureThumbnails(requested, ThumbnailMode::EmbeddedOnly);
@@ -2055,7 +2055,7 @@ void Epub::cancelThumbnailPreparation() {
 }
 
 Epub::ThumbnailSetStatus Epub::ensureThumbnails(const ThumbnailRequest& request, const ThumbnailMode mode) {
-  const ThumbnailRequest requested = allThumbnailVariants(request);
+  const ThumbnailRequest& requested = request;
   ThumbnailSetStatus result;
   if (!requested.shared && !requested.carousel) return result;
   if (!ensureSourceIdentitySnapshot()) {

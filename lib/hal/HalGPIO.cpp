@@ -235,6 +235,9 @@ void HalGPIO::begin() {
 }
 
 void HalGPIO::update() {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  const bool debounceWasPending = inputMgr.isDebouncePending();
+#endif
   inputMgr.update();
   usbStateChanged = false;
 
@@ -248,6 +251,53 @@ void HalGPIO::update() {
       buttonPressFinish[button] = now;
     }
   }
+
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+  uint8_t pressedMask = 0;
+  uint8_t releasedMask = 0;
+  uint8_t committedMask = 0;
+  for (size_t button = 0; button < BUTTON_COUNT; ++button) {
+    if (inputMgr.wasPressed(button)) pressedMask |= static_cast<uint8_t>(1U << button);
+    if (inputMgr.wasReleased(button)) releasedMask |= static_cast<uint8_t>(1U << button);
+    if (inputMgr.isPressed(button)) committedMask |= static_cast<uint8_t>(1U << button);
+  }
+  InputManager::ButtonAdcSample group1{};
+  InputManager::ButtonAdcSample group2{};
+  inputMgr.readButtonAdc(group1, group2);
+  static bool adcSampleSeen = false;
+  static int previousGroup1Raw = -1;
+  static int previousGroup2Raw = -1;
+  static int previousGroup1Button = -1;
+  static int previousGroup2Button = -1;
+  constexpr int ADC_LOG_DELTA = 96;
+  const auto rawMoved = [](const int current, const int previous) {
+    if (current < 0 || previous < 0) return false;
+    const int delta = current >= previous ? current - previous : previous - current;
+    return delta >= ADC_LOG_DELTA;
+  };
+  const bool adcChanged = !adcSampleSeen || group1.button != previousGroup1Button ||
+                          group2.button != previousGroup2Button || rawMoved(group1.raw, previousGroup1Raw) ||
+                          rawMoved(group2.raw, previousGroup2Raw);
+  if ((group1.raw >= 0 || group2.raw >= 0) && adcChanged) {
+    LOG_DBG("INP", "stage=adc adc1=%d class1=%d adc2=%d class2=%d", group1.raw, group1.button, group2.raw,
+            group2.button);
+  }
+  adcSampleSeen = true;
+  previousGroup1Raw = group1.raw;
+  previousGroup2Raw = group2.raw;
+  previousGroup1Button = group1.button;
+  previousGroup2Button = group2.button;
+
+  const bool debouncePending = inputMgr.isDebouncePending();
+  if (debouncePending != debounceWasPending || pressedMask != 0 || releasedMask != 0) {
+    const char* const stage = pressedMask != 0 || releasedMask != 0 ? "commit"
+                              : debouncePending                     ? "candidate"
+                                                                    : "candidate_cleared";
+    LOG_DBG("INP", "stage=%s pending=%u state=%02x pressed=%02x released=%02x adc1=%d class1=%d adc2=%d class2=%d",
+            stage, debouncePending ? 1U : 0U, committedMask, pressedMask, releasedMask, group1.raw, group1.button,
+            group2.raw, group2.button);
+  }
+#endif
 
   if (deviceIsX3() && usbPollAttempted && now - lastUsbPollMs < X3_USB_POLL_INTERVAL_MS) {
     return;
@@ -348,8 +398,11 @@ HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   }
   const bool usbConnectedNow = usbSampleValid && usbConnected.load(std::memory_order_relaxed);
 
+  // HalPowerManager arms only the physical power-button GPIO before deep
+  // sleep.  Its wake cause is therefore authoritative; the X3 fuel gauge can
+  // legitimately report 0 mA during the first boot samples.
   if ((wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnectedNow) ||
-      (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP && usbConnectedNow)) {
+      (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP)) {
     return WakeupReason::PowerButton;
   }
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_UNKNOWN && usbConnectedNow) {

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -67,6 +68,16 @@ class HalStorage {
     const bool removed = files_.erase(path) != 0;
     if (removed) unreadablePaths_.erase(path);
     return removed;
+  }
+  bool removeDir(const char* path) {
+    const std::string prefix = std::string(path) + "/";
+    for (auto it = files_.begin(); it != files_.end();) {
+      it = it->first.starts_with(prefix) ? files_.erase(it) : std::next(it);
+    }
+    for (auto it = directories_.begin(); it != directories_.end();) {
+      it = (*it == path || it->starts_with(prefix)) ? directories_.erase(it) : std::next(it);
+    }
+    return true;
   }
   bool rename(const char* oldPath, const char* newPath) {
     ++renameCalls_;

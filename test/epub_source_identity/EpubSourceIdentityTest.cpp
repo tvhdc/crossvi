@@ -639,6 +639,22 @@ TEST_F(EpubSourceIdentityTest, ContentOpfKeepsTrimmedPrimaryLanguageAcrossChunke
   EXPECT_EQ(parser.language, "en-US");
 }
 
+TEST_F(EpubSourceIdentityTest, ContentOpfAcceptsArbitraryNamespacePrefixes) {
+  const std::string xml =
+      R"(<pkg:package xmlns:pkg="http://www.idpf.org/2007/opf" xmlns:dct="http://purl.org/dc/elements/1.1/"><pkg:metadata><dct:title>Prefixed title</dct:title><dct:creator>Prefixed author</dct:creator><dct:language>vi</dct:language></pkg:metadata><pkg:manifest><pkg:item id="nav" href="nav.xhtml" properties="nav"/><pkg:item id="chapter" href="chapter.xhtml"/></pkg:manifest><pkg:spine><pkg:itemref idref="chapter"/></pkg:spine></pkg:package>)";
+  const std::string cachePath;
+  const std::string basePath = "OPS/";
+  ContentOpfParser parser(cachePath, basePath, xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), xml.size());
+  ASSERT_TRUE(parser.succeeded());
+  EXPECT_EQ(parser.title, "Prefixed title");
+  EXPECT_EQ(parser.author, "Prefixed author");
+  EXPECT_EQ(parser.language, "vi");
+  EXPECT_EQ(parser.tocNavPath, "OPS/nav.xhtml");
+  EXPECT_TRUE(parseOpfIntoScratchCache(xml));
+}
+
 TEST_F(EpubSourceIdentityTest, ContentOpfPropertiesRequireExactTokens) {
   const std::string xml =
       R"(<package><manifest><item id="decoy" href="wrong.xhtml" properties="scripted navigation cover-image-extra"/><item id="nav" href="nav.xhtml" properties="scripted nav"/><item id="cover" href="cover.jpg" properties="cover-image remote-resources"/></manifest></package>)";
@@ -2029,7 +2045,7 @@ TEST_F(EpubSourceIdentityTest, DirectSdBatchExtractsCoverOnceForSharedAndX3Carou
   EXPECT_EQ(Storage.openWriteAttemptsFor(scratch), 0U);
 }
 
-TEST_F(EpubSourceIdentityTest, DeflatedSingleVariantRequestYieldsThenCreatesBothThumbnailCaches) {
+TEST_F(EpubSourceIdentityTest, DeflatedSingleVariantRequestYieldsThenCreatesOnlyRequestedThumbnailCache) {
   auto bytes =
       makeGuideCoverEpub(R"(<html><body><img src="images/cover.jpg"/></body></html>)", true, std::string(9000U, 'J'));
   identify(bytes);
@@ -2054,9 +2070,12 @@ TEST_F(EpubSourceIdentityTest, DeflatedSingleVariantRequestYieldsThenCreatesBoth
 
   const Epub::ThumbnailSetStatus result = epub.ensureThumbnails({true, false, true});
   EXPECT_EQ(result.shared, Epub::ThumbnailStatus::Ready);
-  EXPECT_EQ(result.carousel, Epub::ThumbnailStatus::Ready);
-  EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 1U);
+  EXPECT_EQ(result.carousel, Epub::ThumbnailStatus::Missing);
+  EXPECT_EQ(ThumbnailConverterStub::callCount, 1U);
+  EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 0U);
   EXPECT_EQ(ThumbnailConverterStub::rangedCallCount, 0U);
+  EXPECT_TRUE(Storage.exists(epub.getThumbBmpPath(Epub::SHARED_THUMB_HEIGHT).c_str()));
+  EXPECT_FALSE(Storage.exists(epub.getThumbBmpPath(Epub::CAROUSEL_THUMB_HEIGHT).c_str()));
   EXPECT_FALSE(Storage.exists(scratch.c_str()));
 }
 
@@ -2133,26 +2152,24 @@ TEST_F(EpubSourceIdentityTest, DeflatedCoverPreparationRejectsSourceReplacementB
   EXPECT_FALSE(Storage.exists((epub.getCachePath() + "/.cover.jpg").c_str()));
 }
 
-TEST_F(EpubSourceIdentityTest, DirectSdBatchRequestingOnlyX4CarouselAlsoCreatesSharedThumbnail) {
+TEST_F(EpubSourceIdentityTest, DirectSdRequestingOnlyX4CarouselCreatesOnlyCarouselThumbnail) {
   identify(makeGuideCoverEpub(R"(<html><body><img src="images/cover.jpg"/></body></html>)"));
   ThumbnailConverterStub::reset(true);
 
   Epub epub(EPUB_PATH, "/.crosspoint");
   const Epub::ThumbnailSetStatus result = epub.ensureThumbnails({false, true, false});
 
-  EXPECT_EQ(result.shared, Epub::ThumbnailStatus::Ready);
+  EXPECT_EQ(result.shared, Epub::ThumbnailStatus::Missing);
   EXPECT_EQ(result.carousel, Epub::ThumbnailStatus::Ready);
-  ASSERT_EQ(ThumbnailConverterStub::callCount, 2U);
-  EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 1U);
-  EXPECT_EQ(ThumbnailConverterStub::calls[0].width, Epub::SHARED_THUMB_WIDTH);
-  EXPECT_EQ(ThumbnailConverterStub::calls[0].height, Epub::SHARED_THUMB_HEIGHT);
-  EXPECT_EQ(ThumbnailConverterStub::calls[1].width, Epub::CAROUSEL_X4_THUMB_WIDTH);
-  EXPECT_EQ(ThumbnailConverterStub::calls[1].height, Epub::CAROUSEL_X4_THUMB_HEIGHT);
-  EXPECT_TRUE(Storage.exists(epub.getThumbBmpPath(Epub::SHARED_THUMB_HEIGHT).c_str()));
+  ASSERT_EQ(ThumbnailConverterStub::callCount, 1U);
+  EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 0U);
+  EXPECT_EQ(ThumbnailConverterStub::calls[0].width, Epub::CAROUSEL_X4_THUMB_WIDTH);
+  EXPECT_EQ(ThumbnailConverterStub::calls[0].height, Epub::CAROUSEL_X4_THUMB_HEIGHT);
+  EXPECT_FALSE(Storage.exists(epub.getThumbBmpPath(Epub::SHARED_THUMB_HEIGHT).c_str()));
   EXPECT_TRUE(Storage.exists(epub.getThumbBmpPath(Epub::CAROUSEL_X4_THUMB_HEIGHT).c_str()));
 }
 
-TEST_F(EpubSourceIdentityTest, DirectSdBatchRequestingOnlySharedAlsoCreatesX3CarouselThumbnail) {
+TEST_F(EpubSourceIdentityTest, DirectSdRequestingOnlySharedCreatesOnlySharedThumbnail) {
   identify(makeGuideCoverEpub(R"(<html><body><img src="images/cover.jpg"/></body></html>)"));
   ThumbnailConverterStub::reset(true);
 
@@ -2160,15 +2177,13 @@ TEST_F(EpubSourceIdentityTest, DirectSdBatchRequestingOnlySharedAlsoCreatesX3Car
   const Epub::ThumbnailSetStatus result = epub.ensureThumbnails({true, false, true});
 
   EXPECT_EQ(result.shared, Epub::ThumbnailStatus::Ready);
-  EXPECT_EQ(result.carousel, Epub::ThumbnailStatus::Ready);
-  ASSERT_EQ(ThumbnailConverterStub::callCount, 2U);
-  EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 1U);
+  EXPECT_EQ(result.carousel, Epub::ThumbnailStatus::Missing);
+  ASSERT_EQ(ThumbnailConverterStub::callCount, 1U);
+  EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 0U);
   EXPECT_EQ(ThumbnailConverterStub::calls[0].width, Epub::SHARED_THUMB_WIDTH);
   EXPECT_EQ(ThumbnailConverterStub::calls[0].height, Epub::SHARED_THUMB_HEIGHT);
-  EXPECT_EQ(ThumbnailConverterStub::calls[1].width, Epub::CAROUSEL_THUMB_WIDTH);
-  EXPECT_EQ(ThumbnailConverterStub::calls[1].height, Epub::CAROUSEL_THUMB_HEIGHT);
   EXPECT_TRUE(Storage.exists(epub.getThumbBmpPath(Epub::SHARED_THUMB_HEIGHT).c_str()));
-  EXPECT_TRUE(Storage.exists(epub.getThumbBmpPath(Epub::CAROUSEL_THUMB_HEIGHT).c_str()));
+  EXPECT_FALSE(Storage.exists(epub.getThumbBmpPath(Epub::CAROUSEL_THUMB_HEIGHT).c_str()));
 }
 
 TEST_F(EpubSourceIdentityTest, DirectSdBatchDoesNothingWhenNoCoverUiNeedsACache) {

@@ -150,7 +150,6 @@ struct FilePathResult {
 struct ReadingStatsActionResult {
   enum class Action : uint8_t {
     EditBookDates,
-    ShowFinishedBooks,
     BackupDeviceStats,
     RestoreDeviceStats,
     ImportVCodexStats,

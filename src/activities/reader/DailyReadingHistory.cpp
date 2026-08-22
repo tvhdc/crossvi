@@ -20,7 +20,8 @@ constexpr char USER_BACKUP_DIRECTORY[] = "/.crosspoint/stats_backups";
 constexpr char USER_BACKUP_PATH[] = "/.crosspoint/stats_backups/daily_history_v1.bin";
 constexpr char USER_BACKUP_PREVIOUS_PATH[] = "/.crosspoint/stats_backups/daily_history_v1.bin.bak";
 constexpr std::array<uint8_t, 4> MAGIC = {'C', 'V', 'D', 'H'};
-constexpr uint8_t VERSION = 1;
+constexpr uint8_t VERSION = 2;
+constexpr uint8_t LEGACY_VERSION = 1;
 constexpr uint8_t FLAG_HAS_ANCHOR = 1;
 constexpr size_t HEADER_SIZE = 12;
 
@@ -63,28 +64,31 @@ PathStatus readPath(const char* path, DailyReadingHistory* history = nullptr) {
     file.close();
     return PathStatus::Invalid;
   }
-  if (header[4] > VERSION) {
+  const uint8_t version = header[4];
+  if (version > VERSION) {
     file.close();
     return PathStatus::NewerVersion;
   }
-  if (header[4] != VERSION || readLe16(header.data(), 6) != DailyReadingHistory::DAY_COUNT ||
-      fileSize != DailyReadingHistory::FILE_SIZE) {
+  const size_t expectedSize =
+      version == LEGACY_VERSION ? DailyReadingHistory::LEGACY_FILE_SIZE : DailyReadingHistory::FILE_SIZE;
+  if ((version != LEGACY_VERSION && version != VERSION) ||
+      readLe16(header.data(), 6) != DailyReadingHistory::DAY_COUNT || fileSize != expectedSize) {
     file.close();
     return PathStatus::Invalid;
   }
 
-  auto encoded = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[DailyReadingHistory::FILE_SIZE]);
+  auto encoded = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[expectedSize]);
   if (!encoded) {
     file.close();
     return PathStatus::IoError;
   }
   memcpy(encoded.get(), header.data(), header.size());
-  const size_t remaining = DailyReadingHistory::FILE_SIZE - header.size();
+  const size_t remaining = expectedSize - header.size();
   if (file.read(encoded.get() + header.size(), remaining) != static_cast<int>(remaining) || !file.close()) {
     return PathStatus::IoError;
   }
-  const uint32_t storedCrc = readLe32(encoded.get(), DailyReadingHistory::FILE_SIZE - sizeof(uint32_t));
-  if (storedCrc != ReadingStatsEnvelope::crc32(encoded.get(), DailyReadingHistory::FILE_SIZE - sizeof(uint32_t))) {
+  const uint32_t storedCrc = readLe32(encoded.get(), expectedSize - sizeof(uint32_t));
+  if (storedCrc != ReadingStatsEnvelope::crc32(encoded.get(), expectedSize - sizeof(uint32_t))) {
     return PathStatus::Invalid;
   }
 
@@ -109,6 +113,10 @@ PathStatus readPath(const char* path, DailyReadingHistory* history = nullptr) {
         history->seedExactDay(anchor - static_cast<uint32_t>(index),
                               readLe32(encoded.get(), HEADER_SIZE + index * sizeof(uint32_t)));
       }
+    }
+    if (version == VERSION) {
+      history->raiseLifetimeReadingDaysTo(
+          readLe32(encoded.get(), HEADER_SIZE + DailyReadingHistory::DAY_COUNT * sizeof(uint32_t)));
     }
   }
   return PathStatus::Valid;
@@ -234,6 +242,7 @@ bool DailyReadingHistory::save() const {
   for (size_t index = 0; index < DAY_COUNT; ++index) {
     writeLe32(encoded.get(), HEADER_SIZE + index * sizeof(uint32_t), seconds_[index]);
   }
+  writeLe32(encoded.get(), HEADER_SIZE + DAY_COUNT * sizeof(uint32_t), lifetimeReadingDays_);
   writeLe32(encoded.get(), FILE_SIZE - sizeof(uint32_t),
             ReadingStatsEnvelope::crc32(encoded.get(), FILE_SIZE - sizeof(uint32_t)));
   return ReadingStatsStorage::writeAtomic(HISTORY_PATH, HISTORY_BACKUP_PATH, primaryStatus == PathStatus::Valid,
@@ -262,7 +271,15 @@ void DailyReadingHistory::seedExactDay(const uint32_t day, const uint32_t second
   if (seconds != UNKNOWN_SECONDS && seconds > 24u * 3600u) return;
   if (!hasAnchor_ || day > anchorDay_) advanceTo(day);
   if (!hasAnchor_ || day > anchorDay_ || anchorDay_ - day >= DAY_COUNT) return;
-  seconds_[anchorDay_ - day] = seconds;
+  uint32_t& current = seconds_[anchorDay_ - day];
+  if ((current == 0 || current == UNKNOWN_SECONDS) && seconds != 0 && seconds != UNKNOWN_SECONDS) {
+    lifetimeReadingDays_ = addReadingStatsSaturated(lifetimeReadingDays_, 1);
+  }
+  current = seconds;
+}
+
+void DailyReadingHistory::raiseLifetimeReadingDaysTo(const uint32_t days) {
+  lifetimeReadingDays_ = std::max(lifetimeReadingDays_, days);
 }
 
 bool DailyReadingHistory::apply(const DailyReadingHistoryDelta& delta) {
@@ -272,7 +289,10 @@ bool DailyReadingHistory::apply(const DailyReadingHistoryDelta& delta) {
     advanceTo(day);
     if (!hasAnchor_ || day > anchorDay_ || anchorDay_ - day >= DAY_COUNT) continue;
     uint32_t& value = seconds_[anchorDay_ - day];
-    if (value == UNKNOWN_SECONDS) value = 0;
+    if (value == 0 || value == UNKNOWN_SECONDS) {
+      value = 0;
+      lifetimeReadingDays_ = addReadingStatsSaturated(lifetimeReadingDays_, 1);
+    }
     value = std::min<uint32_t>(24u * 3600u, addReadingStatsSaturated(value, delta.seconds(index)));
   }
   return true;
@@ -333,6 +353,7 @@ DailyReadingHistory::BackupResult DailyReadingHistory::createBackup() {
   for (size_t index = 0; index < DAY_COUNT; ++index) {
     writeLe32(encoded.get(), HEADER_SIZE + index * sizeof(uint32_t), history->seconds_[index]);
   }
+  writeLe32(encoded.get(), HEADER_SIZE + DAY_COUNT * sizeof(uint32_t), history->lifetimeReadingDays_);
   writeLe32(encoded.get(), FILE_SIZE - sizeof(uint32_t),
             ReadingStatsEnvelope::crc32(encoded.get(), FILE_SIZE - sizeof(uint32_t)));
   return ReadingStatsStorage::writeAtomic(USER_BACKUP_PATH, USER_BACKUP_PREVIOUS_PATH,

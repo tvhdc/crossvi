@@ -8,6 +8,7 @@
 #include "BookReadingStats.h"
 #include "DailyReadingHistory.h"
 #include "GlobalReadingStats.h"
+#include "ReadingAchievements.h"
 #include "VCodexStatsImporter.h"
 
 namespace {
@@ -159,6 +160,15 @@ TEST(VCodexStatsImporter, ImportsOnceAndKeepsUnavailablePageMetricsExplicit) {
   EXPECT_EQ(seconds, 3600u);
   EXPECT_TRUE(history.valueForDay(20666u - 10957u, seconds));
   EXPECT_EQ(seconds, 1800u);
+  EXPECT_EQ(history.lifetimeReadingDays(), 2u);
+
+  ReadingAchievementState achievements;
+  ASSERT_EQ(ReadingAchievements::load(achievements), ReadingAchievements::LoadStatus::Ok);
+  EXPECT_TRUE(achievements.isUnlocked(0));
+  EXPECT_TRUE(achievements.isUnlocked(6));
+  EXPECT_TRUE(achievements.isUnlocked(13));
+  EXPECT_TRUE(achievements.isUnlocked(33));
+  EXPECT_EQ(achievements.unlockedCount(), 4);
 
   VCodexStatsImportSummary summary;
   EXPECT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::AlreadyAsked);

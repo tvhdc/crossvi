@@ -132,8 +132,11 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // supported non-uniform values. Persist the physical margin, not its index.
   doc["screenMargin"] = s.screenMargin;
   // Sleep screen also uses a dynamic enum so legacy numeric values can remain
-  // readable while the UI exposes only the four canonical choices.
+  // readable while the UI exposes only the compact canonical choices.
   doc["sleepScreen"] = s.sleepScreen;
+  doc["sleepScreenImageZoom"] = s.sleepScreenImageZoom;
+  doc["sleepScreenImageOffsetX"] = s.sleepScreenImageOffsetX;
+  doc["sleepScreenImageOffsetY"] = s.sleepScreenImageOffsetY;
   // SD card font family name — not in SettingsList, save manually
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
@@ -343,6 +346,23 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       if (needsResave) *needsResave = true;
     }
   }
+
+  const auto loadSleepImageTransform = [&](const char* key, uint8_t& field, const int min, const int max) {
+    const int raw = doc[key] | static_cast<int>(field);
+    const int bounded = std::clamp(raw, min, max);
+    field = static_cast<uint8_t>(bounded);
+    if (!doc[key].isNull() && raw != bounded && needsResave) *needsResave = true;
+  };
+  loadSleepImageTransform("sleepScreenImageZoom", s.sleepScreenImageZoom, 50, 200);
+
+  const auto loadSleepImageOffset = [&](const char* key, int16_t& field) {
+    const int raw = doc[key] | static_cast<int>(field);
+    const int bounded = std::clamp(raw, -1024, 1024);
+    field = static_cast<int16_t>(bounded);
+    if (!doc[key].isNull() && raw != bounded && needsResave) *needsResave = true;
+  };
+  loadSleepImageOffset("sleepScreenImageOffsetX", s.sleepScreenImageOffsetX);
+  loadSleepImageOffset("sleepScreenImageOffsetY", s.sleepScreenImageOffsetY);
 
   if (doc["sleepTimeoutMinutes"].isNull() && !doc["sleepTimeout"].isNull()) {
     const uint8_t legacyValue =

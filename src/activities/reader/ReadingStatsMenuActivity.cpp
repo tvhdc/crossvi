@@ -12,6 +12,7 @@
 #include "FinishedBooksActivity.h"
 #include "GlobalReadingStats.h"
 #include "MappedInputManager.h"
+#include "ReadingAchievementsActivity.h"
 #include "ReadingCalendarActivity.h"
 #include "ReadingStatsActivity.h"
 #include "ReadingStatsPresentation.h"
@@ -20,11 +21,12 @@
 #include "components/UITheme.h"
 
 namespace {
-constexpr std::array<StrId, 3> TITLES = {StrId::STR_STATS_OVERVIEW, StrId::STR_STATS_BY_BOOK,
-                                         StrId::STR_STATS_CALENDAR};
-constexpr std::array<StrId, 3> SUBTITLES = {StrId::STR_STATS_OVERVIEW_SUBTITLE, StrId::STR_STATS_BY_BOOK_SUBTITLE,
-                                            StrId::STR_STATS_CALENDAR_SUBTITLE};
-constexpr std::array<UIIcon, 3> ICONS = {UIIcon::Book, UIIcon::Library, UIIcon::Recent};
+constexpr std::array<StrId, 5> TITLES = {StrId::STR_STATS_OVERVIEW, StrId::STR_STATS_BY_BOOK, StrId::STR_STATS_CALENDAR,
+                                         StrId::STR_FINISHED_BOOKS, StrId::STR_READING_ACHIEVEMENTS};
+constexpr std::array<StrId, 5> SUBTITLES = {
+    StrId::STR_STATS_OVERVIEW_SUBTITLE, StrId::STR_STATS_BY_BOOK_SUBTITLE, StrId::STR_STATS_CALENDAR_SUBTITLE,
+    StrId::STR_STATS_FINISHED_BOOKS_SUBTITLE, StrId::STR_READING_ACHIEVEMENTS_SUBTITLE};
+constexpr std::array<UIIcon, 5> ICONS = {UIIcon::Book, UIIcon::Library, UIIcon::Recent, UIIcon::Book, UIIcon::Trophy};
 
 bool loadDevicePresentation(ReadingStatsPresentation& presentation) {
   if (!Storage.probeMedia()) return false;
@@ -86,11 +88,6 @@ void ReadingStatsMenuActivity::handleStatsAction(const ActivityResult& result) {
     setNotice(Notice::None);
     return;
   }
-  if (action->action == ReadingStatsActionResult::Action::ShowFinishedBooks) {
-    startActivityForResult(std::make_unique<FinishedBooksActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) { setNotice(Notice::None); });
-    return;
-  }
   if (action->action == ReadingStatsActionResult::Action::BackupDeviceStats) {
     setNotice(GlobalReadingStats::createBackup() == GlobalReadingStats::BackupResult::Ok ? Notice::BackupDone
                                                                                          : Notice::BackupFailed);
@@ -141,6 +138,16 @@ void ReadingStatsMenuActivity::openSelected() {
       break;
     case 2:
       openCalendar();
+      break;
+    case 3:
+      setNotice(Notice::None);
+      startActivityForResult(std::make_unique<FinishedBooksActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { setNotice(Notice::None); });
+      break;
+    case 4:
+      setNotice(Notice::None);
+      startActivityForResult(std::make_unique<ReadingAchievementsActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { setNotice(Notice::None); });
       break;
     default:
       break;

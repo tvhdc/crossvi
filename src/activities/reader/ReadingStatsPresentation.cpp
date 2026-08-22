@@ -21,6 +21,13 @@ ReadingStatsChart<N> buildChart(const std::array<uint32_t, N>& values, const uin
   return chart;
 }
 
+template <size_t N>
+ReadingStatsMetric dominantBucket(const std::array<uint32_t, N>& values) {
+  const auto found = std::max_element(values.begin(), values.end());
+  if (found == values.end() || *found == 0) return ReadingStatsMetric::unavailable();
+  return ReadingStatsMetric::known(static_cast<uint32_t>(std::distance(values.begin(), found)));
+}
+
 BookReadingStatsPresentation buildBookPresentation(const BookReadingStats& stats, const bool trusted,
                                                    const ReadingStatsDateTime* now, const ReadingStatsMetric progress,
                                                    const bool hasFreshTimeEstimate) {
@@ -103,6 +110,12 @@ BookReadingStatsPresentation buildBookPresentation(const BookReadingStats& stats
       model.finishDate = ReadingStatsMetric::estimated(readingStatsMinuteIndex(estimate.date, minuteOfDay));
     }
   }
+  if (stats.isCompleted && dateIsNotFuture(stats.startDate) && dateIsNotFuture(stats.finishedDate) &&
+      compareReadingStatsDate(stats.finishedDate, stats.startDate) >= 0) {
+    model.completionDays = ReadingStatsMetric::known(readingSpanDaysInclusive(stats.startDate, stats.finishedDate));
+  }
+  model.preferredTimeBucket = dominantBucket(stats.timeOfDaySeconds);
+  model.preferredWeekday = dominantBucket(stats.dayOfWeekSeconds);
   model.timeOfDay = buildChart(stats.timeOfDaySeconds, stats.totalReadingSeconds, true);
   model.dayOfWeek = buildChart(stats.dayOfWeekSeconds, stats.totalReadingSeconds, true);
   return model;

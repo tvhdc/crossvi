@@ -19,12 +19,41 @@ RTC_NOINIT_ATTR char panicMessage[256];
 RTC_NOINIT_ATTR HalSystem::StackFrame panicStack[MAX_PANIC_STACK_DEPTH];
 RTC_NOINIT_ATTR uint32_t panicCaptureMagic;
 
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+struct RiscvPanicRegisters {
+  uint32_t mepc;
+  uint32_t ra;
+  uint32_t sp;
+  uint32_t fp;
+  uint32_t mcause;
+  uint32_t mtval;
+  uint32_t mstatus;
+  uint32_t captured;
+};
+RTC_NOINIT_ATTR RiscvPanicRegisters panicRiscvRegisters;
+#endif
+
 extern "C" {
 
 void __real_panic_abort(const char* message);
 void __real_panic_print_backtrace(const void* frame, int core);
 
 static DRAM_ATTR const char PANIC_REASON_UNKNOWN[] = "(unknown panic reason)";
+
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+void IRAM_ATTR captureRiscvPanicRegisters(const void* frame) {
+  const auto* exceptionFrame = static_cast<const esp_cpu_frame_t*>(frame);
+  panicRiscvRegisters.mepc = exceptionFrame->mepc;
+  panicRiscvRegisters.ra = exceptionFrame->ra;
+  panicRiscvRegisters.sp = exceptionFrame->sp;
+  panicRiscvRegisters.fp = exceptionFrame->s0;
+  panicRiscvRegisters.mcause = exceptionFrame->mcause;
+  panicRiscvRegisters.mtval = exceptionFrame->mtval;
+  panicRiscvRegisters.mstatus = exceptionFrame->mstatus;
+  panicRiscvRegisters.captured = PANIC_CAPTURE_MAGIC;
+}
+#endif
+
 void IRAM_ATTR __wrap_panic_abort(const char* message) {
   panicCaptureMagic = PANIC_CAPTURE_MAGIC;
   if (!message) message = PANIC_REASON_UNKNOWN;
@@ -47,6 +76,10 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
   for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
     panicStack[i].sp = 0;
   }
+
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+  captureRiscvPanicRegisters(frame);
+#endif
 
   // Copied from components/esp_system/port/arch/riscv/panic_arch.c
   uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
@@ -127,6 +160,9 @@ void clearPanic() {
   for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
     panicStack[i].sp = 0;
   }
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+  panicRiscvRegisters.captured = 0;
+#endif
   clearLastLogs();
 }
 
@@ -140,13 +176,25 @@ std::string getPanicInfo(bool full) {
     info += CROSSPOINT_VERSION;
     info += "\n\nPanic reason: " + std::string(panicMessage);
     info += "\n\nLast logs:\n" + getLastLogs();
-    info += "\n\nStack memory:\n";
 
     auto toHex = [](uint32_t value) {
       char buffer[9];
       snprintf(buffer, sizeof(buffer), "%08X", value);
       return std::string(buffer);
     };
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+    if (panicRiscvRegisters.captured == PANIC_CAPTURE_MAGIC) {
+      info += "\n\nRISC-V exception registers:\n";
+      info += "MEPC (faulting instruction): 0x" + toHex(panicRiscvRegisters.mepc);
+      info += "\nRA (caller): 0x" + toHex(panicRiscvRegisters.ra);
+      info += "\nSP (stack pointer): 0x" + toHex(panicRiscvRegisters.sp);
+      info += "\nS0/FP (frame pointer): 0x" + toHex(panicRiscvRegisters.fp);
+      info += "\nMCAUSE: 0x" + toHex(panicRiscvRegisters.mcause);
+      info += "\nMTVAL (fault address/value): 0x" + toHex(panicRiscvRegisters.mtval);
+      info += "\nMSTATUS: 0x" + toHex(panicRiscvRegisters.mstatus);
+    }
+#endif
+    info += "\n\nStack memory:\n";
     for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
       if (panicStack[i].sp == 0) {
         break;

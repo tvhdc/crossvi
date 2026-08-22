@@ -31,6 +31,7 @@ inline void delay(unsigned long ms) {
   std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
 inline void yield() { std::this_thread::yield(); }
+inline uint32_t getCpuFrequencyMhz() { return 160; }
 
 #include "HardwareSerial.h"
 #include "Print.h"

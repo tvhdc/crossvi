@@ -7,6 +7,7 @@
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <JsonSettingsIO.h>
@@ -22,6 +23,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "DailyBookReadingHistory.h"
 #include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
 #include "PerBookReaderSettingsBridge.h"
@@ -29,6 +31,7 @@
 #include "ProgressFile.h"
 #include "ProgressFileCodec.h"
 #include "ReaderUtils.h"
+#include "ReadingAchievements.h"
 #include "ReadingStatsActivity.h"
 #include "ReadingStatsCompletionTransaction.h"
 #include "ReadingStatsDateEditActivity.h"
@@ -143,6 +146,7 @@ uint8_t normalizeAutoPageTurnSeconds(const uint8_t seconds) {
 
 void TxtReaderActivity::onEnter() {
   Activity::onEnter();
+  readerWaveform.beginTransition();
 
   if (!txt) {
     return;
@@ -210,6 +214,7 @@ void TxtReaderActivity::onEnter() {
 
 void TxtReaderActivity::onExit() {
   Activity::onExit();
+  readerWaveform.leaveReader();
 
   pendingPageTurnDelta = 0;
   pageIndexing.store(false, std::memory_order_release);
@@ -239,6 +244,7 @@ void TxtReaderActivity::onExit() {
 }
 
 void TxtReaderActivity::onPause() {
+  readerWaveform.leaveReader();
   pendingPageTurnDelta = 0;
   clearBlockingFeedback();
   consumeReadingViewSignal();
@@ -249,6 +255,7 @@ void TxtReaderActivity::onPause() {
 }
 
 void TxtReaderActivity::onResume() {
+  readerWaveform.beginTransition();
   sdFontSystem.ensureLoaded(renderer, false);
   // A child activity owns the panel until this reader successfully redraws.
   pendingReadingViewSignal.store(0, std::memory_order_release);
@@ -383,14 +390,13 @@ void TxtReaderActivity::loop() {
   bool prevTriggered = pageGesture.prev;
   bool nextTriggered = pageGesture.next;
   bool drainingQueuedTurn = false;
-  if (!prevTriggered && !nextTriggered && pendingPageTurnDelta != 0 && !inputEdge && !readerInputHeld &&
-      !activityManager.hasPendingRender()) {
-    bool forward = false;
-    if (pendingPageTurnDelta < 0 && currentPage <= 0) {
-      pendingPageTurnDelta = 0;
-    } else if (ReaderUtils::takeQueuedPageTurn(pendingPageTurnDelta, forward)) {
-      prevTriggered = !forward;
-      nextTriggered = forward;
+  int queuedDelta = 0;
+  if (!prevTriggered && !nextTriggered && ReaderUtils::queuedPageTurns(pendingPageTurnDelta) != 0 && !inputEdge &&
+      !readerInputHeld && !activityManager.hasPendingRender()) {
+    queuedDelta = ReaderUtils::takeQueuedPageTurns(pendingPageTurnDelta);
+    if (queuedDelta != 0) {
+      prevTriggered = queuedDelta < 0;
+      nextTriggered = queuedDelta > 0;
       drainingQueuedTurn = true;
     }
   }
@@ -411,24 +417,25 @@ void TxtReaderActivity::loop() {
     return;
   }
 
-  const int pageDelta = drainingQueuedTurn ? 1 : (pageGesture.longPress ? 10 : 1);
-  const int requestedDelta = nextTriggered ? pageDelta : -pageDelta;
+  const int pageDelta = drainingQueuedTurn ? std::abs(queuedDelta) : (pageGesture.longPress ? 10 : 1);
+  const int requestedDelta = drainingQueuedTurn ? queuedDelta : (nextTriggered ? pageDelta : -pageDelta);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   uint32_t turnSequence = debugTurnSequence.load(std::memory_order_relaxed);
   if (!drainingQueuedTurn) {
     turnSequence = debugTurnSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     ReaderUtils::logPageTurnMetric("text", "input", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
-                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire), pendingPageTurnDelta,
-                                   static_cast<uint32_t>(millis()));
+                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire),
+                                   ReaderUtils::queuedPageTurns(pendingPageTurnDelta), static_cast<uint32_t>(millis()));
   }
 #endif
-  if (!drainingQueuedTurn && pendingPageTurnDelta != 0) {
+  if (!drainingQueuedTurn && ReaderUtils::queuedPageTurns(pendingPageTurnDelta) != 0) {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     ReaderUtils::logPageTurnMetric("text", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
-                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire), pendingPageTurnDelta,
-                                   static_cast<uint32_t>(millis()));
+                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire),
+                                   ReaderUtils::queuedPageTurns(pendingPageTurnDelta), static_cast<uint32_t>(millis()));
 #endif
+    requestUpdate();
     return;
   }
 
@@ -438,10 +445,11 @@ void TxtReaderActivity::loop() {
     ReaderUtils::queuePageTurns(pendingPageTurnDelta, requestedDelta);
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     ReaderUtils::logPageTurnMetric("text", "queued", turnSequence, requestedDelta > 0 ? 1 : -1, -1,
-                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire), pendingPageTurnDelta,
-                                   static_cast<uint32_t>(millis()));
+                                   lastSuccessfullyRenderedPage.load(std::memory_order_acquire),
+                                   ReaderUtils::queuedPageTurns(pendingPageTurnDelta), static_cast<uint32_t>(millis()));
 #endif
     lastPageTurnTime = millis();
+    requestUpdate();
     return;
   }
 
@@ -483,6 +491,26 @@ void TxtReaderActivity::loop() {
       requestUpdate();
     }
   }
+}
+
+bool TxtReaderActivity::retargetQueuedPageTurns() {
+  const int delta = ReaderUtils::takeQueuedPageTurns(pendingPageTurnDelta);
+  if (delta == 0 || totalPages <= 0) return false;
+
+  const int previousPage = currentPage;
+  currentPage = std::clamp(currentPage + delta, 0, totalPages - 1);
+  const int applied = currentPage - previousPage;
+  if (delta - applied > 0) {
+    // Reaching the last page and leaving the book are separate visible states.
+    ReaderUtils::queuePageTurns(pendingPageTurnDelta, 1);
+  }
+  if (applied == 0) return false;
+
+  consumeReadingViewSignal();
+  stopReadingPage(applied > 0, static_cast<uint32_t>(millis()));
+  completionAttemptBlocked = false;
+  lastPageTurnTime = millis();
+  return true;
 }
 
 bool TxtReaderActivity::handleReaderShortcut(const uint8_t function) {
@@ -1107,6 +1135,7 @@ void TxtReaderActivity::render(RenderLock&&) {
   // Bounds check
   if (currentPage < 0) currentPage = 0;
   if (currentPage >= totalPages) currentPage = totalPages - 1;
+  retargetQueuedPageTurns();
 
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   ReaderUtils::logPageTurnMetric("text", "render_begin", debugTurnSequence.load(std::memory_order_relaxed), 0, -1,
@@ -1132,7 +1161,12 @@ void TxtReaderActivity::render(RenderLock&&) {
   if (!pageReused && pageIndexScratchOffset) {
     releasePageIndexScratch();
   }
-  if (!pageReused && !loadPageAtOffset(offset, currentPageLines, nextOffset, &currentPageLineOffsets)) {
+  const bool pageLoadFailed =
+      !pageReused && !loadPageAtOffset(offset, currentPageLines, nextOffset, &currentPageLineOffsets);
+  if (retargetQueuedPageTurns()) {
+    return;
+  }
+  if (pageLoadFailed) {
     lastSuccessfullyRenderedPage.store(-1, std::memory_order_release);
     signalReadingPageHidden();
     renderer.clearScreen();
@@ -1149,7 +1183,9 @@ void TxtReaderActivity::render(RenderLock&&) {
 #else
   const uint32_t pageLoadedMs = readerOpenStagesPending ? static_cast<uint32_t>(millis()) : 0;
 #endif
-  renderCurrentPage();
+  if (!renderCurrentPage()) {
+    return;
+  }
   if (readerOpenStagesPending) {
     activityManager.reportReaderOpenStage("text", "render_display", pageLoadedMs);
     readerOpenStagesPending = false;
@@ -1243,7 +1279,7 @@ void TxtReaderActivity::render(RenderLock&&) {
   lastPageTurnTime = millis();
 }
 
-void TxtReaderActivity::renderCurrentPage() {
+bool TxtReaderActivity::renderCurrentPage() {
   auto* fcm = renderer.getFontCacheManager();
   if (fcm) {
     // Keep the scan and inflate outside renderPage(). The render task has a
@@ -1253,12 +1289,11 @@ void TxtReaderActivity::renderCurrentPage() {
     prewarmCurrentPageFont();
     scope.endScanAndPrewarm();
     renderer.clearScreen();
-    renderPage();
-    return;  // scope clears the per-page font cache on the way out.
+    return renderPage();  // scope clears the per-page font cache on the way out.
   }
 
   renderer.clearScreen();
-  renderPage();
+  return renderPage();
 }
 
 void TxtReaderActivity::prewarmCurrentPageFont() {
@@ -1303,7 +1338,7 @@ void TxtReaderActivity::renderCurrentPageLines() const {
   }
 }
 
-void TxtReaderActivity::renderPage() {
+bool TxtReaderActivity::renderPage() {
   ClippingPageTools::HighlightPlan clippingHighlights;
   const uint32_t pageStart =
       currentPage >= 0 && static_cast<size_t>(currentPage) < pageOffsetCount ? pageOffsets[currentPage] : 0;
@@ -1335,14 +1370,15 @@ void TxtReaderActivity::renderPage() {
   renderCurrentPageLines();
   drawClippingHighlights();
   renderStatusBar();
+  if (retargetQueuedPageTurns()) return false;
 
   if (SETTINGS.readerDarkMode) {
     renderer.invertScreen();
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
-    return;
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, readerWaveform);
+    return true;
   }
 
-  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, readerWaveform);
 
   if (SETTINGS.textAntiAliasing) {
     ReaderUtils::renderAntiAliased(renderer, pageScratch, pageScratchSize, [&]() {
@@ -1351,6 +1387,7 @@ void TxtReaderActivity::renderPage() {
       clippingHighlights.drawUnderline(renderer, true);
     });
   }
+  return true;
 }
 
 void TxtReaderActivity::renderStatusBar() const {
@@ -1369,6 +1406,7 @@ void TxtReaderActivity::signalReadingPageVisible() {
                                  currentPage, 0, visibleAtMs);
 #endif
   activityManager.finishReaderOpenMetric("text", visibleAtMs);
+  readerWaveform.pageVisible();
   pendingReadingViewAtMs.store(visibleAtMs, std::memory_order_relaxed);
   pendingReadingViewSignal.store(1, std::memory_order_release);
 }
@@ -1486,6 +1524,11 @@ void TxtReaderActivity::commitReadingSession() {
 
   if (sessionReadingSeconds < 10) return;
 
+  if (txt && !DailyBookReadingHistory::record(txt->getPath(), txt->getTitle(),
+                                              pendingGlobalReadingSpans.pendingDailyHistory)) {
+    LOG_ERR("TRS", "Failed to save the per-book daily reading breakdown");
+  }
+
   if (bookReadingStatsWritable) {
     bookReadingStats.totalReadingSeconds =
         addReadingStatsSaturated(bookReadingStats.totalReadingSeconds, sessionReadingSeconds);
@@ -1525,6 +1568,7 @@ void TxtReaderActivity::saveReadingStats() {
   if (globalReadingStatsWritable && globalReadingStatsDirty) {
     if (globalReadingStats.save()) {
       globalReadingStatsDirty = false;
+      if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("TRS", "Failed to reconcile reading achievements");
     } else {
       LOG_ERR("TRS", "Failed to save global reading statistics");
     }
@@ -1574,6 +1618,7 @@ void TxtReaderActivity::markBookCompleted() {
   }
   bookReadingStats = completedBookStats;
   globalReadingStats = completedGlobalStats;
+  if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("TRS", "Failed to reconcile reading achievements");
   FINISHED_BOOKS.markCompleted(
       txt->getPath(), txt->getTitle(), "",
       completedBookStats.finishedDate.isValid() ? readingStatsDayIndex(completedBookStats.finishedDate) : 0);
@@ -2205,7 +2250,8 @@ void TxtReaderActivity::openReadingStats() {
   markReadingStatsPageMetricsNotApplicable(presentation);
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, txt->getTitle(), std::move(presentation),
-                                             ReadingStatsActivity::Page::Book, bookReadingStatsWritable, false),
+                                             ReadingStatsActivity::Page::Book, bookReadingStatsWritable, false,
+                                             txt->getPath()),
       [this](const ActivityResult& result) {
         const auto* action = std::get_if<ReadingStatsActionResult>(&result.data);
         if (!action || action->action != ReadingStatsActionResult::Action::EditBookDates || !txt ||

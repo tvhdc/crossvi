@@ -377,9 +377,10 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
     return false;
   }
 
-  out.width = jpeg->getWidth();
-  out.height = jpeg->getHeight();
-  LOG_DBG("JPG", "Image dimensions: %dx%d", out.width, out.height);
+  const int width = jpeg->getWidth();
+  const int height = jpeg->getHeight();
+  if (!validateAndStoreDimensions(width, height, out, "JPEG")) return false;
+  LOG_DBG("JPG", "Image dimensions: %dx%d", width, height);
 
   return true;
 }

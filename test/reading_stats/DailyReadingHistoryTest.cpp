@@ -6,6 +6,7 @@
 
 #include "DailyReadingHistory.h"
 #include "GlobalReadingStats.h"
+#include "ReadingStatsEnvelope.h"
 
 namespace {
 constexpr char HISTORY_PATH[] = "/.crosspoint/daily_history_v1.bin";
@@ -90,12 +91,63 @@ TEST(DailyReadingHistory, RejectsCrcCorruptionAndProtectsNewerVersion) {
   EXPECT_EQ(status, DailyReadingHistory::LoadStatus::Invalid);
 
   std::vector<uint8_t> newer = corrupt;
-  newer[4] = 2;
+  newer[4] = 3;
   Storage.setFile(HISTORY_PATH, newer);
   status = DailyReadingHistory::load(loaded);
   EXPECT_EQ(status, DailyReadingHistory::LoadStatus::NewerVersion);
   EXPECT_FALSE(history.save());
   EXPECT_EQ(Storage.file(HISTORY_PATH), newer);
+}
+
+TEST(DailyReadingHistory, MigratesV1ToMonotonicLifetimeReadingDays) {
+  Storage.reset();
+  const uint32_t firstDay = dayIndex(2024, 1, 1);
+  DailyReadingHistory history;
+  history.seedExactDay(firstDay, 60);
+  history.seedExactDay(firstDay + 1, 120);
+  ASSERT_TRUE(history.save());
+
+  std::vector<uint8_t> legacy = Storage.file(HISTORY_PATH);
+  legacy[4] = 1;
+  legacy.erase(legacy.end() - 8, legacy.end() - 4);
+  const uint32_t crc = ReadingStatsEnvelope::crc32(legacy.data(), legacy.size() - sizeof(uint32_t));
+  const size_t crcOffset = legacy.size() - sizeof(uint32_t);
+  legacy[crcOffset] = static_cast<uint8_t>(crc);
+  legacy[crcOffset + 1] = static_cast<uint8_t>(crc >> 8);
+  legacy[crcOffset + 2] = static_cast<uint8_t>(crc >> 16);
+  legacy[crcOffset + 3] = static_cast<uint8_t>(crc >> 24);
+  Storage.setFile(HISTORY_PATH, legacy);
+
+  DailyReadingHistory migrated;
+  ASSERT_EQ(DailyReadingHistory::load(migrated), DailyReadingHistory::LoadStatus::Ok);
+  EXPECT_EQ(migrated.lifetimeReadingDays(), 2u);
+  ASSERT_TRUE(migrated.save());
+
+  DailyReadingHistory reloaded;
+  ASSERT_EQ(DailyReadingHistory::load(reloaded), DailyReadingHistory::LoadStatus::Ok);
+  EXPECT_EQ(reloaded.lifetimeReadingDays(), 2u);
+  DailyReadingHistoryDelta delta;
+  delta.recordSpan({{2026, 8, 21}, 12, 0, 0}, 30);
+  ASSERT_TRUE(reloaded.apply(delta));
+  EXPECT_EQ(reloaded.lifetimeReadingDays(), 3u);
+  ASSERT_TRUE(reloaded.apply(delta));
+  EXPECT_EQ(reloaded.lifetimeReadingDays(), 3u);
+}
+
+TEST(DailyReadingHistory, LifetimeReadingDaysDoNotFallWhenRollingWindowAdvances) {
+  const uint32_t firstDay = dayIndex(2024, 1, 1);
+  DailyReadingHistory history;
+  history.seedExactDay(firstDay, 60);
+  EXPECT_EQ(history.lifetimeReadingDays(), 1u);
+
+  DailyReadingHistoryDelta delta;
+  ReadingStatsDate laterDate;
+  ASSERT_TRUE(readingStatsDateFromDayIndex(firstDay + DailyReadingHistory::DAY_COUNT + 10, laterDate));
+  delta.recordSpan({laterDate, 12, 0, 0}, 60);
+  ASSERT_TRUE(history.apply(delta));
+  EXPECT_EQ(history.lifetimeReadingDays(), 2u);
+  uint32_t seconds = 0;
+  EXPECT_FALSE(history.valueForDay(firstDay, seconds));
 }
 
 TEST(DailyReadingHistory, RecoversBackupThenTemporaryInOrder) {
@@ -217,7 +269,7 @@ TEST(DailyReadingHistory, NewerSidecarIsPreservedWithoutBlockingCumulativeStats)
   history.seedExactDay(dayIndex(2026, 7, 28), 60);
   ASSERT_TRUE(history.save());
   std::vector<uint8_t> newer = Storage.file(HISTORY_PATH);
-  newer[4] = 2;
+  newer[4] = 3;
   Storage.setFile(HISTORY_PATH, newer);
 
   GlobalReadingStats stats;
@@ -266,7 +318,7 @@ TEST(DailyReadingHistory, NewerDailyBackupBlocksRestoreBeforeGlobalStatsChange) 
 
   std::vector<uint8_t> newer = Storage.file(USER_HISTORY_BACKUP_PATH);
   ASSERT_GT(newer.size(), 4u);
-  newer[4] = 2;
+  newer[4] = 3;
   Storage.setFile(USER_HISTORY_BACKUP_PATH, newer);
 
   GlobalReadingStats current;

@@ -75,7 +75,6 @@ bool ReaderActivity::skipDerivedCoverCacheBuild() const {
 }
 
 int ReaderActivity::initialRefreshCountdown() const {
-  if (!allowFastInitialRefresh) return 0;
   const int refreshFrequency = SETTINGS.getRefreshFrequency();
   return refreshFrequency > 1 ? refreshFrequency : 2;
 }

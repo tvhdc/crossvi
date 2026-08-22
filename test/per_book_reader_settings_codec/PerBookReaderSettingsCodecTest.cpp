@@ -383,6 +383,7 @@ TEST(PerBookReaderSettingsCodec, DefaultsAndSdFontAreAlwaysTerminated) {
   EXPECT_FALSE(defaults.autoPageTurnStartsOnOpen);
   EXPECT_FALSE(defaults.hasRenderModeOverride);
   EXPECT_FALSE(defaults.safeModeEnabled);
+  EXPECT_EQ(defaults.textAntiAliasing, 0);
   EXPECT_EQ(defaults.forceParagraphIndents, 0);
   EXPECT_EQ(defaults.renderMode, EpubRenderMode::Balanced);
   EXPECT_EQ(defaults.autoPageTurnSeconds, 0);

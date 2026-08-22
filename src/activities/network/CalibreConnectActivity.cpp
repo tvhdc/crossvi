@@ -1,6 +1,7 @@
 #include "CalibreConnectActivity.h"
 
 #include <ESPmDNS.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Memory.h>
@@ -81,14 +82,19 @@ void CalibreConnectActivity::startWebServer() {
     LOG_DBG("CAL", "mDNS started: http://%s.local/", HOSTNAME);
   }
 
+  // Keep rendering from repopulating the glyph cache during heap-critical server setup.
+  RenderLock lock(*this);
+  if (auto* cache = renderer.getFontCacheManager()) cache->clearCache();
   webServer = makeUniqueNoThrow<CrossPointWebServer>();
+  if (webServer) webServer->begin();
+  lock.unlock();
+
   if (!webServer) {
     LOG_ERR("CAL", "Not enough memory to start the Calibre server");
     state = CalibreConnectState::ERROR;
     requestUpdate();
     return;
   }
-  webServer->begin();
 
   if (webServer->isRunning()) {
     state = CalibreConnectState::SERVER_RUNNING;

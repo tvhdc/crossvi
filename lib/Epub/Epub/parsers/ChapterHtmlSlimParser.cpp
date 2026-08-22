@@ -1539,11 +1539,13 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     }
   }
   if (strcmp(name, "body") == 0) self->insideBody = false;
+  if (strcmp(name, "html") == 0) self->htmlEnded_ = true;
 }
 
 ChapterHtmlSlimParser::~ChapterHtmlSlimParser() { abortParse(); }
 
 bool ChapterHtmlSlimParser::beginParse() {
+  htmlEnded_ = false;
   lastFailure_ = ChapterParseFailure::None;
   releasedFontCachesForMemory_ = false;
   MemoryBudget::logStage("EHP", "parse_begin");
@@ -1619,6 +1621,10 @@ ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
   const int done = parseFile_.available() == 0;
 
   if (XML_ParseBuffer(xmlParser_, static_cast<int>(len), done) == XML_STATUS_ERROR) {
+    if (htmlEnded_) {
+      LOG_DBG("EHP", "Ignoring trailing data after </html>: %s", XML_ErrorString(XML_GetErrorCode(xmlParser_)));
+      return ParseStatus::Done;
+    }
     if (lastFailure_ != ChapterParseFailure::OutOfMemory) {
       lastFailure_ = XML_GetErrorCode(xmlParser_) == XML_ERROR_NO_MEMORY ? ChapterParseFailure::OutOfMemory
                                                                          : ChapterParseFailure::InvalidContent;

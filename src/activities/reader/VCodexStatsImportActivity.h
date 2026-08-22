@@ -30,4 +30,5 @@ class VCodexStatsImportActivity final : public Activity {
   VCodexStatsImporter::ProbeResult probeResult_;
   State state_ = State::Prompt;
   bool initialInputReleased_ = false;
+  uint8_t unlockedAchievements_ = 0;
 };

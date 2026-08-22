@@ -12,6 +12,8 @@
 #include <memory>
 #include <string>
 
+#include "DailyBookReadingHistory.h"
+#include "ReadingAchievements.h"
 #include "ReadingStatsCodec.h"
 #include "ReadingStatsCompletionTransaction.h"
 #include "ReadingStatsEnvelope.h"
@@ -632,6 +634,12 @@ bool GlobalReadingStats::resetLocal() {
     return false;
   }
 
+  // Clear the derived unlock mask before mutating canonical statistics. If a
+  // later reset step fails, the empty mask can be rebuilt from whatever
+  // canonical data remains; keeping stale unlocks after a successful stats
+  // tombstone would not be reversible.
+  if (!ReadingAchievements::reset()) return false;
+
   const GlobalReadingStats zero;
   const ReadingStatsCodec::GlobalBytes tombstone = ReadingStatsCodec::encode(zero);
   if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_BACKUP_PATH, nullptr, false, ReadingStatsEnvelope::Kind::Global,
@@ -647,7 +655,8 @@ bool GlobalReadingStats::resetLocal() {
   const LoadOutcome verifiedBackup =
       loadEnvelopePath(GLOBAL_STATS_BACKUP_PATH, ReadingStatsEnvelope::Kind::Global, backupStats);
   return isExactPayload(verifiedPrimary, primaryStats, tombstone) &&
-         isExactPayload(verifiedBackup, backupStats, tombstone) && DailyReadingHistory::reset();
+         isExactPayload(verifiedBackup, backupStats, tombstone) && DailyReadingHistory::reset() &&
+         DailyBookReadingHistory::reset();
 }
 
 GlobalReadingStats::BackupResult GlobalReadingStats::createBackup() {
@@ -709,6 +718,10 @@ GlobalReadingStats::BackupResult GlobalReadingStats::restoreBackup() {
   } else if (dailyRestore != DailyReadingHistory::BackupResult::Ok) {
     return dailyRestore == DailyReadingHistory::BackupResult::NewerVersion ? BackupResult::NewerFormat
                                                                            : BackupResult::IoError;
+  }
+  if (!DailyBookReadingHistory::reset()) return BackupResult::IoError;
+  if (!ReadingAchievements::reconcileFromStorage()) {
+    LOG_ERR(LOG_TAG, "Restored reading stats but could not reconcile achievements yet");
   }
   return BackupResult::Ok;
 }
