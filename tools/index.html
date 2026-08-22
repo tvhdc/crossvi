@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="CrossVi browser tools for preparing sleep images and custom vocabulary sets.">
+  <title>CrossVi Tools</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17241f;
+      --muted: #68756f;
+      --paper: #fbfaf5;
+      --soft: #e8efe8;
+      --line: #cbd6ce;
+      --green: #24684e;
+      --green-dark: #174836;
+      --screen: #d7ded7;
+      --shadow: 0 18px 46px rgba(29, 58, 44, .12);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(36,104,78,.045) 1px, transparent 1px) 0 0 / 24px 24px,
+        #e5ebe3;
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    button, a { font: inherit; }
+    button:focus-visible, a:focus-visible, iframe:focus-visible { outline: 3px solid #e2a64d; outline-offset: 3px; }
+    .shell { width: min(1320px, calc(100% - 28px)); margin: 24px auto 48px; }
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      padding: 28px 30px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .brand { color: var(--green); font-size: 12px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { margin: 5px 0 8px; font-size: clamp(36px, 6vw, 68px); line-height: .96; letter-spacing: -.055em; }
+    header p { max-width: 680px; margin: 0; color: var(--muted); }
+    .local-badge { display: flex; gap: 9px; align-items: center; color: var(--green-dark); font-size: 13px; font-weight: 750; }
+    .local-badge::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #42a66f; box-shadow: 0 0 0 5px #dff0e4; }
+    .workspace { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
+    nav, .stage { border: 1px solid var(--line); border-radius: 20px; background: var(--paper); box-shadow: var(--shadow); }
+    nav { position: sticky; top: 18px; padding: 14px; }
+    .nav-label { margin: 4px 8px 12px; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .tool-tab {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 11px;
+      align-items: center;
+      padding: 13px;
+      border: 0;
+      border-radius: 13px;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+    .tool-tab + .tool-tab { margin-top: 5px; }
+    .tool-tab:hover { background: #f0f4ef; }
+    .tool-tab[aria-selected="true"] { background: var(--green); color: white; }
+    .tool-tab svg { width: 42px; height: 42px; padding: 9px; border-radius: 11px; background: var(--soft); color: var(--green); }
+    .tool-tab[aria-selected="true"] svg { background: rgba(255,255,255,.15); color: white; }
+    .tool-tab strong, .tool-tab small { display: block; }
+    .tool-tab small { margin-top: 2px; color: var(--muted); line-height: 1.25; }
+    .tool-tab[aria-selected="true"] small { color: rgba(255,255,255,.78); }
+    .stage { overflow: hidden; }
+    .stage-head { display: flex; justify-content: space-between; gap: 20px; align-items: center; padding: 17px 20px; border-bottom: 1px solid var(--line); }
+    .stage-head strong { font-size: 18px; }
+    .stage-head span { color: var(--muted); font-size: 13px; }
+    .open-direct { color: var(--green); font-size: 13px; font-weight: 750; text-decoration: none; white-space: nowrap; }
+    iframe { display: block; width: 100%; min-height: 820px; border: 0; background: var(--screen); }
+    footer { padding: 18px 4px 0; color: var(--muted); font-size: 13px; text-align: center; }
+    footer a { color: var(--green); }
+    @media (max-width: 820px) {
+      .shell { width: min(100% - 18px, 720px); margin-top: 9px; }
+      header { grid-template-columns: 1fr; padding: 22px; border-radius: 17px; }
+      .workspace { grid-template-columns: 1fr; }
+      nav { position: static; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+      .nav-label { grid-column: 1 / -1; }
+      .tool-tab + .tool-tab { margin-top: 0; }
+      .tool-tab { grid-template-columns: 34px 1fr; padding: 10px; }
+      .tool-tab svg { width: 34px; height: 34px; padding: 7px; }
+      .tool-tab small { display: none; }
+      .stage-head { align-items: flex-start; }
+      iframe { min-height: 1100px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <div class="brand">CrossVi utility shelf</div>
+        <h1>Tools for your reader.</h1>
+        <p>Prepare images and study files for Xteink X3/X4 in one place. Choose a tool; your source files stay in this browser.</p>
+      </div>
+      <div class="local-badge">Local processing</div>
+    </header>
+
+    <div class="workspace">
+      <nav aria-label="CrossVi tools">
+        <div class="nav-label">Choose a tool</div>
+        <button class="tool-tab" type="button" data-tool="sleep" aria-selected="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 15 3-3 2 2 3-4 3 5"/><circle cx="8" cy="8" r="1"/></svg>
+          <span><strong>Sleep images</strong><small>Resize and prepare PNG or BMP files</small></span>
+        </button>
+        <button class="tool-tab" type="button" data-tool="vocabulary" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16M8 7h8M8 11h6"/></svg>
+          <span><strong>Vocabulary sets</strong><small>Convert Excel sheets for CrossVi quizzes</small></span>
+        </button>
+      </nav>
+
+      <main class="stage">
+        <div class="stage-head">
+          <div><strong id="tool-title">Sleep Image Maker</strong><br><span id="tool-note">For normal and transparent sleep screens</span></div>
+          <a id="direct-link" class="open-direct" href="sleep-image-converter/">Open tool directly ↗</a>
+        </div>
+        <iframe id="tool-frame" title="CrossVi Sleep Image Maker"></iframe>
+      </main>
+    </div>
+
+    <footer>CrossVi tools run in your browser. <a href="https://github.com/tvhdc/crossvi">View CrossVi on GitHub</a>.</footer>
+  </div>
+
+  <script>
+    const tools = {
+      sleep: { title: 'Sleep Image Maker', note: 'For normal and transparent sleep screens', path: 'sleep-image-converter/' },
+      vocabulary: { title: 'Vocabulary Set Maker', note: 'Convert XLSX, XLS, CSV or TSV into .cvocab', path: 'vocabulary-converter/' }
+    };
+    const frame = document.getElementById('tool-frame');
+    const tabs = [...document.querySelectorAll('.tool-tab')];
+    let resizeObserver;
+
+    function selectTool(name, updateHistory = true) {
+      const selected = tools[name] ? name : 'sleep';
+      const tool = tools[selected];
+      tabs.forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.tool === selected)));
+      document.getElementById('tool-title').textContent = tool.title;
+      document.getElementById('tool-note').textContent = tool.note;
+      document.getElementById('direct-link').href = tool.path;
+      frame.title = `CrossVi ${tool.title}`;
+      frame.src = `${tool.path}?embedded=1`;
+      if (updateHistory) history.replaceState(null, '', `?tool=${selected}`);
+    }
+
+    tabs.forEach(tab => tab.addEventListener('click', () => selectTool(tab.dataset.tool)));
+    frame.addEventListener('load', () => {
+      resizeObserver?.disconnect();
+      const doc = frame.contentDocument;
+      if (!doc) return;
+      const resize = () => frame.style.height = `${Math.max(820, doc.documentElement.scrollHeight)}px`;
+      resize();
+      resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(doc.documentElement);
+    });
+    selectTool(new URLSearchParams(location.search).get('tool') || 'sleep', false);
+  </script>
+</body>
+</html>
