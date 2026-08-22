@@ -449,3 +449,25 @@ if (parsedSize != fileSize) {
     std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }
 ```
+
+## Saved sleep frame (`/.crosspoint/sleep_frame.bin`)
+
+This file is a temporary, regenerable wake framebuffer. Version 1 stores a
+24-byte little-endian header followed by the one-bit framebuffer payload:
+
+| Offset | Size | Meaning |
+| --- | ---: | --- |
+| 0 | 4 | Magic `CVSF` |
+| 4 | 1 | Format version (`1`) |
+| 5 | 1 | Device model (`3` for X3, `4` for X4) |
+| 6 | 2 | Reserved, zero |
+| 8 | 2 | Display width |
+| 10 | 2 | Display height |
+| 12 | 4 | Payload byte length |
+| 16 | 4 | FNV-1a digest of the payload |
+| 20 | 4 | Reserved, zero |
+
+The file is published atomically with `.tmp` and `.bak` siblings. A frame with
+the wrong model, dimensions, length, version, or digest is discarded and the
+wake path falls back to the normal boot screen. Raw legacy framebuffers had no
+integrity information and are intentionally not replayed.

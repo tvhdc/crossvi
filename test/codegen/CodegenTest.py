@@ -376,6 +376,9 @@ class CodegenTest(unittest.TestCase):
                         bitmap.rindex("renderer.drawBitmap(bitmap"))
         self.assertIn("SleepFrameStore::save(renderer)", main)
         self.assertIn("StagedFileTransaction::publishAndVerify", frame_store)
+        self.assertIn("SLEEP_FRAME_MAGIC", frame_store)
+        self.assertIn("payloadDigest.hash == expectedHash", frame_store)
+        self.assertIn("frameSpec(display.getDisplayWidth(), display.getDisplayHeight()", frame_store)
         discard = frame_store[frame_store.index("void discard()") :
                               frame_store.index("bool save(")]
         self.assertIn("Storage.remove(SLEEP_FRAME_TEMP_FILE);", discard)
