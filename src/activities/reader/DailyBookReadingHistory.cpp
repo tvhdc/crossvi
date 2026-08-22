@@ -455,7 +455,46 @@ bool DailyBookReadingHistory::pendingRekeyAlias(const std::string& path, std::st
   return !alias.empty();
 }
 
+bool DailyBookReadingHistory::canReset() {
+  if (!recoverPreparedRekey()) return false;
+  if (!Storage.exists(DIRECTORY)) return true;
+  HalFile directory = Storage.open(DIRECTORY);
+  if (!directory || !directory.isDirectory()) {
+    if (directory) directory.close();
+    return false;
+  }
+  char name[64]{};
+  for (HalFile entry = directory.openNextFile(); entry; entry = directory.openNextFile()) {
+    const bool isDirectory = entry.isDirectory();
+    const size_t length = entry.getName(name, sizeof(name));
+    const bool closed = entry.close();
+    uint32_t day = 0;
+    if (!closed || length == 0 || length >= sizeof(name)) {
+      directory.close();
+      return false;
+    }
+    if (isDirectory) continue;
+    size_t canonicalLength = length;
+    if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".bak") == 0) {
+      canonicalLength -= 4;
+      name[canonicalLength] = '\0';
+    } else if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".tmp") == 0) {
+      canonicalLength -= 4;
+      name[canonicalLength] = '\0';
+    }
+    if (!dayFromFileName(name, day)) continue;
+    DailyBookReadingDay data;
+    const LoadStatus status = load(day, data);
+    if (status == LoadStatus::NewerVersion || status == LoadStatus::IoError) {
+      directory.close();
+      return false;
+    }
+  }
+  return directory.getError() == 0 && directory.close();
+}
+
 bool DailyBookReadingHistory::reset() {
+  if (!canReset()) return false;
   const bool directoryReset = !Storage.exists(DIRECTORY) || (Storage.removeDir(DIRECTORY) && !Storage.exists(DIRECTORY));
   return directoryReset && removeRekeyArtifacts();
 }

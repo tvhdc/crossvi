@@ -36,8 +36,13 @@ constexpr char USER_BACKUP_TEMP_PATH[] = "/.crosspoint/stats_backups/device_stat
 constexpr char DAILY_STATS_PATH[] = "/.crosspoint/daily_stats_v1.bin";
 constexpr char DAILY_STATS_BACKUP_PATH[] = "/.crosspoint/daily_stats_v1.bin.bak";
 constexpr char DAILY_STATS_TEMP_PATH[] = "/.crosspoint/daily_stats_v1.bin.tmp";
+constexpr char RESET_MARKER_PATH[] = "/.crosspoint/reading_stats_reset_v1.pending";
+constexpr char RESET_MARKER_TEMP_PATH[] = "/.crosspoint/reading_stats_reset_v1.pending.tmp";
 constexpr uint8_t DAILY_STATS_VERSION = 2;
 constexpr size_t DAILY_STATS_PAYLOAD_SIZE = 17;
+constexpr std::array<uint8_t, 4> RESET_MARKER_MAGIC = {'C', 'V', 'R', 'S'};
+constexpr uint8_t RESET_MARKER_VERSION = 1;
+constexpr size_t RESET_MARKER_SIZE = RESET_MARKER_MAGIC.size() + 1 + sizeof(uint32_t);
 
 uint32_t readLe32(const uint8_t* data, const size_t offset) {
   return static_cast<uint32_t>(data[offset]) | static_cast<uint32_t>(data[offset + 1]) << 8 |
@@ -58,6 +63,7 @@ struct LoadOutcome {
 };
 
 enum class DailyLoadStatus : uint8_t { Missing, Valid, Invalid, Protected };
+enum class ResetMarkerStatus : uint8_t { Missing, Valid, Invalid, Protected };
 
 struct DailyLoadOutcome {
   DailyLoadStatus status = DailyLoadStatus::Missing;
@@ -344,12 +350,78 @@ GlobalReadingStats::BackupResult backupResultFor(const LoadOutcome& outcome) {
   }
   return GlobalReadingStats::BackupResult::Invalid;
 }
+
+ResetMarkerStatus readResetMarker() {
+  std::array<uint8_t, RESET_MARKER_SIZE> bytes{};
+  const ReadingStatsStorage::ReadOutcome outcome =
+      ReadingStatsStorage::read(RESET_MARKER_PATH, bytes.data(), bytes.size());
+  if (outcome.result == ReadingStatsStorage::ReadResult::Missing) return ResetMarkerStatus::Missing;
+  if (outcome.result == ReadingStatsStorage::ReadResult::TooLarge ||
+      outcome.result == ReadingStatsStorage::ReadResult::IoError) {
+    return ResetMarkerStatus::Protected;
+  }
+  if (outcome.size != bytes.size() ||
+      !std::equal(RESET_MARKER_MAGIC.begin(), RESET_MARKER_MAGIC.end(), bytes.begin()) ||
+      bytes[RESET_MARKER_MAGIC.size()] != RESET_MARKER_VERSION ||
+      readLe32(bytes.data(), RESET_MARKER_MAGIC.size() + 1) !=
+          ReadingStatsEnvelope::crc32(bytes.data(), RESET_MARKER_MAGIC.size() + 1)) {
+    return ResetMarkerStatus::Invalid;
+  }
+  return ResetMarkerStatus::Valid;
+}
+
+bool publishResetMarker() {
+  std::array<uint8_t, RESET_MARKER_SIZE> bytes{};
+  std::copy(RESET_MARKER_MAGIC.begin(), RESET_MARKER_MAGIC.end(), bytes.begin());
+  bytes[RESET_MARKER_MAGIC.size()] = RESET_MARKER_VERSION;
+  writeLe32(bytes.data(), RESET_MARKER_MAGIC.size() + 1,
+            ReadingStatsEnvelope::crc32(bytes.data(), RESET_MARKER_MAGIC.size() + 1));
+  if (!Storage.exists(GLOBAL_STATS_DIRECTORY) && !Storage.mkdir(GLOBAL_STATS_DIRECTORY)) return false;
+  return ReadingStatsStorage::writeAtomic(RESET_MARKER_PATH, nullptr, false, bytes.data(), bytes.size());
+}
+
+bool removeDailySummaryArtifacts() {
+  for (const char* path : {DAILY_STATS_TEMP_PATH, DAILY_STATS_BACKUP_PATH, DAILY_STATS_PATH}) {
+    if (Storage.exists(path) && !Storage.remove(path)) return false;
+  }
+  return true;
+}
+
+bool dailySummaryAllowsReset() {
+  for (const char* path : {DAILY_STATS_PATH, DAILY_STATS_BACKUP_PATH, DAILY_STATS_TEMP_PATH}) {
+    if (loadDailyPath(path).status == DailyLoadStatus::Protected) return false;
+  }
+  return true;
+}
+
+bool publishGlobalResetTombstones() {
+  const GlobalReadingStats zero;
+  const ReadingStatsCodec::GlobalBytes tombstone = ReadingStatsCodec::encode(zero);
+  if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_BACKUP_PATH, nullptr, false,
+                                         ReadingStatsEnvelope::Kind::Global, tombstone.data(), tombstone.size()) ||
+      !ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_PATH, nullptr, false, ReadingStatsEnvelope::Kind::Global,
+                                         tombstone.data(), tombstone.size())) {
+    return false;
+  }
+  GlobalReadingStats primaryStats;
+  GlobalReadingStats backupStats;
+  const LoadOutcome primary =
+      loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, primaryStats);
+  const LoadOutcome backup =
+      loadEnvelopePath(GLOBAL_STATS_BACKUP_PATH, ReadingStatsEnvelope::Kind::Global, backupStats);
+  return isExactPayload(primary, primaryStats, tombstone) && isExactPayload(backup, backupStats, tombstone);
+}
 }  // namespace
 
 GlobalReadingStats GlobalReadingStats::load(LoadStatus* status) {
   const auto finish = [status](const LoadStatus result) {
     if (status) *status = result;
   };
+  if (!recoverPendingReset()) {
+    LOG_ERR(LOG_TAG, "A reading-statistics reset is incomplete; refusing a mixed snapshot");
+    finish(LoadStatus::IoError);
+    return {};
+  }
   const ReadingStatsVersionGuard::Result versionGuard = scanForNewerGlobalCanonicalFile();
   if (versionGuard != ReadingStatsVersionGuard::Result::NoNewerFile) {
     LOG_ERR(LOG_TAG, "A newer or unreadable global stats sibling exists; refusing the v4 view");
@@ -614,7 +686,33 @@ bool GlobalReadingStats::saveRedundant() const {
   return isExactPayload(primary, primaryStats, expected) && isExactPayload(backup, backupStats, expected);
 }
 
+bool GlobalReadingStats::recoverPendingReset() {
+  const ResetMarkerStatus marker = readResetMarker();
+  if (marker == ResetMarkerStatus::Missing) {
+    return !Storage.exists(RESET_MARKER_TEMP_PATH) || Storage.remove(RESET_MARKER_TEMP_PATH);
+  }
+  if (marker != ResetMarkerStatus::Valid) return false;
+
+  GlobalReadingStats ignored;
+  if (scanForNewerGlobalCanonicalFile() != ReadingStatsVersionGuard::Result::NoNewerFile ||
+      isProtected(loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, ignored)) ||
+      isProtected(loadEnvelopePath(GLOBAL_STATS_BACKUP_PATH, ReadingStatsEnvelope::Kind::Global, ignored)) ||
+      isProtected(loadEnvelopePath(GLOBAL_STATS_TEMP_PATH, ReadingStatsEnvelope::Kind::Global, ignored)) ||
+      !dailySummaryAllowsReset() || !DailyReadingHistory::canReset() || !DailyBookReadingHistory::canReset() ||
+      !ReadingAchievements::canReset()) {
+    return false;
+  }
+
+  if (!publishGlobalResetTombstones() || !removeDailySummaryArtifacts() || !DailyReadingHistory::reset() ||
+      !DailyBookReadingHistory::reset() || !ReadingAchievements::reset()) {
+    return false;
+  }
+  return Storage.remove(RESET_MARKER_PATH) &&
+         (!Storage.exists(RESET_MARKER_TEMP_PATH) || Storage.remove(RESET_MARKER_TEMP_PATH));
+}
+
 bool GlobalReadingStats::resetLocal() {
+  if (!recoverPendingReset()) return false;
   if (!ReadingStatsCompletionTransaction::canResetGlobalStats()) {
     LOG_ERR(LOG_TAG, "Refusing to reset global stats with a pending completion transaction");
     return false;
@@ -633,30 +731,12 @@ bool GlobalReadingStats::resetLocal() {
     LOG_ERR(LOG_TAG, "Refusing to replace protected global stats during reset");
     return false;
   }
-
-  // Clear the derived unlock mask before mutating canonical statistics. If a
-  // later reset step fails, the empty mask can be rebuilt from whatever
-  // canonical data remains; keeping stale unlocks after a successful stats
-  // tombstone would not be reversible.
-  if (!ReadingAchievements::reset()) return false;
-
-  const GlobalReadingStats zero;
-  const ReadingStatsCodec::GlobalBytes tombstone = ReadingStatsCodec::encode(zero);
-  if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_BACKUP_PATH, nullptr, false, ReadingStatsEnvelope::Kind::Global,
-                                         tombstone.data(), tombstone.size()) ||
-      !ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_PATH, nullptr, false, ReadingStatsEnvelope::Kind::Global,
-                                         tombstone.data(), tombstone.size())) {
+  if (!dailySummaryAllowsReset() || !DailyReadingHistory::canReset() || !DailyBookReadingHistory::canReset() ||
+      !ReadingAchievements::canReset()) {
+    LOG_ERR(LOG_TAG, "Refusing to reset protected reading-statistics companions");
     return false;
   }
-  GlobalReadingStats primaryStats;
-  GlobalReadingStats backupStats;
-  const LoadOutcome verifiedPrimary =
-      loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, primaryStats);
-  const LoadOutcome verifiedBackup =
-      loadEnvelopePath(GLOBAL_STATS_BACKUP_PATH, ReadingStatsEnvelope::Kind::Global, backupStats);
-  return isExactPayload(verifiedPrimary, primaryStats, tombstone) &&
-         isExactPayload(verifiedBackup, backupStats, tombstone) && DailyReadingHistory::reset() &&
-         DailyBookReadingHistory::reset();
+  return publishResetMarker() && recoverPendingReset();
 }
 
 GlobalReadingStats::BackupResult GlobalReadingStats::createBackup() {

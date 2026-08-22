@@ -50,6 +50,7 @@ class DailyReadingHistory {
   DailyReadingHistory();
 
   static LoadStatus load(DailyReadingHistory& history);
+  static bool canReset();
   static bool reset();
   static BackupResult createBackup();
   static BackupResult inspectBackup();

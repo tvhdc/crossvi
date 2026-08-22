@@ -334,12 +334,19 @@ bool ReadingAchievements::reconcileFromStorage(ReadingAchievementEvaluation* eva
   return reconcile(stats, history, evaluation);
 }
 
+bool ReadingAchievements::canReset() {
+  return !isProtected(readPath(ACHIEVEMENTS_PATH)) && !isProtected(readPath(ACHIEVEMENTS_BACKUP_PATH)) &&
+         !isProtected(readPath(ACHIEVEMENTS_TEMP_PATH));
+}
+
 bool ReadingAchievements::reset() {
+  if (!canReset()) return false;
   if (!Storage.exists(ACHIEVEMENTS_PATH) && !Storage.exists(ACHIEVEMENTS_BACKUP_PATH) &&
       !Storage.exists(ACHIEVEMENTS_TEMP_PATH)) {
     return true;
   }
-  return saveState({});
+  const ReadingAchievementState empty;
+  return saveState(empty) && saveState(empty);
 }
 
 bool ReadingAchievements::peekPendingNotification(ReadingAchievementNotification& notification) {

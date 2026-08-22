@@ -70,6 +70,7 @@ struct GlobalReadingStats {
   static GlobalReadingStatsAggregation loadAggregatedWithReport(const GlobalReadingStats& localStats);
   bool save() const;
   bool saveRedundant() const;
+  static bool recoverPendingReset();
   static bool resetLocal();
   static BackupResult createBackup();
   static BackupResult restoreBackup();

@@ -96,6 +96,7 @@ class ReadingAchievements {
   static bool reconcile(const GlobalReadingStats& stats, const DailyReadingHistory& history,
                         ReadingAchievementEvaluation* evaluation = nullptr);
   static bool reconcileFromStorage(ReadingAchievementEvaluation* evaluation = nullptr);
+  static bool canReset();
   static bool reset();
 
   static bool peekPendingNotification(ReadingAchievementNotification& notification);

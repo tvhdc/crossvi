@@ -60,5 +60,6 @@ class DailyBookReadingHistory {
   // Returns the other path while a partially completed rekey remains. Readers
   // of per-book history can then match both identities until recovery finishes.
   static bool pendingRekeyAlias(const std::string& path, std::string& alias);
+  static bool canReset();
   static bool reset();
 };

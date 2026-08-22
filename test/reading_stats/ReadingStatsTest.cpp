@@ -11,7 +11,9 @@
 #include <vector>
 
 #include "BookReadingStats.h"
+#include "DailyBookReadingHistory.h"
 #include "GlobalReadingStats.h"
+#include "ReadingAchievements.h"
 #include "ReadingSessionTracker.h"
 #include "ReadingStatsCodec.h"
 #include "ReadingStatsCompletionTransaction.h"
@@ -1712,7 +1714,8 @@ TEST(ReadingStatsPersistence, GlobalResetPublishesBackupTombstoneBeforeReplacing
     }
     GlobalReadingStats::LoadStatus status = GlobalReadingStats::LoadStatus::Invalid;
     EXPECT_EQ(GlobalReadingStats::load(&status).totalReadingSeconds, 0u) << fault;
-    EXPECT_EQ(status, GlobalReadingStats::LoadStatus::RecoveredBackup) << fault;
+    EXPECT_EQ(status, GlobalReadingStats::LoadStatus::Ok) << fault;
+    EXPECT_FALSE(Storage.exists("/.crosspoint/reading_stats_reset_v1.pending")) << fault;
     EXPECT_EQ(Storage.file("/.crosspoint/global_stats.bin"), raw) << fault;
   }
 
@@ -1727,6 +1730,67 @@ TEST(ReadingStatsPersistence, GlobalResetPublishesBackupTombstoneBeforeReplacing
     Storage.resetFaultInjection();
     EXPECT_EQ(GlobalReadingStats::load().totalReadingSeconds, 88u) << fault;
   }
+}
+
+TEST(ReadingStatsPersistence, PendingResetRecoversAllCanonicalCompanionsAfterReboot) {
+  Storage.reset();
+  GlobalReadingStats stats = globalStatsWithSeconds(3600);
+  ASSERT_TRUE(stats.save());
+  DailyReadingHistory history;
+  const uint32_t day = readingStatsDayIndex({2026, 8, 22});
+  history.seedExactDay(day, 60);
+  ASSERT_TRUE(history.save());
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 60),
+            DailyBookReadingHistory::RecordStatus::Ok);
+  ASSERT_TRUE(ReadingAchievements::reconcile(stats, history));
+
+  // Marker, global backup and global primary consume the first three renames;
+  // fail while rotating daily history to model a reboot with canonical files
+  // already split.
+  Storage.resetFaultInjection();
+  Storage.failRenameOnCall(4);
+  EXPECT_FALSE(GlobalReadingStats::resetLocal());
+  EXPECT_TRUE(Storage.exists("/.crosspoint/reading_stats_reset_v1.pending"));
+
+  Storage.resetFaultInjection();
+  EXPECT_TRUE(GlobalReadingStats::recoverPendingReset());
+  EXPECT_FALSE(Storage.exists("/.crosspoint/reading_stats_reset_v1.pending"));
+  GlobalReadingStats::LoadStatus status = GlobalReadingStats::LoadStatus::Invalid;
+  EXPECT_EQ(GlobalReadingStats::load(&status).totalReadingSeconds, 0u);
+  EXPECT_EQ(status, GlobalReadingStats::LoadStatus::Ok);
+
+  DailyReadingHistory resetHistory;
+  EXPECT_EQ(DailyReadingHistory::load(resetHistory), DailyReadingHistory::LoadStatus::Ok);
+  EXPECT_TRUE(resetHistory.empty());
+  EXPECT_FALSE(Storage.exists(DailyBookReadingHistory::DIRECTORY));
+  ReadingAchievementState achievementState;
+  EXPECT_EQ(ReadingAchievements::load(achievementState), ReadingAchievements::LoadStatus::Ok);
+  EXPECT_EQ(achievementState.unlockedCount(), 0u);
+
+  ASSERT_TRUE(Storage.remove("/.crosspoint/daily_history_v1.bin"));
+  EXPECT_EQ(DailyReadingHistory::load(resetHistory), DailyReadingHistory::LoadStatus::RecoveredBackup);
+  EXPECT_TRUE(resetHistory.empty());
+  ASSERT_TRUE(Storage.remove("/.crosspoint/achievements_v1.bin"));
+  EXPECT_EQ(ReadingAchievements::load(achievementState), ReadingAchievements::LoadStatus::RecoveredBackup);
+  EXPECT_EQ(achievementState.unlockedCount(), 0u);
+}
+
+TEST(ReadingStatsPersistence, ResetPreflightPreservesNewerPerBookDailyHistory) {
+  Storage.reset();
+  GlobalReadingStats stats = globalStatsWithSeconds(60);
+  ASSERT_TRUE(stats.save());
+  const uint32_t day = readingStatsDayIndex({2026, 8, 22});
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 60),
+            DailyBookReadingHistory::RecordStatus::Ok);
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  std::vector<uint8_t> newer = Storage.file(path);
+  newer[4] = DailyBookReadingHistory::VERSION + 1;
+  Storage.setFile(path, newer);
+
+  EXPECT_FALSE(GlobalReadingStats::resetLocal());
+  EXPECT_EQ(Storage.file(path), newer);
+  EXPECT_FALSE(Storage.exists("/.crosspoint/reading_stats_reset_v1.pending"));
+  EXPECT_EQ(GlobalReadingStats::load().totalReadingSeconds, 60u);
 }
 
 TEST(ReadingStatsPersistence, AggregationFallsBackToBackupsWithoutDoubleMerge) {

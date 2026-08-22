@@ -323,7 +323,16 @@ bool DailyReadingHistory::empty() const {
                      [](const uint32_t seconds) { return seconds == 0 || seconds == UNKNOWN_SECONDS; });
 }
 
-bool DailyReadingHistory::reset() { return DailyReadingHistory{}.save(); }
+bool DailyReadingHistory::canReset() {
+  return !isProtected(readPath(HISTORY_PATH)) && !isProtected(readPath(HISTORY_BACKUP_PATH)) &&
+         !isProtected(readPath(HISTORY_TEMP_PATH));
+}
+
+bool DailyReadingHistory::reset() {
+  if (!canReset()) return false;
+  const DailyReadingHistory empty;
+  return empty.save() && empty.save();
+}
 
 DailyReadingHistory::BackupResult DailyReadingHistory::createBackup() {
   auto history = std::unique_ptr<DailyReadingHistory>(new (std::nothrow) DailyReadingHistory);
