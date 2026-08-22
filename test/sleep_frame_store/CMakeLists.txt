@@ -1,6 +1,8 @@
 add_executable(SleepFrameStoreTest
   SleepFrameStoreTest.cpp
+  SleepImageValidationStub.cpp
   ${REPO_ROOT}/src/activities/boot_sleep/SleepFrameStore.cpp
+  ${REPO_ROOT}/src/activities/boot_sleep/SleepImageSelectionStore.cpp
   ${REPO_ROOT}/lib/Serialization/StagedFileTransaction.cpp
 )
 

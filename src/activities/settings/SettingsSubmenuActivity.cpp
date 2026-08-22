@@ -9,9 +9,7 @@
 #include <cstdio>
 #include <memory>
 
-#include "Bitmap.h"
 #include "CrossPointSettings.h"
-#include "Epub/converters/PngToFramebufferConverter.h"
 #include "FsHelpers.h"
 #include "HalStorage.h"
 #include "OtaUpdateActivity.h"
@@ -22,16 +20,14 @@
 #include "activities/ActivityResult.h"
 #include "activities/boot_sleep/SleepFrameStore.h"
 #include "activities/boot_sleep/SleepImagePlacement.h"
+#include "activities/boot_sleep/SleepImageSelectionStore.h"
+#include "activities/boot_sleep/SleepImageValidation.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-constexpr const char* SLEEP_BMP_PATH = "/sleep.bmp";
-constexpr const char* SLEEP_OVERLAY_BMP_PATH = "/sleep-overlay.bmp";
-constexpr const char* SLEEP_OVERLAY_PNG_PATH = "/sleep-overlay.png";
-
 SettingInfo showTxtBooksSetting() {
   return SettingInfo::DynamicEnum(
       StrId::STR_SHOW_TXT_BOOKS, {StrId::STR_STATE_OFF, StrId::STR_STATE_ON},
@@ -69,46 +65,21 @@ std::string fileNameFromPath(const std::string& path) {
 }
 
 std::string activeSleepImagePath(const uint8_t mode) {
+  if (!SleepImageSelectionStore::recover()) return {};
   if (sleepModeUsesTransparentOverlay(mode)) {
-    if (Storage.exists(SLEEP_OVERLAY_BMP_PATH)) return SLEEP_OVERLAY_BMP_PATH;
-    if (Storage.exists(SLEEP_OVERLAY_PNG_PATH)) return SLEEP_OVERLAY_PNG_PATH;
+    if (Storage.exists(SleepImageSelectionStore::OVERLAY_BMP_PATH)) {
+      return SleepImageSelectionStore::OVERLAY_BMP_PATH;
+    }
+    if (Storage.exists(SleepImageSelectionStore::OVERLAY_PNG_PATH)) {
+      return SleepImageSelectionStore::OVERLAY_PNG_PATH;
+    }
     return {};
   }
-  return Storage.exists(SLEEP_BMP_PATH) ? SLEEP_BMP_PATH : std::string{};
-}
-
-bool validBmpFile(const std::string& path) {
-  HalFile file;
-  if (!Storage.openFileForRead("SLP", path, file)) return false;
-  Bitmap bitmap(file, true);
-  const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
-  file.close();
-  return valid;
-}
-
-bool validPngFile(const std::string& path) {
-  ImageDimensions dimensions{};
-  return PngToFramebufferConverter::getSupportedDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
-         dimensions.height > 0;
+  return Storage.exists(SleepImageSelectionStore::NORMAL_BMP_PATH) ? SleepImageSelectionStore::NORMAL_BMP_PATH
+                                                                   : std::string{};
 }
 
 bool removeIfPresent(const char* path) { return !Storage.exists(path) || Storage.remove(path); }
-
-bool publishTempFile(const std::string& tempPath, const char* finalPath) {
-  const std::string backupPath = std::string(finalPath) + ".bak";
-  if (!removeIfPresent(backupPath.c_str())) return false;
-
-  bool hadFinal = Storage.exists(finalPath);
-  if (hadFinal && !Storage.rename(finalPath, backupPath.c_str())) return false;
-
-  if (Storage.rename(tempPath.c_str(), finalPath)) {
-    if (hadFinal) removeIfPresent(backupPath.c_str());
-    return true;
-  }
-
-  if (hadFinal) Storage.rename(backupPath.c_str(), finalPath);
-  return false;
-}
 
 bool copyFileToTemp(const std::string& sourcePath, const std::string& tempPath) {
   if (!removeIfPresent(tempPath.c_str())) return false;
@@ -165,7 +136,7 @@ bool convertPngToSleepBmpTemp(const std::string& sourcePath, const std::string& 
   ok = ok && output.sync();
   const bool outputClosed = output.close();
   input.close();
-  if (!ok || !outputClosed || !validBmpFile(tempPath)) {
+  if (!ok || !outputClosed || !SleepImageValidation::normalBmp(tempPath)) {
     removeIfPresent(tempPath.c_str());
     return false;
   }
@@ -173,41 +144,27 @@ bool convertPngToSleepBmpTemp(const std::string& sourcePath, const std::string& 
 }
 
 bool saveNormalSleepImage(const std::string& sourcePath, const int width, const int height) {
-  const std::string tempPath = std::string(SLEEP_BMP_PATH) + ".tmp";
+  const std::string tempPath = std::string(SleepImageSelectionStore::NORMAL_BMP_PATH) + ".tmp";
   const bool wroteTemp =
       FsHelpers::hasBmpExtension(sourcePath)
-          ? (validBmpFile(sourcePath) && copyFileToTemp(sourcePath, tempPath))
+          ? (SleepImageValidation::normalBmp(sourcePath) && copyFileToTemp(sourcePath, tempPath))
           : (FsHelpers::hasPngExtension(sourcePath) &&
              convertPngToSleepBmpTemp(sourcePath, tempPath, width, height));
-  return wroteTemp && publishTempFile(tempPath, SLEEP_BMP_PATH);
+  return wroteTemp && SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::NormalBmp, tempPath.c_str());
 }
 
 bool saveTransparentSleepImage(const std::string& sourcePath) {
   if (FsHelpers::hasBmpExtension(sourcePath)) {
-    if (!validBmpFile(sourcePath)) return false;
-    const std::string tempPath = std::string(SLEEP_OVERLAY_BMP_PATH) + ".tmp";
-    if (!copyFileToTemp(sourcePath, tempPath) || !publishTempFile(tempPath, SLEEP_OVERLAY_BMP_PATH)) return false;
-    removeIfPresent(SLEEP_OVERLAY_PNG_PATH);
-    return true;
+    if (!SleepImageValidation::overlayBmp(sourcePath)) return false;
+    const std::string tempPath = std::string(SleepImageSelectionStore::OVERLAY_BMP_PATH) + ".tmp";
+    return copyFileToTemp(sourcePath, tempPath) &&
+           SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayBmp, tempPath.c_str());
   }
 
-  if (!FsHelpers::hasPngExtension(sourcePath) || !validPngFile(sourcePath)) return false;
-
-  const std::string oldBmpBackup = std::string(SLEEP_OVERLAY_BMP_PATH) + ".pickbak";
-  if (!removeIfPresent(oldBmpBackup.c_str())) return false;
-  const bool hadOldBmp = Storage.exists(SLEEP_OVERLAY_BMP_PATH);
-  if (hadOldBmp && !Storage.rename(SLEEP_OVERLAY_BMP_PATH, oldBmpBackup.c_str())) return false;
-
-  const std::string tempPath = std::string(SLEEP_OVERLAY_PNG_PATH) + ".tmp";
-  const bool ok = copyFileToTemp(sourcePath, tempPath) && publishTempFile(tempPath, SLEEP_OVERLAY_PNG_PATH);
-  if (ok) {
-    removeIfPresent(oldBmpBackup.c_str());
-    return true;
-  }
-
-  removeIfPresent(tempPath.c_str());
-  if (hadOldBmp) Storage.rename(oldBmpBackup.c_str(), SLEEP_OVERLAY_BMP_PATH);
-  return false;
+  if (!FsHelpers::hasPngExtension(sourcePath) || !SleepImageValidation::overlayPng(sourcePath)) return false;
+  const std::string tempPath = std::string(SleepImageSelectionStore::OVERLAY_PNG_PATH) + ".tmp";
+  return copyFileToTemp(sourcePath, tempPath) &&
+         SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng, tempPath.c_str());
 }
 }  // namespace
 

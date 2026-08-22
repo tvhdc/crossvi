@@ -27,8 +27,10 @@
 #include "Epub/converters/DitherUtils.h"
 #include "Memory.h"
 #include "RecentBooksStore.h"
-#include "SleepImagePlacement.h"
 #include "SleepFrameStore.h"
+#include "SleepImagePlacement.h"
+#include "SleepImageSelectionStore.h"
+#include "SleepImageValidation.h"
 #include "activities/home/DashboardProgress.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/BookStatsLoader.h"
@@ -538,100 +540,8 @@ bool alphaCoveragePasses(const uint8_t alpha, const int x, const int y) {
   return alpha > static_cast<uint8_t>(bayer4x4[y & 3][x & 3] * 16U);
 }
 
-bool readLE16(HalFile& file, uint16_t& value) {
-  uint8_t raw[2];
-  if (file.read(raw, sizeof(raw)) != static_cast<int>(sizeof(raw))) return false;
-  value = static_cast<uint16_t>(raw[0]) | static_cast<uint16_t>(raw[1]) << 8U;
-  return true;
-}
-
-bool readLE32(HalFile& file, uint32_t& value) {
-  uint8_t raw[4];
-  if (file.read(raw, sizeof(raw)) != static_cast<int>(sizeof(raw))) return false;
-  value = static_cast<uint32_t>(raw[0]) | static_cast<uint32_t>(raw[1]) << 8U | static_cast<uint32_t>(raw[2]) << 16U |
-          static_cast<uint32_t>(raw[3]) << 24U;
-  return true;
-}
-
-struct Bmp32OverlayHeader {
-  int width = 0;
-  int height = 0;
-  bool topDown = false;
-  uint64_t pixelOffset = 0;
-  uint32_t rowBytes = 0;
-};
-
-enum class Bmp32HeaderStatus : uint8_t { Invalid, Not32Bit, Valid };
-
-Bmp32HeaderStatus readBmp32OverlayHeader(HalFile& file, Bmp32OverlayHeader& out) {
-  if (!file.seek(0)) return Bmp32HeaderStatus::Invalid;
-  const uint64_t fileSize = file.fileSize64();
-  uint16_t bfType = 0;
-  uint32_t declaredFileSize = 0;
-  uint32_t pixelOffset = 0;
-  if (!readLE16(file, bfType) || !readLE32(file, declaredFileSize) || !file.seekCur(4) ||
-      !readLE32(file, pixelOffset)) {
-    return Bmp32HeaderStatus::Invalid;
-  }
-  if (bfType != 0x4D42) return Bmp32HeaderStatus::Invalid;
-
-  uint32_t dibSize = 0;
-  uint32_t rawWidth = 0;
-  uint32_t rawHeightBits = 0;
-  uint16_t planes = 0;
-  uint16_t bpp = 0;
-  uint32_t compression = 0;
-  if (!readLE32(file, dibSize) || dibSize < 40 || !readLE32(file, rawWidth) || !readLE32(file, rawHeightBits) ||
-      !readLE16(file, planes) || !readLE16(file, bpp) || !readLE32(file, compression)) {
-    return Bmp32HeaderStatus::Invalid;
-  }
-  if (bpp != 32) return Bmp32HeaderStatus::Not32Bit;
-
-  const int32_t width = static_cast<int32_t>(rawWidth);
-  const int32_t rawHeight = static_cast<int32_t>(rawHeightBits);
-  if (width <= 0 || rawHeight == INT32_MIN || planes != 1) return Bmp32HeaderStatus::Invalid;
-  const int32_t height = rawHeight < 0 ? -rawHeight : rawHeight;
-  constexpr int MAX_OVERLAY_WIDTH = 2048;
-  constexpr int MAX_OVERLAY_HEIGHT = 3072;
-  if (height <= 0 || width > MAX_OVERLAY_WIDTH || height > MAX_OVERLAY_HEIGHT) return Bmp32HeaderStatus::Invalid;
-  if (!(compression == 0 || compression == 3)) return Bmp32HeaderStatus::Invalid;
-
-  if (compression == 3) {
-    const uint64_t maskOffset = 14ULL + 40ULL;
-    if (!file.seek64(maskOffset)) return Bmp32HeaderStatus::Invalid;
-    uint32_t redMask = 0;
-    uint32_t greenMask = 0;
-    uint32_t blueMask = 0;
-    uint32_t alphaMask = 0;
-    if (!readLE32(file, redMask) || !readLE32(file, greenMask) || !readLE32(file, blueMask) ||
-        !readLE32(file, alphaMask)) {
-      return Bmp32HeaderStatus::Invalid;
-    }
-    if (redMask != 0x00FF0000UL || greenMask != 0x0000FF00UL || blueMask != 0x000000FFUL || alphaMask != 0xFF000000UL) {
-      return Bmp32HeaderStatus::Invalid;
-    }
-  }
-
-  const uint64_t minimumPixelOffset = 14ULL + dibSize + (compression == 3 && dibSize == 40 ? 16ULL : 0ULL);
-  if (pixelOffset < minimumPixelOffset) return Bmp32HeaderStatus::Invalid;
-  const uint64_t rowBytes = static_cast<uint64_t>(width) * 4ULL;
-  const uint64_t pixelBytes = rowBytes * static_cast<uint64_t>(height);
-  if (rowBytes > std::numeric_limits<uint32_t>::max() || pixelOffset > fileSize ||
-      pixelBytes > fileSize - pixelOffset) {
-    return Bmp32HeaderStatus::Invalid;
-  }
-  if (declaredFileSize != 0 &&
-      (declaredFileSize < pixelOffset || declaredFileSize > fileSize || pixelBytes > declaredFileSize - pixelOffset)) {
-    return Bmp32HeaderStatus::Invalid;
-  }
-
-  out.width = width;
-  out.height = height;
-  out.topDown = rawHeight < 0;
-  out.pixelOffset = pixelOffset;
-  out.rowBytes = static_cast<uint32_t>(rowBytes);
-  return Bmp32HeaderStatus::Valid;
-}
+using Bmp32OverlayHeader = SleepImageValidation::Bmp32Header;
+using Bmp32HeaderStatus = SleepImageValidation::Bmp32HeaderStatus;
 
 bool renderBmp32Overlay(HalFile& file, const Bmp32OverlayHeader& header, GfxRenderer& renderer) {
   const SleepImagePlacement placement = placeSleepImage(renderer, header.width, header.height);
@@ -666,24 +576,9 @@ bool renderBmp32Overlay(HalFile& file, const Bmp32OverlayHeader& header, GfxRend
   return true;
 }
 
-bool validatePngOverlay(const std::string& path) {
-  ImageDimensions dimensions{};
-  return PngToFramebufferConverter::getSupportedDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
-         dimensions.height > 0;
-}
+bool validatePngOverlay(const std::string& path) { return SleepImageValidation::overlayPng(path); }
 
-bool validateBmpOverlay(const std::string& path) {
-  HalFile file;
-  if (!Storage.openFileForRead("SLP", path, file)) return false;
-  Bmp32OverlayHeader alphaHeader;
-  const Bmp32HeaderStatus alphaStatus = readBmp32OverlayHeader(file, alphaHeader);
-  if (alphaStatus == Bmp32HeaderStatus::Valid) return file.close();
-  if (alphaStatus == Bmp32HeaderStatus::Invalid) return file.close() && false;
-  if (!file.seek(0)) return file.close() && false;
-  Bitmap bitmap(file);
-  const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
-  return file.close() && valid;
-}
+bool validateBmpOverlay(const std::string& path) { return SleepImageValidation::overlayBmp(path); }
 
 bool isOverlayImageName(const std::string& filename) {
   return !filename.empty() && filename[0] != '.' && filename.size() <= 256 &&
@@ -827,7 +722,7 @@ bool renderBmpOverlay(const std::string& path, GfxRenderer& renderer) {
   if (!Storage.openFileForRead("SLP", path, file)) return false;
 
   Bmp32OverlayHeader alphaHeader;
-  const Bmp32HeaderStatus alphaStatus = readBmp32OverlayHeader(file, alphaHeader);
+  const Bmp32HeaderStatus alphaStatus = SleepImageValidation::readBmp32Header(file, alphaHeader);
   if (alphaStatus == Bmp32HeaderStatus::Valid) {
     const bool rendered = renderBmp32Overlay(file, alphaHeader, renderer);
     file.close();
@@ -862,6 +757,17 @@ void SleepActivity::onEnter() {
 
   if (renderQuickResume) {
     return renderLastScreenSleepScreen();
+  }
+
+  const bool customImageRequired =
+      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS ||
+      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM ||
+      (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM &&
+       !APP_STATE.lastSleepFromReader);
+  if (!SleepImageSelectionStore::recover() && customImageRequired) {
+    LOG_ERR("SLP", "Sleep image selection recovery failed; using default screen");
+    return renderDefaultSleepScreen();
   }
 
   const bool renderTransparent = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
