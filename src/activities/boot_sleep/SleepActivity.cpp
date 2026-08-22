@@ -21,7 +21,6 @@
 #include <limits>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -699,21 +698,28 @@ bool validateOverlayImage(const std::string& path) {
 
 struct OverlayCandidate {
   std::string path;
+  uint16_t index = 0;
   bool valid = false;
 };
 
-OverlayCandidate rootOverlayCandidate(const char* path) {
-  if (validateOverlayImage(path)) return OverlayCandidate{path, true};
-  return {};
-}
+constexpr uint16_t MAX_SLEEP_DIRECTORY_ENTRIES = 4096;
+constexpr uint8_t SLEEP_DIRECTORY_YIELD_INTERVAL = 16;
 
-OverlayCandidate directoryOverlayCandidate(const char* directoryPath) {
+template <typename Validator>
+OverlayCandidate directoryImageCandidate(const char* directoryPath, Validator&& validator) {
   HalFile dir = Storage.open(directoryPath);
   if (!dir || !dir.isDirectory()) return {};
 
-  std::vector<std::string> files;
+  OverlayCandidate any;
+  OverlayCandidate fresh;
+  uint16_t entries = 0;
+  uint16_t validCount = 0;
+  uint16_t freshCount = 0;
   char name[257];
-  for (HalFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
+  for (HalFile file = dir.openNextFile(); file && entries < MAX_SLEEP_DIRECTORY_ENTRIES;
+       file = dir.openNextFile()) {
+    ++entries;
+    if (entries % SLEEP_DIRECTORY_YIELD_INTERVAL == 0) yield();
     if (file.isDirectory()) {
       file.close();
       continue;
@@ -721,24 +727,35 @@ OverlayCandidate directoryOverlayCandidate(const char* directoryPath) {
     const size_t length = file.getName(name, sizeof(name));
     file.close();
     if (length == 0 || length >= sizeof(name)) continue;
-    std::string filename(name);
+    const std::string filename(name);
     if (!isOverlayImageName(filename)) continue;
     const std::string path = std::string(directoryPath) + "/" + filename;
-    if (validateOverlayImage(path) && files.size() < UINT16_MAX) files.emplace_back(filename);
+    if (!validator(path)) continue;
+
+    const uint16_t index = validCount++;
+    if (random(static_cast<long>(validCount)) == 0) any = {path, index, true};
+    if (!APP_STATE.isRecentSleep(index, APP_STATE.recentSleepFill)) {
+      ++freshCount;
+      if (random(static_cast<long>(freshCount)) == 0) fresh = {path, index, true};
+    }
   }
   dir.close();
-  if (files.empty()) return {};
 
-  const size_t numFiles = files.size();
-  const uint16_t fileCount = static_cast<uint16_t>(std::min(numFiles, static_cast<size_t>(UINT16_MAX)));
-  const uint8_t window = static_cast<uint8_t>(std::min(static_cast<size_t>(APP_STATE.recentSleepFill), numFiles - 1));
-  uint16_t randomFileIndex = static_cast<uint16_t>(random(fileCount));
-  for (uint8_t attempt = 0; attempt < 20 && APP_STATE.isRecentSleep(randomFileIndex, window); attempt++) {
-    randomFileIndex = static_cast<uint16_t>(random(fileCount));
+  OverlayCandidate selected = fresh.valid ? std::move(fresh) : std::move(any);
+  if (selected.valid) {
+    APP_STATE.pushRecentSleep(selected.index);
+    APP_STATE.saveToFile();
   }
-  APP_STATE.pushRecentSleep(randomFileIndex);
-  APP_STATE.saveToFile();
-  return OverlayCandidate{std::string(directoryPath) + "/" + files[randomFileIndex], true};
+  return selected;
+}
+
+OverlayCandidate rootOverlayCandidate(const char* path) {
+  if (validateOverlayImage(path)) return OverlayCandidate{path, 0, true};
+  return {};
+}
+
+OverlayCandidate directoryOverlayCandidate(const char* directoryPath) {
+  return directoryImageCandidate(directoryPath, [](const std::string& path) { return validateOverlayImage(path); });
 }
 
 OverlayCandidate findTransparentSleepOverlay() {
@@ -1043,57 +1060,17 @@ void SleepActivity::renderCustomSleepScreen(const bool withBookStats) {
   }
 
   if (sleepDir) {
-    std::vector<std::string> files;
-    char name[500];
-    // collect all valid BMP files
-    for (auto dirFile = dir.openNextFile(); dirFile; dirFile = dir.openNextFile()) {
-      if (dirFile.isDirectory()) {
-        dirFile.close();
-        continue;
-      }
-      dirFile.getName(name, sizeof(name));
-      auto filename = std::string(name);
-      if (filename[0] == '.') {
-        dirFile.close();
-        continue;
-      }
-
-      if (!FsHelpers::hasBmpExtension(filename)) {
-        LOG_DBG("SLP", "Skipping non-.bmp file name: %s", name);
-        dirFile.close();
-        continue;
-      }
-      Bitmap bitmap(dirFile);
-      if (bitmap.parseHeaders() != BmpReaderError::Ok) {
-        LOG_DBG("SLP", "Skipping invalid BMP file: %s", name);
-        dirFile.close();
-        continue;
-      }
-      files.emplace_back(filename);
-      dirFile.close();
-    }
-    const auto numFiles = files.size();
-    if (numFiles > 0) {
-      // Pick a random wallpaper, excluding recently shown ones.
-      // Window: up to SLEEP_RECENT_COUNT entries, capped at numFiles-1.
-      const uint16_t fileCount = static_cast<uint16_t>(std::min(numFiles, static_cast<size_t>(UINT16_MAX)));
-      const uint8_t window =
-          static_cast<uint8_t>(std::min(static_cast<size_t>(APP_STATE.recentSleepFill), numFiles - 1));
-      auto randomFileIndex = static_cast<uint16_t>(random(fileCount));
-      for (uint8_t attempt = 0; attempt < 20 && APP_STATE.isRecentSleep(randomFileIndex, window); attempt++) {
-        randomFileIndex = static_cast<uint16_t>(random(fileCount));
-      }
-      APP_STATE.pushRecentSleep(randomFileIndex);
-      APP_STATE.saveToFile();
-      const auto filename = std::string(sleepDir) + "/" + files[randomFileIndex];
+    dir.close();
+    const OverlayCandidate selected =
+        directoryImageCandidate(sleepDir, [](const std::string& path) { return validateBmpOverlay(path); });
+    if (selected.valid) {
       HalFile randFile;
-      if (Storage.openFileForRead("SLP", filename, randFile)) {
-        LOG_DBG("SLP", "Randomly loading: %s/%s", sleepDir, files[randomFileIndex].c_str());
+      if (Storage.openFileForRead("SLP", selected.path, randFile)) {
+        LOG_DBG("SLP", "Randomly loading: %s", selected.path.c_str());
         Bitmap bitmap(randFile, true);
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
           renderBitmapSleepScreen(bitmap, false, withBookStats);
           randFile.close();
-          dir.close();
           return;
         }
         randFile.close();
