@@ -18,6 +18,7 @@
 #include "DitherUtils.h"
 #include "ImageDimsProbe.h"
 #include "PixelCache.h"
+#include "PngFramebufferPreflight.h"
 
 namespace {
 
@@ -172,8 +173,9 @@ void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, uint8_t* alpha
         }
       } else {
         for (int x = 0; x < width; x++) {
-          const uint8_t gray = expandSampleToByte(readPackedSample(pPixels, x, bitsPerSample), bitsPerSample);
-          const uint8_t alpha = hasAlpha && gray == static_cast<uint8_t>(transparentColor) ? 0 : 255;
+          const uint8_t sample = readPackedSample(pPixels, x, bitsPerSample);
+          const uint8_t gray = expandSampleToByte(sample, bitsPerSample);
+          const uint8_t alpha = hasAlpha && sample == static_cast<uint8_t>(transparentColor) ? 0 : 255;
           writeSample(grayLine, alphaLine, x, gray, alpha, preserveAlpha);
         }
       }
@@ -350,6 +352,23 @@ bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
   }
   file.close();
   return false;
+}
+
+bool PngToFramebufferConverter::getSupportedDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
+  HalFile file;
+  if (!Storage.openFileForRead("PNG", imagePath, file)) return false;
+  uint8_t headerBytes[29];
+  const bool read = file.read(headerBytes, sizeof(headerBytes)) == static_cast<int>(sizeof(headerBytes));
+  const bool closed = file.close();
+  if (!read || !closed) return false;
+  PngFramebufferHeader header;
+  if (!parsePngFramebufferHeader(headerBytes, sizeof(headerBytes), header)) return false;
+  if (!validateAndStoreDimensions(header.width, header.height, out, "PNG")) return false;
+  const int bytesPerPixel = header.colorType == 2 ? 3 : header.colorType == 4 ? 2 : header.colorType == 6 ? 4 : 1;
+  const uint64_t pitch = (header.colorType == 0 || header.colorType == 3) && header.bitDepth < 8
+                             ? (static_cast<uint64_t>(header.width) * header.bitDepth + 7U) / 8U
+                             : static_cast<uint64_t>(header.width) * bytesPerPixel;
+  return (pitch + 1U) * 2U + 30U <= PNG_MAX_BUFFERED_PIXELS && header.width <= PNG_MAX_BUFFERED_PIXELS / 2U;
 }
 
 bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,

@@ -668,7 +668,7 @@ bool renderBmp32Overlay(HalFile& file, const Bmp32OverlayHeader& header, GfxRend
 
 bool validatePngOverlay(const std::string& path) {
   ImageDimensions dimensions{};
-  return PngToFramebufferConverter::getDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
+  return PngToFramebufferConverter::getSupportedDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
          dimensions.height > 0;
 }
 
@@ -767,7 +767,7 @@ OverlayCandidate findTransparentSleepOverlay() {
 
 bool renderPngOverlay(const std::string& path, GfxRenderer& renderer) {
   ImageDimensions dimensions{};
-  if (!PngToFramebufferConverter::getDimensionsStatic(path, dimensions)) return false;
+  if (!PngToFramebufferConverter::getSupportedDimensionsStatic(path, dimensions)) return false;
   const SleepImagePlacement placement = placeSleepImage(renderer, dimensions.width, dimensions.height);
   if (placement.width <= 0 || placement.height <= 0) return false;
 

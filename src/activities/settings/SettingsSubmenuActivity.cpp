@@ -88,7 +88,7 @@ bool validBmpFile(const std::string& path) {
 
 bool validPngFile(const std::string& path) {
   ImageDimensions dimensions{};
-  return PngToFramebufferConverter::getDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
+  return PngToFramebufferConverter::getSupportedDimensionsStatic(path, dimensions) && dimensions.width > 0 &&
          dimensions.height > 0;
 }
 

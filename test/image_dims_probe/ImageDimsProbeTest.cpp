@@ -10,6 +10,7 @@
 #include "ImageDimsProbe.h"
 #include "InflateStream.h"
 #include "PixelCacheValidation.h"
+#include "PngFramebufferPreflight.h"
 #include "PngToBmpConverter.h"
 #include "PngToBmpConverter/PngImageSafety.h"
 
@@ -217,6 +218,36 @@ TEST(ImageDimsProbeTest, ValidatesCompleteSupportedPngIhdr) {
   EXPECT_FALSE(png_image_safety::validIhdr(13, 600, 900, 8, 2, 1, 0, 0));
   EXPECT_FALSE(png_image_safety::validIhdr(13, 600, 900, 8, 2, 0, 1, 0));
   EXPECT_FALSE(png_image_safety::validIhdr(13, 600, 900, 8, 2, 0, 0, 1));
+}
+
+TEST(ImageDimsProbeTest, FramebufferPreflightAcceptsOnlyFormatsTheRuntimeDecoderSupports) {
+  PngFramebufferHeader header;
+  for (const auto& [colorType, bitDepth] :
+       std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {0, 2}, {0, 4}, {0, 8}, {2, 8}, {3, 1},
+                                                {3, 2}, {3, 4}, {3, 8}, {4, 8}, {6, 8}}) {
+    const auto bytes = pngIhdr(528, 792, bitDepth, colorType);
+    ASSERT_TRUE(parsePngFramebufferHeader(bytes.data(), bytes.size(), header))
+        << "color=" << static_cast<int>(colorType) << " depth=" << static_cast<int>(bitDepth);
+    EXPECT_EQ(header.width, 528u);
+    EXPECT_EQ(header.height, 792u);
+  }
+
+  for (const auto& [colorType, bitDepth] :
+       std::vector<std::pair<uint8_t, uint8_t>>{{0, 16}, {2, 16}, {3, 16}, {4, 16}, {6, 16}, {2, 4}}) {
+    const auto bytes = pngIhdr(528, 792, bitDepth, colorType);
+    EXPECT_FALSE(parsePngFramebufferHeader(bytes.data(), bytes.size(), header))
+        << "color=" << static_cast<int>(colorType) << " depth=" << static_cast<int>(bitDepth);
+  }
+}
+
+TEST(ImageDimsProbeTest, FramebufferPreflightRejectsInterlaceTruncationAndOversize) {
+  PngFramebufferHeader header;
+  auto interlaced = pngIhdr(528, 792, 8, 6);
+  interlaced[28] = 1;
+  EXPECT_FALSE(parsePngFramebufferHeader(interlaced.data(), interlaced.size(), header));
+  EXPECT_FALSE(parsePngFramebufferHeader(interlaced.data(), 28, header));
+  const auto oversized = pngIhdr(static_cast<uint32_t>(INT16_MAX) + 1u, 792, 8, 6);
+  EXPECT_FALSE(parsePngFramebufferHeader(oversized.data(), oversized.size(), header));
 }
 
 TEST(ImageDimsProbeTest, RejectsPathologicalCropOutputBeforeAllocation) {
