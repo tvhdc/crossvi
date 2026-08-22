@@ -24,7 +24,8 @@ namespace {
 // interpretation reaches Epub::getTextReferenceHref().
 // v12 retains the OPF itemref linear flag so sequential page turns can skip
 // auxiliary content without making direct links to it unreachable.
-constexpr uint8_t BOOK_CACHE_VERSION = 12;
+// v13 rebuilds metadata parsed before OPF/DC namespaces were validated.
+constexpr uint8_t BOOK_CACHE_VERSION = 13;
 constexpr uint32_t BOOK_CACHE_COMMIT_MARKER = 0x424D434B;  // "BMCK"
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char bookBinStagingFile[] = "/book.bin.tmp";

@@ -393,7 +393,7 @@ ZipFile::SourceIdentity identify(const std::vector<uint8_t>& bytes) {
 }
 
 std::vector<uint8_t> makeBookCache(const ZipFile::SourceIdentity& identity, const bool withCover = true) {
-  constexpr uint8_t version = 12;
+  constexpr uint8_t version = 13;
   constexpr uint16_t spineCount = 1;
   constexpr uint16_t tocCount = 1;
   constexpr uint32_t commitMarker = 0x424D434B;
@@ -441,7 +441,7 @@ std::vector<uint8_t> makeBookCache(const ZipFile::SourceIdentity& identity, cons
 }
 
 std::vector<uint8_t> makeSpineOnlyBookCache(const ZipFile::SourceIdentity& identity, const uint16_t spineCount) {
-  constexpr uint8_t version = 12;
+  constexpr uint8_t version = 13;
   constexpr uint32_t commitMarker = 0x424D434B;
   SourceIdentityCodec::Payload identityPayload{};
   EXPECT_TRUE(SourceIdentityCodec::encodePayload(identity, identityPayload));
@@ -653,6 +653,32 @@ TEST_F(EpubSourceIdentityTest, ContentOpfAcceptsArbitraryNamespacePrefixes) {
   EXPECT_EQ(parser.language, "vi");
   EXPECT_EQ(parser.tocNavPath, "OPS/nav.xhtml");
   EXPECT_TRUE(parseOpfIntoScratchCache(xml));
+}
+
+TEST_F(EpubSourceIdentityTest, ContentOpfIgnoresMetadataFromUnrelatedNamespaces) {
+  const std::string xml =
+      R"(<opf:package xmlns:opf="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:evil="urn:crossvi:test"><opf:metadata><evil:title>Wrong title</evil:title><evil:creator>Wrong author</evil:creator><dc:title>Right title</dc:title><dc:creator>Right author</dc:creator></opf:metadata></opf:package>)";
+  const std::string cachePath;
+  const std::string basePath;
+  ContentOpfParser parser(cachePath, basePath, xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), xml.size());
+  ASSERT_TRUE(parser.succeeded());
+  EXPECT_EQ(parser.title, "Right title");
+  EXPECT_EQ(parser.author, "Right author");
+}
+
+TEST_F(EpubSourceIdentityTest, ContentOpfIgnoresManifestEntriesFromUnrelatedNamespaces) {
+  const std::string xml =
+      R"(<opf:package xmlns:opf="http://www.idpf.org/2007/opf" xmlns:evil="urn:crossvi:test"><opf:manifest><evil:item id="wrong" href="wrong.xhtml" properties="nav cover-image"/><opf:item id="right" href="right.xhtml" properties="nav cover-image"/></opf:manifest></opf:package>)";
+  const std::string cachePath;
+  const std::string basePath = "OPS/";
+  ContentOpfParser parser(cachePath, basePath, xml.size(), nullptr);
+  ASSERT_TRUE(parser.setup());
+  ASSERT_EQ(parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size()), xml.size());
+  ASSERT_TRUE(parser.succeeded());
+  EXPECT_EQ(parser.tocNavPath, "OPS/right.xhtml");
+  EXPECT_EQ(parser.coverItemHref, "OPS/right.xhtml");
 }
 
 TEST_F(EpubSourceIdentityTest, ContentOpfPropertiesRequireExactTokens) {
@@ -1588,13 +1614,13 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheDistinguishesNewerFromCorruptWit
   EXPECT_EQ(Storage.file(BOOK_CACHE_PATH), legacy);
 
   auto newer = makeBookCache(identity);
-  newer.front() = 13;
+  newer.front() = 14;
   Storage.setFile(BOOK_CACHE_PATH, newer);
   BookMetadataCache newerCache(CACHE_PATH);
   EXPECT_EQ(newerCache.load(identity), BookMetadataCache::LoadStatus::NewerVersion);
   EXPECT_EQ(Storage.file(BOOK_CACHE_PATH), newer);
 
-  std::vector<uint8_t> truncated = {12, 0, 0};
+  std::vector<uint8_t> truncated = {13, 0, 0};
   Storage.setFile(BOOK_CACHE_PATH, truncated);
   BookMetadataCache truncatedCache(CACHE_PATH);
   EXPECT_EQ(truncatedCache.load(identity), BookMetadataCache::LoadStatus::Invalid);

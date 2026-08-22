@@ -14,7 +14,27 @@ namespace {
 constexpr char MEDIA_TYPE_NCX[] = "application/x-dtbncx+xml";
 constexpr char MEDIA_TYPE_CSS[] = "text/css";
 constexpr char MEDIA_TYPE_IMAGE_PREFIX[] = "image/";
+constexpr char OPF_NAMESPACE[] = "http://www.idpf.org/2007/opf";
+constexpr char DC_NAMESPACE[] = "http://purl.org/dc/elements/1.1/";
+constexpr char XML_NAMESPACE_SEPARATOR = '|';
 constexpr char itemCacheFile[] = "/.items.bin";
+
+bool expandedNameEquals(const char* name, const char* namespaceUri, const char* localName) {
+  if (!name) return false;
+  const char* const separator = std::strchr(name, XML_NAMESPACE_SEPARATOR);
+  if (!separator) return std::strcmp(name, localName) == 0;
+  return static_cast<size_t>(separator - name) == std::strlen(namespaceUri) &&
+         std::strncmp(name, namespaceUri, static_cast<size_t>(separator - name)) == 0 &&
+         std::strcmp(separator + 1, localName) == 0;
+}
+
+bool opfElementEquals(const char* name, const char* localName) {
+  return expandedNameEquals(name, OPF_NAMESPACE, localName);
+}
+
+bool dcElementEquals(const char* name, const char* localName) {
+  return expandedNameEquals(name, DC_NAMESPACE, localName);
+}
 
 bool startsWithImageMediaType(const std::string& mediaType) {
   constexpr size_t prefixLen = sizeof(MEDIA_TYPE_IMAGE_PREFIX) - 1;
@@ -67,7 +87,7 @@ bool appendBoundedText(std::string& destination, const char* value, const int le
 }  // namespace
 
 bool ContentOpfParser::setup() {
-  parser = XML_ParserCreate(nullptr);
+  parser = XML_ParserCreateNS(nullptr, XML_NAMESPACE_SEPARATOR);
   if (!parser) {
     LOG_DBG("COF", "Couldn't allocate memory for parser");
     return false;
@@ -183,17 +203,17 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
 
   if (self->ioFailed) return;
 
-  if (self->state == START && xmlLocalNameEquals(name, "package")) {
+  if (self->state == START && opfElementEquals(name, "package")) {
     self->state = IN_PACKAGE;
     return;
   }
 
-  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "metadata")) {
+  if (self->state == IN_PACKAGE && opfElementEquals(name, "metadata")) {
     self->state = IN_METADATA;
     return;
   }
 
-  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "title")) {
+  if (self->state == IN_METADATA && dcElementEquals(name, "title")) {
     // Only capture the first title element; subsequent ones are subtitles
     if (self->title.empty()) {
       self->state = IN_BOOK_TITLE;
@@ -201,19 +221,19 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "creator")) {
+  if (self->state == IN_METADATA && dcElementEquals(name, "creator")) {
     self->currentAuthor.clear();
     self->state = IN_BOOK_AUTHOR;
     return;
   }
 
-  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "language")) {
+  if (self->state == IN_METADATA && dcElementEquals(name, "language")) {
     self->currentLanguage.clear();
     self->state = IN_BOOK_LANGUAGE;
     return;
   }
 
-  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "manifest")) {
+  if (self->state == IN_PACKAGE && opfElementEquals(name, "manifest")) {
     self->state = IN_MANIFEST;
     if (self->cache && !Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
       LOG_ERR("COF", "Couldn't open temp items file for writing");
@@ -222,7 +242,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "spine")) {
+  if (self->state == IN_PACKAGE && opfElementEquals(name, "spine")) {
     self->state = IN_SPINE;
     if (self->cache && !Storage.openFileForRead("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
       LOG_ERR("COF", "Couldn't open temp items file for reading");
@@ -243,12 +263,12 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "guide")) {
+  if (self->state == IN_PACKAGE && opfElementEquals(name, "guide")) {
     self->state = IN_GUIDE;
     return;
   }
 
-  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "meta")) {
+  if (self->state == IN_METADATA && opfElementEquals(name, "meta")) {
     bool isCover = false;
     std::string coverItemId;
 
@@ -270,7 +290,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
-  if (self->state == IN_MANIFEST && xmlLocalNameEquals(name, "item")) {
+  if (self->state == IN_MANIFEST && opfElementEquals(name, "item")) {
     if (++self->manifestItemCount > MAX_MANIFEST_ITEMS) {
       LOG_ERR("COF", "Manifest exceeds %u items", static_cast<unsigned>(MAX_MANIFEST_ITEMS));
       self->ioFailed = true;
@@ -369,7 +389,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   // NOTE: This relies on spine appearing after item manifest (which is pretty safe as it's part of the EPUB spec)
   // Only run the spine parsing if there's a cache to add it to
   if (self->cache) {
-    if (self->state == IN_SPINE && xmlLocalNameEquals(name, "itemref")) {
+    if (self->state == IN_SPINE && opfElementEquals(name, "itemref")) {
       if (++self->spineItemCount > MAX_SPINE_ITEMS) {
         LOG_ERR("COF", "Spine exceeds %u items", static_cast<unsigned>(MAX_SPINE_ITEMS));
         self->ioFailed = true;
@@ -428,7 +448,7 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     }
   }
   // parse the guide
-  if (self->state == IN_GUIDE && xmlLocalNameEquals(name, "reference")) {
+  if (self->state == IN_GUIDE && opfElementEquals(name, "reference")) {
     std::string type;
     std::string guideHref;
     for (int i = 0; atts[i]; i += 2) {
@@ -487,29 +507,29 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
 
   if (self->ioFailed) return;
 
-  if (self->state == IN_SPINE && xmlLocalNameEquals(name, "spine")) {
+  if (self->state == IN_SPINE && opfElementEquals(name, "spine")) {
     self->state = IN_PACKAGE;
     if (self->cache && !self->closeItemStore()) self->ioFailed = true;
     return;
   }
 
-  if (self->state == IN_GUIDE && xmlLocalNameEquals(name, "guide")) {
+  if (self->state == IN_GUIDE && opfElementEquals(name, "guide")) {
     self->state = IN_PACKAGE;
     return;
   }
 
-  if (self->state == IN_MANIFEST && xmlLocalNameEquals(name, "manifest")) {
+  if (self->state == IN_MANIFEST && opfElementEquals(name, "manifest")) {
     self->state = IN_PACKAGE;
     if (self->cache && !self->closeItemStore()) self->ioFailed = true;
     return;
   }
 
-  if (self->state == IN_BOOK_TITLE && xmlLocalNameEquals(name, "title")) {
+  if (self->state == IN_BOOK_TITLE && dcElementEquals(name, "title")) {
     self->state = IN_METADATA;
     return;
   }
 
-  if (self->state == IN_BOOK_AUTHOR && xmlLocalNameEquals(name, "creator")) {
+  if (self->state == IN_BOOK_AUTHOR && dcElementEquals(name, "creator")) {
     if (!self->currentAuthor.empty()) {
       const size_t separatorBytes = self->author.empty() ? 0 : 2;
       if (self->author.size() > MAX_METADATA_TEXT_BYTES - separatorBytes ||
@@ -525,19 +545,19 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
     return;
   }
 
-  if (self->state == IN_BOOK_LANGUAGE && xmlLocalNameEquals(name, "language")) {
+  if (self->state == IN_BOOK_LANGUAGE && dcElementEquals(name, "language")) {
     if (self->language.empty()) self->language = trimAsciiWhitespace(self->currentLanguage);
     self->currentLanguage.clear();
     self->state = IN_METADATA;
     return;
   }
 
-  if (self->state == IN_METADATA && xmlLocalNameEquals(name, "metadata")) {
+  if (self->state == IN_METADATA && opfElementEquals(name, "metadata")) {
     self->state = IN_PACKAGE;
     return;
   }
 
-  if (self->state == IN_PACKAGE && xmlLocalNameEquals(name, "package")) {
+  if (self->state == IN_PACKAGE && opfElementEquals(name, "package")) {
     self->state = START;
     return;
   }
