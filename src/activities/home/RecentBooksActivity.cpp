@@ -20,7 +20,6 @@
 #include <span>
 
 #include "CrossPointSettings.h"
-#include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/BookSavedItemsActivity.h"
@@ -95,12 +94,6 @@ bool setBookCompletion(const LibraryBookRecord& record, const bool completed) {
     if (nextGlobal.completedBooks > 0) --nextGlobal.completedBooks;
   }
   if (!ReadingStatsCompletionTransaction::commit(cachePath, oldBook, nextBook, oldGlobal, nextGlobal)) return false;
-  if (completed) {
-    FINISHED_BOOKS.markCompleted(record.path, record.title, record.author,
-                                 nextBook.finishedDate.isValid() ? readingStatsDayIndex(nextBook.finishedDate) : 0);
-  } else {
-    FINISHED_BOOKS.removeByPath(record.path);
-  }
   if (!ReadingAchievements::reconcileFromStorage()) {
     LOG_ERR("LIB", "Failed to reconcile reading achievements after completion update");
   }

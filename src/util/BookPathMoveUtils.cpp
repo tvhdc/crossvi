@@ -18,7 +18,6 @@
 #include "BookmarkUtil.h"
 #include "CrossPointState.h"
 #include "Epub/SourceIdentityStore.h"
-#include "FinishedBooksStore.h"
 #include "LibraryCatalogStore.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/ReadingStatsCompletionTransaction.h"
@@ -639,7 +638,6 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
       LOG_ERR("BookMove", "Could not finish old TXT state cleanup");
     }
     RECENT_BOOKS.updatePath(sourcePath, destinationPath, sourceCachePath, destinationCachePath);
-    FINISHED_BOOKS.updatePath(sourcePath, destinationPath);
     if (APP_STATE.openEpubPath == sourcePath) {
       APP_STATE.openEpubPath = destinationPath;
       APP_STATE.saveToFile();
@@ -670,7 +668,6 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     }
 
     RECENT_BOOKS.updatePath(sourcePath, destinationPath, sourceCachePath, destinationCachePath);
-    FINISHED_BOOKS.updatePath(sourcePath, destinationPath);
     if (APP_STATE.openEpubPath == sourcePath) {
       APP_STATE.openEpubPath = destinationPath;
       APP_STATE.saveToFile();
@@ -739,7 +736,6 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     }
   }
   RECENT_BOOKS.updatePath(sourcePath, destinationPath, sourceCachePath, destinationCachePath);
-  FINISHED_BOOKS.updatePath(sourcePath, destinationPath);
   if (APP_STATE.openEpubPath == sourcePath) {
     APP_STATE.openEpubPath = destinationPath;
     APP_STATE.saveToFile();
@@ -749,7 +745,6 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
 }
 
 bool removeBookUserStateAfterDelete(const std::string& bookPath, const bool sourceDeleted) {
-  if (sourceDeleted) FINISHED_BOOKS.removeByPath(bookPath);
   // Callers invoke this after removing the source file. Catalog invalidation is
   // independent of whether stale user-state cleanup can complete.
   if (sourceDeleted) {

@@ -24,7 +24,6 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DailyBookReadingHistory.h"
-#include "FinishedBooksStore.h"
 #include "MappedInputManager.h"
 #include "PerBookReaderSettingsBridge.h"
 #include "PerBookReaderSettingsStore.h"
@@ -1623,9 +1622,6 @@ void TxtReaderActivity::markBookCompleted() {
   bookReadingStats = completedBookStats;
   globalReadingStats = completedGlobalStats;
   if (!ReadingAchievements::reconcileFromStorage()) LOG_ERR("TRS", "Failed to reconcile reading achievements");
-  FINISHED_BOOKS.markCompleted(
-      txt->getPath(), txt->getTitle(), "",
-      completedBookStats.finishedDate.isValid() ? readingStatsDayIndex(completedBookStats.finishedDate) : 0);
 }
 
 void TxtReaderActivity::openReaderMenu() {
