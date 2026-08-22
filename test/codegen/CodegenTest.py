@@ -964,6 +964,12 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("SleepImageValidation::overlayPng(sourcePath)", submenu)
         self.assertIn("SleepImageSelectionStore::publish", submenu)
         self.assertIn("SleepFrameStore::discard();", submenu)
+        self.assertIn('for (const char* path : {"/.sleep-overlay", "/sleep-overlay"})', submenu)
+        self.assertIn('for (const char* directory : {"/.sleep", "/sleep"})', submenu)
+        self.assertIn("SleepImageValidation::normalBmp", submenu)
+        self.assertIn("STR_SLEEP_IMAGE_SELECT_FILE", submenu)
+        self.assertIn("STR_SLEEP_IMAGE_SOURCE_FOLDER", submenu)
+        self.assertIn("STR_SLEEP_IMAGE_SOURCE_INVALID", submenu)
 
     def test_sleep_image_placement_applies_to_cover_custom_and_overlay(self):
         sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
@@ -1030,6 +1036,12 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("BookReadingHistoryActivity", stats)
         self.assertIn("openNextFile", history)
         self.assertIn("DailyBookReadingHistory::load", history)
+        self.assertIn("ClockDateFormat::format", history)
+        self.assertIn("ReadingCalendarRenderer::formatDuration", history)
+
+        day_detail = (REPO_ROOT / "src/activities/reader/ReadingDayDetailActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("ClockDateFormat::format", day_detail)
+        self.assertIn("ReadingCalendarRenderer::formatDuration", day_detail)
 
     def test_reading_achievements_paginate_open_details_and_use_trophy_icon(self):
         activity = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.cpp").read_text(

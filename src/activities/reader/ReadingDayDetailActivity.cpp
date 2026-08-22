@@ -4,29 +4,16 @@
 #include <I18n.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <string>
 
+#include "ClockDateFormat.h"
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "ReadingCalendarRenderer.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-std::string formatDuration(const uint32_t seconds) {
-  char value[24];
-  if (seconds == 0) {
-    snprintf(value, sizeof(value), "0m");
-  } else if (seconds < 60) {
-    snprintf(value, sizeof(value), "<1m");
-  } else if (seconds < 3600) {
-    snprintf(value, sizeof(value), "%lum", static_cast<unsigned long>(seconds / 60));
-  } else {
-    snprintf(value, sizeof(value), "%luh %lum", static_cast<unsigned long>(seconds / 3600),
-             static_cast<unsigned long>(seconds % 3600 / 60));
-  }
-  return value;
-}
-
 std::string titleFor(const DailyBookReadingRecord& book) {
   if (!book.title.empty()) return book.title;
   const size_t slash = book.path.find_last_of('/');
@@ -101,11 +88,13 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
   const int subHeaderTop = headerTop + metrics.headerHeight;
   char date[16] = "--/--/----";
   if (cell_.date.isValid()) {
-    snprintf(date, sizeof(date), "%02u/%02u/%04u", static_cast<unsigned>(cell_.date.day),
-             static_cast<unsigned>(cell_.date.month), static_cast<unsigned>(cell_.date.year));
+    ClockDateFormat::format(cell_.date.year, cell_.date.month, cell_.date.day, SETTINGS.dateFormat,
+                           ClockDateFormat::separatorChar(SETTINGS.dateSeparator), date, sizeof(date),
+                           I18N.getLanguage() == Language::VI);
   }
   GUI.drawHeader(renderer, Rect{safe.x, headerTop, safe.width, metrics.headerHeight}, tr(STR_STATS_CALENDAR));
-  const std::string duration = cell_.exactDuration ? formatDuration(cell_.readingSeconds) : "--";
+  const std::string duration =
+      cell_.exactDuration ? ReadingCalendarRenderer::formatDuration(cell_.readingSeconds) : "--";
   GUI.drawSubHeader(renderer, Rect{safe.x, subHeaderTop, safe.width, metrics.tabBarHeight}, date, duration.c_str());
 
   int contentTop = subHeaderTop + metrics.tabBarHeight + metrics.verticalSpacing;
@@ -122,7 +111,9 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
     GUI.drawList(
         renderer, content, books_.count, static_cast<int>(selected_),
         [this](const int index) { return titleFor(books_.records[static_cast<size_t>(index)]); },
-        [this](const int index) { return formatDuration(books_.records[static_cast<size_t>(index)].seconds); },
+        [this](const int index) {
+          return ReadingCalendarRenderer::formatDuration(books_.records[static_cast<size_t>(index)].seconds);
+        },
         [this](const int index) { return UITheme::getFileIcon(books_.records[static_cast<size_t>(index)].path); });
   } else {
     const bool unavailable = breakdownPartial_ || cell_.readingSeconds > 0;

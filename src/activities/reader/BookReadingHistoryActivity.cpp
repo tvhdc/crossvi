@@ -5,35 +5,25 @@
 #include <Logging.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <string>
 
+#include "ClockDateFormat.h"
+#include "CrossPointSettings.h"
 #include "DailyBookReadingHistory.h"
 #include "MappedInputManager.h"
+#include "ReadingCalendarRenderer.h"
 #include "ReadingStatsUtils.h"
 #include "components/UITheme.h"
 
 namespace {
-std::string formatDuration(const uint32_t seconds) {
-  char value[24];
-  if (seconds < 60) {
-    snprintf(value, sizeof(value), seconds == 0 ? "0m" : "<1m");
-  } else if (seconds < 3600) {
-    snprintf(value, sizeof(value), "%lum", static_cast<unsigned long>(seconds / 60));
-  } else {
-    snprintf(value, sizeof(value), "%luh %lum", static_cast<unsigned long>(seconds / 3600),
-             static_cast<unsigned long>(seconds % 3600 / 60));
-  }
-  return value;
-}
-
 std::string formatDate(const uint32_t day) {
   ReadingStatsDate date;
   if (!readingStatsDateFromDayIndex(day, date)) return "--/--/----";
   char value[16];
-  snprintf(value, sizeof(value), "%02u/%02u/%04u", static_cast<unsigned>(date.day), static_cast<unsigned>(date.month),
-           static_cast<unsigned>(date.year));
-  return value;
+  const bool formatted = ClockDateFormat::format(
+      date.year, date.month, date.day, SETTINGS.dateFormat, ClockDateFormat::separatorChar(SETTINGS.dateSeparator),
+      value, sizeof(value), I18N.getLanguage() == Language::VI);
+  return formatted ? value : "--/--/----";
 }
 }  // namespace
 
@@ -169,7 +159,9 @@ void BookReadingHistoryActivity::render(RenderLock&&) {
     GUI.drawList(
         renderer, content, entryCount_, static_cast<int>(selected_),
         [this](const int index) { return formatDate(entries_[static_cast<size_t>(index)].day); },
-        [this](const int index) { return formatDuration(entries_[static_cast<size_t>(index)].seconds); },
+        [this](const int index) {
+          return ReadingCalendarRenderer::formatDuration(entries_[static_cast<size_t>(index)].seconds);
+        },
         [](int) { return UIIcon::Recent; });
   }
 

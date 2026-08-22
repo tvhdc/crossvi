@@ -64,19 +64,86 @@ std::string fileNameFromPath(const std::string& path) {
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-std::string activeSleepImagePath(const uint8_t mode) {
-  if (!SleepImageSelectionStore::recover()) return {};
-  if (sleepModeUsesTransparentOverlay(mode)) {
-    if (Storage.exists(SleepImageSelectionStore::OVERLAY_BMP_PATH)) {
-      return SleepImageSelectionStore::OVERLAY_BMP_PATH;
-    }
-    if (Storage.exists(SleepImageSelectionStore::OVERLAY_PNG_PATH)) {
-      return SleepImageSelectionStore::OVERLAY_PNG_PATH;
-    }
-    return {};
+enum class SleepImageSourceKind : uint8_t { None, File, Folder, Invalid };
+
+struct SleepImageSource {
+  SleepImageSourceKind kind = SleepImageSourceKind::None;
+  std::string path;
+};
+
+bool validSleepImage(const std::string& path, const bool transparent) {
+  if (FsHelpers::hasPngExtension(path)) return transparent && SleepImageValidation::overlayPng(path);
+  if (!FsHelpers::hasBmpExtension(path)) return false;
+  return transparent ? SleepImageValidation::overlayBmp(path) : SleepImageValidation::normalBmp(path);
+}
+
+bool directoryHasValidSleepImage(const char* directoryPath, const bool transparent) {
+  HalFile directory = Storage.open(directoryPath);
+  if (!directory || !directory.isDirectory()) {
+    if (directory) directory.close();
+    return false;
   }
-  return Storage.exists(SleepImageSelectionStore::NORMAL_BMP_PATH) ? SleepImageSelectionStore::NORMAL_BMP_PATH
-                                                                   : std::string{};
+  constexpr size_t MAX_ENTRIES = 4096;
+  char name[257]{};
+  for (size_t entries = 0; entries < MAX_ENTRIES; ++entries) {
+    if (entries > 0 && entries % 16 == 0) yield();
+    HalFile file = directory.openNextFile();
+    if (!file) break;
+    const bool isDirectory = file.isDirectory();
+    const size_t length = isDirectory ? 0 : file.getName(name, sizeof(name));
+    file.close();
+    if (isDirectory || length == 0 || length >= sizeof(name)) continue;
+    name[length] = '\0';
+    if (name[0] == '.') continue;
+    const std::string path = std::string(directoryPath) + "/" + name;
+    if (validSleepImage(path, transparent)) {
+      directory.close();
+      return true;
+    }
+  }
+  directory.close();
+  return false;
+}
+
+SleepImageSource inspectSleepImageSource(const uint8_t mode) {
+  if (!SleepImageSelectionStore::recover()) return {SleepImageSourceKind::Invalid, {}};
+  const bool transparent = sleepModeUsesTransparentOverlay(mode);
+  const char* invalidRoot = nullptr;
+  if (transparent) {
+    for (const char* path : {SleepImageSelectionStore::OVERLAY_BMP_PATH,
+                             SleepImageSelectionStore::OVERLAY_PNG_PATH}) {
+      if (!Storage.exists(path)) continue;
+      if (validSleepImage(path, true)) return {SleepImageSourceKind::File, path};
+      if (!invalidRoot) invalidRoot = path;
+    }
+    for (const char* path : {"/.sleep-overlay", "/sleep-overlay"}) {
+      if (directoryHasValidSleepImage(path, true)) return {SleepImageSourceKind::Folder, path};
+    }
+  } else {
+    const char* path = SleepImageSelectionStore::NORMAL_BMP_PATH;
+    if (Storage.exists(path)) {
+      if (validSleepImage(path, false)) return {SleepImageSourceKind::File, path};
+      invalidRoot = path;
+    }
+    for (const char* directory : {"/.sleep", "/sleep"}) {
+      if (directoryHasValidSleepImage(directory, false)) return {SleepImageSourceKind::Folder, directory};
+    }
+  }
+  return invalidRoot ? SleepImageSource{SleepImageSourceKind::Invalid, invalidRoot} : SleepImageSource{};
+}
+
+std::string sleepImageSourceLabel(const SleepImageSource& source) {
+  if (source.kind == SleepImageSourceKind::None) return tr(STR_NOT_SET);
+  char label[320];
+  if (source.kind == SleepImageSourceKind::Folder) {
+    snprintf(label, sizeof(label), tr(STR_SLEEP_IMAGE_SOURCE_FOLDER), source.path.c_str());
+  } else if (source.kind == SleepImageSourceKind::Invalid) {
+    snprintf(label, sizeof(label), tr(STR_SLEEP_IMAGE_SOURCE_INVALID),
+             source.path.empty() ? "?" : fileNameFromPath(source.path).c_str());
+  } else {
+    snprintf(label, sizeof(label), "%s", fileNameFromPath(source.path).c_str());
+  }
+  return label;
 }
 
 bool removeIfPresent(const char* path) { return !Storage.exists(path) || Storage.remove(path); }
@@ -426,10 +493,9 @@ void SettingsSubmenuActivity::openSleepImageZoomPicker() {
 
 void SettingsSubmenuActivity::showSleepImageDialog(const uint8_t mode) {
   std::string title = std::string(tr(STR_SLEEP_SCREEN)) + ": ";
-  const std::string currentPath = activeSleepImagePath(mode);
-  title += currentPath.empty() ? tr(STR_NOT_SET) : fileNameFromPath(currentPath);
+  title += sleepImageSourceLabel(inspectSleepImageSource(mode));
 
-  const std::string choose = std::string(tr(STR_SELECT)) + " BMP/PNG";
+  const std::string choose = tr(STR_SLEEP_IMAGE_SELECT_FILE);
   const std::string cancel = tr(STR_CANCEL);
   const char* options[] = {choose.c_str(), cancel.c_str()};
   optionPopup_.show(title.c_str(), options, 2, 0, [this, mode](const int index) {
