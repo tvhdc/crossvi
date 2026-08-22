@@ -4499,7 +4499,11 @@ async function optimizeStandaloneImageUpload(file) {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, rect.x, rect.y, rect.width, rect.height, x, y, drawWidth, drawHeight);
 
-  const hasAlpha = source.hasAlpha || imageDataHasTransparency(ctx.getImageData(0, 0, canvas.width, canvas.height));
+  // Empty padding belongs to the device canvas, not to the uploaded image.
+  // Classify the pixels that will actually be exported so a solid image fitted
+  // inside the screen does not become a transparent overlay merely because it
+  // has margins around it.
+  const hasAlpha = imageDataHasTransparency(ctx.getImageData(x, y, drawWidth, drawHeight));
   const outputName = imageUploadOutputName(file.name, hasAlpha);
   let blob;
   if (hasAlpha) {

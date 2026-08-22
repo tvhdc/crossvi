@@ -674,6 +674,8 @@
       canvas: document.getElementById("canvas")
     };
     const ctx = els.canvas.getContext("2d", { willReadFrequently: true });
+    const outputCanvas = document.createElement("canvas");
+    const outputCtx = outputCanvas.getContext("2d", { willReadFrequently: true });
     let sourceImage = null;
     let sourceRect = null;
     let sourceInfo = null;
@@ -776,8 +778,8 @@
       return { has: transparent > 0, percent: Math.round((transparent * 1000) / total) / 10 };
     }
 
-    function quantizeCanvasToFourGrayLevels(canvas) {
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    function quantizeCanvasToFourGrayLevels(canvas, context) {
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
       const data = imageData.data;
       for (let y = 0; y < canvas.height; y++) {
         for (let x = 0; x < canvas.width; x++) {
@@ -792,7 +794,7 @@
           data[i + 3] = 255;
         }
       }
-      ctx.putImageData(imageData, 0, 0);
+      context.putImageData(imageData, 0, 0);
     }
 
     function crc32(bytes) {
@@ -915,8 +917,8 @@
       ], { type: "image/png" });
     }
 
-    async function makeOptimizedOverlayPngBlob(canvas) {
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    async function makeOptimizedOverlayPngBlob(canvas, context) {
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
       let firstQualityBlob = null;
       let fallbackBlob = null;
       for (const candidate of overlayPaletteCandidates) {
@@ -935,23 +937,26 @@
 
     function drawSource() {
       const t = target();
-      els.canvas.width = t.width;
-      els.canvas.height = t.height;
-      ctx.clearRect(0, 0, t.width, t.height);
+      outputCanvas.width = t.width;
+      outputCanvas.height = t.height;
+      outputCtx.clearRect(0, 0, t.width, t.height);
       if (els.mode.value === "normal") {
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, t.width, t.height);
+        outputCtx.fillStyle = "#fff";
+        outputCtx.fillRect(0, 0, t.width, t.height);
       }
-      if (!sourceImage) return null;
+      if (!sourceImage) {
+        renderFirmwarePreview();
+        return null;
+      }
 
       const scale = placementScale(t) * (zoomPercent() / 100);
       const drawWidth = Math.max(1, Math.round(sourceRect.width * scale));
       const drawHeight = Math.max(1, Math.round(sourceRect.height * scale));
       const x = Math.floor((t.width - drawWidth) / 2);
       const y = Math.floor((t.height - drawHeight) / 2);
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(
+      outputCtx.imageSmoothingEnabled = true;
+      outputCtx.imageSmoothingQuality = "high";
+      outputCtx.drawImage(
         sourceImage,
         sourceRect.x,
         sourceRect.y,
@@ -964,11 +969,40 @@
       );
       const drawnRect = { x, y, width: drawWidth, height: drawHeight };
 
-      if (els.mode.value === "normal") quantizeCanvasToFourGrayLevels(els.canvas);
+      if (els.mode.value === "normal") quantizeCanvasToFourGrayLevels(outputCanvas, outputCtx);
+      renderFirmwarePreview();
       return drawnRect;
     }
 
-    function makeBmpBlob(canvas) {
+    function renderFirmwarePreview() {
+      els.canvas.width = outputCanvas.width;
+      els.canvas.height = outputCanvas.height;
+      ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+      if (!outputCanvas.width || !outputCanvas.height) return;
+      if (els.mode.value === "normal") {
+        ctx.drawImage(outputCanvas, 0, 0);
+        return;
+      }
+
+      const source = outputCtx.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
+      const preview = ctx.createImageData(outputCanvas.width, outputCanvas.height);
+      for (let y = 0; y < outputCanvas.height; y++) {
+        for (let x = 0; x < outputCanvas.width; x++) {
+          const i = (y * outputCanvas.width + x) * 4;
+          const alpha = source.data[i + 3];
+          const threshold = bayer[y & 3][x & 3] * 16;
+          if (alpha === 0 || (alpha !== 255 && alpha <= threshold)) continue;
+          const gray = (source.data[i] * 77 + source.data[i + 1] * 150 + source.data[i + 2] * 29) >> 8;
+          const oneBitThreshold = bayer[y & 3][x & 3] * 16 + 8;
+          const value = gray < oneBitThreshold ? 0 : 255;
+          preview.data[i] = preview.data[i + 1] = preview.data[i + 2] = value;
+          preview.data[i + 3] = 255;
+        }
+      }
+      ctx.putImageData(preview, 0, 0);
+    }
+
+    function makeBmpBlob(canvas, context) {
       const width = canvas.width;
       const height = canvas.height;
       const rowStride = Math.ceil(width / 8) * 4;
@@ -993,7 +1027,7 @@
         bytes.set([v, v, v, 0], 54 + i * 4);
       }
 
-      const imageData = ctx.getImageData(0, 0, width, height).data;
+      const imageData = context.getImageData(0, 0, width, height).data;
       const offset = 14 + 40 + paletteBytes;
       for (let y = 0; y < height; y++) {
         const srcY = height - 1 - y;
@@ -1060,15 +1094,15 @@
         els.download.textContent = t("downloadReady", { name, size: formatSize(blob.size) });
       };
       if (els.mode.value === "transparent") {
-        makeOptimizedOverlayPngBlob(els.canvas).then(blob => {
+        makeOptimizedOverlayPngBlob(outputCanvas, outputCtx).then(blob => {
           if (blob) {
             finish(blob);
           } else {
-            els.canvas.toBlob(finish, "image/png");
+            outputCanvas.toBlob(finish, "image/png");
           }
         });
       } else {
-        finish(makeBmpBlob(els.canvas));
+        finish(makeBmpBlob(outputCanvas, outputCtx));
       }
     }
 
