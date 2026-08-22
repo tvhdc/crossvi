@@ -27,6 +27,7 @@
 #include "activities/reader/BookStatsLoader.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/reader/ReadingStatsActivity.h"
+#include "activities/reader/ReadingAchievements.h"
 #include "activities/reader/ReadingStatsCompletionTransaction.h"
 #include "activities/reader/ReadingStatsPresentation.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -99,6 +100,9 @@ bool setBookCompletion(const LibraryBookRecord& record, const bool completed) {
                                  nextBook.finishedDate.isValid() ? readingStatsDayIndex(nextBook.finishedDate) : 0);
   } else {
     FINISHED_BOOKS.removeByPath(record.path);
+  }
+  if (!ReadingAchievements::reconcileFromStorage()) {
+    LOG_ERR("LIB", "Failed to reconcile reading achievements after completion update");
   }
   return true;
 }

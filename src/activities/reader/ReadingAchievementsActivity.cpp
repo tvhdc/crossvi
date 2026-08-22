@@ -36,6 +36,7 @@ size_t categoryIndexFor(const uint8_t id) {
 std::string rowProgress(const ReadingAchievementDefinition& definition, const ReadingAchievementSnapshot& snapshot,
                         const bool unlocked) {
   if (unlocked) return I18N.get(StrId::STR_ACHIEVEMENT_UNLOCKED);
+  if (!snapshot.isAvailable(definition.metric)) return I18N.get(StrId::STR_STATS_UNAVAILABLE);
   const uint32_t current = std::min(ReadingAchievements::progress(definition, snapshot), definition.threshold);
   char value[32];
   if (definition.metric == ReadingAchievementMetric::ReadingSeconds) {
@@ -168,7 +169,10 @@ void ReadingAchievementsActivity::render(RenderLock&&) {
     }
     y += metrics.verticalSpacing * 2;
 
-    const uint32_t current = std::min(ReadingAchievements::progress(definition, snapshot_), definition.threshold);
+    const bool progressAvailable = snapshot_.isAvailable(definition.metric);
+    const uint32_t current = progressAvailable
+                                 ? std::min(ReadingAchievements::progress(definition, snapshot_), definition.threshold)
+                                 : 0;
     const int progressWidth = std::min(320, contentWidth);
     const int progressX = safe.x + (safe.width - progressWidth) / 2;
     renderer.drawRect(progressX, y, progressWidth, 16, true);
@@ -179,13 +183,15 @@ void ReadingAchievementsActivity::render(RenderLock&&) {
     if (progressFill > 0) renderer.fillRect(progressX + 2, y + 2, progressFill, 12, true);
     y += 16 + metrics.verticalSpacing;
 
-    const std::string progress = rowProgress(definition, snapshot_, false);
+    const std::string progress = rowProgress(definition, snapshot_, state_.isUnlocked(definition.id));
     char progressDetail[64];
     snprintf(progressDetail, sizeof(progressDetail), tr(STR_ACHIEVEMENT_PROGRESS_DETAIL_FORMAT), progress.c_str());
     renderer.drawCenteredText(UI_10_FONT_ID, y, progressDetail, true, EpdFontFamily::BOLD);
     y += renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing * 2;
 
-    if (!state_.isUnlocked(definition.id)) {
+    if (!state_.isUnlocked(definition.id) && !progressAvailable) {
+      renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_STATS_UNAVAILABLE));
+    } else if (!state_.isUnlocked(definition.id)) {
       renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_ACHIEVEMENT_IN_PROGRESS));
     } else {
       const uint32_t recognitionDay = state_.unlockRecognitionDay(definition.id);

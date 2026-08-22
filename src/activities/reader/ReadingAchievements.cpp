@@ -171,6 +171,19 @@ uint8_t ReadingAchievementState::unlockedCount() const {
   return count;
 }
 
+bool ReadingAchievementSnapshot::isAvailable(const ReadingAchievementMetric metric) const {
+  return (availableMetrics & static_cast<uint8_t>(1u << static_cast<uint8_t>(metric))) != 0;
+}
+
+void ReadingAchievementSnapshot::setAvailable(const ReadingAchievementMetric metric, const bool available) {
+  const uint8_t bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(metric));
+  if (available) {
+    availableMetrics |= bit;
+  } else {
+    availableMetrics &= static_cast<uint8_t>(~bit);
+  }
+}
+
 const std::array<ReadingAchievementDefinition, ReadingAchievements::COUNT>& ReadingAchievements::definitions() {
   return DEFINITIONS;
 }
@@ -178,6 +191,10 @@ const std::array<ReadingAchievementDefinition, ReadingAchievements::COUNT>& Read
 ReadingAchievementSnapshot ReadingAchievements::snapshot(const GlobalReadingStats& stats,
                                                          const DailyReadingHistory& history) {
   ReadingAchievementSnapshot result;
+  result.setAvailable(ReadingAchievementMetric::Sessions, !stats.sessionsUnavailable);
+  result.setAvailable(ReadingAchievementMetric::ReadingSeconds, !stats.readingTimeUnavailable);
+  result.setAvailable(ReadingAchievementMetric::CompletedBooks, !stats.completionUnavailable);
+  result.setAvailable(ReadingAchievementMetric::ForwardPages, !stats.pageTurnsUnavailable);
   result.sessions = stats.sessionsUnavailable ? 0 : stats.totalSessions;
   result.readingSeconds = stats.readingTimeUnavailable ? 0 : stats.totalReadingSeconds;
   result.completedBooks = stats.completionUnavailable ? 0 : stats.completedBooks;
@@ -211,7 +228,10 @@ ReadingAchievementEvaluation ReadingAchievements::evaluate(ReadingAchievementSta
                                                            const uint32_t recognitionDay) {
   ReadingAchievementEvaluation result;
   for (const auto& definition : DEFINITIONS) {
-    if (state.isUnlocked(definition.id) || progress(definition, snapshot) < definition.threshold) continue;
+    if (state.isUnlocked(definition.id) || !snapshot.isAvailable(definition.metric) ||
+        progress(definition, snapshot) < definition.threshold) {
+      continue;
+    }
     state.unlock(definition.id, recognitionDay);
     if (result.firstUnlockedId == UINT8_MAX) result.firstUnlockedId = definition.id;
     ++result.newlyUnlocked;

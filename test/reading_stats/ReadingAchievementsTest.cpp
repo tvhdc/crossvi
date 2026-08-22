@@ -174,7 +174,22 @@ TEST(ReadingAchievements, UnavailableImportedMetricsDoNotCreateFalseUnlocks) {
   stats.pageTurnsUnavailable = true;
   DailyReadingHistory history;
   ReadingAchievementState state;
-  EXPECT_EQ(evaluate(ReadingAchievements::snapshot(stats, history), state).newlyUnlocked, 0);
+  const ReadingAchievementSnapshot snapshot = ReadingAchievements::snapshot(stats, history);
+  EXPECT_FALSE(snapshot.isAvailable(ReadingAchievementMetric::Sessions));
+  EXPECT_FALSE(snapshot.isAvailable(ReadingAchievementMetric::ForwardPages));
+  EXPECT_TRUE(snapshot.isAvailable(ReadingAchievementMetric::ReadingSeconds));
+  EXPECT_EQ(evaluate(snapshot, state).newlyUnlocked, 0);
+}
+
+TEST(ReadingAchievements, UnavailableMetricsAreSkippedEvenWhenProgressIsNonZero) {
+  ReadingAchievementState state;
+  ReadingAchievementSnapshot snapshot;
+  snapshot.sessions = 200;
+  snapshot.setAvailable(ReadingAchievementMetric::Sessions, false);
+
+  EXPECT_EQ(evaluate(snapshot, state).newlyUnlocked, 0);
+  EXPECT_FALSE(state.isUnlocked(0));
+  EXPECT_FALSE(state.isUnlocked(5));
 }
 
 TEST(ReadingAchievements, ExplicitStatsResetClearsAchievementState) {

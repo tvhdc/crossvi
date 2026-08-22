@@ -35,12 +35,18 @@ struct ReadingAchievementDefinition {
 };
 
 struct ReadingAchievementSnapshot {
+  static constexpr uint8_t ALL_METRICS_AVAILABLE = 0x3Fu;
+
   uint32_t sessions = 0;
   uint32_t readingSeconds = 0;
   uint32_t completedBooks = 0;
   uint32_t forwardPages = 0;
   uint32_t longestStreak = 0;
   uint32_t lifetimeReadingDays = 0;
+  uint8_t availableMetrics = ALL_METRICS_AVAILABLE;
+
+  bool isAvailable(ReadingAchievementMetric metric) const;
+  void setAvailable(ReadingAchievementMetric metric, bool available);
 };
 
 struct ReadingAchievementState {
