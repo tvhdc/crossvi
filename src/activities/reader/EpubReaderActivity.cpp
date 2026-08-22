@@ -955,8 +955,9 @@ void EpubReaderActivity::saveReadingStats() {
   }
   if (dailyBookHistoryPending && !bookReadingStatsDirty && !globalReadingStatsDirty && epub) {
     dailyBookHistoryPending = false;
-    if (!DailyBookReadingHistory::record(epub->getPath(), epub->getTitle(),
-                                         pendingGlobalReadingSpans.pendingDailyHistory)) {
+    if (DailyBookReadingHistory::record(epub->getPath(), epub->getTitle(),
+                                        pendingGlobalReadingSpans.pendingDailyHistory) !=
+        DailyBookReadingHistory::RecordStatus::Ok) {
       LOG_ERR("ERS", "Failed to save the per-book daily reading breakdown");
     }
   }

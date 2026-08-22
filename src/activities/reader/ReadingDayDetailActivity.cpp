@@ -9,6 +9,7 @@
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "fontIds.h"
 
 namespace {
 std::string formatDuration(const uint32_t seconds) {
@@ -38,7 +39,32 @@ void ReadingDayDetailActivity::onEnter() {
   suppressInitialConfirmRelease_ = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   historyRekeyPending_ = !DailyBookReadingHistory::recoverPreparedRekey();
   if (cell_.date.isValid()) {
-    bookHistoryStatus_ = DailyBookReadingHistory::load(readingStatsDayIndex(cell_.date), books_);
+    const uint32_t day = readingStatsDayIndex(cell_.date);
+    bookHistoryStatus_ = DailyBookReadingHistory::load(day, books_);
+    uint32_t recordedSeconds = 0;
+    for (size_t index = 0; index < books_.count; ++index) {
+      recordedSeconds = addReadingStatsSaturated(recordedSeconds, books_.records[index].seconds);
+    }
+
+    DailyReadingHistory canonicalHistory;
+    const DailyReadingHistory::LoadStatus canonicalStatus = DailyReadingHistory::load(canonicalHistory);
+    uint32_t canonicalSeconds = 0;
+    const bool canonicalTrusted = canonicalStatus == DailyReadingHistory::LoadStatus::Ok ||
+                                  canonicalStatus == DailyReadingHistory::LoadStatus::RecoveredBackup ||
+                                  canonicalStatus == DailyReadingHistory::LoadStatus::RecoveredTemp;
+    const bool canonicalDayKnown = canonicalTrusted && canonicalHistory.valueForDay(day, canonicalSeconds);
+    const bool recovered = bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::RecoveredBackup ||
+                           bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::RecoveredTemp ||
+                           canonicalStatus == DailyReadingHistory::LoadStatus::RecoveredBackup ||
+                           canonicalStatus == DailyReadingHistory::LoadStatus::RecoveredTemp;
+    const bool bookHistoryUnreadable = bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::Invalid ||
+                                       bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::NewerVersion ||
+                                       bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::IoError;
+    const bool canonicalUnreadable = canonicalStatus == DailyReadingHistory::LoadStatus::Invalid ||
+                                     canonicalStatus == DailyReadingHistory::LoadStatus::NewerVersion ||
+                                     canonicalStatus == DailyReadingHistory::LoadStatus::IoError;
+    breakdownPartial_ = historyRekeyPending_ || recovered || bookHistoryUnreadable || canonicalUnreadable ||
+                        (canonicalDayKnown ? recordedSeconds != canonicalSeconds : cell_.readingSeconds > 0);
   }
   selected_ = books_.count == 0 ? 0 : std::min(selected_, books_.count - 1);
   requestUpdate();
@@ -82,8 +108,15 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
   const std::string duration = cell_.exactDuration ? formatDuration(cell_.readingSeconds) : "--";
   GUI.drawSubHeader(renderer, Rect{safe.x, subHeaderTop, safe.width, metrics.tabBarHeight}, date, duration.c_str());
 
-  const int contentTop = subHeaderTop + metrics.tabBarHeight + metrics.verticalSpacing;
+  int contentTop = subHeaderTop + metrics.tabBarHeight + metrics.verticalSpacing;
   const int contentBottom = safe.y + safe.height - metrics.verticalSpacing;
+  if (breakdownPartial_ && books_.count > 0) {
+    const char* message = tr(STR_STATS_BOOK_DETAILS_PARTIAL);
+    const std::string display =
+        renderer.truncatedText(UI_10_FONT_ID, message, safe.width - metrics.contentSidePadding * 2);
+    renderer.drawText(UI_10_FONT_ID, safe.x + metrics.contentSidePadding, contentTop, display.c_str());
+    contentTop += renderer.getTextHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+  }
   const Rect content{safe.x, contentTop, safe.width, std::max(1, contentBottom - contentTop)};
   if (books_.count > 0) {
     GUI.drawList(
@@ -92,10 +125,7 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
         [this](const int index) { return formatDuration(books_.records[static_cast<size_t>(index)].seconds); },
         [this](const int index) { return UITheme::getFileIcon(books_.records[static_cast<size_t>(index)].path); });
   } else {
-    const bool unavailable = historyRekeyPending_ || cell_.readingSeconds > 0 ||
-                             bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::Invalid ||
-                             bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::NewerVersion ||
-                             bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::IoError;
+    const bool unavailable = breakdownPartial_ || cell_.readingSeconds > 0;
     GUI.drawList(renderer, content, 1, -1, [unavailable](int) {
       const StrId message = unavailable ? StrId::STR_STATS_BOOK_DETAILS_UNAVAILABLE : StrId::STR_STATS_NO_DATA;
       return std::string(I18n::getInstance().get(message));

@@ -1571,8 +1571,9 @@ void TxtReaderActivity::saveReadingStats() {
   }
   if (dailyBookHistoryPending && !bookReadingStatsDirty && !globalReadingStatsDirty && txt) {
     dailyBookHistoryPending = false;
-    if (!DailyBookReadingHistory::record(txt->getPath(), txt->getTitle(),
-                                         pendingGlobalReadingSpans.pendingDailyHistory)) {
+    if (DailyBookReadingHistory::record(txt->getPath(), txt->getTitle(),
+                                        pendingGlobalReadingSpans.pendingDailyHistory) !=
+        DailyBookReadingHistory::RecordStatus::Ok) {
       LOG_ERR("TRS", "Failed to save the per-book daily reading breakdown");
     }
   }

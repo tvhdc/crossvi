@@ -1091,8 +1091,9 @@ void XtcReaderActivity::saveReadingStats() {
   }
   if (dailyBookHistoryPending && !bookReadingStatsDirty && !globalReadingStatsDirty && xtc) {
     dailyBookHistoryPending = false;
-    if (!DailyBookReadingHistory::record(xtc->getPath(), xtc->getTitle(),
-                                         pendingGlobalReadingSpans.pendingDailyHistory)) {
+    if (DailyBookReadingHistory::record(xtc->getPath(), xtc->getTitle(),
+                                        pendingGlobalReadingSpans.pendingDailyHistory) !=
+        DailyBookReadingHistory::RecordStatus::Ok) {
       LOG_ERR("XRS", "Failed to save the per-book daily reading breakdown");
     }
   }

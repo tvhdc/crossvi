@@ -40,11 +40,16 @@ class DailyBookReadingHistory {
     IoError,
   };
 
+  enum class RecordStatus : uint8_t { Ok, CapacityExceeded, Protected, IoError };
+
   static std::string pathForDay(uint32_t day);
   static bool dayFromFileName(const char* name, uint32_t& day);
   static LoadStatus load(uint32_t day, DailyBookReadingDay& out);
-  static bool record(uint32_t day, const std::string& path, const std::string& title, uint32_t seconds);
-  static bool record(const std::string& path, const std::string& title, const DailyReadingHistoryDelta& delta);
+  static RecordStatus record(uint32_t day, const std::string& path, const std::string& title, uint32_t seconds);
+  // Attempts every independent day in the bounded delta. This prevents one
+  // full day from discarding the per-book breakdown for later days.
+  static RecordStatus record(const std::string& path, const std::string& title,
+                             const DailyReadingHistoryDelta& delta);
   // Persists the old/new path before a book move. Finishing is idempotent and
   // rewrites each bounded day file atomically, so power-loss recovery can
   // safely continue without adding reading time twice.

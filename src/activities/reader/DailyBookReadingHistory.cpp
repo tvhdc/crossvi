@@ -327,43 +327,51 @@ DailyBookReadingHistory::LoadStatus DailyBookReadingHistory::load(const uint32_t
   return invalid ? LoadStatus::Invalid : LoadStatus::Missing;
 }
 
-bool DailyBookReadingHistory::record(const uint32_t day, const std::string& path, const std::string& title,
-                                     const uint32_t seconds) {
+DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const uint32_t day, const std::string& path,
+                                                                      const std::string& title,
+                                                                      const uint32_t seconds) {
   ReadingStatsDate date;
   if (!readingStatsDateFromDayIndex(day, date) || path.empty() || path.size() > MAX_PATH_BYTES || seconds == 0) {
-    return false;
+    return RecordStatus::IoError;
   }
   const std::string storedTitle = title.size() <= MAX_TITLE_BYTES ? title : std::string{};
   DailyBookReadingDay data;
   const LoadStatus status = load(day, data);
-  if (status == LoadStatus::NewerVersion || status == LoadStatus::IoError) return false;
+  if (status == LoadStatus::NewerVersion) return RecordStatus::Protected;
+  if (status == LoadStatus::IoError) return RecordStatus::IoError;
   auto found = std::find_if(data.records.begin(), data.records.begin() + data.count,
                             [&path](const DailyBookReadingRecord& record) { return record.path == path; });
   if (found != data.records.begin() + data.count) {
     found->seconds = std::min<uint32_t>(24U * 3600U, addReadingStatsSaturated(found->seconds, seconds));
     if (!storedTitle.empty()) found->title = storedTitle;
   } else {
-    if (data.count >= DailyBookReadingDay::MAX_BOOKS) return false;
+    if (data.count >= DailyBookReadingDay::MAX_BOOKS) return RecordStatus::CapacityExceeded;
     data.records[data.count++] = {path, storedTitle, std::min<uint32_t>(seconds, 24U * 3600U)};
   }
   const std::string primaryPath = pathForDay(day);
   const PathStatus primaryStatus = readPath(primaryPath.c_str(), day);
-  if (isProtected(primaryStatus)) return false;
-  return saveDay(day, data, primaryStatus);
+  if (primaryStatus == PathStatus::NewerVersion) return RecordStatus::Protected;
+  if (primaryStatus == PathStatus::IoError) return RecordStatus::IoError;
+  return saveDay(day, data, primaryStatus) ? RecordStatus::Ok : RecordStatus::IoError;
 }
 
-bool DailyBookReadingHistory::record(const std::string& path, const std::string& title,
-                                     const DailyReadingHistoryDelta& delta) {
-  if (delta.empty()) return true;
-  if (delta.overflowed()) return false;
+DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const std::string& path,
+                                                                      const std::string& title,
+                                                                      const DailyReadingHistoryDelta& delta) {
+  if (delta.empty()) return RecordStatus::Ok;
+  if (delta.overflowed()) return RecordStatus::IoError;
+  RecordStatus aggregate = RecordStatus::Ok;
   for (size_t index = 0; index < delta.count(); ++index) {
-    if (!record(delta.day(index), path, title, delta.seconds(index))) {
+    const RecordStatus status = record(delta.day(index), path, title, delta.seconds(index));
+    if (status != RecordStatus::Ok) {
       LOG_ERR(LOG_TAG, "Could not save per-book reading history for day %lu",
               static_cast<unsigned long>(delta.day(index)));
-      return false;
+      if (status == RecordStatus::Protected || status == RecordStatus::IoError || aggregate == RecordStatus::Ok) {
+        aggregate = status;
+      }
     }
   }
-  return true;
+  return aggregate;
 }
 
 bool DailyBookReadingHistory::prepareRekey(const std::string& oldPath, const std::string& newPath) {
