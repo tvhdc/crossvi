@@ -21,6 +21,9 @@ class SleepImagePositionActivity final : public Activity {
   uint8_t zoom_ = 100;
   int16_t offsetX_ = 0;
   int16_t offsetY_ = 0;
+  int sourceWidth_ = 0;
+  int sourceHeight_ = 0;
+  bool sourceSizeVaries_ = false;
   bool resetHoldHandled_ = false;
   ButtonNavigator buttonNavigator_;
 
@@ -28,6 +31,7 @@ class SleepImagePositionActivity final : public Activity {
   void move(int dx, int dy);
   int moveStep(MappedInputManager::Button button) const;
   void resetTransform();
+  void resolveSourceGeometry();
   void saveAndFinish();
   void drawZoomStepHint(int y, StrId labelId, int step);
 };
