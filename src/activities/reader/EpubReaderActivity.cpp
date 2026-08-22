@@ -1295,6 +1295,11 @@ void EpubReaderActivity::loop() {
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
   if (atEndOfBook) {
     markBookCompleted();
+    if (endOfBookOptions.start(epub->getPath())) requestUpdate();
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() &&
+        endOfBookOptions.stepSuggestions(8)) {
+      requestUpdate();
+    }
   } else {
     completionAttemptBlocked = false;
   }
@@ -3202,9 +3207,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // Show end of book screen
   if (currentSpineIndex == epub->getSpineItemsCount()) {
     signalReadingPageHidden();
-    // Sole load site: runs on the render task (serialized by RenderLock); the main
-    // task only reads the suggestions once the loaded flag is published
-    endOfBookOptions.loadOnce(epub->getPath());
     BookReadingStats displayBookStats = bookReadingStats;
     if (!readingSessionCommitted) {
       previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr,

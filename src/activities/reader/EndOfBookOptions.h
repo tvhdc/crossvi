@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "BookReadingStats.h"
+#include "util/NextBookFinder.h"
 
 class GfxRenderer;
 class MappedInputManager;
@@ -25,11 +26,11 @@ class EndOfBookOptions {
 
   static constexpr size_t MAX_SUGGESTIONS = 3;
 
-  // Scans the book's folder for suggestions; no-op when already loaded. Call ONLY from
-  // the reader's render() (the render task, serialized by RenderLock) — the loaded flag
-  // is the release/acquire publication point that lets the main task read the finished
-  // list safely.
-  void loadOnce(const std::string& currentBookPath);
+  // Start immediately so summary/statistics/Home can render without waiting for
+  // a directory scan. stepSuggestions() checks only a bounded number of entries
+  // from the main loop and release-publishes the immutable result when done.
+  bool start(const std::string& currentBookPath);
+  bool stepSuggestions(size_t maxEntries);
 
   // True when the end-of-book menu is ready and should own the reader's input.
   bool menuActive() const;
@@ -46,11 +47,11 @@ class EndOfBookOptions {
 
  private:
   std::string folder;
-  // Written by the render task in loadOnce(), immutable afterwards; the main task only
-  // reads it after isLoaded is observed true (acquire), so no further locking is needed.
-  std::vector<std::string> names;
-  int selector = 0;
-  std::atomic<bool> isLoaded{false};
+  NextBookFinder::Scan suggestionScan;
+  std::atomic<int> selector{0};
+  std::atomic<bool> isStarted{false};
+  std::atomic<bool> suggestionsReady{false};
 
+  const std::vector<std::string>& names() const;
   std::string fullPath(size_t index) const;
 };

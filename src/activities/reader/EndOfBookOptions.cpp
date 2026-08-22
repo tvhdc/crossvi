@@ -83,37 +83,52 @@ void drawSummaryMetrics(const GfxRenderer& renderer, const Rect& rect, const End
 }
 }  // namespace
 
-void EndOfBookOptions::loadOnce(const std::string& currentBookPath) {
-  if (isLoaded.load(std::memory_order_acquire)) {
-    return;
-  }
+bool EndOfBookOptions::start(const std::string& currentBookPath) {
+  if (isStarted.load(std::memory_order_acquire)) return false;
   folder = FsHelpers::extractFolderPath(currentBookPath);
-  names = NextBookFinder::findNextBooks(currentBookPath, MAX_SUGGESTIONS);
-  selector = 0;
-  // Release-publish so the main task, which gates all access on isLoaded, never
-  // observes a partially built list
-  isLoaded.store(true, std::memory_order_release);
+  selector.store(0, std::memory_order_relaxed);
+  suggestionsReady.store(!suggestionScan.begin(currentBookPath, MAX_SUGGESTIONS), std::memory_order_relaxed);
+  isStarted.store(true, std::memory_order_release);
+  return true;
 }
 
-bool EndOfBookOptions::menuActive() const { return isLoaded.load(std::memory_order_acquire); }
+bool EndOfBookOptions::stepSuggestions(const size_t maxEntries) {
+  if (!isStarted.load(std::memory_order_acquire) || suggestionsReady.load(std::memory_order_acquire)) return false;
+  const NextBookFinder::StepResult result = suggestionScan.step(maxEntries);
+  if (result == NextBookFinder::StepResult::Pending) return false;
+  suggestionsReady.store(true, std::memory_order_release);
+  return true;
+}
+
+bool EndOfBookOptions::menuActive() const { return isStarted.load(std::memory_order_acquire); }
+
+const std::vector<std::string>& EndOfBookOptions::names() const {
+  static const std::vector<std::string> empty;
+  return suggestionsReady.load(std::memory_order_acquire) ? suggestionScan.result() : empty;
+}
 
 std::string EndOfBookOptions::fullPath(const size_t index) const {
-  if (index >= names.size()) {
+  const auto& suggestions = names();
+  if (index >= suggestions.size()) {
     return {};
   }
-  return folder == "/" ? "/" + names[index] : folder + "/" + names[index];
+  return folder == "/" ? "/" + suggestions[index] : folder + "/" + suggestions[index];
 }
 
 EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputManager& input, std::string* openPath) {
+  const auto& suggestions = names();
+  const int selected = selector.load(std::memory_order_relaxed);
   if (input.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (selector < static_cast<int>(names.size())) {
+    if (selected == 0) return Action::ViewStats;
+    if (selected == 1) return Action::GoHome;
+    const size_t suggestionIndex = static_cast<size_t>(selected - 2);
+    if (suggestionIndex < suggestions.size()) {
       if (openPath) {
-        *openPath = fullPath(selector);
+        *openPath = fullPath(suggestionIndex);
       }
       return Action::OpenBook;
     }
-    if (selector == static_cast<int>(names.size())) return Action::ViewStats;
-    return Action::GoHome;
+    return Action::None;
   }
 
   // Short-press Back returns to the last page; a long press falls through to the
@@ -133,13 +148,13 @@ EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputMana
   const auto triggered = [&](const MappedInputManager::Button button) {
     return usePress ? input.wasPressed(button) : input.wasReleased(button);
   };
-  const int itemCount = static_cast<int>(names.size()) + 2;  // + statistics and Home
+  const int itemCount = static_cast<int>(suggestions.size()) + 2;  // statistics, Home, then suggestions
   if (triggered(MappedInputManager::Button::NavPrevious)) {
-    selector = ButtonNavigator::previousIndex(selector, itemCount);  // wraps to the bottom
+    selector.store(ButtonNavigator::previousIndex(selected, itemCount), std::memory_order_relaxed);
     return Action::Redraw;
   }
   if (triggered(MappedInputManager::Button::NavNext)) {
-    selector = ButtonNavigator::nextIndex(selector, itemCount);  // wraps to the top
+    selector.store(ButtonNavigator::nextIndex(selected, itemCount), std::memory_order_relaxed);
     return Action::Redraw;
   }
   return Action::None;
@@ -147,6 +162,7 @@ EndOfBookOptions::Action EndOfBookOptions::handleMenuInput(const MappedInputMana
 
 void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& input,
                               const EndOfBookSummary& summary) const {
+  const auto& suggestions = names();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
   // Summary, actions and optional next-book suggestions. The hints are drawn at
@@ -180,11 +196,11 @@ void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& i
   const int listTop = summaryTop + summaryHeight + metrics.verticalSpacing * 2;
 
   const int listHeight = safe.y + safe.height - listTop - metrics.verticalSpacing;
-  GUI.drawList(renderer, Rect{safe.x, listTop, safe.width, listHeight}, static_cast<int>(names.size()) + 2, selector,
-               [this](const int index) {
-                 if (index < static_cast<int>(names.size())) return displayName(names[index]);
-                 return index == static_cast<int>(names.size()) ? std::string(tr(STR_READING_STATS))
-                                                                 : std::string(tr(STR_EOB_HOME));
+  GUI.drawList(renderer, Rect{safe.x, listTop, safe.width, listHeight}, static_cast<int>(suggestions.size()) + 2,
+               selector.load(std::memory_order_relaxed), [&suggestions](const int index) {
+                 if (index == 0) return std::string(tr(STR_READING_STATS));
+                 if (index == 1) return std::string(tr(STR_EOB_HOME));
+                 return displayName(suggestions[static_cast<size_t>(index - 2)]);
                });
 
   const auto labels = input.mapLabels(tr(STR_BACK), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

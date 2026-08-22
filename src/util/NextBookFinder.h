@@ -1,15 +1,37 @@
 #pragma once
 
+#include <HalStorage.h>
+
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace NextBookFinder {
 
-// Collects up to maxCount book files that order after currentBookPath's filename
-// (natural sort, same ordering as the file browser) within the same folder.
-// Returns bare filenames in sorted order; the current file itself is excluded.
-// Single directory pass keeping only the maxCount best matches, so memory stays
-// bounded regardless of folder size.
-std::vector<std::string> findNextBooks(const std::string& currentBookPath, size_t maxCount);
+enum class StepResult { Pending, Complete, Error };
+
+class Scan {
+ public:
+  Scan() = default;
+  ~Scan();
+  Scan(const Scan&) = delete;
+  Scan& operator=(const Scan&) = delete;
+
+  bool begin(const std::string& currentBookPath, size_t maxCount);
+  StepResult step(size_t maxEntries);
+  const std::vector<std::string>& result() const { return result_; }
+  const std::string& folder() const { return folder_; }
+
+ private:
+  HalFile directory_;
+  std::unique_ptr<char[]> nameBuffer_;
+  std::string folder_;
+  std::string currentName_;
+  std::vector<std::string> result_;
+  size_t maxCount_ = 0;
+  size_t entriesScanned_ = 0;
+  bool active_ = false;
+};
 
 }  // namespace NextBookFinder

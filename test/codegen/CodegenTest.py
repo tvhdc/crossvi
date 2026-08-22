@@ -1456,6 +1456,7 @@ class CodegenTest(unittest.TestCase):
     def test_end_of_book_shows_live_book_summary_and_opens_detailed_stats(self):
         options = (REPO_ROOT / "src/activities/reader/EndOfBookOptions.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/EndOfBookOptions.h").read_text(encoding="utf-8")
+        finder = (REPO_ROOT / "src/util/NextBookFinder.cpp").read_text(encoding="utf-8")
 
         self.assertIn("const EndOfBookSummary& summary", header)
         self.assertIn("Action::ViewStats", options)
@@ -1464,12 +1465,17 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("STR_STATS_PAGES_TURNED", options)
         self.assertIn("STR_STATS_DAYS_TO_FINISH", options)
         self.assertNotIn("cover", options.lower())
+        self.assertIn("stepSuggestions(size_t maxEntries)", header)
+        self.assertIn("suggestionScan.step(maxEntries)", options)
+        self.assertIn("processed < maxEntries", finder)
+        self.assertNotIn("findNextBooks(", options)
 
         for reader_name in ("EpubReaderActivity", "XtcReaderActivity"):
             reader = (REPO_ROOT / f"src/activities/reader/{reader_name}.cpp").read_text(encoding="utf-8")
             self.assertIn("case EndOfBookOptions::Action::ViewStats:", reader)
             self.assertIn("previewReadingStatsSession", reader)
             self.assertIn("EndOfBookSummary{", reader)
+            self.assertIn("endOfBookOptions.stepSuggestions(8)", reader)
 
     def test_sd_font_discovery_caps_allocations_while_scanning(self):
         registry = (REPO_ROOT / "lib/EpdFont/SdCardFontRegistry.cpp").read_text(encoding="utf-8")

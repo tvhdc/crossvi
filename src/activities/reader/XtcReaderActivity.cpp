@@ -416,6 +416,13 @@ void XtcReaderActivity::loop() {
     if (lock.ownsLock()) pageSnapshot = currentPage;
   }
   const bool atEndOfBook = pageSnapshot >= xtc->getPageCount();
+  if (atEndOfBook) {
+    if (endOfBookOptions.start(xtc->getPath())) requestUpdate();
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() &&
+        endOfBookOptions.stepSuggestions(8)) {
+      requestUpdate();
+    }
+  }
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     confirmHold.onPress();
     if (!automaticPageTurnActive && !(atEndOfBook && endOfBookOptions.menuActive())) {
@@ -732,9 +739,6 @@ void XtcReaderActivity::render(RenderLock&&) {
   // Bounds check
   if (page >= book->getPageCount()) {
     signalReadingPageHidden();
-    // Show end of book screen. Sole load site: runs on the render task (serialized by
-    // RenderLock); the main task only reads the suggestions once the flag is published.
-    endOfBookOptions.loadOnce(book->getPath());
     BookReadingStats displayBookStats = bookReadingStats;
     if (!readingSessionCommitted) {
       previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr,
