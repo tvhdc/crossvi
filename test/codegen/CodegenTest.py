@@ -2250,6 +2250,16 @@ class CodegenTest(unittest.TestCase):
         self.assertNotIn(removed, manager)
         self.assertIn("replaceActivity(std::move(sleepActivity));", manager)
 
+    def test_panel_debug_trace_correlates_refresh_operations(self):
+        hal = (REPO_ROOT / "lib/hal/HalDisplay.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("nextRefreshTraceId()", hal)
+        self.assertIn('refresh_id=%lu op=display begin', hal)
+        self.assertIn('refresh_id=%lu op=display complete', hal)
+        self.assertIn('refresh_id=%lu op=gray-base begin', hal)
+        self.assertIn('refresh_id=%lu op=gray-planes begin', hal)
+        self.assertIn("#ifdef ENABLE_SERIAL_LOG", hal)
+
     def test_reader_input_debug_trace_covers_poll_debounce_and_gesture_layers(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
         gpio = (REPO_ROOT / "lib/hal/HalGPIO.cpp").read_text(encoding="utf-8")

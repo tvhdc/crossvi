@@ -8,6 +8,13 @@ HalDisplay display;
 #define SD_SPI_MISO 7
 
 namespace {
+#ifdef ENABLE_SERIAL_LOG
+uint32_t nextRefreshTraceId() {
+  static uint32_t id = 0;
+  return ++id;
+}
+#endif
+
 const char* halRefreshModeName(const HalDisplay::RefreshMode mode) {
   switch (mode) {
     case HalDisplay::FULL_REFRESH:
@@ -82,31 +89,54 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
   const bool x3HalfResync = gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH;
-  LOG_DBG("EPD", "hal_display req=%s off=%u x3=%u x3_half_resync=%u", halRefreshModeName(mode),
-          static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(gpio.deviceIsX3()),
-          static_cast<unsigned>(x3HalfResync));
+#ifdef ENABLE_SERIAL_LOG
+  const uint32_t refreshId = nextRefreshTraceId();
+  const unsigned long startedAt = millis();
+  LOG_DBG("EPD", "refresh_id=%lu op=display begin req=%s off=%u x3=%u x3_half_resync=%u",
+          static_cast<unsigned long>(refreshId), halRefreshModeName(mode), static_cast<unsigned>(turnOffScreen),
+          static_cast<unsigned>(gpio.deviceIsX3()), static_cast<unsigned>(x3HalfResync));
+#endif
   if (x3HalfResync) {
     einkDisplay.requestResync(1);
   }
 
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
+#ifdef ENABLE_SERIAL_LOG
+  LOG_DBG("EPD", "refresh_id=%lu op=display complete elapsed_ms=%lu", static_cast<unsigned long>(refreshId),
+          millis() - startedAt);
+#endif
 }
 
 void HalDisplay::triggerDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-  LOG_DBG("EPD", "hal_trigger req=%s off=%u", halRefreshModeName(mode), static_cast<unsigned>(turnOffScreen));
+#ifdef ENABLE_SERIAL_LOG
+  const uint32_t refreshId = nextRefreshTraceId();
+  LOG_DBG("EPD", "refresh_id=%lu op=trigger begin req=%s off=%u", static_cast<unsigned long>(refreshId),
+          halRefreshModeName(mode), static_cast<unsigned>(turnOffScreen));
+#endif
   einkDisplay.triggerDisplay(convertRefreshMode(mode), turnOffScreen);
+#ifdef ENABLE_SERIAL_LOG
+  LOG_DBG("EPD", "refresh_id=%lu op=trigger dispatched", static_cast<unsigned long>(refreshId));
+#endif
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
   const bool x3HalfResync = gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH;
-  LOG_DBG("EPD", "hal_refresh req=%s off=%u x3=%u x3_half_resync=%u", halRefreshModeName(mode),
-          static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(gpio.deviceIsX3()),
-          static_cast<unsigned>(x3HalfResync));
+#ifdef ENABLE_SERIAL_LOG
+  const uint32_t refreshId = nextRefreshTraceId();
+  const unsigned long startedAt = millis();
+  LOG_DBG("EPD", "refresh_id=%lu op=refresh begin req=%s off=%u x3=%u x3_half_resync=%u",
+          static_cast<unsigned long>(refreshId), halRefreshModeName(mode), static_cast<unsigned>(turnOffScreen),
+          static_cast<unsigned>(gpio.deviceIsX3()), static_cast<unsigned>(x3HalfResync));
+#endif
   if (x3HalfResync) {
     einkDisplay.requestResync(1);
   }
 
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
+#ifdef ENABLE_SERIAL_LOG
+  LOG_DBG("EPD", "refresh_id=%lu op=refresh complete elapsed_ms=%lu", static_cast<unsigned long>(refreshId),
+          millis() - startedAt);
+#endif
 }
 
 void HalDisplay::requestResync(const uint8_t settlePasses) { einkDisplay.requestResync(settlePasses); }
@@ -124,6 +154,13 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* m
 }
 
 void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) {
+#ifdef ENABLE_SERIAL_LOG
+  const uint32_t refreshId = nextRefreshTraceId();
+  const unsigned long startedAt = millis();
+  LOG_DBG("EPD", "refresh_id=%lu op=gray-base begin fallback=%s off=%u x3=%u",
+          static_cast<unsigned long>(refreshId), halRefreshModeName(fallback), static_cast<unsigned>(turnOffScreen),
+          static_cast<unsigned>(gpio.deviceIsX3()));
+#endif
   // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
   // cover, a full-screen swap from arbitrary prior content). Without this, the
   // X3 grayscale base takes its gentle differential happy path and the prior
@@ -136,6 +173,10 @@ void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) 
   }
 
   einkDisplay.displayGrayscaleBase(convertRefreshMode(fallback), turnOffScreen);
+#ifdef ENABLE_SERIAL_LOG
+  LOG_DBG("EPD", "refresh_id=%lu op=gray-base complete elapsed_ms=%lu", static_cast<unsigned long>(refreshId),
+          millis() - startedAt);
+#endif
 }
 
 void HalDisplay::preconditionGrayscale() { einkDisplay.preconditionGrayscale(); }
@@ -150,7 +191,19 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
 
 void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
 
-void HalDisplay::displayGrayBuffer(bool turnOffScreen) { einkDisplay.displayGrayBuffer(turnOffScreen); }
+void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
+#ifdef ENABLE_SERIAL_LOG
+  const uint32_t refreshId = nextRefreshTraceId();
+  const unsigned long startedAt = millis();
+  LOG_DBG("EPD", "refresh_id=%lu op=gray-planes begin off=%u x3=%u", static_cast<unsigned long>(refreshId),
+          static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(gpio.deviceIsX3()));
+#endif
+  einkDisplay.displayGrayBuffer(turnOffScreen);
+#ifdef ENABLE_SERIAL_LOG
+  LOG_DBG("EPD", "refresh_id=%lu op=gray-planes complete elapsed_ms=%lu", static_cast<unsigned long>(refreshId),
+          millis() - startedAt);
+#endif
+}
 
 void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
   einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
