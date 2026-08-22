@@ -25,5 +25,6 @@ class ReadingDayDetailActivity final : public Activity {
   DailyBookReadingHistory::LoadStatus bookHistoryStatus_ = DailyBookReadingHistory::LoadStatus::Missing;
   ButtonNavigator navigator_;
   size_t selected_ = 0;
+  bool historyRekeyPending_ = false;
   bool suppressInitialConfirmRelease_ = false;
 };

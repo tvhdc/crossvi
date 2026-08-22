@@ -40,6 +40,10 @@ std::string formatDate(const uint32_t day) {
 void BookReadingHistoryActivity::onEnter() {
   Activity::onEnter();
   suppressInitialConfirmRelease_ = mappedInput.isPressed(MappedInputManager::Button::Confirm);
+  if (!DailyBookReadingHistory::recoverPreparedRekey()) {
+    scanPartial_ = true;
+    DailyBookReadingHistory::pendingRekeyAlias(bookPath_, pendingAlias_);
+  }
   if (bookPath_.empty() || !Storage.exists(DailyBookReadingHistory::DIRECTORY)) {
     scanComplete_ = true;
   } else {
@@ -106,9 +110,14 @@ void BookReadingHistoryActivity::stepScan() {
     scanPartial_ = scanPartial_ || status != DailyBookReadingHistory::LoadStatus::Missing;
     return;
   }
-  const auto found = std::find_if(daily.records.begin(), daily.records.begin() + daily.count,
-                                  [this](const DailyBookReadingRecord& record) { return record.path == bookPath_; });
-  if (found != daily.records.begin() + daily.count) addEntry(day, found->seconds);
+  uint32_t seconds = 0;
+  for (size_t index = 0; index < daily.count; ++index) {
+    const DailyBookReadingRecord& record = daily.records[index];
+    if (record.path == bookPath_ || (!pendingAlias_.empty() && record.path == pendingAlias_)) {
+      seconds = addReadingStatsSaturated(seconds, record.seconds);
+    }
+  }
+  addEntry(day, seconds);
 }
 
 void BookReadingHistoryActivity::move(const int delta) {

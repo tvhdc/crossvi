@@ -45,5 +45,15 @@ class DailyBookReadingHistory {
   static LoadStatus load(uint32_t day, DailyBookReadingDay& out);
   static bool record(uint32_t day, const std::string& path, const std::string& title, uint32_t seconds);
   static bool record(const std::string& path, const std::string& title, const DailyReadingHistoryDelta& delta);
+  // Persists the old/new path before a book move. Finishing is idempotent and
+  // rewrites each bounded day file atomically, so power-loss recovery can
+  // safely continue without adding reading time twice.
+  static bool prepareRekey(const std::string& oldPath, const std::string& newPath);
+  static bool finishPreparedRekey();
+  static bool cancelPreparedRekey(const std::string& oldPath, const std::string& newPath);
+  static bool recoverPreparedRekey();
+  // Returns the other path while a partially completed rekey remains. Readers
+  // of per-book history can then match both identities until recovery finishes.
+  static bool pendingRekeyAlias(const std::string& path, std::string& alias);
   static bool reset();
 };

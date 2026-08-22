@@ -94,3 +94,70 @@ TEST(DailyBookReadingHistory, RecognizesOnlyCanonicalDayFileNames) {
   EXPECT_FALSE(DailyBookReadingHistory::dayFromFileName("1/2.bin", day));
   EXPECT_FALSE(DailyBookReadingHistory::dayFromFileName("42949672960.bin", day));
 }
+
+TEST(DailyBookReadingHistory, RekeysAndMergesMovedBooksWithoutDuplicatingTime) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_TRUE(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 90));
+  ASSERT_TRUE(DailyBookReadingHistory::record(day, "/books/new.epub", "New", 30));
+
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+  ASSERT_TRUE(DailyBookReadingHistory::finishPreparedRekey());
+  ASSERT_TRUE(DailyBookReadingHistory::finishPreparedRekey());
+
+  DailyBookReadingDay loaded;
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(loaded.count, 1u);
+  EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
+  EXPECT_EQ(loaded.records[0].title, "New");
+  EXPECT_EQ(loaded.records[0].seconds, 120u);
+}
+
+TEST(DailyBookReadingHistory, RecoversPreparedMoveAccordingToAuthoritativeBookPath) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_TRUE(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 60));
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+  Storage.setFile("/books/new.epub", {1});
+
+  ASSERT_TRUE(DailyBookReadingHistory::recoverPreparedRekey());
+  std::string alias;
+  EXPECT_FALSE(DailyBookReadingHistory::pendingRekeyAlias("/books/new.epub", alias));
+  DailyBookReadingDay loaded;
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(loaded.count, 1u);
+  EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
+  EXPECT_EQ(loaded.records[0].seconds, 60u);
+
+  Storage.reset();
+  ASSERT_TRUE(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 60));
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+  Storage.setFile("/books/old.epub", {1});
+  ASSERT_TRUE(DailyBookReadingHistory::recoverPreparedRekey());
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  EXPECT_EQ(loaded.records[0].path, "/books/old.epub");
+}
+
+TEST(DailyBookReadingHistory, FailedRekeyPublicationRetainsAliasAndResumesIdempotently) {
+  Storage.reset();
+  const uint32_t firstDay = dayIndex(2026, 8, 22);
+  const uint32_t secondDay = dayIndex(2026, 8, 23);
+  ASSERT_TRUE(DailyBookReadingHistory::record(firstDay, "/books/old.epub", "Old", 60));
+  ASSERT_TRUE(DailyBookReadingHistory::record(secondDay, "/books/old.epub", "Old", 120));
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+
+  Storage.failRenameOnce();
+  EXPECT_FALSE(DailyBookReadingHistory::finishPreparedRekey());
+  std::string alias;
+  EXPECT_TRUE(DailyBookReadingHistory::pendingRekeyAlias("/books/new.epub", alias));
+  EXPECT_EQ(alias, "/books/old.epub");
+
+  Storage.setFile("/books/new.epub", {1});
+  ASSERT_TRUE(DailyBookReadingHistory::recoverPreparedRekey());
+  for (const uint32_t day : {firstDay, secondDay}) {
+    DailyBookReadingDay loaded;
+    ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+    ASSERT_EQ(loaded.count, 1u);
+    EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
+  }
+}

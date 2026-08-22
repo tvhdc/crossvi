@@ -36,6 +36,7 @@ std::string titleFor(const DailyBookReadingRecord& book) {
 void ReadingDayDetailActivity::onEnter() {
   Activity::onEnter();
   suppressInitialConfirmRelease_ = mappedInput.isPressed(MappedInputManager::Button::Confirm);
+  historyRekeyPending_ = !DailyBookReadingHistory::recoverPreparedRekey();
   if (cell_.date.isValid()) {
     bookHistoryStatus_ = DailyBookReadingHistory::load(readingStatsDayIndex(cell_.date), books_);
   }
@@ -91,7 +92,7 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
         [this](const int index) { return formatDuration(books_.records[static_cast<size_t>(index)].seconds); },
         [this](const int index) { return UITheme::getFileIcon(books_.records[static_cast<size_t>(index)].path); });
   } else {
-    const bool unavailable = cell_.readingSeconds > 0 ||
+    const bool unavailable = historyRekeyPending_ || cell_.readingSeconds > 0 ||
                              bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::Invalid ||
                              bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::NewerVersion ||
                              bookHistoryStatus_ == DailyBookReadingHistory::LoadStatus::IoError;

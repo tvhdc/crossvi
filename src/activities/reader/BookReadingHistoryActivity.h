@@ -40,6 +40,7 @@ class BookReadingHistoryActivity final : public Activity {
 
   std::string bookPath_;
   std::string bookTitle_;
+  std::string pendingAlias_;
   HalFile directory_;
   std::array<HistoryEntry, READING_HISTORY_DAYS> entries_{};
   size_t entryCount_ = 0;

@@ -20,6 +20,7 @@
 #include "Epub/SourceIdentityStore.h"
 #include "LibraryCatalogStore.h"
 #include "RecentBooksStore.h"
+#include "activities/reader/DailyBookReadingHistory.h"
 #include "activities/reader/ReadingStatsCompletionTransaction.h"
 #include "clippings/ClippingStore.h"
 
@@ -582,6 +583,20 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
   if (!prepareBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath)) {
     return BookPathMoveResult::StateUnavailable;
   }
+  if (!DailyBookReadingHistory::prepareRekey(sourcePath, destinationPath)) {
+    cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
+    return BookPathMoveResult::StateUnavailable;
+  }
+  const auto cancelDailyHistoryRekey = [&] {
+    if (!DailyBookReadingHistory::cancelPreparedRekey(sourcePath, destinationPath)) {
+      LOG_ERR("BookMove", "Could not cancel prepared daily-history rekey");
+    }
+  };
+  const auto finishDailyHistoryRekey = [&] {
+    if (!DailyBookReadingHistory::finishPreparedRekey()) {
+      LOG_ERR("BookMove", "Daily-history rekey remains pending for recovery");
+    }
+  };
 
   if (sourceKind == CacheBackedBookKind::Text) {
     ClippingStore clippings;
@@ -591,6 +606,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
       const ClippingStore::LoadResult load = clippings.loadForBook(sourcePath, "", "", "txt");
       if (!clippings.isLoaded()) {
         LOG_ERR("BookMove", "Could not inspect TXT clipping state before move (%u)", static_cast<unsigned>(load));
+        cancelDailyHistoryRekey();
         cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
         return BookPathMoveResult::StateUnavailable;
       }
@@ -598,6 +614,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
       preparedClippings = clippings.prepareRekeyForBook(destinationPath, sourceBook.title, sourceBook.author, "txt");
       if (preparedClippings != ClippingStore::RekeyResult::Prepared &&
           preparedClippings != ClippingStore::RekeyResult::Unchanged) {
+        cancelDailyHistoryRekey();
         cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
         return BookPathMoveResult::StateUnavailable;
       }
@@ -605,6 +622,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
 
     if (!Storage.rename(sourcePath.c_str(), destinationPath.c_str())) {
       if (hasClippings) clippings.cancelPreparedRekey();
+      cancelDailyHistoryRekey();
       cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
       return BookPathMoveResult::StorageError;
     }
@@ -612,6 +630,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
         finalizeBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
     if (!cachePublished && Storage.rename(destinationPath.c_str(), sourcePath.c_str())) {
       if (hasClippings) clippings.cancelPreparedRekey();
+      cancelDailyHistoryRekey();
       cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
       return BookPathMoveResult::StateUnavailable;
     }
@@ -629,6 +648,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
             cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
           }
           clippings.cancelPreparedRekey();
+          cancelDailyHistoryRekey();
           return BookPathMoveResult::StateUnavailable;
         }
       }
@@ -638,6 +658,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
       LOG_ERR("BookMove", "Could not finish old TXT state cleanup");
     }
     RECENT_BOOKS.updatePath(sourcePath, destinationPath, sourceCachePath, destinationCachePath);
+    finishDailyHistoryRekey();
     if (APP_STATE.openEpubPath == sourcePath) {
       APP_STATE.openEpubPath = destinationPath;
       APP_STATE.saveToFile();
@@ -648,6 +669,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
 
   if (sourceKind != CacheBackedBookKind::Epub) {
     if (!Storage.rename(sourcePath.c_str(), destinationPath.c_str())) {
+      cancelDailyHistoryRekey();
       cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
       return BookPathMoveResult::StorageError;
     }
@@ -657,6 +679,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     if (!cachePublished) {
       LOG_ERR("BookMove", "Could not publish moved non-EPUB state");
       if (Storage.rename(destinationPath.c_str(), sourcePath.c_str())) {
+        cancelDailyHistoryRekey();
         cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
         return BookPathMoveResult::StateUnavailable;
       }
@@ -668,6 +691,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     }
 
     RECENT_BOOKS.updatePath(sourcePath, destinationPath, sourceCachePath, destinationCachePath);
+    finishDailyHistoryRekey();
     if (APP_STATE.openEpubPath == sourcePath) {
       APP_STATE.openEpubPath = destinationPath;
       APP_STATE.saveToFile();
@@ -681,6 +705,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     const ClippingStore::LoadResult load = clippings.loadForBook(sourcePath, "", "");
     if (!clippings.isLoaded()) {
       LOG_ERR("BookMove", "Could not inspect clipping state before move (%u)", static_cast<unsigned>(load));
+      cancelDailyHistoryRekey();
       cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
       return BookPathMoveResult::StateUnavailable;
     }
@@ -689,12 +714,14 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
   const ClippingStore::RekeyResult prepared =
       clippings.prepareRekeyForBook(destinationPath, sourceBook.title, sourceBook.author, sourceBook.bookType);
   if (prepared != ClippingStore::RekeyResult::Prepared && prepared != ClippingStore::RekeyResult::Unchanged) {
+    cancelDailyHistoryRekey();
     cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
     return BookPathMoveResult::StateUnavailable;
   }
 
   if (!Storage.rename(sourcePath.c_str(), destinationPath.c_str())) {
     clippings.cancelPreparedRekey();
+    cancelDailyHistoryRekey();
     cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
     return BookPathMoveResult::StorageError;
   }
@@ -705,6 +732,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     LOG_ERR("BookMove", "Could not publish moved cache state");
     if (Storage.rename(destinationPath.c_str(), sourcePath.c_str())) {
       clippings.cancelPreparedRekey();
+      cancelDailyHistoryRekey();
       cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
       return BookPathMoveResult::StateUnavailable;
     }
@@ -725,6 +753,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
         cancelBookCacheUserStateMove(sourceCachePath, destinationCachePath, sourcePath, destinationPath);
       }
       clippings.cancelPreparedRekey();
+      cancelDailyHistoryRekey();
       return BookPathMoveResult::StateUnavailable;
     }
     LOG_ERR("BookMove", "Could not roll back book after clipping publication failure");
@@ -736,6 +765,7 @@ BookPathMoveResult moveBookFilePreservingUserState(const std::string& sourcePath
     }
   }
   RECENT_BOOKS.updatePath(sourcePath, destinationPath, sourceCachePath, destinationCachePath);
+  finishDailyHistoryRekey();
   if (APP_STATE.openEpubPath == sourcePath) {
     APP_STATE.openEpubPath = destinationPath;
     APP_STATE.saveToFile();

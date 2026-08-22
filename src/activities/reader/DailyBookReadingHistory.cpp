@@ -17,8 +17,15 @@
 namespace {
 constexpr char LOG_TAG[] = "DAYBOOK";
 constexpr std::array<uint8_t, 4> MAGIC = {'C', 'V', 'D', 'B'};
+constexpr std::array<uint8_t, 4> REKEY_MAGIC = {'C', 'V', 'D', 'M'};
+constexpr uint8_t REKEY_VERSION = 1;
+constexpr char REKEY_PATH[] = "/.crosspoint/daily_books.move";
+constexpr char REKEY_BACKUP_PATH[] = "/.crosspoint/daily_books.move.bak";
+constexpr char REKEY_TEMP_PATH[] = "/.crosspoint/daily_books.move.tmp";
 constexpr size_t HEADER_SIZE = 12;
 constexpr size_t RECORD_FIXED_SIZE = sizeof(uint32_t) + sizeof(uint16_t) * 2;
+constexpr size_t REKEY_HEADER_SIZE = REKEY_MAGIC.size() + 1 + 1 + sizeof(uint16_t) * 2;
+constexpr size_t REKEY_MAX_SIZE = REKEY_HEADER_SIZE + DailyBookReadingHistory::MAX_PATH_BYTES * 2 + sizeof(uint32_t);
 constexpr size_t MAX_FILE_SIZE =
     HEADER_SIZE +
     DailyBookReadingDay::MAX_BOOKS *
@@ -26,6 +33,11 @@ constexpr size_t MAX_FILE_SIZE =
     sizeof(uint32_t);
 
 enum class PathStatus : uint8_t { Missing, Valid, Invalid, NewerVersion, IoError };
+
+struct RekeyIdentity {
+  std::string oldPath;
+  std::string newPath;
+};
 
 uint16_t readLe16(const uint8_t* data, const size_t offset) {
   return static_cast<uint16_t>(data[offset]) | static_cast<uint16_t>(data[offset + 1]) << 8U;
@@ -107,6 +119,80 @@ bool isProtected(const PathStatus status) {
   return status == PathStatus::NewerVersion || status == PathStatus::IoError;
 }
 
+PathStatus readRekeyPath(const char* path, RekeyIdentity* identity = nullptr) {
+  HalFile file;
+  if (!Storage.openFileForRead(LOG_TAG, path, file)) {
+    return Storage.exists(path) ? PathStatus::IoError : PathStatus::Missing;
+  }
+  const size_t size = file.fileSize();
+  if (size < REKEY_HEADER_SIZE + sizeof(uint32_t) || size > REKEY_MAX_SIZE) {
+    file.close();
+    return size > REKEY_MAX_SIZE ? PathStatus::IoError : PathStatus::Invalid;
+  }
+  auto bytes = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[size]);
+  if (!bytes) {
+    file.close();
+    return PathStatus::IoError;
+  }
+  if (file.read(bytes.get(), size) != static_cast<int>(size) || !file.close()) return PathStatus::IoError;
+  if (!std::equal(REKEY_MAGIC.begin(), REKEY_MAGIC.end(), bytes.get())) return PathStatus::Invalid;
+  if (bytes[4] > REKEY_VERSION) return PathStatus::NewerVersion;
+  if (bytes[4] != REKEY_VERSION || bytes[5] != 0) return PathStatus::Invalid;
+  const uint16_t oldLength = readLe16(bytes.get(), 6);
+  const uint16_t newLength = readLe16(bytes.get(), 8);
+  if (oldLength == 0 || newLength == 0 || oldLength > DailyBookReadingHistory::MAX_PATH_BYTES ||
+      newLength > DailyBookReadingHistory::MAX_PATH_BYTES ||
+      REKEY_HEADER_SIZE + static_cast<size_t>(oldLength) + newLength + sizeof(uint32_t) != size) {
+    return PathStatus::Invalid;
+  }
+  const uint32_t expectedCrc = readLe32(bytes.get(), size - sizeof(uint32_t));
+  if (expectedCrc != ReadingStatsEnvelope::crc32(bytes.get(), size - sizeof(uint32_t))) return PathStatus::Invalid;
+  if (identity) {
+    identity->oldPath.assign(reinterpret_cast<const char*>(bytes.get() + REKEY_HEADER_SIZE), oldLength);
+    identity->newPath.assign(reinterpret_cast<const char*>(bytes.get() + REKEY_HEADER_SIZE + oldLength), newLength);
+    if (identity->oldPath == identity->newPath) return PathStatus::Invalid;
+  }
+  return PathStatus::Valid;
+}
+
+PathStatus loadRekeyIdentity(RekeyIdentity& identity) {
+  PathStatus status = readRekeyPath(REKEY_PATH, &identity);
+  if (status == PathStatus::Valid || isProtected(status)) return status;
+  bool invalid = status == PathStatus::Invalid;
+  status = readRekeyPath(REKEY_BACKUP_PATH, &identity);
+  if (status == PathStatus::Valid || isProtected(status)) return status;
+  invalid = invalid || status == PathStatus::Invalid;
+  status = readRekeyPath(REKEY_TEMP_PATH, &identity);
+  if (status == PathStatus::Valid || isProtected(status)) return status;
+  return invalid || status == PathStatus::Invalid ? PathStatus::Invalid : PathStatus::Missing;
+}
+
+bool removeRekeyArtifacts() {
+  for (const char* path : {REKEY_TEMP_PATH, REKEY_BACKUP_PATH, REKEY_PATH}) {
+    if (Storage.exists(path) && !Storage.remove(path)) return false;
+  }
+  return true;
+}
+
+bool saveRekeyIdentity(const RekeyIdentity& identity, const PathStatus primaryStatus) {
+  const size_t size = REKEY_HEADER_SIZE + identity.oldPath.size() + identity.newPath.size() + sizeof(uint32_t);
+  if (size > REKEY_MAX_SIZE) return false;
+  auto bytes = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[size]);
+  if (!bytes) return false;
+  memset(bytes.get(), 0, size);
+  std::copy(REKEY_MAGIC.begin(), REKEY_MAGIC.end(), bytes.get());
+  bytes[4] = REKEY_VERSION;
+  writeLe16(bytes.get(), 6, static_cast<uint16_t>(identity.oldPath.size()));
+  writeLe16(bytes.get(), 8, static_cast<uint16_t>(identity.newPath.size()));
+  memcpy(bytes.get() + REKEY_HEADER_SIZE, identity.oldPath.data(), identity.oldPath.size());
+  memcpy(bytes.get() + REKEY_HEADER_SIZE + identity.oldPath.size(), identity.newPath.data(), identity.newPath.size());
+  writeLe32(bytes.get(), size - sizeof(uint32_t),
+            ReadingStatsEnvelope::crc32(bytes.get(), size - sizeof(uint32_t)));
+  if (!Storage.exists("/.crosspoint") && !Storage.mkdir("/.crosspoint")) return false;
+  return ReadingStatsStorage::writeAtomic(REKEY_PATH, REKEY_BACKUP_PATH, primaryStatus == PathStatus::Valid,
+                                          bytes.get(), size);
+}
+
 DailyBookReadingHistory::LoadStatus publicStatus(const PathStatus status) {
   switch (status) {
     case PathStatus::Valid:
@@ -159,6 +245,41 @@ bool saveDay(const uint32_t day, const DailyBookReadingDay& data, const PathStat
   const std::string backup = path + ".bak";
   return ReadingStatsStorage::writeAtomic(path.c_str(), backup.c_str(), primaryStatus == PathStatus::Valid,
                                           encoded.get(), size);
+}
+
+bool rekeyDay(const uint32_t day, const RekeyIdentity& identity) {
+  DailyBookReadingDay data;
+  const DailyBookReadingHistory::LoadStatus status = DailyBookReadingHistory::load(day, data);
+  if (status == DailyBookReadingHistory::LoadStatus::Missing) return true;
+  if (status == DailyBookReadingHistory::LoadStatus::NewerVersion ||
+      status == DailyBookReadingHistory::LoadStatus::IoError ||
+      status == DailyBookReadingHistory::LoadStatus::Invalid) {
+    return false;
+  }
+  auto oldRecord = std::find_if(data.records.begin(), data.records.begin() + data.count,
+                                [&identity](const DailyBookReadingRecord& record) {
+                                  return record.path == identity.oldPath;
+                                });
+  if (oldRecord == data.records.begin() + data.count) return true;
+  auto newRecord = std::find_if(data.records.begin(), data.records.begin() + data.count,
+                                [&identity](const DailyBookReadingRecord& record) {
+                                  return record.path == identity.newPath;
+                                });
+  if (newRecord != data.records.begin() + data.count) {
+    newRecord->seconds =
+        std::min<uint32_t>(24U * 3600U, addReadingStatsSaturated(newRecord->seconds, oldRecord->seconds));
+    if (newRecord->title.empty()) newRecord->title = oldRecord->title;
+    const size_t oldIndex = static_cast<size_t>(std::distance(data.records.begin(), oldRecord));
+    for (size_t index = oldIndex + 1; index < data.count; ++index) {
+      data.records[index - 1] = std::move(data.records[index]);
+    }
+    data.records[--data.count] = {};
+  } else {
+    oldRecord->path = identity.newPath;
+  }
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  const PathStatus primaryStatus = readPath(path.c_str(), day);
+  return !isProtected(primaryStatus) && saveDay(day, data, primaryStatus);
 }
 }  // namespace
 
@@ -245,6 +366,88 @@ bool DailyBookReadingHistory::record(const std::string& path, const std::string&
   return true;
 }
 
+bool DailyBookReadingHistory::prepareRekey(const std::string& oldPath, const std::string& newPath) {
+  if (oldPath.empty() || newPath.empty() || oldPath == newPath || oldPath.size() > MAX_PATH_BYTES ||
+      newPath.size() > MAX_PATH_BYTES) {
+    return false;
+  }
+  RekeyIdentity existing;
+  const PathStatus status = loadRekeyIdentity(existing);
+  if (status == PathStatus::Valid) {
+    if (existing.oldPath == oldPath && existing.newPath == newPath) return true;
+    if (!recoverPreparedRekey()) return false;
+  } else if (isProtected(status) || status == PathStatus::Invalid) {
+    return false;
+  }
+  return saveRekeyIdentity({oldPath, newPath}, readRekeyPath(REKEY_PATH));
+}
+
+bool DailyBookReadingHistory::finishPreparedRekey() {
+  RekeyIdentity identity;
+  const PathStatus status = loadRekeyIdentity(identity);
+  if (status == PathStatus::Missing) return true;
+  if (status != PathStatus::Valid) return false;
+  if (Storage.exists(DIRECTORY)) {
+    HalFile directory = Storage.open(DIRECTORY);
+    if (!directory || !directory.isDirectory()) {
+      if (directory) directory.close();
+      return false;
+    }
+    char name[64]{};
+    for (HalFile entry = directory.openNextFile(); entry; entry = directory.openNextFile()) {
+      if (entry.isDirectory()) {
+        entry.close();
+        continue;
+      }
+      const size_t length = entry.getName(name, sizeof(name));
+      const bool closed = entry.close();
+      uint32_t day = 0;
+      if (!closed || length == 0 || length >= sizeof(name)) {
+        directory.close();
+        return false;
+      }
+      if (dayFromFileName(name, day) && !rekeyDay(day, identity)) {
+        directory.close();
+        return false;
+      }
+    }
+    if (directory.getError() != 0 || !directory.close()) return false;
+  }
+  return removeRekeyArtifacts();
+}
+
+bool DailyBookReadingHistory::cancelPreparedRekey(const std::string& oldPath, const std::string& newPath) {
+  RekeyIdentity identity;
+  const PathStatus status = loadRekeyIdentity(identity);
+  if (status == PathStatus::Missing) return true;
+  if (status != PathStatus::Valid || identity.oldPath != oldPath || identity.newPath != newPath) return false;
+  return removeRekeyArtifacts();
+}
+
+bool DailyBookReadingHistory::recoverPreparedRekey() {
+  RekeyIdentity identity;
+  const PathStatus status = loadRekeyIdentity(identity);
+  if (status == PathStatus::Missing) return true;
+  if (status != PathStatus::Valid) return false;
+  const bool oldExists = Storage.exists(identity.oldPath.c_str());
+  const bool newExists = Storage.exists(identity.newPath.c_str());
+  if (oldExists == newExists) return false;
+  return oldExists ? removeRekeyArtifacts() : finishPreparedRekey();
+}
+
+bool DailyBookReadingHistory::pendingRekeyAlias(const std::string& path, std::string& alias) {
+  alias.clear();
+  RekeyIdentity identity;
+  if (loadRekeyIdentity(identity) != PathStatus::Valid) return false;
+  if (path == identity.oldPath) {
+    alias = identity.newPath;
+  } else if (path == identity.newPath) {
+    alias = identity.oldPath;
+  }
+  return !alias.empty();
+}
+
 bool DailyBookReadingHistory::reset() {
-  return !Storage.exists(DIRECTORY) || (Storage.removeDir(DIRECTORY) && !Storage.exists(DIRECTORY));
+  const bool directoryReset = !Storage.exists(DIRECTORY) || (Storage.removeDir(DIRECTORY) && !Storage.exists(DIRECTORY));
+  return directoryReset && removeRekeyArtifacts();
 }
