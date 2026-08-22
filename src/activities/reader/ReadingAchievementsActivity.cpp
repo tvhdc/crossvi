@@ -82,12 +82,17 @@ void ReadingAchievementsActivity::onEnter() {
   }
   snapshot_ = ReadingAchievements::snapshot(stats, history);
   ReadingAchievementNotification notification;
-  if (ReadingAchievements::takePendingNotification(notification)) {
+  if (ReadingAchievements::peekPendingNotification(notification)) {
     unlockNoticeCount_ = notification.count;
     unlockNoticeHistorical_ = notification.historical;
   }
   available_ = true;
   requestUpdate();
+}
+
+void ReadingAchievementsActivity::onExit() {
+  if (unlockNoticeCount_ != 0) ReadingAchievements::ackPendingNotification();
+  Activity::onExit();
 }
 
 void ReadingAchievementsActivity::moveSelection(const int delta) {

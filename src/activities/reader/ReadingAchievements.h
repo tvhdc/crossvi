@@ -53,15 +53,20 @@ struct ReadingAchievementState {
   static constexpr size_t BYTE_COUNT = 5;
 
   std::array<uint8_t, BYTE_COUNT> unlocked{};
+  std::array<uint8_t, BYTE_COUNT> announced{};
   // Day-index + 1 when CrossVi first recognized the unlock. Zero means that
   // older persisted data did not retain a date.
   std::array<uint32_t, READING_ACHIEVEMENT_COUNT> unlockRecognitionDays{};
   bool initialized = false;
+  bool pendingHistoricalNotification = false;
 
   bool isUnlocked(uint8_t id) const;
   void unlock(uint8_t id, uint32_t recognitionDay = 0);
   uint32_t unlockRecognitionDay(uint8_t id) const;
   uint8_t unlockedCount() const;
+  uint8_t pendingNotificationCount() const;
+  uint8_t firstPendingNotificationId() const;
+  void markAllAnnounced();
 };
 
 struct ReadingAchievementEvaluation {
@@ -93,5 +98,6 @@ class ReadingAchievements {
   static bool reconcileFromStorage(ReadingAchievementEvaluation* evaluation = nullptr);
   static bool reset();
 
-  static bool takePendingNotification(ReadingAchievementNotification& notification);
+  static bool peekPendingNotification(ReadingAchievementNotification& notification);
+  static bool ackPendingNotification();
 };

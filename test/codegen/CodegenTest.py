@@ -1017,7 +1017,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("showDetail_ = false;", activity)
         self.assertIn("unlockRecognitionDay", activity)
         self.assertIn("bool showDetail_ = false;", header)
-        self.assertIn("PAYLOAD_VERSION = 2", achievements)
+        self.assertIn("PAYLOAD_VERSION = 3", achievements)
         self.assertIn("LEGACY_PAYLOAD_VERSION = 1", achievements)
         self.assertIn("UIIcon::Trophy", menu)
         self.assertIn("return TrophyIcon;", theme)

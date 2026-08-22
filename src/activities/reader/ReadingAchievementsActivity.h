@@ -10,6 +10,7 @@ class ReadingAchievementsActivity final : public Activity {
       : Activity("ReadingAchievements", renderer, mappedInput) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool handleGlobalShortcut(GlobalShortcut shortcut) override { return handleSafeGlobalShortcut(shortcut); }

@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <cstdio>
 #include <utility>
@@ -26,6 +27,9 @@ void ReadingAchievementNotificationActivity::onEnter() {
 }
 
 void ReadingAchievementNotificationActivity::continueToDestination() {
+  if (!ReadingAchievements::ackPendingNotification()) {
+    LOG_ERR("ACH", "Failed to acknowledge achievement notification");
+  }
   if (nextActivity_) activityManager.replaceActivity(std::move(nextActivity_));
 }
 

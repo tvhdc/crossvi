@@ -73,11 +73,12 @@ void VCodexStatsImportActivity::setImportResult(const VCodexStatsImporter::Impor
                                                                    : State::Failed;
   if (result == VCodexStatsImporter::ImportResult::Imported) {
     ReadingAchievementNotification notification;
-    if (ReadingAchievements::takePendingNotification(notification)) unlockedAchievements_ = notification.count;
+    if (ReadingAchievements::peekPendingNotification(notification)) unlockedAchievements_ = notification.count;
   }
 }
 
 void VCodexStatsImportActivity::continueAfterResult() {
+  if (unlockedAchievements_ != 0) ReadingAchievements::ackPendingNotification();
   if (nextActivity_) {
     activityManager.replaceActivity(std::move(nextActivity_));
   } else {

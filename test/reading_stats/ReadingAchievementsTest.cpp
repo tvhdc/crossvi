@@ -65,7 +65,7 @@ TEST(ReadingAchievements, RecognitionDayPersistsAndLegacyUnlocksRemainUndated) {
   DailyReadingHistory history;
   ASSERT_TRUE(ReadingAchievements::reconcile(stats, history));
   ReadingAchievementNotification notification;
-  EXPECT_FALSE(ReadingAchievements::takePendingNotification(notification));
+  EXPECT_FALSE(ReadingAchievements::peekPendingNotification(notification));
 
   stats.totalSessions = 1;
   ASSERT_TRUE(ReadingAchievements::reconcile(stats, history));
@@ -74,7 +74,8 @@ TEST(ReadingAchievements, RecognitionDayPersistsAndLegacyUnlocksRemainUndated) {
   ASSERT_EQ(ReadingAchievements::load(persisted), ReadingAchievements::LoadStatus::Ok);
   EXPECT_EQ(persisted.unlockRecognitionDay(0), readingStatsDayIndex(clockValue.date) + 1u);
   clockValid = false;
-  EXPECT_TRUE(ReadingAchievements::takePendingNotification(notification));
+  EXPECT_TRUE(ReadingAchievements::peekPendingNotification(notification));
+  EXPECT_TRUE(ReadingAchievements::ackPendingNotification());
 
   const uint8_t legacyPayload[] = {1, 1, 1, 0, 0, 0, 0};
   ReadingStatsEnvelope::Bytes encoded{};
@@ -87,6 +88,20 @@ TEST(ReadingAchievements, RecognitionDayPersistsAndLegacyUnlocksRemainUndated) {
   ASSERT_EQ(ReadingAchievements::load(legacy), ReadingAchievements::LoadStatus::Ok);
   EXPECT_TRUE(legacy.isUnlocked(0));
   EXPECT_EQ(legacy.unlockRecognitionDay(0), 0u);
+
+  std::array<uint8_t, 159> datedPayload{};
+  datedPayload[0] = 2;
+  datedPayload[1] = 1;
+  datedPayload[2] = 1;
+  const size_t datedSize = ReadingStatsEnvelope::encode(ReadingStatsEnvelope::Kind::Achievements,
+                                                        datedPayload.data(), datedPayload.size(), encoded);
+  ASSERT_NE(datedSize, 0u);
+  Storage.setFile("/.crosspoint/achievements_v1.bin",
+                  std::vector<uint8_t>(encoded.begin(), encoded.begin() + datedSize));
+  ReadingAchievementState dated;
+  ASSERT_EQ(ReadingAchievements::load(dated), ReadingAchievements::LoadStatus::Ok);
+  EXPECT_TRUE(dated.isUnlocked(0));
+  EXPECT_FALSE(ReadingAchievements::peekPendingNotification(notification));
 }
 
 TEST(ReadingAchievements, AllMetricBoundariesUseCanonicalIntegerValues) {
@@ -151,7 +166,7 @@ TEST(ReadingAchievements, RetroactiveReconcilePersistsOnlyUnlockStateAndDoesNotR
   ASSERT_TRUE(ReadingAchievements::reconcile(stats, history, &evaluation));
   EXPECT_EQ(evaluation.newlyUnlocked, 3 + 4 + 1);
   ReadingAchievementNotification notification;
-  ASSERT_TRUE(ReadingAchievements::takePendingNotification(notification));
+  ASSERT_TRUE(ReadingAchievements::peekPendingNotification(notification));
   EXPECT_TRUE(notification.historical);
   EXPECT_EQ(notification.count, evaluation.newlyUnlocked);
 
@@ -163,7 +178,8 @@ TEST(ReadingAchievements, RetroactiveReconcilePersistsOnlyUnlockStateAndDoesNotR
   ASSERT_TRUE(ReadingAchievements::reconcile(stats, history, &evaluation));
   EXPECT_EQ(evaluation.newlyUnlocked, 0);
   EXPECT_EQ(Storage.writeCallCount(), writes);
-  EXPECT_FALSE(ReadingAchievements::takePendingNotification(notification));
+  ASSERT_TRUE(ReadingAchievements::ackPendingNotification());
+  EXPECT_FALSE(ReadingAchievements::peekPendingNotification(notification));
 }
 
 TEST(ReadingAchievements, UnavailableImportedMetricsDoNotCreateFalseUnlocks) {
@@ -233,11 +249,33 @@ TEST(ReadingAchievements, PendingNotificationsCoalesceAcrossCommits) {
   ASSERT_TRUE(ReadingAchievements::reconcile(stats, history));
 
   ReadingAchievementNotification notification;
-  ASSERT_TRUE(ReadingAchievements::takePendingNotification(notification));
+  ASSERT_TRUE(ReadingAchievements::peekPendingNotification(notification));
   EXPECT_EQ(notification.count, 2);
   EXPECT_FALSE(notification.historical);
   EXPECT_EQ(notification.firstId, 0);
-  EXPECT_FALSE(ReadingAchievements::takePendingNotification(notification));
+  EXPECT_TRUE(ReadingAchievements::peekPendingNotification(notification));
+  ASSERT_TRUE(ReadingAchievements::ackPendingNotification());
+  EXPECT_FALSE(ReadingAchievements::peekPendingNotification(notification));
+}
+
+TEST(ReadingAchievements, PendingNotificationPersistsUntilAcknowledged) {
+  Storage.reset();
+  GlobalReadingStats stats;
+  DailyReadingHistory history;
+  ASSERT_TRUE(ReadingAchievements::reconcile(stats, history));
+  stats.totalSessions = 1;
+  ASSERT_TRUE(ReadingAchievements::reconcile(stats, history));
+
+  ReadingAchievementNotification first;
+  ReadingAchievementNotification afterReload;
+  ASSERT_TRUE(ReadingAchievements::peekPendingNotification(first));
+  ASSERT_TRUE(ReadingAchievements::peekPendingNotification(afterReload));
+  EXPECT_EQ(afterReload.count, first.count);
+  EXPECT_EQ(afterReload.firstId, first.firstId);
+  EXPECT_EQ(afterReload.historical, first.historical);
+
+  ASSERT_TRUE(ReadingAchievements::ackPendingNotification());
+  EXPECT_FALSE(ReadingAchievements::peekPendingNotification(afterReload));
 }
 
 TEST(ReadingAchievements, CorruptPrimaryRecoversThePreviousUnlockState) {
@@ -267,7 +305,7 @@ TEST(ReadingAchievements, NewerUnlockFileIsPreservedAndFailsClosed) {
 
   auto newer = Storage.file("/.crosspoint/achievements_v1.bin");
   ASSERT_GT(newer.size(), 12u);
-  newer[8] = 3;
+  newer[8] = 4;
   const uint32_t crc = ReadingStatsEnvelope::crc32(newer.data(), newer.size() - sizeof(uint32_t));
   const size_t crcOffset = newer.size() - sizeof(uint32_t);
   newer[crcOffset] = static_cast<uint8_t>(crc);

@@ -17,7 +17,7 @@ enum class DecodeResult : uint8_t { Ok, Invalid, NewerFormat, WrongKind, Payload
 constexpr uint8_t CURRENT_VERSION = 1;
 constexpr size_t HEADER_SIZE = 8;
 constexpr size_t CRC_SIZE = 4;
-constexpr size_t MAX_PAYLOAD_SIZE = 159;
+constexpr size_t MAX_PAYLOAD_SIZE = 164;
 constexpr size_t MAX_FILE_SIZE = HEADER_SIZE + MAX_PAYLOAD_SIZE + CRC_SIZE;
 using Bytes = std::array<uint8_t, MAX_FILE_SIZE>;
 

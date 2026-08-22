@@ -150,7 +150,7 @@ void ActivityManager::loop() {
         }
         ReadingAchievementNotification notification;
         if (leavingReader && !enteringReader && !enteringSleep &&
-            ReadingAchievements::takePendingNotification(notification)) {
+            ReadingAchievements::peekPendingNotification(notification)) {
           pendingActivity = std::make_unique<ReadingAchievementNotificationActivity>(
               renderer, mappedInput, notification, std::move(pendingActivity));
         }

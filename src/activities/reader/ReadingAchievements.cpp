@@ -16,11 +16,16 @@ constexpr char LOG_TAG[] = "ACH";
 constexpr char ACHIEVEMENTS_PATH[] = "/.crosspoint/achievements_v1.bin";
 constexpr char ACHIEVEMENTS_BACKUP_PATH[] = "/.crosspoint/achievements_v1.bin.bak";
 constexpr char ACHIEVEMENTS_TEMP_PATH[] = "/.crosspoint/achievements_v1.bin.tmp";
-constexpr uint8_t PAYLOAD_VERSION = 2;
+constexpr uint8_t PAYLOAD_VERSION = 3;
+constexpr uint8_t DATED_PAYLOAD_VERSION = 2;
 constexpr uint8_t LEGACY_PAYLOAD_VERSION = 1;
 constexpr uint8_t FLAG_INITIALIZED = 1;
+constexpr uint8_t FLAG_PENDING_HISTORICAL = 2;
 constexpr size_t LEGACY_PAYLOAD_SIZE = 2 + ReadingAchievementState::BYTE_COUNT;
-constexpr size_t RECOGNITION_DAYS_OFFSET = LEGACY_PAYLOAD_SIZE;
+constexpr size_t DATED_RECOGNITION_DAYS_OFFSET = LEGACY_PAYLOAD_SIZE;
+constexpr size_t DATED_PAYLOAD_SIZE = DATED_RECOGNITION_DAYS_OFFSET + ReadingAchievements::COUNT * sizeof(uint32_t);
+constexpr size_t ANNOUNCED_OFFSET = LEGACY_PAYLOAD_SIZE;
+constexpr size_t RECOGNITION_DAYS_OFFSET = ANNOUNCED_OFFSET + ReadingAchievementState::BYTE_COUNT;
 constexpr size_t PAYLOAD_SIZE = RECOGNITION_DAYS_OFFSET + ReadingAchievements::COUNT * sizeof(uint32_t);
 static_assert(PAYLOAD_SIZE <= ReadingStatsEnvelope::MAX_PAYLOAD_SIZE);
 
@@ -65,8 +70,6 @@ constexpr std::array<ReadingAchievementDefinition, ReadingAchievements::COUNT> D
     {37, ReadingAchievementCategory::ReadingDays, ReadingAchievementMetric::LifetimeReadingDays, 365},
 }};
 
-ReadingAchievementNotification pendingNotification;
-
 enum class PathStatus : uint8_t { Missing, Valid, Invalid, NewerVersion, IoError };
 
 uint32_t readU32(const uint8_t* data) {
@@ -96,9 +99,13 @@ PathStatus readPath(const char* path, ReadingAchievementState* state = nullptr) 
     return PathStatus::NewerVersion;
   }
   if (outcome.decodeResult != ReadingStatsEnvelope::DecodeResult::Ok || outcome.payloadSize < 2 ||
-      (payload[0] != LEGACY_PAYLOAD_VERSION && payload[0] != PAYLOAD_VERSION) ||
+      (payload[0] != LEGACY_PAYLOAD_VERSION && payload[0] != DATED_PAYLOAD_VERSION &&
+       payload[0] != PAYLOAD_VERSION) ||
       (payload[0] == LEGACY_PAYLOAD_VERSION && outcome.payloadSize != LEGACY_PAYLOAD_SIZE) ||
-      (payload[0] == PAYLOAD_VERSION && outcome.payloadSize != PAYLOAD_SIZE) || (payload[1] & ~FLAG_INITIALIZED) != 0 ||
+      (payload[0] == DATED_PAYLOAD_VERSION && outcome.payloadSize != DATED_PAYLOAD_SIZE) ||
+      (payload[0] == PAYLOAD_VERSION && outcome.payloadSize != PAYLOAD_SIZE) ||
+      (payload[1] & ~(payload[0] == PAYLOAD_VERSION ? FLAG_INITIALIZED | FLAG_PENDING_HISTORICAL
+                                                    : FLAG_INITIALIZED)) != 0 ||
       (payload[2 + ReadingAchievementState::BYTE_COUNT - 1] & 0xC0u) != 0) {
     return PathStatus::Invalid;
   }
@@ -106,8 +113,19 @@ PathStatus readPath(const char* path, ReadingAchievementState* state = nullptr) 
     state->initialized = (payload[1] & FLAG_INITIALIZED) != 0;
     std::copy_n(payload.begin() + 2, ReadingAchievementState::BYTE_COUNT, state->unlocked.begin());
     if (payload[0] == PAYLOAD_VERSION) {
+      state->pendingHistoricalNotification = (payload[1] & FLAG_PENDING_HISTORICAL) != 0;
+      std::copy_n(payload.begin() + ANNOUNCED_OFFSET, ReadingAchievementState::BYTE_COUNT, state->announced.begin());
+      if ((state->announced.back() & 0xC0u) != 0) return PathStatus::Invalid;
       for (size_t id = 0; id < ReadingAchievements::COUNT; ++id) {
         state->unlockRecognitionDays[id] = readU32(payload.data() + RECOGNITION_DAYS_OFFSET + id * sizeof(uint32_t));
+      }
+    } else {
+      state->announced = state->unlocked;
+      if (payload[0] == DATED_PAYLOAD_VERSION) {
+        for (size_t id = 0; id < ReadingAchievements::COUNT; ++id) {
+          state->unlockRecognitionDays[id] =
+              readU32(payload.data() + DATED_RECOGNITION_DAYS_OFFSET + id * sizeof(uint32_t));
+        }
       }
     }
   }
@@ -126,8 +144,10 @@ bool saveState(const ReadingAchievementState& state) {
   }
   std::array<uint8_t, PAYLOAD_SIZE> payload{};
   payload[0] = PAYLOAD_VERSION;
-  payload[1] = state.initialized ? FLAG_INITIALIZED : 0;
+  payload[1] = static_cast<uint8_t>((state.initialized ? FLAG_INITIALIZED : 0) |
+                                    (state.pendingHistoricalNotification ? FLAG_PENDING_HISTORICAL : 0));
   std::copy(state.unlocked.begin(), state.unlocked.end(), payload.begin() + 2);
+  std::copy(state.announced.begin(), state.announced.end(), payload.begin() + ANNOUNCED_OFFSET);
   for (size_t id = 0; id < ReadingAchievements::COUNT; ++id) {
     writeU32(payload.data() + RECOGNITION_DAYS_OFFSET + id * sizeof(uint32_t), state.unlockRecognitionDays[id]);
   }
@@ -169,6 +189,28 @@ uint8_t ReadingAchievementState::unlockedCount() const {
   uint8_t count = 0;
   for (uint8_t id = 0; id < ReadingAchievements::COUNT; ++id) count += isUnlocked(id) ? 1 : 0;
   return count;
+}
+
+uint8_t ReadingAchievementState::pendingNotificationCount() const {
+  uint8_t count = 0;
+  for (uint8_t id = 0; id < ReadingAchievements::COUNT; ++id) {
+    const uint8_t bit = static_cast<uint8_t>(1u << (id % 8u));
+    count += (unlocked[id / 8u] & bit) != 0 && (announced[id / 8u] & bit) == 0 ? 1 : 0;
+  }
+  return count;
+}
+
+uint8_t ReadingAchievementState::firstPendingNotificationId() const {
+  for (uint8_t id = 0; id < ReadingAchievements::COUNT; ++id) {
+    const uint8_t bit = static_cast<uint8_t>(1u << (id % 8u));
+    if ((unlocked[id / 8u] & bit) != 0 && (announced[id / 8u] & bit) == 0) return id;
+  }
+  return UINT8_MAX;
+}
+
+void ReadingAchievementState::markAllAnnounced() {
+  announced = unlocked;
+  pendingHistoricalNotification = false;
 }
 
 bool ReadingAchievementSnapshot::isAvailable(const ReadingAchievementMetric metric) const {
@@ -271,18 +313,10 @@ bool ReadingAchievements::reconcile(const GlobalReadingStats& stats, const Daily
   const ReadingAchievementEvaluation unlocked =
       evaluate(state, snapshot(stats, history), historical ? 0u : recognitionDay);
   if (!state.initialized) state.initialized = true;
+  if (historical && unlocked.newlyUnlocked != 0) state.pendingHistoricalNotification = true;
   if ((historical || unlocked.newlyUnlocked != 0) && !saveState(state)) return false;
 
   if (evaluation) *evaluation = unlocked;
-  if (unlocked.newlyUnlocked != 0) {
-    if (pendingNotification.count == 0) {
-      pendingNotification = {unlocked.newlyUnlocked, unlocked.firstUnlockedId, historical};
-    } else {
-      pendingNotification.count = static_cast<uint8_t>(
-          std::min<unsigned>(COUNT, static_cast<unsigned>(pendingNotification.count) + unlocked.newlyUnlocked));
-      pendingNotification.historical = pendingNotification.historical || historical;
-    }
-  }
   return true;
 }
 
@@ -301,7 +335,6 @@ bool ReadingAchievements::reconcileFromStorage(ReadingAchievementEvaluation* eva
 }
 
 bool ReadingAchievements::reset() {
-  pendingNotification = {};
   if (!Storage.exists(ACHIEVEMENTS_PATH) && !Storage.exists(ACHIEVEMENTS_BACKUP_PATH) &&
       !Storage.exists(ACHIEVEMENTS_TEMP_PATH)) {
     return true;
@@ -309,9 +342,21 @@ bool ReadingAchievements::reset() {
   return saveState({});
 }
 
-bool ReadingAchievements::takePendingNotification(ReadingAchievementNotification& notification) {
-  if (pendingNotification.count == 0) return false;
-  notification = pendingNotification;
-  pendingNotification = {};
+bool ReadingAchievements::peekPendingNotification(ReadingAchievementNotification& notification) {
+  ReadingAchievementState state;
+  const LoadStatus status = load(state);
+  if (status == LoadStatus::Invalid || status == LoadStatus::NewerVersion || status == LoadStatus::IoError) return false;
+  const uint8_t count = state.pendingNotificationCount();
+  if (count == 0) return false;
+  notification = {count, state.firstPendingNotificationId(), state.pendingHistoricalNotification};
   return true;
+}
+
+bool ReadingAchievements::ackPendingNotification() {
+  ReadingAchievementState state;
+  const LoadStatus status = load(state);
+  if (status == LoadStatus::Invalid || status == LoadStatus::NewerVersion || status == LoadStatus::IoError) return false;
+  if (state.pendingNotificationCount() == 0 && !state.pendingHistoricalNotification) return true;
+  state.markAllAnnounced();
+  return saveState(state);
 }
