@@ -6,6 +6,8 @@
   <title>CrossVi Tools</title>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
   <script src="vocabulary-converter/converter-core.js" defer></script>
+  <script src="flasher/flasher-core.js" defer></script>
+  <script src="flasher/flasher-ui.js" defer></script>
   <style>
     :root {
       --font-color: #333;
@@ -372,7 +374,7 @@
 
     .toolSwitcher {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
       margin: 0 0 18px;
       padding: 8px;
@@ -452,6 +454,7 @@
     }
 
     .secondaryButton {
+      display: block;
       width: 100%;
       margin-top: 10px;
       border: 1px solid var(--accent-color);
@@ -461,6 +464,8 @@
       color: var(--accent-hover-color);
       font: inherit;
       font-weight: 750;
+      text-align: center;
+      text-decoration: none;
       cursor: pointer;
     }
 
@@ -474,6 +479,136 @@
 
     .statusBox.warn { background: rgba(183, 121, 31, .14); color: var(--warning); }
     .statusBox.error { background: rgba(176, 60, 54, .12); color: #a13d38; }
+
+    .flashSafety {
+      margin-bottom: 16px;
+      padding: 14px;
+      border: 1px solid rgba(110, 154, 130, .32);
+      border-radius: 10px;
+      background: var(--accent-color-10);
+    }
+
+    .flashSafety strong { color: var(--title-color); }
+    .flashSafety p { margin: 5px 0 0; }
+
+    .flashStage {
+      display: grid;
+      gap: 18px;
+      padding: 20px;
+      align-content: start;
+      background:
+        linear-gradient(90deg, transparent 49%, rgba(110, 154, 130, .08) 50%, transparent 51%),
+        var(--bg);
+    }
+
+    .flashDeviceCard {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--card-bg);
+    }
+
+    .flashPort {
+      display: grid;
+      place-items: center;
+      width: 52px;
+      height: 66px;
+      border: 3px solid var(--accent-color);
+      border-radius: 8px 8px 13px 13px;
+      color: var(--accent-hover-color);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .04em;
+    }
+
+    .flashDeviceMeta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0;
+    }
+
+    .flashDeviceMeta div {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--accent-color-10);
+    }
+
+    .flashDeviceMeta dt {
+      color: var(--label-color);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .flashDeviceMeta dd {
+      margin: 2px 0 0;
+      color: var(--title-color);
+      font-weight: 800;
+    }
+
+    .flashSteps {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .flashSteps li {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 10px;
+      align-items: center;
+      min-height: 48px;
+      padding: 8px 11px;
+      border: 1px solid var(--border-color);
+      border-radius: 9px;
+      background: var(--card-bg);
+    }
+
+    .flashSteps strong { color: var(--title-color); }
+    .flashSteps small { display: block; color: var(--label-color); }
+
+    .stepMarker {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--border-color);
+      border-radius: 50%;
+      color: var(--label-color);
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .flashSteps li[data-state="running"] {
+      border-color: var(--accent-color);
+      background: var(--accent-color-10);
+    }
+
+    .flashSteps li[data-state="running"] .stepMarker { border-color: var(--accent-color); color: var(--accent-hover-color); }
+    .flashSteps li[data-state="done"] .stepMarker { border-color: var(--accent-color); background: var(--accent-color); color: #fff; }
+    .flashSteps li[data-state="done"] .stepMarker::before { content: "✓"; }
+    .flashSteps li[data-state="done"] .stepMarker span { display: none; }
+    .flashSteps li[data-state="error"] { border-color: #b03c36; }
+    .flashSteps li[data-state="error"] .stepMarker { border-color: #b03c36; color: #b03c36; }
+
+    .flashProgressRow {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .flashProgressRow progress {
+      width: 100%;
+      height: 14px;
+      accent-color: var(--accent-color);
+    }
 
     @media (max-width: 840px) {
       body { padding: 14px; }
@@ -492,6 +627,9 @@
       .previewStage { padding: 12px; }
       .vocabGrid { grid-template-columns: 1fr; }
       .toolTab { padding-inline: 8px; }
+      .flashDeviceCard { grid-template-columns: 1fr; }
+      .flashPort { display: none; }
+      .flashDeviceMeta { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -515,6 +653,7 @@
     <nav class="toolSwitcher" data-i18n-aria-label="toolsNavigation">
       <button id="sleepTab" class="toolTab" type="button" data-tool="sleep" aria-selected="true" data-i18n="sleepTool"></button>
       <button id="vocabTab" class="toolTab" type="button" data-tool="vocabulary" aria-selected="false" data-i18n="vocabTool"></button>
+      <button id="flashTab" class="toolTab" type="button" data-tool="flash" aria-selected="false" data-i18n="flashTool"></button>
     </nav>
 
     <section id="sleepTool">
@@ -643,6 +782,64 @@
         </section>
       </div>
     </section>
+
+    <section id="flashTool" class="hidden">
+      <div class="flow" aria-hidden="true">
+        <span data-i18n="flashFlowFile"></span><span class="arrow">→</span>
+        <span data-i18n="flashFlowConnect"></span><span class="arrow">→</span>
+        <span data-i18n="flashFlowCheck"></span><span class="arrow">→</span>
+        <span data-i18n="flashFlowInstall"></span>
+      </div>
+      <div class="workspace">
+        <section class="panel">
+          <div class="flashSafety">
+            <strong data-i18n="flashSafetyTitle"></strong>
+            <p data-i18n="flashSafetyText"></p>
+          </div>
+
+          <label for="firmwareFile" data-i18n="flashFileLabel"></label>
+          <input id="firmwareFile" type="file" accept=".bin,application/octet-stream">
+          <p id="firmwareFileStatus" class="hint" data-i18n="flashFileHint"></p>
+          <a class="secondaryButton" href="https://github.com/tvhdc/crossvi/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="flashDownloadLatest"></a>
+
+          <div id="flashBrowserWarning" class="statusBox warn hidden" data-i18n="flashBrowserUnsupported"></div>
+          <button id="flashStart" class="download" type="button" disabled data-i18n="flashStart"></button>
+          <div id="flashStatus" class="statusBox hidden" role="status" aria-live="polite"></div>
+          <p class="hint" data-i18n="flashCableHint"></p>
+        </section>
+
+        <section class="previewPanel">
+          <div class="previewHeader">
+            <div><strong data-i18n="flashProgressTitle"></strong><p class="hint" data-i18n="flashProgressHint"></p></div>
+            <span id="flashBadge" class="badge" data-i18n="flashDisconnected"></span>
+          </div>
+          <div class="flashStage">
+            <div class="flashDeviceCard">
+              <div class="flashPort" aria-hidden="true">USB-C</div>
+              <dl class="flashDeviceMeta">
+                <div><dt data-i18n="flashDeviceLabel"></dt><dd id="flashDevice" data-i18n="flashNotDetected"></dd></div>
+                <div><dt data-i18n="flashTargetLabel"></dt><dd id="flashTarget" data-i18n="flashNotSelected"></dd></div>
+              </dl>
+            </div>
+
+            <ol class="flashSteps">
+              <li data-flash-step="0" data-state="idle"><span class="stepMarker"><span>1</span></span><div><strong data-i18n="flashStepConnect"></strong><small data-i18n="flashStepConnectHint"></small></div></li>
+              <li data-flash-step="1" data-state="idle"><span class="stepMarker"><span>2</span></span><div><strong data-i18n="flashStepLayout"></strong><small data-i18n="flashStepLayoutHint"></small></div></li>
+              <li data-flash-step="2" data-state="idle"><span class="stepMarker"><span>3</span></span><div><strong data-i18n="flashStepOta"></strong><small data-i18n="flashStepOtaHint"></small></div></li>
+              <li data-flash-step="3" data-state="idle"><span class="stepMarker"><span>4</span></span><div><strong data-i18n="flashStepWrite"></strong><small data-i18n="flashStepWriteHint"></small></div></li>
+              <li data-flash-step="4" data-state="idle"><span class="stepMarker"><span>5</span></span><div><strong data-i18n="flashStepVerify"></strong><small data-i18n="flashStepVerifyHint"></small></div></li>
+              <li data-flash-step="5" data-state="idle"><span class="stepMarker"><span>6</span></span><div><strong data-i18n="flashStepRestart"></strong><small data-i18n="flashStepRestartHint"></small></div></li>
+            </ol>
+
+            <div class="flashProgressRow">
+              <progress id="flashProgress" max="100" value="0"></progress>
+              <strong id="flashProgressText">0%</strong>
+            </div>
+          </div>
+          <div class="previewFooter"><span data-i18n="flashFooterBrowser"></span><span data-i18n="flashFooterSafety"></span></div>
+        </section>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -650,9 +847,10 @@
       vi: {
         siteTitle: "Công cụ CrossVi",
         siteEyebrow: "Công cụ cho Xteink X3 / X4",
-        siteIntro: "Chuẩn bị ảnh ngủ và bộ từ vựng tại một nơi. Tệp chỉ được xử lý trong trình duyệt này.",
+        siteIntro: "Chuẩn bị ảnh ngủ, bộ từ vựng và cài firmware CrossVi tại một nơi.",
         sleepTool: "Ảnh màn hình ngủ",
         vocabTool: "Bộ từ vựng",
+        flashTool: "Cài firmware",
         toolsNavigation: "Chọn công cụ CrossVi",
         title: "Tạo ảnh ngủ CrossVi",
         eyebrow: "Công cụ ảnh ngủ",
@@ -742,14 +940,68 @@
         vocabVerb: "Động từ",
         vocabAdjective: "Tính từ",
         vocabAdverb: "Trạng từ",
-        vocabOther: "Khác"
+        vocabOther: "Khác",
+        flashFlowFile: "Chọn firmware",
+        flashFlowConnect: "Kết nối USB",
+        flashFlowCheck: "Kiểm tra máy",
+        flashFlowInstall: "Cài đặt",
+        flashSafetyTitle: "Cập nhật OTA an toàn",
+        flashSafetyText: "Công cụ chỉ ghi firmware vào vùng dự phòng rồi mới chuyển vùng khởi động. Nó không xóa sách, cài đặt hoặc toàn bộ bộ nhớ máy.",
+        flashFileLabel: "1. Chọn firmware CrossVi",
+        flashFileHint: "Chọn firmware.bin tải từ trang phát hành CrossVi. Tệp được kiểm tra trong trình duyệt trước khi kết nối máy.",
+        flashDownloadLatest: "Tải firmware CrossVi mới nhất",
+        flashBrowserUnsupported: "Trình duyệt này không hỗ trợ kết nối USB. Hãy mở trang bằng Chrome hoặc Edge trên máy tính.",
+        flashStart: "Kết nối và cài firmware",
+        flashWorking: "Đang cài firmware…",
+        flashCableHint: "Giữ cáp USB-C kết nối và không đóng trang trong lúc cài. Nếu máy vẫn không xuất hiện sau khi đổi cáp/cổng USB, hãy dừng lại; công cụ này không mở khóa thiết bị bị khóa USB.",
+        flashProgressTitle: "Thiết bị và tiến trình",
+        flashProgressHint: "CrossVi tự nhận diện bố cục X3/X4 trước khi ghi.",
+        flashDisconnected: "Chưa kết nối",
+        flashConnecting: "Đang kết nối",
+        flashReady: "Firmware hợp lệ",
+        flashInvalidFile: "Tệp không hợp lệ",
+        flashCompleteBadge: "Đã hoàn tất",
+        flashFailedBadge: "Cài đặt thất bại",
+        flashDeviceLabel: "Bố cục thiết bị",
+        flashTargetLabel: "Vùng sẽ ghi",
+        flashNotDetected: "Chưa nhận diện",
+        flashNotSelected: "Chưa chọn",
+        flashDetectedDevice: "Bố cục {model}",
+        flashStepConnect: "Kết nối thiết bị",
+        flashStepConnectHint: "Mở chế độ nạp qua USB và xác nhận ESP32-C3.",
+        flashStepLayout: "Kiểm tra phân vùng",
+        flashStepLayoutHint: "Chỉ chấp nhận bố cục OTA X3 hoặc X4 đã biết.",
+        flashStepOta: "Chọn vùng dự phòng",
+        flashStepOtaHint: "Giữ nguyên firmware đang chạy cho tới khi ghi xong.",
+        flashStepWrite: "Ghi firmware",
+        flashStepWriteHint: "Không ngắt cáp trong bước này.",
+        flashStepVerify: "Xác minh và chuyển vùng",
+        flashStepVerifyHint: "Chỉ đổi vùng khởi động sau khi ghi thành công.",
+        flashStepRestart: "Khởi động lại",
+        flashStepRestartHint: "Thiết bị khởi động bằng firmware mới.",
+        flashFooterBrowser: "Chrome / Edge trên máy tính",
+        flashFooterSafety: "Không xóa NVS, sách hoặc cài đặt",
+        flashCheckingFile: "Đang kiểm tra firmware…",
+        flashFileReady: "{name} · {size} · ESP32-C3",
+        flashComplete: "Đã cài CrossVi thành công cho bố cục {model}. Thiết bị đang khởi động lại.",
+        flashCancelled: "Bạn đã hủy chọn cổng USB. Chưa có dữ liệu nào được ghi.",
+        flashFirmwareReadError: "Không đọc được tệp firmware này.",
+        flashFirmwareInvalid: "Tệp này không phải firmware CrossVi hợp lệ hoặc đã bị cắt thiếu.",
+        flashFirmwareTooLarge: "Firmware quá lớn so với vùng OTA của thiết bị.",
+        flashFirmwareWrongChip: "Firmware này không dành cho X3/X4 dùng ESP32-C3.",
+        flashFirmwareCorrupt: "Firmware bị lỗi checksum hoặc SHA-256. Hãy tải lại từ trang phát hành CrossVi.",
+        flashDeviceWrongChip: "Thiết bị đã chọn không phải Xteink X3/X4 dùng ESP32-C3. Quá trình đã dừng trước khi ghi.",
+        flashPartitionUnsupported: "Không nhận diện được bố cục phân vùng X3/X4 an toàn. Quá trình đã dừng trước khi ghi.",
+        flashOtaError: "Không thể xác minh vùng khởi động OTA. Không nên ngắt nguồn; hãy thử kết nối lại.",
+        flashUnknownError: "Không thể cài firmware: {message}"
       },
       en: {
         siteTitle: "CrossVi Tools",
         siteEyebrow: "Tools for Xteink X3 / X4",
-        siteIntro: "Prepare sleep images and vocabulary sets in one place. Files stay in this browser.",
+        siteIntro: "Prepare sleep images, vocabulary sets, and install CrossVi firmware in one place.",
         sleepTool: "Sleep images",
         vocabTool: "Vocabulary sets",
+        flashTool: "Install firmware",
         toolsNavigation: "Choose a CrossVi tool",
         title: "CrossVi Sleep Image Maker",
         eyebrow: "Sleep screen tool",
@@ -839,7 +1091,60 @@
         vocabVerb: "Verb",
         vocabAdjective: "Adjective",
         vocabAdverb: "Adverb",
-        vocabOther: "Other"
+        vocabOther: "Other",
+        flashFlowFile: "Choose firmware",
+        flashFlowConnect: "Connect USB",
+        flashFlowCheck: "Check device",
+        flashFlowInstall: "Install",
+        flashSafetyTitle: "Safe OTA update",
+        flashSafetyText: "The tool writes firmware to the backup app slot, then changes the boot slot. It does not erase books, settings, or the whole device flash.",
+        flashFileLabel: "1. Choose CrossVi firmware",
+        flashFileHint: "Choose firmware.bin from a CrossVi release. The file is checked in this browser before the device is connected.",
+        flashDownloadLatest: "Download the latest CrossVi firmware",
+        flashBrowserUnsupported: "This browser cannot connect to USB devices. Open this page in Chrome or Edge on a computer.",
+        flashStart: "Connect and install firmware",
+        flashWorking: "Installing firmware…",
+        flashCableHint: "Keep the USB-C cable connected and leave this page open while installing. If the device still does not appear after changing cable/USB port, stop here; this tool does not unlock USB-locked devices.",
+        flashProgressTitle: "Device and progress",
+        flashProgressHint: "CrossVi detects the known X3/X4 layout before writing.",
+        flashDisconnected: "Not connected",
+        flashConnecting: "Connecting",
+        flashReady: "Firmware is valid",
+        flashInvalidFile: "Invalid file",
+        flashCompleteBadge: "Complete",
+        flashFailedBadge: "Install failed",
+        flashDeviceLabel: "Device layout",
+        flashTargetLabel: "Write target",
+        flashNotDetected: "Not detected",
+        flashNotSelected: "Not selected",
+        flashDetectedDevice: "{model} layout",
+        flashStepConnect: "Connect device",
+        flashStepConnectHint: "Enter USB download mode and confirm ESP32-C3.",
+        flashStepLayout: "Check partitions",
+        flashStepLayoutHint: "Only a known X3 or X4 OTA layout is accepted.",
+        flashStepOta: "Choose backup slot",
+        flashStepOtaHint: "Keep the running firmware intact until writing finishes.",
+        flashStepWrite: "Write firmware",
+        flashStepWriteHint: "Do not disconnect the cable during this step.",
+        flashStepVerify: "Verify and switch slot",
+        flashStepVerifyHint: "Change the boot slot only after a successful write.",
+        flashStepRestart: "Restart device",
+        flashStepRestartHint: "Start the device with the new firmware.",
+        flashFooterBrowser: "Chrome / Edge on desktop",
+        flashFooterSafety: "Does not erase NVS, books, or settings",
+        flashCheckingFile: "Checking firmware…",
+        flashFileReady: "{name} · {size} · ESP32-C3",
+        flashComplete: "CrossVi was installed successfully on the {model} layout. The device is restarting.",
+        flashCancelled: "USB port selection was cancelled. Nothing was written.",
+        flashFirmwareReadError: "This firmware file could not be read.",
+        flashFirmwareInvalid: "This is not a valid CrossVi firmware file, or the download is incomplete.",
+        flashFirmwareTooLarge: "The firmware is too large for the device OTA slot.",
+        flashFirmwareWrongChip: "This firmware is not for the ESP32-C3 used by X3/X4.",
+        flashFirmwareCorrupt: "The firmware checksum or SHA-256 is invalid. Download it again from CrossVi Releases.",
+        flashDeviceWrongChip: "The selected device is not an ESP32-C3 Xteink X3/X4. Flashing stopped before writing.",
+        flashPartitionUnsupported: "A safe X3/X4 partition layout was not found. Flashing stopped before writing.",
+        flashOtaError: "The OTA boot slot could not be verified. Keep the device powered and reconnect it.",
+        flashUnknownError: "Firmware installation failed: {message}"
       }
     };
 
@@ -930,6 +1235,7 @@
       refreshStatus();
       render();
       refreshVocabularyLanguage();
+      window.dispatchEvent(new CustomEvent("crossvi-language-change"));
     }
 
     function formatSize(bytes) {
@@ -937,6 +1243,8 @@
       if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
       return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     }
+
+    window.CrossViTools = { t, formatSize };
 
     function setStatus(text) {
       els.status.textContent = text || "";
@@ -1391,15 +1699,19 @@
 
     const sleepTool = document.getElementById("sleepTool");
     const vocabularyTool = document.getElementById("vocabularyTool");
+    const flashTool = document.getElementById("flashTool");
     const sleepTab = document.getElementById("sleepTab");
     const vocabTab = document.getElementById("vocabTab");
+    const flashTab = document.getElementById("flashTab");
 
     function selectTool(requestedTool, updateUrl = true) {
-      const selected = requestedTool === "vocabulary" ? "vocabulary" : "sleep";
+      const selected = ["sleep", "vocabulary", "flash"].includes(requestedTool) ? requestedTool : "sleep";
       sleepTool.classList.toggle("hidden", selected !== "sleep");
       vocabularyTool.classList.toggle("hidden", selected !== "vocabulary");
+      flashTool.classList.toggle("hidden", selected !== "flash");
       sleepTab.setAttribute("aria-selected", String(selected === "sleep"));
       vocabTab.setAttribute("aria-selected", String(selected === "vocabulary"));
+      flashTab.setAttribute("aria-selected", String(selected === "flash"));
       if (updateUrl) {
         const url = new URL(window.location.href);
         url.searchParams.set("tool", selected);
@@ -1409,6 +1721,7 @@
 
     sleepTab.addEventListener("click", () => selectTool("sleep"));
     vocabTab.addEventListener("click", () => selectTool("vocabulary"));
+    flashTab.addEventListener("click", () => selectTool("flash"));
     selectTool(new URLSearchParams(window.location.search).get("tool"), false);
     applyLanguage();
   </script>
