@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 SCRIPT_DIR = Path(globals().get("__file__", Path.cwd() / "scripts" / "gen_i18n.py")).resolve().parent
+BUILD_LANGUAGES_FILE = SCRIPT_DIR.parent / "lib" / "I18n" / "build-languages.txt"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -116,9 +117,28 @@ def parse_yaml_file(filepath: str) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def load_build_language_codes(filepath: Path = BUILD_LANGUAGES_FILE) -> List[str]:
+    """Read the ordered UI-language whitelist used by production builds."""
+    codes: List[str] = []
+    for line_num, raw_line in enumerate(filepath.read_text(encoding="utf-8").splitlines(), start=1):
+        code = raw_line.split("#", 1)[0].strip()
+        if not code:
+            continue
+        if not re.match(r"^[A-Z][A-Z0-9]*$", code):
+            raise ValueError(f"{filepath}:{line_num}: invalid language code '{code}'")
+        if code in codes:
+            raise ValueError(f"{filepath}:{line_num}: duplicate language code '{code}'")
+        codes.append(code)
+
+    if not codes or codes[0] != "EN":
+        raise ValueError(f"{filepath}: English (EN) must be the first build language")
+    return codes
+
+
 def load_translations(
     translations_dir: str,
     verbose: bool = False,
+    enabled_language_codes: Optional[List[str]] = None,
 ) -> Tuple[List[str], List[str], List[str], Dict[str, List[str]], List[Set[str]]]:
     """
     Read every YAML file in *translations_dir* and return:
@@ -127,7 +147,8 @@ def load_translations(
         string_keys      ordered list of STR_* keys (from English)
         translations     {key: [translation_per_language]}
 
-    English is always first;
+    Only languages listed in build-languages.txt are returned. English is
+    always first. All YAML files are still parsed and validated.
     """
     yaml_dir = Path(translations_dir)
     if not yaml_dir.is_dir():
@@ -142,54 +163,27 @@ def load_translations(
     for yf in yaml_files:
         parsed[yf.name] = parse_yaml_file(str(yf))
 
-    # Identify the English file (must exist)
-    english_file = None
-    for name, data in parsed.items():
-        if data.get("_language_code", "").upper() == "EN":
-            english_file = name
-            break
-
-    if english_file is None:
-        raise ValueError("No YAML file with _language_code: EN found")
-
-    duplicate_orders: Dict[str, List[str]] = {}
-    order_to_files: Dict[str, List[str]] = {}
+    code_to_file: Dict[str, str] = {}
     for fname, data in parsed.items():
-        order = data.get("_order")
-        if not order:
-            continue
-        order_to_files.setdefault(order, []).append(fname)
+        code = data.get("_language_code", "").upper()
+        if not code:
+            raise ValueError(f"{fname}: missing _language_code")
+        if code in code_to_file:
+            raise ValueError(f"Duplicate _language_code {code}: {code_to_file[code]}, {fname}")
+        code_to_file[code] = fname
 
-    for order, files in order_to_files.items():
-        if len(files) > 1:
-            duplicate_orders[order] = sorted(files)
+    if enabled_language_codes is None:
+        enabled_language_codes = load_build_language_codes()
+    missing_codes = [code for code in enabled_language_codes if code not in code_to_file]
+    if missing_codes:
+        raise ValueError(f"Build languages have no translation YAML: {', '.join(missing_codes)}")
 
-    if duplicate_orders:
-        duplicate_messages = [
-            f"_order {order}: {', '.join(files)}"
-            for order, files in sorted(
-                duplicate_orders.items(), key=lambda item: int(item[0])
-            )
-        ]
-        raise ValueError(
-            "Duplicate _order values found:\n  "
-            + "\n  ".join(duplicate_messages)
-            + "\nEach _order value must be unique to ensure a deterministic language order."
-        )
+    english_file = code_to_file["EN"]
 
-    # Order: English first, then by _order metadata (falls back to filename)
-    def sort_key(fname: str) -> Tuple[int, int, str]:
-        """English always first (0), then by _order, then by filename."""
-        if fname == english_file:
-            return (0, 0, fname)
-        order = parsed[fname].get("_order", "999")
-        try:
-            order_int = int(order)
-        except ValueError:
-            order_int = 999
-        return (1, order_int, fname)
-
-    ordered_files = sorted(parsed, key=sort_key)
+    # The production whitelist is the sole source of truth for generated enum
+    # order. Disabled YAML files remain available in source but add no firmware
+    # data.
+    ordered_files = [code_to_file[code] for code in enabled_language_codes]
 
     # Extract metadata
     language_codes: List[str] = []
@@ -557,15 +551,21 @@ def generate_keys_header(
 
     # V1 language.bin migration table -- frozen enum order from commit 2f969a9.
     # Maps the old uint8_t index stored on disk to the current Language enum.
-    # If a Language enum value listed here is ever removed, this will fail to
-    # compile, signalling that the migration table needs updating.
+    # Languages no longer built map safely to English.
     v1_codes = [
         "EN", "ES", "FR", "DE", "CS", "PT", "RU", "SV", "RO", "CA", "UK",
         "BE", "IT", "PL", "FI", "DA", "NL", "TR", "KK", "HU", "LT", "SI",
     ]
     lines.append("// V1 language.bin migration table (frozen enum order from 2f969a9)")
     lines.append("constexpr Language V1_LANGUAGES[] = {")
-    lines.append("    " + ", ".join(f"Language::{c}" for c in v1_codes) + ",")
+    lines.append(
+        "    "
+        + ", ".join(
+            f"Language::{c}" if c in languages else f"Language::EN /* {c} unavailable */"
+            for c in v1_codes
+        )
+        + ","
+    )
     lines.append("};")
     lines.append(
         f"constexpr uint8_t V1_LANGUAGE_COUNT = {len(v1_codes)};"

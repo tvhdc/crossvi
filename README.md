@@ -23,7 +23,7 @@ additional safeguards for data stored on the SD card.
 
 **[Download v1.1.2](https://github.com/tvhdc/crossvi/releases/download/v1.1.2/firmware.bin) ·
 [Installation](#installation) · [User Guide](USER_GUIDE.md) ·
-[Sleep Image Converter](https://tvhdc.github.io/crossvi/tools/sleep-image-converter/) ·
+[CrossVi Tools](https://tvhdc.github.io/crossvi/tools/) ·
 [Report a Bug](https://github.com/tvhdc/crossvi/issues/new?template=bug_report.yml) ·
 [Contributing](docs/contributing/README.md)**
 
@@ -36,8 +36,9 @@ additional safeguards for data stored on the SD card.
   clipping export, screenshots, and device, book, and calendar statistics.
 - **Customization:** Built-in Noto Serif and downloadable fonts up to 28 pt, per-book
   typography, margins, spacing, orientation, image handling, and reader dark mode.
-- **Learning and migration:** A Vietnamese-interface quiz using 3,000 common
-  English words, plus one-time reading-statistics import from CPR-vCodex.
+- **Learning and migration:** Vocabulary quizzes using the built-in 3,000-word
+  English-Vietnamese set or a user-made spreadsheet set, plus one-time
+  reading-statistics import from CPR-vCodex.
 - **Connectivity:** Wi-Fi file transfer, OPDS, Calibre/WebDAV, KOReader Sync, OTA, and Nearby Sync.
 - **Device and reliability:** Configurable buttons, sleep screens, Quick Resume,
   clock, automatic and tilt page turns, plus transactional storage for important data.
@@ -92,7 +93,7 @@ power use, buttons, and sleep/wake must be tested on a physical device.
 ## Documentation
 
 - [User Guide](USER_GUIDE.md)
-- [Sleep Image Converter](https://tvhdc.github.io/crossvi/tools/sleep-image-converter/) ([source](docs/tools/sleep-image-converter/))
+- [CrossVi Tools](https://tvhdc.github.io/crossvi/tools/) ([source](docs/tools/))
 - [Contributing](docs/contributing/README.md)
 - [Supported file formats](docs/file-formats.md)
 - [Wi-Fi file transfer](docs/webserver.md)

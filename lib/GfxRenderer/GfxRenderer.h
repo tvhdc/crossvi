@@ -183,10 +183,9 @@ class GfxRenderer {
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawIcon(const uint8_t bitmap[], int x, int y, int size) const;
-  bool drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
-                  float cropY = 0, bool allowUpscale = false) const;
-  bool drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight,
-                      bool allowUpscale = false) const;
+  bool drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0, float cropY = 0,
+                  bool allowUpscale = false) const;
+  bool drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, bool allowUpscale = false) const;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Snapshot / restore a screen-coordinate framebuffer region (byte-aligned in

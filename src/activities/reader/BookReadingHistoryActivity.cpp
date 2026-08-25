@@ -20,9 +20,9 @@ std::string formatDate(const uint32_t day) {
   ReadingStatsDate date;
   if (!readingStatsDateFromDayIndex(day, date)) return "--/--/----";
   char value[16];
-  const bool formatted = ClockDateFormat::format(
-      date.year, date.month, date.day, SETTINGS.dateFormat, ClockDateFormat::separatorChar(SETTINGS.dateSeparator),
-      value, sizeof(value), I18N.getLanguage() == Language::VI);
+  const bool formatted = ClockDateFormat::format(date.year, date.month, date.day, SETTINGS.dateFormat,
+                                                 ClockDateFormat::separatorChar(SETTINGS.dateSeparator), value,
+                                                 sizeof(value), I18N.getLanguage() == Language::VI);
   return formatted ? value : "--/--/----";
 }
 }  // namespace

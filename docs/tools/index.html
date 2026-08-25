@@ -1,0 +1,1923 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrossVi Tools</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+  <script src="vocabulary-converter/converter-core.js" defer></script>
+  <script src="flasher/flasher-core.js" defer></script>
+  <script src="flasher/flasher-ui.js" defer></script>
+  <style>
+    :root {
+      --font-color: #333;
+      --bg: #f5f5f5;
+      --title-color: #2c3e50;
+      --card-bg: #fff;
+      --label-color: #7f8c8d;
+      --border-color: #e5e8eb;
+      --accent-color: rgb(110, 154, 130);
+      --accent-color-10: rgba(110, 154, 130, 0.1);
+      --accent-hover-color: #5a8c73;
+      --blue: #315f9d;
+      --warning: #b7791f;
+      --badge-bg: #eef1f4;
+      --badge-text: #42505c;
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --font-color: #f5f5f5;
+        --bg: #333;
+        --title-color: #ecf0f1;
+        --card-bg: #444;
+        --label-color: #bdc3c7;
+        --border-color: #555;
+        --accent-color-10: rgba(110, 154, 130, 0.16);
+        --accent-hover-color: #9bc8ae;
+        --blue: #a9c7ff;
+        --warning: #f1c06a;
+        --badge-bg: #3a4147;
+        --badge-text: #dce4ec;
+        color-scheme: dark;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px;
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+      color: var(--font-color);
+      background: var(--bg);
+    }
+
+    main {
+      width: 100%;
+    }
+
+    .site-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+
+    .site-header h1 {
+      margin: 0;
+      color: var(--title-color);
+      font-size: clamp(30px, 4vw, 44px);
+      line-height: 1.06;
+      letter-spacing: -0.035em;
+    }
+
+    .lead {
+      max-width: 670px;
+      margin: 8px 0 0;
+      color: var(--label-color);
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      margin-bottom: 16px;
+      color: var(--label-color);
+      font-size: 14px;
+    }
+
+    .flow span {
+      padding: 5px 9px;
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      background: var(--card-bg);
+    }
+
+    .flow .arrow {
+      border: 0;
+      padding-inline: 0;
+      background: transparent;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(310px, 390px) minmax(360px, 1fr);
+      gap: 18px;
+    }
+
+    .panel, .previewPanel {
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--card-bg);
+      box-shadow: var(--shadow);
+    }
+
+    .panel { padding: 20px; align-self: start; }
+
+    p { margin: 0 0 14px; color: var(--label-color); }
+
+    .eyebrow {
+      margin: 0 0 6px;
+      color: var(--accent-color);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    label {
+      display: block;
+      margin: 16px 0 6px;
+      color: var(--title-color);
+      font-weight: 700;
+    }
+
+    input[type="file"], input[type="text"], select, input[type="range"] { width: 100%; }
+
+    input[type="text"], select, .download {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--font-color);
+      background: var(--card-bg);
+      font: inherit;
+    }
+
+    select option {
+      color: #1f2937;
+      background: #fff;
+    }
+
+    input[type="file"] {
+      padding: 10px;
+      border: 1px dashed var(--border-color);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--font-color);
+    }
+
+    input[type="file"]::file-selector-button {
+      margin-right: 10px;
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 11px;
+      background: var(--accent-color);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--accent-color);
+    }
+
+    input[type="range"] {
+      accent-color: var(--accent-color);
+    }
+
+    .language {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--label-color);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .language select {
+      min-width: 128px;
+      border: 0;
+      padding: 2px 4px;
+      background: transparent;
+      color: var(--font-color);
+      font-weight: 600;
+      color-scheme: light;
+    }
+
+    .inline {
+      display: grid;
+      gap: 12px;
+    }
+
+    .zoomRow {
+      display: grid;
+      grid-template-columns: 38px 1fr 38px;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .zoomBtn {
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--font-color);
+      font: inherit;
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .zoomBtn:hover {
+      border-color: var(--accent-color);
+      color: var(--accent-hover-color);
+    }
+
+    .fieldTitle {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .advanced {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(110, 154, 130, 0.24);
+      border-radius: 10px;
+      background: var(--accent-color-10);
+    }
+
+    .option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-top: 12px;
+      color: var(--font-color);
+      font-weight: 650;
+    }
+
+    .option input { width: 18px; height: 18px; margin-top: 3px; }
+
+    .hint, output {
+      color: var(--label-color);
+      font-size: 14px;
+    }
+
+    .download {
+      display: inline-block;
+      margin-top: 18px;
+      width: 100%;
+      text-align: center;
+      text-decoration: none;
+      font-weight: 850;
+      background: var(--accent-color);
+      color: white;
+      border: 0;
+    }
+
+    .download:hover { background: var(--accent-hover-color); }
+
+    .download[aria-disabled="true"] {
+      pointer-events: none;
+      opacity: 0.55;
+      background: #87928d;
+    }
+
+    button.download:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      background: #87928d;
+    }
+
+    .previewPanel {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: min(760px, calc(100vh - 112px));
+      overflow: hidden;
+    }
+
+    .previewHeader, .previewFooter {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .previewFooter {
+      border-top: 1px solid var(--border-color);
+      border-bottom: 0;
+      color: var(--label-color);
+      font-size: 14px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 850;
+      background: var(--badge-bg);
+      color: var(--badge-text);
+      white-space: nowrap;
+    }
+
+    .badge.transparent {
+      background: rgba(49, 95, 157, 0.13);
+      color: var(--blue);
+    }
+
+    .badge.solid {
+      background: rgba(110, 154, 130, 0.16);
+      color: var(--accent-hover-color);
+    }
+
+    .badge.bmp {
+      background: rgba(183, 121, 31, 0.16);
+      color: var(--warning);
+    }
+
+    .previewStage {
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      overflow: auto;
+      background: var(--bg);
+    }
+
+    .checker {
+      background-color: #f5f7fa;
+      background-image:
+        linear-gradient(45deg, #a8b0ba 25%, transparent 25%),
+        linear-gradient(-45deg, #a8b0ba 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #a8b0ba 75%),
+        linear-gradient(-45deg, transparent 75%, #a8b0ba 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+
+    canvas {
+      display: block;
+      width: min(100%, 528px);
+      height: auto;
+      max-height: calc(100vh - 250px);
+      object-fit: contain;
+      background: transparent;
+    }
+
+    .hidden { display: none; }
+
+    .toolSwitcher {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0 0 18px;
+      padding: 8px;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      background: var(--card-bg);
+      box-shadow: var(--shadow);
+    }
+
+    .toolTab {
+      min-height: 52px;
+      border: 0;
+      border-radius: 9px;
+      padding: 10px 14px;
+      background: transparent;
+      color: var(--font-color);
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .toolTab:hover { background: var(--accent-color-10); }
+
+    .toolTab[aria-selected="true"] {
+      background: var(--accent-color);
+      color: #fff;
+    }
+
+    .vocabGuide {
+      margin-bottom: 14px;
+      padding: 14px;
+      border: 1px solid rgba(110, 154, 130, .28);
+      border-radius: 10px;
+      background: var(--accent-color-10);
+    }
+
+    .vocabGuide strong { color: var(--title-color); }
+    .vocabGuide p { margin: 5px 0 0; }
+
+    .vocabGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .vocabGrid label { margin-top: 10px; }
+
+    .vocabTableWrap { padding: 18px; overflow: auto; }
+
+    .vocabTable {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      border: 1px solid var(--border-color);
+      border-radius: 9px;
+      overflow: hidden;
+      background: var(--card-bg);
+    }
+
+    .vocabTable th, .vocabTable td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-color);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .vocabTable th { color: var(--accent-hover-color); background: var(--accent-color-10); font-size: 13px; }
+    .vocabTable tr:last-child td { border-bottom: 0; }
+
+    .vocabEmpty {
+      display: grid;
+      min-height: 330px;
+      place-items: center;
+      padding: 28px;
+      color: var(--label-color);
+      text-align: center;
+    }
+
+    .secondaryButton {
+      display: block;
+      width: 100%;
+      margin-top: 10px;
+      border: 1px solid var(--accent-color);
+      border-radius: 8px;
+      padding: 9px 12px;
+      background: var(--card-bg);
+      color: var(--accent-hover-color);
+      font: inherit;
+      font-weight: 750;
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .statusBox {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--accent-color-10);
+      color: var(--accent-hover-color);
+    }
+
+    .statusBox.warn { background: rgba(183, 121, 31, .14); color: var(--warning); }
+    .statusBox.error { background: rgba(176, 60, 54, .12); color: #a13d38; }
+
+    .flashSafety {
+      margin-bottom: 16px;
+      padding: 14px;
+      border: 1px solid rgba(110, 154, 130, .32);
+      border-radius: 10px;
+      background: var(--accent-color-10);
+    }
+
+    .flashSafety strong { color: var(--title-color); }
+    .flashSafety p { margin: 5px 0 0; }
+
+    .flashStage {
+      display: grid;
+      gap: 18px;
+      padding: 20px;
+      align-content: start;
+      background:
+        linear-gradient(90deg, transparent 49%, rgba(110, 154, 130, .08) 50%, transparent 51%),
+        var(--bg);
+    }
+
+    .flashDeviceCard {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--card-bg);
+    }
+
+    .flashPort {
+      display: grid;
+      place-items: center;
+      width: 52px;
+      height: 66px;
+      border: 3px solid var(--accent-color);
+      border-radius: 8px 8px 13px 13px;
+      color: var(--accent-hover-color);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .04em;
+    }
+
+    .flashDeviceMeta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0;
+    }
+
+    .flashDeviceMeta div {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--accent-color-10);
+    }
+
+    .flashDeviceMeta dt {
+      color: var(--label-color);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .flashDeviceMeta dd {
+      margin: 2px 0 0;
+      color: var(--title-color);
+      font-weight: 800;
+    }
+
+    .flashSteps {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .flashSteps li {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 10px;
+      align-items: center;
+      min-height: 48px;
+      padding: 8px 11px;
+      border: 1px solid var(--border-color);
+      border-radius: 9px;
+      background: var(--card-bg);
+    }
+
+    .flashSteps strong { color: var(--title-color); }
+    .flashSteps small { display: block; color: var(--label-color); }
+
+    .stepMarker {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--border-color);
+      border-radius: 50%;
+      color: var(--label-color);
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .flashSteps li[data-state="running"] {
+      border-color: var(--accent-color);
+      background: var(--accent-color-10);
+    }
+
+    .flashSteps li[data-state="running"] .stepMarker { border-color: var(--accent-color); color: var(--accent-hover-color); }
+    .flashSteps li[data-state="done"] .stepMarker { border-color: var(--accent-color); background: var(--accent-color); color: #fff; }
+    .flashSteps li[data-state="done"] .stepMarker::before { content: "✓"; }
+    .flashSteps li[data-state="done"] .stepMarker span { display: none; }
+    .flashSteps li[data-state="error"] { border-color: #b03c36; }
+    .flashSteps li[data-state="error"] .stepMarker { border-color: #b03c36; color: #b03c36; }
+
+    .flashProgressRow {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .flashProgressRow progress {
+      width: 100%;
+      height: 14px;
+      accent-color: var(--accent-color);
+    }
+
+    @media (max-width: 840px) {
+      body { padding: 14px; }
+      .site-header { flex-direction: column; }
+      .language { align-self: flex-end; }
+      .workspace { grid-template-columns: 1fr; }
+      .previewPanel { min-height: auto; }
+      .previewHeader, .previewFooter { align-items: flex-start; flex-direction: column; }
+      canvas { max-height: 68vh; }
+    }
+
+    @media (max-width: 520px) {
+      body { padding: 10px; }
+      .panel, .previewPanel { border-radius: 8px; }
+      .flow { display: none; }
+      .previewStage { padding: 12px; }
+      .vocabGrid { grid-template-columns: 1fr; }
+      .toolTab { padding-inline: 8px; }
+      .flashDeviceCard { grid-template-columns: 1fr; }
+      .flashPort { display: none; }
+      .flashDeviceMeta { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow" data-i18n="siteEyebrow"></p>
+        <h1 data-i18n="siteTitle"></h1>
+        <p class="lead" data-i18n="siteIntro"></p>
+      </div>
+      <label class="language">
+        <span data-i18n="language"></span>
+        <select id="language">
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt</option>
+        </select>
+      </label>
+    </header>
+
+    <nav class="toolSwitcher" data-i18n-aria-label="toolsNavigation">
+      <button id="sleepTab" class="toolTab" type="button" data-tool="sleep" aria-selected="true" data-i18n="sleepTool"></button>
+      <button id="vocabTab" class="toolTab" type="button" data-tool="vocabulary" aria-selected="false" data-i18n="vocabTool"></button>
+      <button id="flashTab" class="toolTab" type="button" data-tool="flash" aria-selected="false" data-i18n="flashTool"></button>
+    </nav>
+
+    <section id="sleepTool">
+      <div class="flow" aria-hidden="true">
+        <span data-i18n="flowPick"></span><span class="arrow">→</span>
+        <span data-i18n="flowDevice"></span><span class="arrow">→</span>
+        <span data-i18n="flowPreview"></span><span class="arrow">→</span>
+        <span data-i18n="flowDownload"></span>
+      </div>
+      <div class="workspace">
+        <section class="panel">
+          <label for="file" data-i18n="fileLabel"></label>
+          <input id="file" type="file" accept="image/*">
+          <p class="hint" data-i18n="fileHint"></p>
+
+          <div class="inline">
+            <div>
+              <label for="device" data-i18n="deviceLabel"></label>
+              <select id="device">
+                <option value="x3" selected data-i18n="deviceX3"></option>
+                <option value="x4" data-i18n="deviceX4"></option>
+              </select>
+            </div>
+            <div>
+              <label for="mode" data-i18n="modeLabel"></label>
+              <select id="mode">
+                <option value="transparent" selected data-i18n="modeTransparent"></option>
+                <option value="normal" data-i18n="modeNormal"></option>
+              </select>
+            </div>
+          </div>
+
+          <label for="fit" data-i18n="fitLabel"></label>
+          <select id="fit">
+            <option value="fill" selected data-i18n="fitFill"></option>
+            <option value="height" data-i18n="fitHeight"></option>
+            <option value="width" data-i18n="fitWidth"></option>
+          </select>
+          <p class="hint" data-i18n="fitHint"></p>
+
+          <label for="zoom" class="fieldTitle">
+            <span data-i18n="zoomLabel"></span>
+            <output id="zoomOut">100%</output>
+          </label>
+          <div class="zoomRow">
+            <button id="zoomDown" class="zoomBtn" type="button" aria-label="">−</button>
+            <input id="zoom" type="range" min="50" max="250" step="5" value="100">
+            <button id="zoomUp" class="zoomBtn" type="button" aria-label="">+</button>
+          </div>
+          <p class="hint" data-i18n="zoomHint"></p>
+
+          <section id="normalOptions" class="advanced hidden">
+            <strong data-i18n="smoothTitle"></strong>
+            <p class="hint" data-i18n="smoothHint"></p>
+            <label class="option"><input id="dither" type="checkbox" checked><span data-i18n="dither"></span></label>
+          </section>
+
+          <a id="download" class="download" aria-disabled="true" download="sleep-overlay.png"></a>
+          <p class="hint" id="status"></p>
+          <p class="hint" data-i18n="copyHint"></p>
+        </section>
+
+        <section class="previewPanel">
+          <div class="previewHeader">
+            <div><strong data-i18n="previewTitle"></strong><p class="hint" id="previewHint"></p></div>
+            <span id="previewBadge" class="badge"></span>
+          </div>
+          <div class="previewStage">
+            <div class="checker"><canvas id="canvas" width="528" height="792"></canvas></div>
+          </div>
+          <div class="previewFooter"><span id="stats"></span><span data-i18n="checkerHint"></span></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="vocabularyTool" class="hidden">
+      <div class="flow" aria-hidden="true">
+        <span data-i18n="vocabFlowFile"></span><span class="arrow">→</span>
+        <span data-i18n="vocabFlowColumns"></span><span class="arrow">→</span>
+        <span data-i18n="vocabFlowPreview"></span><span class="arrow">→</span>
+        <span data-i18n="vocabFlowDownload"></span>
+      </div>
+      <div class="workspace">
+        <section class="panel">
+          <div class="vocabGuide">
+            <strong data-i18n="vocabGuideTitle"></strong>
+            <p data-i18n="vocabGuideText"></p>
+            <p class="hint" data-i18n="vocabGuideExample"></p>
+          </div>
+
+          <label for="vocabFile" data-i18n="vocabFileLabel"></label>
+          <input id="vocabFile" type="file" accept=".xlsx,.xls,.csv,.tsv">
+          <p class="hint" data-i18n="vocabFileHint"></p>
+          <button id="vocabTemplate" class="secondaryButton" type="button" data-i18n="vocabTemplate"></button>
+
+          <div id="vocabMapping" class="hidden">
+            <label for="vocabTitle" data-i18n="vocabTitleLabel"></label>
+            <input id="vocabTitle" type="text" maxlength="60" data-i18n-placeholder="vocabTitlePlaceholder">
+            <div class="vocabGrid">
+              <div><label for="vocabWord" data-i18n="vocabWord"></label><select id="vocabWord"></select></div>
+              <div><label for="vocabMeaning" data-i18n="vocabMeaning"></label><select id="vocabMeaning"></select></div>
+              <div><label for="vocabPronunciation" data-i18n="vocabPronunciation"></label><select id="vocabPronunciation"></select></div>
+              <div><label for="vocabPart" data-i18n="vocabPart"></label><select id="vocabPart"></select></div>
+            </div>
+            <label class="option"><input id="vocabHeader" type="checkbox" checked><span data-i18n="vocabHeader"></span></label>
+          </div>
+
+          <button id="vocabDownload" class="download" type="button" disabled data-i18n="vocabDownload"></button>
+          <div id="vocabStatus" class="statusBox hidden"></div>
+          <p class="hint" data-i18n="vocabCopyHint"></p>
+        </section>
+
+        <section class="previewPanel">
+          <div class="previewHeader">
+            <div><strong data-i18n="vocabPreviewTitle"></strong><p class="hint" data-i18n="vocabPreviewHint"></p></div>
+            <span id="vocabBadge" class="badge" data-i18n="vocabNoFile"></span>
+          </div>
+          <div class="vocabTableWrap">
+            <div id="vocabEmpty" class="vocabEmpty"><div><strong data-i18n="vocabEmptyTitle"></strong><br><span data-i18n="vocabEmptyText"></span></div></div>
+            <table id="vocabTable" class="vocabTable hidden">
+              <thead><tr><th data-i18n="vocabWord"></th><th data-i18n="vocabMeaning"></th><th data-i18n="vocabPronunciation"></th><th data-i18n="vocabPart"></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="previewFooter"><span data-i18n="vocabLimits"></span><span data-i18n="vocabLocal"></span></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="flashTool" class="hidden">
+      <div class="flow" aria-hidden="true">
+        <span data-i18n="flashFlowFile"></span><span class="arrow">→</span>
+        <span data-i18n="flashFlowConnect"></span><span class="arrow">→</span>
+        <span data-i18n="flashFlowCheck"></span><span class="arrow">→</span>
+        <span data-i18n="flashFlowInstall"></span>
+      </div>
+      <div class="workspace">
+        <section class="panel">
+          <div class="flashSafety">
+            <strong data-i18n="flashSafetyTitle"></strong>
+            <p data-i18n="flashSafetyText"></p>
+          </div>
+
+          <label for="firmwareFile" data-i18n="flashFileLabel"></label>
+          <input id="firmwareFile" type="file" accept=".bin,application/octet-stream">
+          <p id="firmwareFileStatus" class="hint" data-i18n="flashFileHint"></p>
+          <a class="secondaryButton" href="https://github.com/tvhdc/crossvi/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="flashDownloadLatest"></a>
+
+          <div id="flashBrowserWarning" class="statusBox warn hidden" data-i18n="flashBrowserUnsupported"></div>
+          <button id="flashStart" class="download" type="button" disabled data-i18n="flashStart"></button>
+          <div id="flashStatus" class="statusBox hidden" role="status" aria-live="polite"></div>
+          <p class="hint" data-i18n="flashCableHint"></p>
+        </section>
+
+        <section class="previewPanel">
+          <div class="previewHeader">
+            <div><strong data-i18n="flashProgressTitle"></strong><p class="hint" data-i18n="flashProgressHint"></p></div>
+            <span id="flashBadge" class="badge" data-i18n="flashDisconnected"></span>
+          </div>
+          <div class="flashStage">
+            <div class="flashDeviceCard">
+              <div class="flashPort" aria-hidden="true">USB-C</div>
+              <dl class="flashDeviceMeta">
+                <div><dt data-i18n="flashDeviceLabel"></dt><dd id="flashDevice" data-i18n="flashNotDetected"></dd></div>
+                <div><dt data-i18n="flashTargetLabel"></dt><dd id="flashTarget" data-i18n="flashNotSelected"></dd></div>
+              </dl>
+            </div>
+
+            <ol class="flashSteps">
+              <li data-flash-step="0" data-state="idle"><span class="stepMarker"><span>1</span></span><div><strong data-i18n="flashStepConnect"></strong><small data-i18n="flashStepConnectHint"></small></div></li>
+              <li data-flash-step="1" data-state="idle"><span class="stepMarker"><span>2</span></span><div><strong data-i18n="flashStepLayout"></strong><small data-i18n="flashStepLayoutHint"></small></div></li>
+              <li data-flash-step="2" data-state="idle"><span class="stepMarker"><span>3</span></span><div><strong data-i18n="flashStepOta"></strong><small data-i18n="flashStepOtaHint"></small></div></li>
+              <li data-flash-step="3" data-state="idle"><span class="stepMarker"><span>4</span></span><div><strong data-i18n="flashStepWrite"></strong><small data-i18n="flashStepWriteHint"></small></div></li>
+              <li data-flash-step="4" data-state="idle"><span class="stepMarker"><span>5</span></span><div><strong data-i18n="flashStepVerify"></strong><small data-i18n="flashStepVerifyHint"></small></div></li>
+              <li data-flash-step="5" data-state="idle"><span class="stepMarker"><span>6</span></span><div><strong data-i18n="flashStepRestart"></strong><small data-i18n="flashStepRestartHint"></small></div></li>
+            </ol>
+
+            <div class="flashProgressRow">
+              <progress id="flashProgress" max="100" value="0"></progress>
+              <strong id="flashProgressText">0%</strong>
+            </div>
+          </div>
+          <div class="previewFooter"><span data-i18n="flashFooterBrowser"></span><span data-i18n="flashFooterSafety"></span></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const TEXT = {
+      vi: {
+        siteTitle: "Công cụ CrossVi",
+        siteEyebrow: "Công cụ cho Xteink X3 / X4",
+        siteIntro: "Chuẩn bị ảnh ngủ, bộ từ vựng và cài firmware CrossVi tại một nơi.",
+        sleepTool: "Ảnh màn hình ngủ",
+        vocabTool: "Bộ từ vựng",
+        flashTool: "Cài firmware",
+        toolsNavigation: "Chọn công cụ CrossVi",
+        title: "Tạo ảnh ngủ CrossVi",
+        eyebrow: "Công cụ ảnh ngủ",
+        intro: "Chọn ảnh, xem trước đúng kích thước màn hình, rồi tải file đã sẵn sàng để copy vào thẻ SD.",
+        flowPick: "Chọn ảnh",
+        flowDevice: "Chọn máy",
+        flowPreview: "Xem kết quả",
+        flowDownload: "Tải file",
+        language: "Ngôn ngữ",
+        fileLabel: "1. Chọn ảnh",
+        fileHint: "Dùng PNG, JPG, BMP hoặc WebP. Ảnh không được gửi lên mạng.",
+        deviceLabel: "2. Chọn máy",
+        deviceX3: "X3 · 528×792",
+        deviceX4: "X4 · 480×800",
+        modeLabel: "3. Chọn cách dùng",
+        modeTransparent: "Phủ lên màn hình đang có",
+        modeNormal: "Thay toàn bộ màn hình ngủ",
+        fitLabel: "4. Cách đặt ảnh",
+        fitWidth: "Vừa theo chiều rộng",
+        fitHeight: "Vừa theo chiều cao",
+        fitFill: "Lấp đầy màn hình, không viền",
+        fitHint: "Lấp đầy sẽ che kín màn hình và có thể cắt bớt phần thừa ở cạnh dài.",
+        zoomLabel: "Phóng to / thu nhỏ",
+        zoomOut: "Thu nhỏ",
+        zoomIn: "Phóng to",
+        zoomHint: "100% là đúng theo kiểu đặt ảnh đã chọn. Với “lấp đầy”, 100% là mức nhỏ nhất để không bị viền.",
+        smoothTitle: "Tối ưu ảnh BMP thường",
+        smoothHint: "Dùng cho ảnh ngủ toàn màn hình. File BMP sẽ dùng 4 mức xám mà CrossVi hỗ trợ, nên ảnh mềm hơn kiểu chỉ đen/trắng.",
+        dither: "Làm chuyển sắc mịn hơn",
+        downloadIdle: "Chọn ảnh để tải file",
+        downloadWorking: "Đang chuẩn bị file…",
+        downloadReady: "Tải {name} ({size})",
+        statusLoaded: "Ảnh gốc: {width}×{height}, {size}",
+        statusError: "Không mở được ảnh này. Hãy thử PNG, JPG, BMP hoặc WebP.",
+        copyHint: "Copy file tải về vào root thẻ SD. Ảnh phủ dùng /sleep-overlay.png; ảnh ngủ thường dùng /sleep.bmp.",
+        previewTitle: "Xem trước",
+        previewEmpty: "Chọn ảnh để xem trước kết quả.",
+        previewTransparent: "Ô caro là phần sẽ không che nội dung phía dưới.",
+        previewNormal: "BMP sẽ phủ toàn màn hình, không có phần trong suốt.",
+        badgeEmpty: "Chưa có ảnh",
+        badgeTransparent: "Có vùng trong suốt · {percent}%",
+        badgeSolid: "Không có vùng trong suốt",
+        badgeBmp: "BMP · không hỗ trợ trong suốt",
+        stats: "{device} · {width}×{height} · {mode}",
+        statsTransparent: "ảnh phủ PNG",
+        statsNormal: "ảnh ngủ BMP",
+        checkerHint: "Ô caro chỉ để xem trước vùng trong suốt; nó không nằm trong file tải về.",
+        vocabFlowFile: "Chọn bảng tính",
+        vocabFlowColumns: "Ghép cột",
+        vocabFlowPreview: "Kiểm tra từ",
+        vocabFlowDownload: "Tải xuống",
+        vocabGuideTitle: "Định dạng Excel đơn giản",
+        vocabGuideText: "Mỗi hàng là một từ. Chỉ cần hai cột Từ và Nghĩa; Cách đọc và Loại từ có thể để trống.",
+        vocabGuideExample: "Ví dụ: book | quyển sách | /bʊk/ | danh từ",
+        vocabFileLabel: "1. Chọn tệp Excel hoặc CSV",
+        vocabFileHint: "Hỗ trợ XLSX, XLS, CSV và TSV. Công cụ dùng trang tính đầu tiên.",
+        vocabTemplate: "Tải tệp Excel mẫu",
+        vocabTitleLabel: "2. Đặt tên bộ từ",
+        vocabTitlePlaceholder: "Ví dụ: Từ vựng du lịch",
+        vocabWord: "Từ hoặc cụm từ",
+        vocabMeaning: "Nghĩa",
+        vocabPronunciation: "Cách đọc (không bắt buộc)",
+        vocabPart: "Loại từ (không bắt buộc)",
+        vocabHeader: "Hàng đầu tiên là tên các cột",
+        vocabDownload: "Tải tệp .cvocab",
+        vocabCopyHint: "Tải tệp .cvocab lên bằng Truyền tệp qua Wi-Fi hoặc chép vào thẻ SD, rồi chọn tệp trong Học từ vựng.",
+        vocabPreviewTitle: "Xem trước",
+        vocabPreviewHint: "Các mục hợp lệ đầu tiên sẽ được lưu.",
+        vocabNoFile: "Chưa chọn tệp",
+        vocabEmptyTitle: "Hãy chọn một bảng tính",
+        vocabEmptyText: "Cần ít nhất bốn nghĩa khác nhau.",
+        vocabLimits: "Tối đa 10.000 mục",
+        vocabLocal: "Xử lý ngay trong trình duyệt",
+        vocabOptional: "Không dùng",
+        vocabColumn: "Cột {number}",
+        vocabValidBadge: "{valid} hợp lệ · bỏ qua {skipped}",
+        vocabSkipped: "Đã bỏ qua {count} hàng vì thiếu dữ liệu bắt buộc, bị trùng hoặc quá dài.",
+        vocabReading: "Đang đọc bảng tính…",
+        vocabExcelUnavailable: "Không tải được bộ đọc Excel. Hãy kiểm tra mạng rồi tải lại trang.",
+        vocabNoSheets: "Tệp này không có trang tính.",
+        vocabEmptySheet: "Trang tính đầu tiên đang trống.",
+        vocabReadError: "Không đọc được tệp này.",
+        vocabReady: "Đã sẵn sàng: {count} mục · {size}",
+        vocabNeedMeanings: "Hãy dùng ít nhất bốn nghĩa khác nhau.",
+        vocabBuildError: "Không tạo được bộ từ vựng này.",
+        vocabNoun: "Danh từ",
+        vocabVerb: "Động từ",
+        vocabAdjective: "Tính từ",
+        vocabAdverb: "Trạng từ",
+        vocabOther: "Khác",
+        flashFlowFile: "Chọn firmware",
+        flashFlowConnect: "Kết nối USB",
+        flashFlowCheck: "Kiểm tra máy",
+        flashFlowInstall: "Cài đặt",
+        flashSafetyTitle: "Cập nhật OTA an toàn",
+        flashSafetyText: "Công cụ chỉ ghi firmware vào vùng dự phòng rồi mới chuyển vùng khởi động. Nó không xóa sách, cài đặt hoặc toàn bộ bộ nhớ máy.",
+        flashFileLabel: "1. Chọn firmware CrossVi",
+        flashFileHint: "Chọn firmware.bin tải từ trang phát hành CrossVi. Tệp được kiểm tra trong trình duyệt trước khi kết nối máy.",
+        flashDownloadLatest: "Tải firmware CrossVi mới nhất",
+        flashBrowserUnsupported: "Trình duyệt này không hỗ trợ kết nối USB. Hãy mở trang bằng Chrome hoặc Edge trên máy tính.",
+        flashStart: "Kết nối và cài firmware",
+        flashWorking: "Đang cài firmware…",
+        flashCableHint: "Giữ cáp USB-C kết nối và không đóng trang trong lúc cài. Nếu máy vẫn không xuất hiện sau khi đổi cáp/cổng USB, hãy dừng lại; công cụ này không mở khóa thiết bị bị khóa USB.",
+        flashProgressTitle: "Thiết bị và tiến trình",
+        flashProgressHint: "CrossVi tự nhận diện bố cục X3/X4 trước khi ghi.",
+        flashDisconnected: "Chưa kết nối",
+        flashConnecting: "Đang kết nối",
+        flashReady: "Firmware hợp lệ",
+        flashInvalidFile: "Tệp không hợp lệ",
+        flashCompleteBadge: "Đã hoàn tất",
+        flashFailedBadge: "Cài đặt thất bại",
+        flashDeviceLabel: "Bố cục thiết bị",
+        flashTargetLabel: "Vùng sẽ ghi",
+        flashNotDetected: "Chưa nhận diện",
+        flashNotSelected: "Chưa chọn",
+        flashDetectedDevice: "Bố cục {model}",
+        flashStepConnect: "Kết nối thiết bị",
+        flashStepConnectHint: "Mở chế độ nạp qua USB và xác nhận ESP32-C3.",
+        flashStepLayout: "Kiểm tra phân vùng",
+        flashStepLayoutHint: "Chỉ chấp nhận bố cục OTA X3 hoặc X4 đã biết.",
+        flashStepOta: "Chọn vùng dự phòng",
+        flashStepOtaHint: "Giữ nguyên firmware đang chạy cho tới khi ghi xong.",
+        flashStepWrite: "Ghi firmware",
+        flashStepWriteHint: "Không ngắt cáp trong bước này.",
+        flashStepVerify: "Xác minh và chuyển vùng",
+        flashStepVerifyHint: "Chỉ đổi vùng khởi động sau khi ghi thành công.",
+        flashStepRestart: "Khởi động lại",
+        flashStepRestartHint: "Thiết bị khởi động bằng firmware mới.",
+        flashFooterBrowser: "Chrome / Edge trên máy tính",
+        flashFooterSafety: "Không xóa NVS, sách hoặc cài đặt",
+        flashCheckingFile: "Đang kiểm tra firmware…",
+        flashFileReady: "{name} · {size} · ESP32-C3",
+        flashComplete: "Đã cài CrossVi thành công cho bố cục {model}. Thiết bị đang khởi động lại.",
+        flashCancelled: "Bạn đã hủy chọn cổng USB. Chưa có dữ liệu nào được ghi.",
+        flashFirmwareReadError: "Không đọc được tệp firmware này.",
+        flashFirmwareInvalid: "Tệp này không phải firmware CrossVi hợp lệ hoặc đã bị cắt thiếu.",
+        flashFirmwareTooLarge: "Firmware quá lớn so với vùng OTA của thiết bị.",
+        flashFirmwareWrongChip: "Firmware này không dành cho X3/X4 dùng ESP32-C3.",
+        flashFirmwareCorrupt: "Firmware bị lỗi checksum hoặc SHA-256. Hãy tải lại từ trang phát hành CrossVi.",
+        flashDeviceWrongChip: "Thiết bị đã chọn không phải Xteink X3/X4 dùng ESP32-C3. Quá trình đã dừng trước khi ghi.",
+        flashPartitionUnsupported: "Không nhận diện được bố cục phân vùng X3/X4 an toàn. Quá trình đã dừng trước khi ghi.",
+        flashOtaError: "Không thể xác minh vùng khởi động OTA. Không nên ngắt nguồn; hãy thử kết nối lại.",
+        flashUnknownError: "Không thể cài firmware: {message}"
+      },
+      en: {
+        siteTitle: "CrossVi Tools",
+        siteEyebrow: "Tools for Xteink X3 / X4",
+        siteIntro: "Prepare sleep images, vocabulary sets, and install CrossVi firmware in one place.",
+        sleepTool: "Sleep images",
+        vocabTool: "Vocabulary sets",
+        flashTool: "Install firmware",
+        toolsNavigation: "Choose a CrossVi tool",
+        title: "CrossVi Sleep Image Maker",
+        eyebrow: "Sleep screen tool",
+        intro: "Pick an image, preview it at device size, then download a file ready for the SD card.",
+        flowPick: "Choose image",
+        flowDevice: "Choose device",
+        flowPreview: "Preview result",
+        flowDownload: "Download",
+        language: "Language",
+        fileLabel: "1. Choose an image",
+        fileHint: "PNG, JPG, BMP, or WebP works. Your image stays in this browser.",
+        deviceLabel: "2. Choose device",
+        deviceX3: "X3 · 528×792",
+        deviceX4: "X4 · 480×800",
+        modeLabel: "3. Choose how to use it",
+        modeTransparent: "Place over the current screen",
+        modeNormal: "Replace the whole sleep screen",
+        fitLabel: "4. Image placement",
+        fitWidth: "Fit to width",
+        fitHeight: "Fit to height",
+        fitFill: "Fill the screen, no border",
+        fitHint: "Fill covers the whole screen and may crop the extra part on the long side.",
+        zoomLabel: "Zoom in / out",
+        zoomOut: "Zoom out",
+        zoomIn: "Zoom in",
+        zoomHint: "100% follows the selected placement. In Fill mode, 100% is the minimum to avoid borders.",
+        smoothTitle: "Optimize normal BMP",
+        smoothHint: "For a full sleep picture. The BMP uses the four gray levels supported by CrossVi, so it looks smoother than plain black and white.",
+        dither: "Smooth gradients",
+        downloadIdle: "Choose an image to download",
+        downloadWorking: "Preparing file…",
+        downloadReady: "Download {name} ({size})",
+        statusLoaded: "Original image: {width}×{height}, {size}",
+        statusError: "This image could not be opened. Try PNG, JPG, BMP, or WebP.",
+        copyHint: "Copy the downloaded file to the SD card root. Overlay images use /sleep-overlay.png; full sleep pictures use /sleep.bmp.",
+        previewTitle: "Preview",
+        previewEmpty: "Choose an image to preview the result.",
+        previewTransparent: "The checkerboard shows parts that will let the screen underneath show through.",
+        previewNormal: "BMP covers the whole screen and has no see-through areas.",
+        badgeEmpty: "No image yet",
+        badgeTransparent: "Has see-through areas · {percent}%",
+        badgeSolid: "No see-through areas",
+        badgeBmp: "BMP · no transparency",
+        stats: "{device} · {width}×{height} · {mode}",
+        statsTransparent: "overlay PNG",
+        statsNormal: "sleep BMP",
+        checkerHint: "The checkerboard only helps preview transparency; it is not saved into the file.",
+        vocabFlowFile: "Choose spreadsheet",
+        vocabFlowColumns: "Match columns",
+        vocabFlowPreview: "Check entries",
+        vocabFlowDownload: "Download",
+        vocabGuideTitle: "Simple Excel format",
+        vocabGuideText: "Use one row per word. Only Word and Meaning are required; Pronunciation and Part of speech are optional.",
+        vocabGuideExample: "Example: book | quyển sách | /bʊk/ | noun",
+        vocabFileLabel: "1. Choose an Excel or CSV file",
+        vocabFileHint: "Accepted: XLSX, XLS, CSV and TSV. The first worksheet is used.",
+        vocabTemplate: "Download Excel template",
+        vocabTitleLabel: "2. Name this set",
+        vocabTitlePlaceholder: "Example: Travel vocabulary",
+        vocabWord: "Word or phrase",
+        vocabMeaning: "Meaning",
+        vocabPronunciation: "Pronunciation (optional)",
+        vocabPart: "Part of speech (optional)",
+        vocabHeader: "First row contains column names",
+        vocabDownload: "Download .cvocab",
+        vocabCopyHint: "Upload the .cvocab file through CrossVi File Transfer or copy it to the SD card, then choose it in Vocabulary learning.",
+        vocabPreviewTitle: "Preview",
+        vocabPreviewHint: "The first valid entries that will be saved.",
+        vocabNoFile: "No file selected",
+        vocabEmptyTitle: "Choose a spreadsheet",
+        vocabEmptyText: "At least four different meanings are required.",
+        vocabLimits: "Up to 10,000 entries",
+        vocabLocal: "Processed in this browser",
+        vocabOptional: "Not used",
+        vocabColumn: "Column {number}",
+        vocabValidBadge: "{valid} valid · {skipped} skipped",
+        vocabSkipped: "{count} rows were skipped because required cells were missing, duplicated or too long.",
+        vocabReading: "Reading spreadsheet…",
+        vocabExcelUnavailable: "The Excel reader could not load. Check your connection and reload.",
+        vocabNoSheets: "This workbook has no worksheets.",
+        vocabEmptySheet: "The first worksheet is empty.",
+        vocabReadError: "This file could not be read.",
+        vocabReady: "Ready: {count} entries · {size}",
+        vocabNeedMeanings: "Use at least four different meanings.",
+        vocabBuildError: "The vocabulary set could not be created.",
+        vocabNoun: "Noun",
+        vocabVerb: "Verb",
+        vocabAdjective: "Adjective",
+        vocabAdverb: "Adverb",
+        vocabOther: "Other",
+        flashFlowFile: "Choose firmware",
+        flashFlowConnect: "Connect USB",
+        flashFlowCheck: "Check device",
+        flashFlowInstall: "Install",
+        flashSafetyTitle: "Safe OTA update",
+        flashSafetyText: "The tool writes firmware to the backup app slot, then changes the boot slot. It does not erase books, settings, or the whole device flash.",
+        flashFileLabel: "1. Choose CrossVi firmware",
+        flashFileHint: "Choose firmware.bin from a CrossVi release. The file is checked in this browser before the device is connected.",
+        flashDownloadLatest: "Download the latest CrossVi firmware",
+        flashBrowserUnsupported: "This browser cannot connect to USB devices. Open this page in Chrome or Edge on a computer.",
+        flashStart: "Connect and install firmware",
+        flashWorking: "Installing firmware…",
+        flashCableHint: "Keep the USB-C cable connected and leave this page open while installing. If the device still does not appear after changing cable/USB port, stop here; this tool does not unlock USB-locked devices.",
+        flashProgressTitle: "Device and progress",
+        flashProgressHint: "CrossVi detects the known X3/X4 layout before writing.",
+        flashDisconnected: "Not connected",
+        flashConnecting: "Connecting",
+        flashReady: "Firmware is valid",
+        flashInvalidFile: "Invalid file",
+        flashCompleteBadge: "Complete",
+        flashFailedBadge: "Install failed",
+        flashDeviceLabel: "Device layout",
+        flashTargetLabel: "Write target",
+        flashNotDetected: "Not detected",
+        flashNotSelected: "Not selected",
+        flashDetectedDevice: "{model} layout",
+        flashStepConnect: "Connect device",
+        flashStepConnectHint: "Enter USB download mode and confirm ESP32-C3.",
+        flashStepLayout: "Check partitions",
+        flashStepLayoutHint: "Only a known X3 or X4 OTA layout is accepted.",
+        flashStepOta: "Choose backup slot",
+        flashStepOtaHint: "Keep the running firmware intact until writing finishes.",
+        flashStepWrite: "Write firmware",
+        flashStepWriteHint: "Do not disconnect the cable during this step.",
+        flashStepVerify: "Verify and switch slot",
+        flashStepVerifyHint: "Change the boot slot only after a successful write.",
+        flashStepRestart: "Restart device",
+        flashStepRestartHint: "Start the device with the new firmware.",
+        flashFooterBrowser: "Chrome / Edge on desktop",
+        flashFooterSafety: "Does not erase NVS, books, or settings",
+        flashCheckingFile: "Checking firmware…",
+        flashFileReady: "{name} · {size} · ESP32-C3",
+        flashComplete: "CrossVi was installed successfully on the {model} layout. The device is restarting.",
+        flashCancelled: "USB port selection was cancelled. Nothing was written.",
+        flashFirmwareReadError: "This firmware file could not be read.",
+        flashFirmwareInvalid: "This is not a valid CrossVi firmware file, or the download is incomplete.",
+        flashFirmwareTooLarge: "The firmware is too large for the device OTA slot.",
+        flashFirmwareWrongChip: "This firmware is not for the ESP32-C3 used by X3/X4.",
+        flashFirmwareCorrupt: "The firmware checksum or SHA-256 is invalid. Download it again from CrossVi Releases.",
+        flashDeviceWrongChip: "The selected device is not an ESP32-C3 Xteink X3/X4. Flashing stopped before writing.",
+        flashPartitionUnsupported: "A safe X3/X4 partition layout was not found. Flashing stopped before writing.",
+        flashOtaError: "The OTA boot slot could not be verified. Keep the device powered and reconnect it.",
+        flashUnknownError: "Firmware installation failed: {message}"
+      }
+    };
+
+    const LANGUAGE_KEY = "crossvi.tools.language.v1";
+    const targets = {
+      x3: { width: 528, height: 792 },
+      x4: { width: 480, height: 800 }
+    };
+    const bayer = [
+      [0, 8, 2, 10],
+      [12, 4, 14, 6],
+      [3, 11, 1, 9],
+      [15, 7, 13, 5]
+    ];
+    const overlayPaletteCandidates = [
+      { gray: 8, alpha: 8 },
+      { gray: 12, alpha: 10 },
+      { gray: 16, alpha: 12 },
+      { gray: 24, alpha: 10 },
+      { gray: 32, alpha: 8 },
+      { gray: 48, alpha: 5 },
+      { gray: 64, alpha: 4 },
+      { gray: 85, alpha: 4 }
+    ];
+    const overlayTargetPngBytes = 24 * 1024;
+    const els = {
+      file: document.getElementById("file"),
+      language: document.getElementById("language"),
+      device: document.getElementById("device"),
+      mode: document.getElementById("mode"),
+      fit: document.getElementById("fit"),
+      zoom: document.getElementById("zoom"),
+      zoomOut: document.getElementById("zoomOut"),
+      zoomDown: document.getElementById("zoomDown"),
+      zoomUp: document.getElementById("zoomUp"),
+      dither: document.getElementById("dither"),
+      normalOptions: document.getElementById("normalOptions"),
+      download: document.getElementById("download"),
+      status: document.getElementById("status"),
+      stats: document.getElementById("stats"),
+      previewHint: document.getElementById("previewHint"),
+      previewBadge: document.getElementById("previewBadge"),
+      canvas: document.getElementById("canvas")
+    };
+    const ctx = els.canvas.getContext("2d", { willReadFrequently: true });
+    const outputCanvas = document.createElement("canvas");
+    const outputCtx = outputCanvas.getContext("2d", { willReadFrequently: true });
+    let sourceImage = null;
+    let sourceRect = null;
+    let sourceInfo = null;
+    let sourceError = false;
+    let downloadUrl = null;
+    let downloadGeneration = 0;
+    let language = initialLanguage();
+    let refreshVocabularyLanguage = () => {};
+
+    function initialLanguage() {
+      const saved = localStorage.getItem(LANGUAGE_KEY);
+      if (saved && TEXT[saved]) return saved;
+      return "en";
+    }
+
+    function t(key, values = {}) {
+      let text = (TEXT[language] && TEXT[language][key]) || TEXT.en[key] || key;
+      for (const [name, value] of Object.entries(values)) {
+        text = text.replaceAll(`{${name}}`, value);
+      }
+      return text;
+    }
+
+    function applyLanguage() {
+      document.documentElement.lang = language;
+      document.title = t("siteTitle");
+      els.language.value = language;
+      document.querySelectorAll("[data-i18n]").forEach(node => {
+        node.textContent = t(node.dataset.i18n);
+      });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach(node => {
+        node.placeholder = t(node.dataset.i18nPlaceholder);
+      });
+      document.querySelectorAll("[data-i18n-aria-label]").forEach(node => {
+        node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
+      });
+      els.zoomDown.setAttribute("aria-label", t("zoomOut"));
+      els.zoomDown.title = t("zoomOut");
+      els.zoomUp.setAttribute("aria-label", t("zoomIn"));
+      els.zoomUp.title = t("zoomIn");
+      refreshStatus();
+      render();
+      refreshVocabularyLanguage();
+      window.dispatchEvent(new CustomEvent("crossvi-language-change"));
+    }
+
+    function formatSize(bytes) {
+      if (!bytes) return "0 KB";
+      if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    window.CrossViTools = { t, formatSize };
+
+    function setStatus(text) {
+      els.status.textContent = text || "";
+    }
+
+    function refreshStatus() {
+      if (sourceError) {
+        setStatus(t("statusError"));
+      } else if (sourceInfo) {
+        setStatus(t("statusLoaded", sourceInfo));
+      } else {
+        setStatus("");
+      }
+    }
+
+    function revokeDownload() {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+      downloadUrl = null;
+      els.download.href = "";
+      els.download.setAttribute("aria-disabled", "true");
+    }
+
+    function target() {
+      return targets[els.device.value] || targets.x3;
+    }
+
+    function zoomPercent() {
+      return Math.max(Number(els.zoom.min), Math.min(Number(els.zoom.max), Number(els.zoom.value) || 100));
+    }
+
+    function updateZoomControls() {
+      const min = els.fit.value === "fill" ? 100 : 50;
+      els.zoom.min = String(min);
+      if (Number(els.zoom.value) < min) els.zoom.value = String(min);
+      if (Number(els.zoom.value) > Number(els.zoom.max)) els.zoom.value = els.zoom.max;
+      els.zoomOut.textContent = `${zoomPercent()}%`;
+    }
+
+    function placementScale(profile) {
+      const widthScale = profile.width / sourceRect.width;
+      const heightScale = profile.height / sourceRect.height;
+      if (els.fit.value === "width") return widthScale;
+      if (els.fit.value === "height") return heightScale;
+      return Math.max(widthScale, heightScale);
+    }
+
+    function detectSourceRect(image) {
+      return { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight };
+    }
+
+    function transparencyStats(imageData) {
+      const data = imageData.data;
+      let transparent = 0;
+      for (let i = 3; i < data.length; i += 4) {
+        if (data[i] < 250) transparent++;
+      }
+      const total = data.length / 4;
+      return { has: transparent > 0, percent: Math.round((transparent * 1000) / total) / 10 };
+    }
+
+    function quantizeCanvasToFourGrayLevels(canvas, context) {
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          const i = (y * canvas.width + x) * 4;
+          let gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          if (els.dither.checked) {
+            gray += (bayer[y & 3][x & 3] - 7.5) * (85 / 16);
+          }
+          const level = Math.max(0, Math.min(3, Math.round((gray * 3) / 255)));
+          const v = level * 85;
+          data[i] = data[i + 1] = data[i + 2] = v;
+          data[i + 3] = 255;
+        }
+      }
+      context.putImageData(imageData, 0, 0);
+    }
+
+    function crc32(bytes) {
+      if (!crc32.table) {
+        crc32.table = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+          crc32.table[n] = c >>> 0;
+        }
+      }
+      let c = 0xffffffff;
+      for (const b of bytes) c = crc32.table[(c ^ b) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    }
+
+    function pngChunk(type, payload = new Uint8Array()) {
+      const out = new Uint8Array(12 + payload.length);
+      const view = new DataView(out.buffer);
+      view.setUint32(0, payload.length, false);
+      for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+      out.set(payload, 8);
+      view.setUint32(8 + payload.length, crc32(out.subarray(4, 8 + payload.length)), false);
+      return out;
+    }
+
+    async function deflateBytes(bytes) {
+      if (typeof CompressionStream !== "function") return null;
+      try {
+        const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate"));
+        return new Uint8Array(await new Response(stream).arrayBuffer());
+      } catch {
+        return null;
+      }
+    }
+
+    function quantizeOverlay(imageData, grayLevels, alphaLevels) {
+      const data = imageData.data;
+      const palette = [];
+      const alphas = [];
+      const lookup = new Map();
+      const indexes = new Uint8Array(imageData.width * imageData.height);
+      let visibleWeight = 0;
+      let visibleLumaError = 0;
+      let activeAlphaError = 0;
+      let activeAlphaCount = 0;
+
+      function paletteIndex(key, gray, alpha) {
+        let idx = lookup.get(key);
+        if (idx !== undefined) return idx;
+        idx = alphas.length;
+        lookup.set(key, idx);
+        palette.push(gray, gray, gray);
+        alphas.push(alpha);
+        return idx;
+      }
+
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        const alpha = data[i + 3];
+        const luma = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+        let idx;
+        let outLuma = 255;
+        let outAlpha = 0;
+        if (alpha < 4) {
+          idx = paletteIndex("t", 255, 0);
+        } else {
+          const grayBucket = Math.round((luma * (grayLevels - 1)) / 255);
+          const alphaBucket = Math.max(1, Math.round((alpha * (alphaLevels - 1)) / 255));
+          outLuma = Math.round((grayBucket * 255) / (grayLevels - 1));
+          outAlpha = Math.round((alphaBucket * 255) / (alphaLevels - 1));
+          idx = paletteIndex(`${grayBucket},${alphaBucket}`, outLuma, outAlpha);
+          activeAlphaError += Math.abs(alpha - outAlpha);
+          activeAlphaCount++;
+        }
+        const weight = alpha / 255;
+        visibleLumaError += Math.abs(luma - outLuma) * weight;
+        visibleWeight += weight;
+        indexes[p] = idx;
+      }
+
+      return {
+        palette: new Uint8Array(palette),
+        alphas: new Uint8Array(alphas),
+        indexes,
+        colorCount: alphas.length,
+        visibleLumaError: visibleWeight ? visibleLumaError / visibleWeight : 0,
+        activeAlphaError: activeAlphaCount ? activeAlphaError / activeAlphaCount : 0
+      };
+    }
+
+    function overlayPaletteLooksGood(quantized) {
+      return quantized.visibleLumaError <= 2 && quantized.activeAlphaError <= 2.5;
+    }
+
+    async function makeIndexedPngBlob(canvas, quantized) {
+      const stride = canvas.width + 1;
+      const scanlines = new Uint8Array(stride * canvas.height);
+      for (let y = 0; y < canvas.height; y++) {
+        const row = y * stride;
+        scanlines[row] = 0;
+        scanlines.set(quantized.indexes.subarray(y * canvas.width, (y + 1) * canvas.width), row + 1);
+      }
+      const compressed = await deflateBytes(scanlines);
+      if (!compressed) return null;
+
+      const ihdr = new Uint8Array(13);
+      const view = new DataView(ihdr.buffer);
+      view.setUint32(0, canvas.width, false);
+      view.setUint32(4, canvas.height, false);
+      ihdr[8] = 8;
+      ihdr[9] = 3;
+      const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      return new Blob([
+        signature,
+        pngChunk("IHDR", ihdr),
+        pngChunk("PLTE", quantized.palette),
+        pngChunk("tRNS", quantized.alphas),
+        pngChunk("IDAT", compressed),
+        pngChunk("IEND")
+      ], { type: "image/png" });
+    }
+
+    async function makeOptimizedOverlayPngBlob(canvas, context) {
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      let firstQualityBlob = null;
+      let fallbackBlob = null;
+      for (const candidate of overlayPaletteCandidates) {
+        const quantized = quantizeOverlay(imageData, candidate.gray, candidate.alpha);
+        if (quantized.colorCount > 256) continue;
+        const blob = await makeIndexedPngBlob(canvas, quantized);
+        if (!blob) return null;
+        fallbackBlob = blob;
+        if (overlayPaletteLooksGood(quantized)) {
+          if (!firstQualityBlob) firstQualityBlob = blob;
+          if (blob.size <= overlayTargetPngBytes) return blob;
+        }
+      }
+      return firstQualityBlob || fallbackBlob;
+    }
+
+    function drawSource() {
+      const t = target();
+      outputCanvas.width = t.width;
+      outputCanvas.height = t.height;
+      outputCtx.clearRect(0, 0, t.width, t.height);
+      if (els.mode.value === "normal") {
+        outputCtx.fillStyle = "#fff";
+        outputCtx.fillRect(0, 0, t.width, t.height);
+      }
+      if (!sourceImage) {
+        renderFirmwarePreview();
+        return null;
+      }
+
+      const scale = placementScale(t) * (zoomPercent() / 100);
+      const drawWidth = Math.max(1, Math.round(sourceRect.width * scale));
+      const drawHeight = Math.max(1, Math.round(sourceRect.height * scale));
+      const x = Math.floor((t.width - drawWidth) / 2);
+      const y = Math.floor((t.height - drawHeight) / 2);
+      outputCtx.imageSmoothingEnabled = true;
+      outputCtx.imageSmoothingQuality = "high";
+      outputCtx.drawImage(
+        sourceImage,
+        sourceRect.x,
+        sourceRect.y,
+        sourceRect.width,
+        sourceRect.height,
+        x,
+        y,
+        drawWidth,
+        drawHeight
+      );
+      const drawnRect = { x, y, width: drawWidth, height: drawHeight };
+
+      if (els.mode.value === "normal") quantizeCanvasToFourGrayLevels(outputCanvas, outputCtx);
+      renderFirmwarePreview();
+      return drawnRect;
+    }
+
+    function renderFirmwarePreview() {
+      els.canvas.width = outputCanvas.width;
+      els.canvas.height = outputCanvas.height;
+      ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+      if (!outputCanvas.width || !outputCanvas.height) return;
+      if (els.mode.value === "normal") {
+        ctx.drawImage(outputCanvas, 0, 0);
+        return;
+      }
+
+      const source = outputCtx.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
+      const preview = ctx.createImageData(outputCanvas.width, outputCanvas.height);
+      for (let y = 0; y < outputCanvas.height; y++) {
+        for (let x = 0; x < outputCanvas.width; x++) {
+          const i = (y * outputCanvas.width + x) * 4;
+          const alpha = source.data[i + 3];
+          const threshold = bayer[y & 3][x & 3] * 16;
+          if (alpha === 0 || (alpha !== 255 && alpha <= threshold)) continue;
+          const gray = (source.data[i] * 77 + source.data[i + 1] * 150 + source.data[i + 2] * 29) >> 8;
+          const oneBitThreshold = bayer[y & 3][x & 3] * 16 + 8;
+          const value = gray < oneBitThreshold ? 0 : 255;
+          preview.data[i] = preview.data[i + 1] = preview.data[i + 2] = value;
+          preview.data[i + 3] = 255;
+        }
+      }
+      ctx.putImageData(preview, 0, 0);
+    }
+
+    function makeBmpBlob(canvas, context) {
+      const width = canvas.width;
+      const height = canvas.height;
+      const rowStride = Math.ceil(width / 8) * 4;
+      const pixelBytes = rowStride * height;
+      const paletteBytes = 16 * 4;
+      const fileSize = 14 + 40 + paletteBytes + pixelBytes;
+      const bytes = new Uint8Array(fileSize);
+      const view = new DataView(bytes.buffer);
+      bytes[0] = 0x42; bytes[1] = 0x4d;
+      view.setUint32(2, fileSize, true);
+      view.setUint32(10, 14 + 40 + paletteBytes, true);
+      view.setUint32(14, 40, true);
+      view.setInt32(18, width, true);
+      view.setInt32(22, height, true);
+      view.setUint16(26, 1, true);
+      view.setUint16(28, 4, true);
+      view.setUint32(34, pixelBytes, true);
+      view.setUint32(46, 16, true);
+      view.setUint32(50, 4, true);
+      for (let i = 0; i < 16; i++) {
+        const v = i < 4 ? i * 85 : 255;
+        bytes.set([v, v, v, 0], 54 + i * 4);
+      }
+
+      const imageData = context.getImageData(0, 0, width, height).data;
+      const offset = 14 + 40 + paletteBytes;
+      for (let y = 0; y < height; y++) {
+        const srcY = height - 1 - y;
+        const row = offset + y * rowStride;
+        for (let x = 0; x < width; x++) {
+          const i = (srcY * width + x) * 4;
+          const gray = imageData[i] * 0.299 + imageData[i + 1] * 0.587 + imageData[i + 2] * 0.114;
+          const level = Math.max(0, Math.min(3, Math.round((gray * 3) / 255)));
+          bytes[row + (x >> 1)] |= level << ((x & 1) ? 0 : 4);
+        }
+      }
+      return new Blob([bytes], { type: "image/bmp" });
+    }
+
+    function updatePreviewState() {
+      const profile = target();
+      const modeText = els.mode.value === "transparent" ? t("statsTransparent") : t("statsNormal");
+      els.stats.textContent = t("stats", {
+        device: els.device.value.toUpperCase(),
+        width: profile.width,
+        height: profile.height,
+        mode: modeText
+      });
+
+      els.previewBadge.className = "badge";
+      if (!sourceImage) {
+        els.previewHint.textContent = t("previewEmpty");
+        els.previewBadge.textContent = t("badgeEmpty");
+        return;
+      }
+      if (els.mode.value === "normal") {
+        els.previewHint.textContent = t("previewNormal");
+        els.previewBadge.classList.add("bmp");
+        els.previewBadge.textContent = t("badgeBmp");
+        return;
+      }
+
+      const stats = transparencyStats(ctx.getImageData(0, 0, els.canvas.width, els.canvas.height));
+      els.previewHint.textContent = t("previewTransparent");
+      if (stats.has) {
+        els.previewBadge.classList.add("transparent");
+        els.previewBadge.textContent = t("badgeTransparent", { percent: stats.percent });
+      } else {
+        els.previewBadge.classList.add("solid");
+        els.previewBadge.textContent = t("badgeSolid");
+      }
+    }
+
+    function updateDownload() {
+      revokeDownload();
+      const generation = ++downloadGeneration;
+      if (!sourceImage) {
+        els.download.textContent = t("downloadIdle");
+        return;
+      }
+      const name = els.mode.value === "transparent" ? "sleep-overlay.png" : "sleep.bmp";
+      els.download.textContent = t("downloadWorking");
+      const finish = (blob) => {
+        if (generation !== downloadGeneration || !blob) return;
+        downloadUrl = URL.createObjectURL(blob);
+        els.download.href = downloadUrl;
+        els.download.download = name;
+        els.download.removeAttribute("aria-disabled");
+        els.download.textContent = t("downloadReady", { name, size: formatSize(blob.size) });
+      };
+      if (els.mode.value === "transparent") {
+        makeOptimizedOverlayPngBlob(outputCanvas, outputCtx).then(blob => {
+          if (blob) {
+            finish(blob);
+          } else {
+            outputCanvas.toBlob(finish, "image/png");
+          }
+        });
+      } else {
+        finish(makeBmpBlob(outputCanvas, outputCtx));
+      }
+    }
+
+    function render() {
+      els.normalOptions.classList.toggle("hidden", els.mode.value !== "normal");
+      updateZoomControls();
+      drawSource();
+      updatePreviewState();
+      updateDownload();
+    }
+
+    els.language.addEventListener("change", () => {
+      language = els.language.value;
+      localStorage.setItem(LANGUAGE_KEY, language);
+      applyLanguage();
+    });
+
+    els.file.addEventListener("change", () => {
+      const file = els.file.files && els.file.files[0];
+      revokeDownload();
+      sourceImage = null;
+      sourceRect = null;
+      sourceInfo = null;
+      sourceError = false;
+      if (!file) {
+        render();
+        refreshStatus();
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        sourceImage = img;
+        sourceRect = detectSourceRect(img);
+        sourceInfo = {
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+          size: formatSize(file.size)
+        };
+        sourceError = false;
+        refreshStatus();
+        render();
+        URL.revokeObjectURL(img.src);
+      };
+      img.onerror = () => {
+        sourceInfo = null;
+        sourceError = true;
+        refreshStatus();
+        render();
+        URL.revokeObjectURL(img.src);
+      };
+      img.src = URL.createObjectURL(file);
+    });
+
+    function stepZoom(delta) {
+      const next = Math.max(Number(els.zoom.min), Math.min(Number(els.zoom.max), zoomPercent() + delta));
+      els.zoom.value = String(next);
+      render();
+    }
+
+    els.zoomDown.addEventListener("click", () => stepZoom(-5));
+    els.zoomUp.addEventListener("click", () => stepZoom(5));
+
+    for (const el of [els.device, els.mode, els.fit, els.zoom, els.dither]) {
+      el.addEventListener("input", render);
+      el.addEventListener("change", render);
+    }
+
+    const sleepTool = document.getElementById("sleepTool");
+    const vocabularyTool = document.getElementById("vocabularyTool");
+    const flashTool = document.getElementById("flashTool");
+    const sleepTab = document.getElementById("sleepTab");
+    const vocabTab = document.getElementById("vocabTab");
+    const flashTab = document.getElementById("flashTab");
+
+    function selectTool(requestedTool, updateUrl = true) {
+      const selected = ["sleep", "vocabulary", "flash"].includes(requestedTool) ? requestedTool : "sleep";
+      sleepTool.classList.toggle("hidden", selected !== "sleep");
+      vocabularyTool.classList.toggle("hidden", selected !== "vocabulary");
+      flashTool.classList.toggle("hidden", selected !== "flash");
+      sleepTab.setAttribute("aria-selected", String(selected === "sleep"));
+      vocabTab.setAttribute("aria-selected", String(selected === "vocabulary"));
+      flashTab.setAttribute("aria-selected", String(selected === "flash"));
+      if (updateUrl) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("tool", selected);
+        history.replaceState(null, "", url);
+      }
+    }
+
+    sleepTab.addEventListener("click", () => selectTool("sleep"));
+    vocabTab.addEventListener("click", () => selectTool("vocabulary"));
+    flashTab.addEventListener("click", () => selectTool("flash"));
+    selectTool(new URLSearchParams(window.location.search).get("tool"), false);
+    applyLanguage();
+  </script>
+
+  <script>
+    window.addEventListener("DOMContentLoaded", () => {
+      const byId = id => document.getElementById(id);
+      const vocab = {
+        file: byId("vocabFile"),
+        template: byId("vocabTemplate"),
+        mapping: byId("vocabMapping"),
+        title: byId("vocabTitle"),
+        word: byId("vocabWord"),
+        meaning: byId("vocabMeaning"),
+        pronunciation: byId("vocabPronunciation"),
+        part: byId("vocabPart"),
+        header: byId("vocabHeader"),
+        download: byId("vocabDownload"),
+        status: byId("vocabStatus"),
+        badge: byId("vocabBadge"),
+        empty: byId("vocabEmpty"),
+        table: byId("vocabTable")
+      };
+      let vocabRows = [];
+      let vocabNormalized = { entries: [], errors: [] };
+      let statusState = null;
+
+      function escapeHtml(value) {
+        const node = document.createElement("span");
+        node.textContent = value;
+        return node.innerHTML;
+      }
+
+      function setVocabStatus(kind, key, values = {}) {
+        statusState = key ? { kind, key, values } : null;
+        vocab.status.className = `statusBox${kind ? ` ${kind}` : ""}${key ? "" : " hidden"}`;
+        vocab.status.textContent = key ? t(key, values) : "";
+      }
+
+      function columnOptions(width, header, optional) {
+        const prefix = optional ? `<option value="-1">${escapeHtml(t("vocabOptional"))}</option>` : "";
+        return prefix + Array.from({ length: width }, (_, index) => {
+          const label = String(header[index] || t("vocabColumn", { number: index + 1 }));
+          return `<option value="${index}">${String.fromCharCode(65 + index)} · ${escapeHtml(label)}</option>`;
+        }).join("");
+      }
+
+      function fillVocabColumns(autoDetect) {
+        const width = Math.max(...vocabRows.slice(0, 30).map(row => row.length), 0);
+        const header = vocabRows[0] || [];
+        const previous = [vocab.word.value, vocab.meaning.value, vocab.pronunciation.value, vocab.part.value];
+        const required = columnOptions(width, header, false);
+        const optional = columnOptions(width, header, true);
+        vocab.word.innerHTML = required;
+        vocab.meaning.innerHTML = required;
+        vocab.pronunciation.innerHTML = optional;
+        vocab.part.innerHTML = optional;
+
+        if (!autoDetect) {
+          [vocab.word, vocab.meaning, vocab.pronunciation, vocab.part].forEach((select, index) => {
+            if ([...select.options].some(option => option.value === previous[index])) select.value = previous[index];
+          });
+          return;
+        }
+
+        const names = header.map(value => String(value).trim().toLowerCase());
+        const find = candidates => names.findIndex(value => candidates.some(candidate => value.includes(candidate)));
+        const wordIndex = find(["word", "term", "phrase", "từ"]);
+        const meaningIndex = find(["meaning", "definition", "nghĩa"]);
+        vocab.word.value = String(wordIndex >= 0 ? wordIndex : 0);
+        vocab.meaning.value = String(meaningIndex >= 0 ? meaningIndex : Math.min(1, Math.max(0, width - 1)));
+        vocab.pronunciation.value = String(find(["pronunciation", "phonetic", "ipa", "cách đọc"]));
+        vocab.part.value = String(find(["part of speech", "type", "pos", "loại từ"]));
+      }
+
+      function updateVocabularyPreview() {
+        if (!vocabRows.length) return;
+        vocabNormalized = CrossViVocabulary.normalizeRows(vocabRows, {
+          word: Number(vocab.word.value),
+          meaning: Number(vocab.meaning.value),
+          pronunciation: Number(vocab.pronunciation.value),
+          partOfSpeech: Number(vocab.part.value),
+          hasHeader: vocab.header.checked
+        });
+        const partLabels = [t("vocabNoun"), t("vocabVerb"), t("vocabAdjective"), t("vocabAdverb"), t("vocabOther")];
+        vocab.table.querySelector("tbody").innerHTML = vocabNormalized.entries.slice(0, 10).map(entry =>
+          `<tr><td>${escapeHtml(entry.word)}</td><td>${escapeHtml(entry.meaning)}</td><td>${escapeHtml(entry.pronunciation || "—")}</td><td>${escapeHtml(partLabels[entry.partOfSpeech])}</td></tr>`
+        ).join("");
+        vocab.empty.classList.add("hidden");
+        vocab.table.classList.remove("hidden");
+        vocab.badge.textContent = t("vocabValidBadge", {
+          valid: vocabNormalized.entries.length,
+          skipped: vocabNormalized.errors.length
+        });
+        vocab.download.disabled = vocabNormalized.entries.length < 4 ||
+          new Set(vocabNormalized.entries.map(entry => entry.meaning)).size < 4;
+        if (vocabNormalized.errors.length) {
+          setVocabStatus("warn", "vocabSkipped", { count: vocabNormalized.errors.length });
+        } else if (statusState && statusState.key === "vocabSkipped") {
+          setVocabStatus("", null);
+        }
+      }
+
+      refreshVocabularyLanguage = () => {
+        if (vocabRows.length) {
+          fillVocabColumns(false);
+          updateVocabularyPreview();
+        } else {
+          vocab.badge.textContent = t("vocabNoFile");
+        }
+        if (statusState && statusState.key !== "vocabSkipped") {
+          vocab.status.textContent = t(statusState.key, statusState.values);
+        }
+      };
+
+      for (const element of [vocab.word, vocab.meaning, vocab.pronunciation, vocab.part, vocab.header]) {
+        element.addEventListener("change", updateVocabularyPreview);
+      }
+
+      vocab.file.addEventListener("change", async event => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        setVocabStatus("", "vocabReading");
+        try {
+          if (!window.XLSX) throw new Error("excel-unavailable");
+          const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellText: true, cellDates: false });
+          if (!workbook.SheetNames.length) throw new Error("no-sheets");
+          vocabRows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
+            header: 1, raw: false, defval: ""
+          });
+          if (!vocabRows.length) throw new Error("empty-sheet");
+          vocab.title.value = file.name.replace(/\.(xlsx?|csv|tsv)$/i, "").slice(0, 60);
+          fillVocabColumns(true);
+          vocab.mapping.classList.remove("hidden");
+          setVocabStatus("", null);
+          updateVocabularyPreview();
+        } catch (error) {
+          vocabRows = [];
+          vocabNormalized = { entries: [], errors: [] };
+          vocab.mapping.classList.add("hidden");
+          vocab.download.disabled = true;
+          vocab.table.classList.add("hidden");
+          vocab.empty.classList.remove("hidden");
+          vocab.badge.textContent = t("vocabNoFile");
+          const key = error.message === "excel-unavailable" ? "vocabExcelUnavailable" :
+            error.message === "no-sheets" ? "vocabNoSheets" :
+            error.message === "empty-sheet" ? "vocabEmptySheet" : "vocabReadError";
+          setVocabStatus("error", key);
+        }
+      });
+
+      vocab.download.addEventListener("click", () => {
+        try {
+          const data = CrossViVocabulary.buildCvocab(vocabNormalized.entries, vocab.title.value);
+          const name = (vocab.title.value || "vocabulary").trim()
+            .replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "") || "vocabulary";
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(new Blob([data], { type: "application/octet-stream" }));
+          link.download = `${name}.cvocab`;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+          setVocabStatus("", "vocabReady", {
+            count: vocabNormalized.entries.length,
+            size: `${(data.length / 1024).toFixed(1)} KB`
+          });
+        } catch (error) {
+          setVocabStatus("error", error.message === "meaning-count" ? "vocabNeedMeanings" : "vocabBuildError");
+        }
+      });
+
+      vocab.template.addEventListener("click", () => {
+        if (!window.XLSX) {
+          setVocabStatus("error", "vocabExcelUnavailable");
+          return;
+        }
+        const templateRows = language === "vi" ? [
+          ["Từ hoặc cụm từ", "Nghĩa", "Cách đọc", "Loại từ"],
+          ["hello", "xin chào", "həˈləʊ", "khác"],
+          ["book", "quyển sách", "bʊk", "danh từ"],
+          ["read", "đọc", "riːd", "động từ"],
+          ["quickly", "nhanh chóng", "ˈkwɪkli", "trạng từ"]
+        ] : [
+          ["Word or phrase", "Meaning", "Pronunciation", "Part of speech"],
+          ["hello", "hello in another language", "həˈləʊ", "other"],
+          ["book", "a set of bound pages", "bʊk", "noun"],
+          ["read", "look at written words", "riːd", "verb"],
+          ["quickly", "at a fast speed", "ˈkwɪkli", "adverb"]
+        ];
+        const sheet = XLSX.utils.aoa_to_sheet(templateRows);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, sheet, "Vocabulary");
+        XLSX.writeFile(workbook, "crossvi-vocabulary-template.xlsx");
+      });
+
+      refreshVocabularyLanguage();
+    });
+  </script>
+</body>
+</html>

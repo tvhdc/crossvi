@@ -153,6 +153,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["vocabularyQuizSize"] = s.vocabularyQuizSize;
   doc["vocabularyQuestionTime"] = s.vocabularyQuestionTime;
   doc["vocabularyAnswerCount"] = s.vocabularyAnswerCount;
+  if (s.vocabularyDatasetPath[0] != '\0') doc["vocabularyDatasetPath"] = s.vocabularyDatasetPath;
 
   JsonArray shortcutArray = doc["homeShortcuts"].to<JsonArray>();
   for (uint8_t index = 0; index < s.homeShortcuts.count && index < HomeShortcutList::CAPACITY; ++index) {
@@ -428,7 +429,9 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {
-    s.language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
+    const char* storedLanguage = doc["language"].as<const char*>();
+    s.language = static_cast<uint8_t>(I18n::languageFromCode(storedLanguage));
+    if (std::strcmp(storedLanguage, LANGUAGE_CODES[s.language]) != 0 && needsResave) *needsResave = true;
   }
   // These controls were removed: Home Back always opens Shortcuts and a short
   // reader Back always returns Home. Drop stale values on the next save.
@@ -451,6 +454,14 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.vocabularyAnswerCount =
       clamp(doc["vocabularyAnswerCount"] | s.vocabularyAnswerCount, CrossPointSettings::VOCABULARY_ANSWER_COUNT_COUNT,
             CrossPointSettings::VOCABULARY_ANSWERS_3);
+  const char* vocabularyDatasetPath = doc["vocabularyDatasetPath"] | "";
+  if (vocabularyDatasetPath[0] == '/' &&
+      std::strlen(vocabularyDatasetPath) < CrossPointSettings::VOCABULARY_DATASET_PATH_CAPACITY) {
+    std::strcpy(s.vocabularyDatasetPath, vocabularyDatasetPath);
+  } else {
+    s.vocabularyDatasetPath[0] = '\0';
+    if (vocabularyDatasetPath[0] != '\0' && needsResave) *needsResave = true;
+  }
 
   LOG_DBG("CPS", "Settings loaded from file");
 

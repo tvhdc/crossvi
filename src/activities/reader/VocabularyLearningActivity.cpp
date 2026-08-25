@@ -10,9 +10,11 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "activities/home/FileBrowserActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "vocabulary/VocabularyData.h"
@@ -34,16 +36,6 @@ constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_QUESTION_TIME_COUNT
                                                                                                       0};
 constexpr std::array<uint8_t, CrossPointSettings::VOCABULARY_ANSWER_COUNT_COUNT> ANSWER_COUNTS = {3, 4};
 
-constexpr const char* ATTRIBUTION_LINES[] = {
-    "Danh sách từ: Oxford 3000, có bổ sung các dạng ngữ pháp thiết yếu và xếp theo tần suất sử dụng.",
-    "https://english4u.com.vn/Uploads/files/3000.pdf",
-    "Dữ liệu từ điển: Từ điển Anh–Việt thichhoc.com (thichhoc-dict), giấy phép CC BY-SA 4.0.",
-    "https://github.com/thichhoc-org/thichhoc-dict",
-    "https://creativecommons.org/licenses/by-sa/4.0/",
-    "Nguồn gốc: WordNet 3.1 (Princeton), CMUdict (CMU), Wiktionary.",
-    "Đã chỉnh sửa dữ liệu: chọn 3.000 từ theo tần suất, rút gọn nghĩa và bổ sung một số từ ngữ pháp.",
-};
-
 uint32_t nextRandom(uint32_t& state) {
   if (state == 0) state = 0x9E3779B9U;
   state ^= state << 13;
@@ -52,16 +44,32 @@ uint32_t nextRandom(uint32_t& state) {
   return state;
 }
 
+void copyDatasetPath(char destination[CrossPointSettings::VOCABULARY_DATASET_PATH_CAPACITY], const char* source) {
+  const size_t length = std::min(std::strlen(source), CrossPointSettings::VOCABULARY_DATASET_PATH_CAPACITY - 1);
+  std::memcpy(destination, source, length);
+  destination[length] = '\0';
+}
+
 }  // namespace
 
 void VocabularyLearningActivity::onEnter() {
   Activity::onEnter();
   randomState_ = static_cast<uint32_t>(millis()) ^ 0xC05F17A1U;
-  reviewStoreReady_ = VOCABULARY_REVIEW.load();
+  datasetLoadFailed_ = SETTINGS.vocabularyDatasetPath[0] != '\0' &&
+                       !crossvi::vocabulary::useExternalDataset(SETTINGS.vocabularyDatasetPath);
+  if (datasetLoadFailed_) crossvi::vocabulary::useBuiltInDataset();
+  const auto dataset = crossvi::vocabulary::activeDatasetInfo();
+  reviewStoreReady_ = VOCABULARY_REVIEW.configure(dataset.identity, dataset.entryCount, dataset.external);
   screen_ = Screen::Settings;
   selectedSetting_ = 0;
   skipHold_.reset();
   requestUpdate();
+}
+
+void VocabularyLearningActivity::onExit() {
+  if (reviewStoreReady_ && !VOCABULARY_REVIEW.flush()) LOG_ERR("VOCAB", "Failed to save review words on exit");
+  crossvi::vocabulary::useBuiltInDataset();
+  Activity::onExit();
 }
 
 uint8_t VocabularyLearningActivity::configuredQuestionCount() const {
@@ -123,7 +131,7 @@ void VocabularyLearningActivity::loop() {
 }
 
 void VocabularyLearningActivity::handleSettingsInput() {
-  constexpr int ITEM_COUNT = 6;
+  constexpr int ITEM_COUNT = 7;
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finishActivity();
     return;
@@ -146,6 +154,9 @@ void VocabularyLearningActivity::handleSettingsInput() {
       beginReviewQuiz();
       break;
     case 2:
+      showDatasetPicker();
+      break;
+    case 3:
       optionPopup_.show(StrId::STR_VOCAB_QUIZ_SIZE, QUIZ_SIZE_LABELS.data(), QUIZ_SIZE_LABELS.size(),
                         SETTINGS.vocabularyQuizSize, [this](const int index) {
                           SETTINGS.vocabularyQuizSize = static_cast<uint8_t>(index);
@@ -153,7 +164,7 @@ void VocabularyLearningActivity::handleSettingsInput() {
                         });
       requestUpdate();
       break;
-    case 3:
+    case 4:
       optionPopup_.show(StrId::STR_VOCAB_QUESTION_TIME, QUESTION_TIME_LABELS.data(), QUESTION_TIME_LABELS.size(),
                         SETTINGS.vocabularyQuestionTime, [this](const int index) {
                           SETTINGS.vocabularyQuestionTime = static_cast<uint8_t>(index);
@@ -161,7 +172,7 @@ void VocabularyLearningActivity::handleSettingsInput() {
                         });
       requestUpdate();
       break;
-    case 4:
+    case 5:
       optionPopup_.show(StrId::STR_VOCAB_ANSWER_COUNT, ANSWER_COUNT_LABELS.data(), ANSWER_COUNT_LABELS.size(),
                         SETTINGS.vocabularyAnswerCount, [this](const int index) {
                           SETTINGS.vocabularyAnswerCount = static_cast<uint8_t>(index);
@@ -169,11 +180,69 @@ void VocabularyLearningActivity::handleSettingsInput() {
                         });
       requestUpdate();
       break;
-    case 5:
+    case 6:
       screen_ = Screen::Source;
       requestUpdate();
       break;
   }
+}
+
+void VocabularyLearningActivity::showDatasetPicker() {
+  const int selected = crossvi::vocabulary::activeDatasetInfo().external ? 1 : 0;
+  optionPopup_.show(StrId::STR_VOCAB_SET,
+                    std::vector<std::string>{tr(STR_VOCAB_BUILT_IN_SET), tr(STR_VOCAB_CHOOSE_FILE)}, selected,
+                    [this](const int index) {
+                      if (index == 0) {
+                        selectDataset(nullptr);
+                        requestUpdate();
+                        return;
+                      }
+                      openDatasetFilePicker();
+                    });
+  requestUpdate();
+}
+
+void VocabularyLearningActivity::openDatasetFilePicker() {
+  startActivityForResult(
+      std::make_unique<FileBrowserActivity>(renderer, mappedInput, "/", FileBrowserActivity::Mode::PickVocabulary),
+      [this](const ActivityResult& result) {
+        if (result.isCancelled) return;
+        const auto* selected = std::get_if<FilePathResult>(&result.data);
+        if (!selected) return;
+        GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+        if (!selectDataset(selected->path.c_str())) GUI.drawPopup(renderer, tr(STR_VOCAB_SET_INVALID));
+      });
+}
+
+bool VocabularyLearningActivity::selectDataset(const char* path) {
+  if (reviewStoreReady_ && !VOCABULARY_REVIEW.flush()) return false;
+  const std::string previousPath = SETTINGS.vocabularyDatasetPath;
+  const bool external = path && path[0] != '\0';
+  const bool activated =
+      external ? crossvi::vocabulary::useExternalDataset(path) : (crossvi::vocabulary::useBuiltInDataset(), true);
+  if (!activated) return false;
+
+  const auto dataset = crossvi::vocabulary::activeDatasetInfo();
+  reviewStoreReady_ = VOCABULARY_REVIEW.configure(dataset.identity, dataset.entryCount, dataset.external);
+
+  SETTINGS.vocabularyDatasetPath[0] = '\0';
+  if (external) copyDatasetPath(SETTINGS.vocabularyDatasetPath, path);
+  if (!SETTINGS.saveToFile()) {
+    copyDatasetPath(SETTINGS.vocabularyDatasetPath, previousPath.c_str());
+    bool restored = true;
+    if (previousPath.empty()) {
+      crossvi::vocabulary::useBuiltInDataset();
+    } else {
+      restored = crossvi::vocabulary::useExternalDataset(previousPath.c_str());
+    }
+    if (!restored) crossvi::vocabulary::useBuiltInDataset();
+    const auto previous = crossvi::vocabulary::activeDatasetInfo();
+    reviewStoreReady_ = VOCABULARY_REVIEW.configure(previous.identity, previous.entryCount, previous.external);
+    datasetLoadFailed_ = !restored;
+    return false;
+  }
+  datasetLoadFailed_ = false;
+  return true;
 }
 
 void VocabularyLearningActivity::handleQuestionInput() {
@@ -339,8 +408,14 @@ void VocabularyLearningActivity::prepareQuestion() {
   }
   record.correctSlot = answerSlotOrder_[nextAnswerSlot_++];
   size_t answers[crossvi::vocabulary::MAX_ANSWER_COUNT]{};
-  crossvi::vocabulary::buildAnswerIndices(entryIndex, record.correctSlot, answerCount_, nextRandom(randomState_),
-                                          answers);
+  if (!crossvi::vocabulary::buildAnswerIndices(entryIndex, record.correctSlot, answerCount_, nextRandom(randomState_),
+                                               answers)) {
+    LOG_ERR("VOCAB", "Vocabulary set cannot provide distinct answers");
+    screen_ = Screen::Settings;
+    datasetLoadFailed_ = true;
+    requestUpdate();
+    return;
+  }
   for (size_t index = 0; index < answerCount_; ++index) {
     record.answerIndices[index] = static_cast<uint16_t>(answers[index]);
   }
@@ -460,11 +535,12 @@ void VocabularyLearningActivity::renderSettings() {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = height - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   GUI.drawList(
-      renderer, Rect{0, contentTop, width, contentHeight}, 6, selectedSetting_,
+      renderer, Rect{0, contentTop, width, contentHeight}, 7, selectedSetting_,
       [](const int index) {
-        constexpr StrId LABELS[] = {StrId::STR_VOCAB_START_QUIZ,   StrId::STR_VOCAB_REVIEW_WRONG,
-                                    StrId::STR_VOCAB_QUIZ_SIZE,    StrId::STR_VOCAB_QUESTION_TIME,
-                                    StrId::STR_VOCAB_ANSWER_COUNT, StrId::STR_VOCAB_DATA_SOURCE};
+        constexpr StrId LABELS[] = {StrId::STR_VOCAB_START_QUIZ,    StrId::STR_VOCAB_REVIEW_WRONG,
+                                    StrId::STR_VOCAB_SET,           StrId::STR_VOCAB_QUIZ_SIZE,
+                                    StrId::STR_VOCAB_QUESTION_TIME, StrId::STR_VOCAB_ANSWER_COUNT,
+                                    StrId::STR_VOCAB_DATA_SOURCE};
         return std::string(I18N.get(LABELS[index]));
       },
       nullptr, nullptr,
@@ -474,10 +550,13 @@ void VocabularyLearningActivity::renderSettings() {
             if (!reviewStoreReady_) return tr(STR_STATS_UNAVAILABLE);
             return std::to_string(VOCABULARY_REVIEW.count());
           case 2:
-            return quizSizeLabel();
+            if (datasetLoadFailed_) return tr(STR_FAILED_LOWER);
+            return crossvi::vocabulary::activeDatasetInfo().title;
           case 3:
-            return questionTimeLabel();
+            return quizSizeLabel();
           case 4:
+            return questionTimeLabel();
+          case 5:
             return answerCountLabel();
           default:
             return {};
@@ -708,20 +787,35 @@ void VocabularyLearningActivity::renderSource() {
   const int x = 20;
   const int textWidth = width - 40;
   int y = metrics.topPadding + metrics.headerHeight + 20;
-  const auto noticeLines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_VOCAB_SOURCE_NOTICE), textWidth, 4);
+  const auto dataset = crossvi::vocabulary::activeDatasetInfo();
+  renderer.drawText(UI_12_FONT_ID, x, y, dataset.title, true, EpdFontFamily::BOLD);
+  y += renderer.getLineHeight(UI_12_FONT_ID) + 8;
+  char entryCount[32];
+  std::snprintf(entryCount, sizeof(entryCount), tr(STR_VOCAB_ENTRY_COUNT_FORMAT),
+                static_cast<unsigned>(dataset.entryCount));
+  renderer.drawText(SMALL_FONT_ID, x, y, entryCount);
+  y += renderer.getLineHeight(SMALL_FONT_ID) + 16;
+  const StrId notice = dataset.external ? StrId::STR_VOCAB_EXTERNAL_SOURCE_NOTICE : StrId::STR_VOCAB_SOURCE_NOTICE;
+  const auto noticeLines = renderer.wrappedText(UI_10_FONT_ID, I18N.get(notice), textWidth, 4);
   for (const auto& line : noticeLines) {
     renderer.drawText(UI_10_FONT_ID, x, y, line.c_str(), true, EpdFontFamily::BOLD);
     y += renderer.getLineHeight(UI_10_FONT_ID);
   }
-  y += 18;
-  for (const char* paragraph : ATTRIBUTION_LINES) {
-    const auto lines = renderer.wrappedText(SMALL_FONT_ID, paragraph, textWidth, 5);
-    for (const auto& line : lines) {
-      if (y + renderer.getLineHeight(SMALL_FONT_ID) >= height - metrics.buttonHintsHeight - 8) break;
-      renderer.drawText(SMALL_FONT_ID, x, y, line.c_str());
-      y += renderer.getLineHeight(SMALL_FONT_ID);
+  if (!dataset.external) {
+    y += 18;
+    constexpr const char* SOURCES[] = {"https://english4u.com.vn/Uploads/files/3000.pdf",
+                                       "https://github.com/thichhoc-org/thichhoc-dict",
+                                       "https://creativecommons.org/licenses/by-sa/4.0/"};
+    const char* paragraphs[] = {tr(STR_VOCAB_BUILT_IN_CREDITS), SOURCES[0], SOURCES[1], SOURCES[2]};
+    for (const char* paragraph : paragraphs) {
+      const auto lines = renderer.wrappedText(SMALL_FONT_ID, paragraph, textWidth, 5);
+      for (const auto& line : lines) {
+        if (y + renderer.getLineHeight(SMALL_FONT_ID) >= height - metrics.buttonHintsHeight - 8) break;
+        renderer.drawText(SMALL_FONT_ID, x, y, line.c_str());
+        y += renderer.getLineHeight(SMALL_FONT_ID);
+      }
+      y += 8;
     }
-    y += 8;
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -89,8 +89,8 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
   char date[16] = "--/--/----";
   if (cell_.date.isValid()) {
     ClockDateFormat::format(cell_.date.year, cell_.date.month, cell_.date.day, SETTINGS.dateFormat,
-                           ClockDateFormat::separatorChar(SETTINGS.dateSeparator), date, sizeof(date),
-                           I18N.getLanguage() == Language::VI);
+                            ClockDateFormat::separatorChar(SETTINGS.dateSeparator), date, sizeof(date),
+                            I18N.getLanguage() == Language::VI);
   }
   GUI.drawHeader(renderer, Rect{safe.x, headerTop, safe.width, metrics.headerHeight}, tr(STR_STATS_CALENDAR));
   const std::string duration =
@@ -101,9 +101,9 @@ void ReadingDayDetailActivity::render(RenderLock&&) {
   const int contentBottom = safe.y + safe.height - metrics.verticalSpacing;
   if (breakdownPartial_ && books_.count > 0) {
     const char* message = tr(STR_STATS_BOOK_DETAILS_PARTIAL);
-    const std::string display =
+    const std::string displayText =
         renderer.truncatedText(UI_10_FONT_ID, message, safe.width - metrics.contentSidePadding * 2);
-    renderer.drawText(UI_10_FONT_ID, safe.x + metrics.contentSidePadding, contentTop, display.c_str());
+    renderer.drawText(UI_10_FONT_ID, safe.x + metrics.contentSidePadding, contentTop, displayText.c_str());
     contentTop += renderer.getTextHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
   }
   const Rect content{safe.x, contentTop, safe.width, std::max(1, contentBottom - contentTop)};

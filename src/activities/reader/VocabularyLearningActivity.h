@@ -15,6 +15,7 @@ class VocabularyLearningActivity final : public Activity {
       : Activity("VocabularyLearning", renderer, mappedInput) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
@@ -53,6 +54,7 @@ class VocabularyLearningActivity final : public Activity {
   bool reviewOnly_ = false;
   bool reviewStoreReady_ = false;
   bool reviewSaveFailed_ = false;
+  bool datasetLoadFailed_ = false;
   ReaderUtils::HoldGestureState skipHold_;
   std::array<QuestionRecord, MAX_QUESTIONS> records_{};
   std::array<uint16_t, MAX_QUESTIONS> reviewEntryIndices_{};
@@ -64,6 +66,9 @@ class VocabularyLearningActivity final : public Activity {
   void handleReviewInput();
   void beginQuiz(uint8_t count);
   void beginReviewQuiz();
+  void showDatasetPicker();
+  void openDatasetFilePicker();
+  bool selectDataset(const char* path);
   void startQuiz(uint8_t count, bool reviewOnly);
   void prepareQuestion();
   void submitAnswer(int selectedSlot, bool timedOut = false);

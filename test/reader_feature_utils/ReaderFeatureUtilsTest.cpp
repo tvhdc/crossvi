@@ -14,10 +14,10 @@
 #include "MemoryBudget.h"
 #include "PowerButtonGesture.h"
 #include "QrCapacity.h"
-#include "activities/boot_sleep/SleepImagePlacement.h"
 #include "UrlUtils.h"
 #include "Utf8.h"
 #include "VietnameseTelex.h"
+#include "activities/boot_sleep/SleepImagePlacement.h"
 #include "components/LibraryGridModel.h"
 #include "util/WifiNetworkSelection.h"
 

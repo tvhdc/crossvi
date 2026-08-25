@@ -26,7 +26,7 @@ constexpr std::array<StrId, 5> TITLES = {StrId::STR_STATS_OVERVIEW, StrId::STR_S
 constexpr std::array<StrId, 5> SUBTITLES = {
     StrId::STR_STATS_OVERVIEW_SUBTITLE, StrId::STR_STATS_BY_BOOK_SUBTITLE, StrId::STR_STATS_CALENDAR_SUBTITLE,
     StrId::STR_STATS_FINISHED_BOOKS_SUBTITLE, StrId::STR_READING_ACHIEVEMENTS_SUBTITLE};
-constexpr std::array<UIIcon, 5> ICONS = {UIIcon::Book, UIIcon::Library, UIIcon::Recent, UIIcon::Book, UIIcon::Trophy};
+constexpr std::array<UIIcon, 5> ICONS = {UIIcon::Book, UIIcon::Library, UIIcon::Recent, UIIcon::Book, UIIcon::Medal};
 
 bool loadDevicePresentation(ReadingStatsPresentation& presentation) {
   if (!Storage.probeMedia()) return false;

@@ -26,16 +26,14 @@ std::string displayName(const std::string& filename) {
   return filename.substr(0, pos);
 }
 
-std::string metricValue(const bool available, const uint32_t value) {
-  return available ? std::to_string(value) : "--";
-}
+std::string metricValue(const bool available, const uint32_t value) { return available ? std::to_string(value) : "--"; }
 
 void drawMetric(const GfxRenderer& renderer, const Rect& rect, const std::string& value, const char* label) {
   const int valueHeight = renderer.getLineHeight(UI_10_FONT_ID);
   const int labelHeight = renderer.getLineHeight(SMALL_FONT_ID);
   const int top = rect.y + std::max(2, (rect.height - valueHeight - labelHeight - 2) / 2);
-  const std::string displayedValue = renderer.truncatedText(UI_10_FONT_ID, value.c_str(), rect.width - 8,
-                                                            EpdFontFamily::BOLD);
+  const std::string displayedValue =
+      renderer.truncatedText(UI_10_FONT_ID, value.c_str(), rect.width - 8, EpdFontFamily::BOLD);
   const std::string displayedLabel = renderer.truncatedText(SMALL_FONT_ID, label, rect.width - 8);
   UITheme::drawCenteredText(renderer, rect, UI_10_FONT_ID, top, displayedValue.c_str(), true, EpdFontFamily::BOLD);
   UITheme::drawCenteredText(renderer, rect, SMALL_FONT_ID, top + valueHeight + 2, displayedLabel.c_str());
@@ -172,15 +170,13 @@ void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& i
   // resolutions scale (review request on #2532).
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const int titleY = safe.y + metrics.verticalSpacing;
-  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, titleY, tr(STR_STATS_FINISHED), true,
-                            EpdFontFamily::BOLD);
+  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, titleY, tr(STR_STATS_FINISHED), true, EpdFontFamily::BOLD);
 
   const int bookTitleY = titleY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
-  const std::string bookTitle = renderer.truncatedText(UI_12_FONT_ID,
-                                                       summary.title.empty() ? tr(STR_END_OF_BOOK) : summary.title.c_str(),
-                                                       safe.width - 16, EpdFontFamily::BOLD);
-  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, bookTitleY, bookTitle.c_str(), true,
-                            EpdFontFamily::BOLD);
+  const std::string bookTitle =
+      renderer.truncatedText(UI_12_FONT_ID, summary.title.empty() ? tr(STR_END_OF_BOOK) : summary.title.c_str(),
+                             safe.width - 16, EpdFontFamily::BOLD);
+  UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, bookTitleY, bookTitle.c_str(), true, EpdFontFamily::BOLD);
 
   int summaryTop = bookTitleY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
   if (!summary.author.empty()) {
@@ -191,8 +187,7 @@ void EndOfBookOptions::render(GfxRenderer& renderer, const MappedInputManager& i
 
   const bool landscape = safe.width > safe.height;
   const int summaryHeight = landscape ? 54 : 96;
-  drawSummaryMetrics(renderer, Rect{safe.x + 4, summaryTop, safe.width - 8, summaryHeight}, summary,
-                     landscape ? 4 : 2);
+  drawSummaryMetrics(renderer, Rect{safe.x + 4, summaryTop, safe.width - 8, summaryHeight}, summary, landscape ? 4 : 2);
   const int listTop = summaryTop + summaryHeight + metrics.verticalSpacing * 2;
 
   const int listHeight = safe.y + safe.height - listTop - metrics.verticalSpacing;

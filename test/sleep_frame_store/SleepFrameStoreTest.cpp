@@ -34,8 +34,8 @@ TEST(SleepFrameStoreTest, RoundTripsX3AndX4AndHonorsConsume) {
 
     HalDisplay first(width, height);
     ASSERT_TRUE(SleepFrameStore::load(first, false));
-    EXPECT_TRUE(std::equal(source.getFrameBuffer(), source.getFrameBuffer() + source.getBufferSize(),
-                           first.getFrameBuffer()));
+    EXPECT_TRUE(
+        std::equal(source.getFrameBuffer(), source.getFrameBuffer() + source.getBufferSize(), first.getFrameBuffer()));
     EXPECT_TRUE(Storage.exists(FRAME));
 
     HalDisplay second(width, height);
@@ -80,13 +80,13 @@ TEST(SleepImageSelectionStoreTest, PublishesOneVerifiedOverlayFormatAtATime) {
   Storage.reset();
   ASSERT_TRUE(Storage.mkdir("/.crosspoint"));
   Storage.setFile("/sleep-overlay.bmp.tmp", {'B', 'M', 'P'});
-  ASSERT_TRUE(SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayBmp,
-                                                "/sleep-overlay.bmp.tmp"));
+  ASSERT_TRUE(
+      SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayBmp, "/sleep-overlay.bmp.tmp"));
   ASSERT_TRUE(Storage.exists(SleepImageSelectionStore::OVERLAY_BMP_PATH));
 
   Storage.setFile("/sleep-overlay.png.tmp", {'P', 'N', 'G'});
-  ASSERT_TRUE(SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng,
-                                                "/sleep-overlay.png.tmp"));
+  ASSERT_TRUE(
+      SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng, "/sleep-overlay.png.tmp"));
   EXPECT_TRUE(Storage.exists(SleepImageSelectionStore::OVERLAY_PNG_PATH));
   EXPECT_FALSE(Storage.exists(SleepImageSelectionStore::OVERLAY_BMP_PATH));
 }
@@ -97,8 +97,8 @@ TEST(SleepImageSelectionStoreTest, ResumesPublicationAfterRenameFailure) {
   Storage.setFile("/sleep-overlay.bmp", {'B', 'O', 'L', 'D'});
   Storage.setFile("/sleep-overlay.png.tmp", {'P', 'N', 'E', 'W'});
   Storage.failRenameTo("/sleep-overlay.png");
-  EXPECT_FALSE(SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng,
-                                                 "/sleep-overlay.png.tmp"));
+  EXPECT_FALSE(
+      SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng, "/sleep-overlay.png.tmp"));
   EXPECT_TRUE(Storage.exists("/.crosspoint/sleep_image_selection_v1.pending"));
   EXPECT_TRUE(Storage.exists("/sleep-overlay.bmp"));
 
@@ -113,8 +113,8 @@ TEST(SleepImageSelectionStoreTest, RejectsInvalidStagingWithoutReplacingCurrentI
   ASSERT_TRUE(Storage.mkdir("/.crosspoint"));
   Storage.setFile("/sleep-overlay.bmp", {'B', 'O', 'L', 'D'});
   Storage.setFile("/sleep-overlay.png.tmp", {'X', 'B', 'A', 'D'});
-  EXPECT_FALSE(SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng,
-                                                 "/sleep-overlay.png.tmp"));
+  EXPECT_FALSE(
+      SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng, "/sleep-overlay.png.tmp"));
   EXPECT_EQ(Storage.file("/sleep-overlay.bmp"), (std::vector<uint8_t>{'B', 'O', 'L', 'D'}));
   EXPECT_FALSE(Storage.exists("/.crosspoint/sleep_image_selection_v1.pending"));
 }

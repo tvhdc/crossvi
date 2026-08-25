@@ -1296,8 +1296,7 @@ void EpubReaderActivity::loop() {
   if (atEndOfBook) {
     markBookCompleted();
     if (endOfBookOptions.start(epub->getPath())) requestUpdate();
-    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() &&
-        endOfBookOptions.stepSuggestions(8)) {
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() && endOfBookOptions.stepSuggestions(8)) {
       requestUpdate();
     }
   } else {
@@ -3209,8 +3208,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     signalReadingPageHidden();
     BookReadingStats displayBookStats = bookReadingStats;
     if (!readingSessionCommitted) {
-      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr,
-                                 sessionReadingSeconds, pendingBookReadingSpans, pendingGlobalReadingSpans,
+      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr, sessionReadingSeconds,
+                                 pendingBookReadingSpans, pendingGlobalReadingSpans,
                                  hasSessionStartLocalDateTime ? &sessionStartLocalDateTime : nullptr);
     }
     renderer.clearScreen();

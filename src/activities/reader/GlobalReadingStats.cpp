@@ -381,32 +381,29 @@ bool publishResetMarker() {
 }
 
 bool removeDailySummaryArtifacts() {
-  for (const char* path : {DAILY_STATS_TEMP_PATH, DAILY_STATS_BACKUP_PATH, DAILY_STATS_PATH}) {
-    if (Storage.exists(path) && !Storage.remove(path)) return false;
-  }
-  return true;
+  constexpr std::array paths = {DAILY_STATS_TEMP_PATH, DAILY_STATS_BACKUP_PATH, DAILY_STATS_PATH};
+  return std::all_of(paths.begin(), paths.end(),
+                     [](const char* path) { return !Storage.exists(path) || Storage.remove(path); });
 }
 
 bool dailySummaryAllowsReset() {
-  for (const char* path : {DAILY_STATS_PATH, DAILY_STATS_BACKUP_PATH, DAILY_STATS_TEMP_PATH}) {
-    if (loadDailyPath(path).status == DailyLoadStatus::Protected) return false;
-  }
-  return true;
+  constexpr std::array paths = {DAILY_STATS_PATH, DAILY_STATS_BACKUP_PATH, DAILY_STATS_TEMP_PATH};
+  return std::none_of(paths.begin(), paths.end(),
+                      [](const char* path) { return loadDailyPath(path).status == DailyLoadStatus::Protected; });
 }
 
 bool publishGlobalResetTombstones() {
   const GlobalReadingStats zero;
   const ReadingStatsCodec::GlobalBytes tombstone = ReadingStatsCodec::encode(zero);
-  if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_BACKUP_PATH, nullptr, false,
-                                         ReadingStatsEnvelope::Kind::Global, tombstone.data(), tombstone.size()) ||
+  if (!ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_BACKUP_PATH, nullptr, false, ReadingStatsEnvelope::Kind::Global,
+                                         tombstone.data(), tombstone.size()) ||
       !ReadingStatsEnvelope::writeAtomic(GLOBAL_STATS_PATH, nullptr, false, ReadingStatsEnvelope::Kind::Global,
                                          tombstone.data(), tombstone.size())) {
     return false;
   }
   GlobalReadingStats primaryStats;
   GlobalReadingStats backupStats;
-  const LoadOutcome primary =
-      loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, primaryStats);
+  const LoadOutcome primary = loadEnvelopePath(GLOBAL_STATS_PATH, ReadingStatsEnvelope::Kind::Global, primaryStats);
   const LoadOutcome backup =
       loadEnvelopePath(GLOBAL_STATS_BACKUP_PATH, ReadingStatsEnvelope::Kind::Global, backupStats);
   return isExactPayload(primary, primaryStats, tombstone) && isExactPayload(backup, backupStats, tombstone);

@@ -16,6 +16,7 @@ build
 /.cache
 /.simulator-data
 /simulator-screenshots
+/logs/
 .history/
 /.venv
 *.local*

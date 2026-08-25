@@ -1,0 +1,18 @@
+# UI language codes compiled into the default CrossVi firmware.
+# Keep English first. The order below defines the generated Language enum.
+EN
+VI
+ES
+FR
+DE
+PT
+IT
+PL
+RU
+UK
+TR
+ID
+NL
+CS
+SV
+P2

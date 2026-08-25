@@ -36,6 +36,7 @@ Welcome to the **CrossVi** firmware. This guide outlines the hardware controls, 
       - [Cover settings](#cover-settings)
       - [Custom images](#custom-images)
     - [3.8 Custom Fonts (SD Card)](#38-custom-fonts-sd-card)
+    - [3.9 Vocabulary Learning](#39-vocabulary-learning)
   - [4. Reading Mode](#4-reading-mode)
     - [Page Turning](#page-turning)
     - [Chapter Navigation](#chapter-navigation)
@@ -570,6 +571,18 @@ There are three ways to install fonts:
 Once installed, custom fonts appear in **Settings → Reader → Font Family** alongside the built-in fonts.
 
 See [docs/sd-card-fonts.md](./docs/sd-card-fonts.md) for full installation details and SD card folder structure.
+
+### 3.9 Vocabulary Learning
+
+CrossVi includes a built-in English-Vietnamese set and can also study a custom set created from an Excel or CSV file.
+
+1. Open the [CrossVi Vocabulary Set Maker](https://tvhdc.github.io/crossvi/tools/vocabulary-converter/).
+2. Select an `.xlsx`, `.xls`, `.csv`, or `.tsv` file and map the word and meaning columns. Pronunciation and part of speech are optional.
+3. Download the generated `.cvocab` file.
+4. Upload that file with **File Transfer** over Wi-Fi, or copy it to the SD card directly.
+5. Open **Vocabulary learning -> Vocabulary set -> Choose a file**, then select the `.cvocab` file.
+
+The spreadsheet is converted locally in your browser and is not uploaded to CrossVi. See [Custom vocabulary sets](docs/vocabulary.md) for limits, the recommended template, and troubleshooting.
 
 ---
 

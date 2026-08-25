@@ -48,8 +48,7 @@ class DailyBookReadingHistory {
   static RecordStatus record(uint32_t day, const std::string& path, const std::string& title, uint32_t seconds);
   // Attempts every independent day in the bounded delta. This prevents one
   // full day from discarding the per-book breakdown for later days.
-  static RecordStatus record(const std::string& path, const std::string& title,
-                             const DailyReadingHistoryDelta& delta);
+  static RecordStatus record(const std::string& path, const std::string& title, const DailyReadingHistoryDelta& delta);
   // Persists the old/new path before a book move. Finishing is idempotent and
   // rewrites each bounded day file atomically, so power-loss recovery can
   // safely continue without adding reading time twice.

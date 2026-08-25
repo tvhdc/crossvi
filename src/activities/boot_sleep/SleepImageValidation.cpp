@@ -21,8 +21,8 @@ bool readLE16(HalFile& file, uint16_t& value) {
 bool readLE32(HalFile& file, uint32_t& value) {
   uint8_t raw[4];
   if (file.read(raw, sizeof(raw)) != static_cast<int>(sizeof(raw))) return false;
-  value = static_cast<uint32_t>(raw[0]) | static_cast<uint32_t>(raw[1]) << 8U |
-          static_cast<uint32_t>(raw[2]) << 16U | static_cast<uint32_t>(raw[3]) << 24U;
+  value = static_cast<uint32_t>(raw[0]) | static_cast<uint32_t>(raw[1]) << 8U | static_cast<uint32_t>(raw[2]) << 16U |
+          static_cast<uint32_t>(raw[3]) << 24U;
   return true;
 }
 
@@ -78,10 +78,10 @@ Bmp32HeaderStatus readBmp32Header(HalFile& file, Bmp32Header& out) {
   const uint64_t minimumPixelOffset = 14ULL + dibSize + (compression == 3 && dibSize == 40 ? 16ULL : 0ULL);
   const uint64_t rowBytes = static_cast<uint64_t>(width) * 4ULL;
   const uint64_t pixelBytes = rowBytes * static_cast<uint64_t>(height);
-  if (pixelOffset < minimumPixelOffset || rowBytes > std::numeric_limits<uint32_t>::max() ||
-      pixelOffset > fileSize || pixelBytes > fileSize - pixelOffset ||
-      (declaredFileSize != 0 &&
-       (declaredFileSize < pixelOffset || declaredFileSize > fileSize || pixelBytes > declaredFileSize - pixelOffset))) {
+  if (pixelOffset < minimumPixelOffset || rowBytes > std::numeric_limits<uint32_t>::max() || pixelOffset > fileSize ||
+      pixelBytes > fileSize - pixelOffset ||
+      (declaredFileSize != 0 && (declaredFileSize < pixelOffset || declaredFileSize > fileSize ||
+                                 pixelBytes > declaredFileSize - pixelOffset))) {
     return Bmp32HeaderStatus::Invalid;
   }
 

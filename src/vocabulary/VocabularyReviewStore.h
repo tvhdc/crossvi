@@ -8,11 +8,14 @@ namespace crossvi::vocabulary {
 
 class VocabularyReviewStore {
  public:
-  static constexpr size_t WORD_COUNT = 3000;
-  static constexpr size_t BITSET_BYTES = (WORD_COUNT + 7) / 8;
+  static constexpr size_t BUILT_IN_WORD_COUNT = 3000;
+  static constexpr size_t WORD_COUNT = BUILT_IN_WORD_COUNT;
+  static constexpr size_t MAX_WORD_COUNT = 10000;
+  static constexpr size_t BITSET_BYTES = (MAX_WORD_COUNT + 7) / 8;
 
   static VocabularyReviewStore& getInstance();
 
+  bool configure(uint32_t datasetIdentity, size_t wordCount, bool external);
   bool load();
   bool needsReview(size_t entryIndex);
   size_t count();
@@ -27,6 +30,9 @@ class VocabularyReviewStore {
     writable_ = true;
     dirty_ = false;
     count_ = 0;
+    wordCount_ = BUILT_IN_WORD_COUNT;
+    datasetIdentity_ = 0;
+    external_ = false;
     bits_.fill(0);
   }
 #endif
@@ -34,11 +40,16 @@ class VocabularyReviewStore {
  private:
   static bool validate(const uint8_t* data, size_t size, void* context);
   bool set(size_t entryIndex, bool value);
+  const char* reviewPath();
 
   bool loaded_ = false;
   bool writable_ = true;
   bool dirty_ = false;
   size_t count_ = 0;
+  size_t wordCount_ = BUILT_IN_WORD_COUNT;
+  uint32_t datasetIdentity_ = 0;
+  bool external_ = false;
+  char externalPath_[64]{};
   std::array<uint8_t, BITSET_BYTES> bits_{};
 };
 

@@ -13,10 +13,6 @@ int saveCalls = 0;
 std::string savedJson;
 }  // namespace
 
-const char* const LANGUAGE_CODES[] = {"EN",  "ES", "FR", "DE", "CS", "PT", "RU", "SV", "RO", "CA", "UK",
-                                      "BE",  "IT", "PL", "FI", "DA", "NL", "TR", "KK", "HU", "LT", "SI",
-                                      "CAV", "HE", "SK", "VI", "NB", "P2", "AR", "BS", "ID"};
-
 namespace AtomicJsonFile {
 
 AtomicFile::LoadStatus load(const char* path, std::string& json, size_t) {

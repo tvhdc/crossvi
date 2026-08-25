@@ -16,6 +16,7 @@ class BookMetadataCache {
 
 class Epub {
  public:
+  static constexpr int SHARED_THUMB_HEIGHT = 240;
   enum class CoreMetadataStepResult : uint8_t { InProgress, Loaded, Error };
 
   Epub(const std::string&, const std::string&) {}
@@ -44,6 +45,7 @@ class Epub {
   }
   void cancelCoreMetadataRead() { readingMetadata_ = false; }
   std::string getThumbBmpPath() const { return thumbnailPath; }
+  bool hasVerifiedNoCoverThumbnail(int) const { return false; }
 
   static void setMetadata(BookMetadataCache::BookMetadata value, std::string thumbnail,
                           const size_t inProgressSteps = 0) {

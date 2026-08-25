@@ -93,8 +93,8 @@ TEST(ReadingAchievements, RecognitionDayPersistsAndLegacyUnlocksRemainUndated) {
   datedPayload[0] = 2;
   datedPayload[1] = 1;
   datedPayload[2] = 1;
-  const size_t datedSize = ReadingStatsEnvelope::encode(ReadingStatsEnvelope::Kind::Achievements,
-                                                        datedPayload.data(), datedPayload.size(), encoded);
+  const size_t datedSize = ReadingStatsEnvelope::encode(ReadingStatsEnvelope::Kind::Achievements, datedPayload.data(),
+                                                        datedPayload.size(), encoded);
   ASSERT_NE(datedSize, 0u);
   Storage.setFile("/.crosspoint/achievements_v1.bin",
                   std::vector<uint8_t>(encoded.begin(), encoded.begin() + datedSize));

@@ -15,9 +15,8 @@ bool ImageToFramebufferDecoder::validateImageDimensions(int width, int height, c
 bool ImageToFramebufferDecoder::validateAndStoreDimensions(const int64_t width, const int64_t height,
                                                            ImageDimensions& out, const char* format) {
   if (width <= 0 || height <= 0 || width > MAX_SOURCE_DIMENSION || height > MAX_SOURCE_DIMENSION) {
-    LOG_ERR("IMG", "Invalid %s dimensions: %lldx%lld (max %lld per dimension)", format,
-            static_cast<long long>(width), static_cast<long long>(height),
-            static_cast<long long>(MAX_SOURCE_DIMENSION));
+    LOG_ERR("IMG", "Invalid %s dimensions: %lldx%lld (max %lld per dimension)", format, static_cast<long long>(width),
+            static_cast<long long>(height), static_cast<long long>(MAX_SOURCE_DIMENSION));
     return false;
   }
 

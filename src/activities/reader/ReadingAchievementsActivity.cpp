@@ -15,7 +15,7 @@
 #include "ReadingAchievementsUi.h"
 #include "ReadingStatsUtils.h"
 #include "components/UITheme.h"
-#include "components/icons/trophy.h"
+#include "components/icons/medal.h"
 #include "fontIds.h"
 
 namespace {
@@ -85,13 +85,14 @@ void ReadingAchievementsActivity::onEnter() {
   if (ReadingAchievements::peekPendingNotification(notification)) {
     unlockNoticeCount_ = notification.count;
     unlockNoticeHistorical_ = notification.historical;
+    pendingNoticeAcknowledgement_ = true;
   }
   available_ = true;
   requestUpdate();
 }
 
 void ReadingAchievementsActivity::onExit() {
-  if (unlockNoticeCount_ != 0) ReadingAchievements::ackPendingNotification();
+  if (pendingNoticeAcknowledgement_) ReadingAchievements::ackPendingNotification();
   Activity::onExit();
 }
 
@@ -159,7 +160,7 @@ void ReadingAchievementsActivity::render(RenderLock&&) {
                       tr(STR_ACHIEVEMENT_DETAILS));
     y += metrics.tabBarHeight + metrics.verticalSpacing * 2;
 
-    renderer.drawIcon(TrophyIcon, safe.x + (safe.width - 32) / 2, y, 32);
+    renderer.drawIcon(MedalIcon, safe.x + (safe.width - 32) / 2, y, 32);
     y += 32 + metrics.verticalSpacing;
     char title[96];
     ReadingAchievementsUi::formatTitle(definition, title, sizeof(title));
@@ -175,9 +176,8 @@ void ReadingAchievementsActivity::render(RenderLock&&) {
     y += metrics.verticalSpacing * 2;
 
     const bool progressAvailable = snapshot_.isAvailable(definition.metric);
-    const uint32_t current = progressAvailable
-                                 ? std::min(ReadingAchievements::progress(definition, snapshot_), definition.threshold)
-                                 : 0;
+    const uint32_t current =
+        progressAvailable ? std::min(ReadingAchievements::progress(definition, snapshot_), definition.threshold) : 0;
     const int progressWidth = std::min(320, contentWidth);
     const int progressX = safe.x + (safe.width - progressWidth) / 2;
     renderer.drawRect(progressX, y, progressWidth, 16, true);

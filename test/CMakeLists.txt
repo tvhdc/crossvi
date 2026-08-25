@@ -63,6 +63,11 @@ endif()
 
 add_test(NAME CodegenTest COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/codegen/CodegenTest.py)
 add_test(NAME FontConverterTest COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/font_converter/FontConverterTest.py)
+find_program(NODE_EXECUTABLE NAMES node)
+if(NODE_EXECUTABLE)
+  add_test(NAME VocabularyConverterTest COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/vocabulary/VocabularyConverterTest.js)
+  add_test(NAME FlashToolTest COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/web_tools/FlashToolTest.js)
+endif()
 
 add_subdirectory(streaming_json_parser)
 add_subdirectory(release_json_parser)

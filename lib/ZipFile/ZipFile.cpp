@@ -910,8 +910,8 @@ int ZipFile::fillUncompressedSizes(const SizeTarget* const targets, const size_t
       if (file.read(itemName, nameLen) != nameLen) break;
       const uint64_t hash = fnvHash64(itemName, nameLen);
       const SizeTarget key = {hash, nameLen, 0};
-      const SizeTarget* it = std::lower_bound(
-          targets, targets + targetCount, key, [](const SizeTarget& a, const SizeTarget& b) {
+      const SizeTarget* it =
+          std::lower_bound(targets, targets + targetCount, key, [](const SizeTarget& a, const SizeTarget& b) {
             return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
           });
       while (it != targets + targetCount && it->hash == hash && it->len == nameLen) {

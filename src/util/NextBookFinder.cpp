@@ -85,14 +85,12 @@ NextBookFinder::StepResult NextBookFinder::Scan::step(const size_t maxEntries) {
       return StepResult::Error;
     }
     if (length > 0 && length < NAME_BUFFER_SIZE) nameBuffer_[length] = '\0';
-    if (isDirectory || length == 0 || length >= NAME_BUFFER_SIZE ||
-        isBookFileTransactionArtifact(nameBuffer_.get()) ||
+    if (isDirectory || length == 0 || length >= NAME_BUFFER_SIZE || isBookFileTransactionArtifact(nameBuffer_.get()) ||
         (!SETTINGS.showHiddenFiles && nameBuffer_[0] == '.') || !isSupportedBookFile(nameBuffer_.get())) {
       continue;
     }
     std::string name{nameBuffer_.get(), length};
-    if (!FsHelpers::naturalLess(currentName_, name) ||
-        (result_.size() >= maxCount_ && !less(name, result_.back()))) {
+    if (!FsHelpers::naturalLess(currentName_, name) || (result_.size() >= maxCount_ && !less(name, result_.back()))) {
       continue;
     }
     const auto pos = std::lower_bound(result_.begin(), result_.end(), name, less);

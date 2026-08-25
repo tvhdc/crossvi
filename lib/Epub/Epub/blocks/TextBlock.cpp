@@ -146,8 +146,8 @@ bool hasRtlScriptBytes(const char* text) {
   return false;
 }
 
-void recordFontText(FontCacheManager& cache, const char* text, const int fontId,
-                    const EpdFontFamily::Style style, const bool resolveBidi, const int baseDirection) {
+void recordFontText(FontCacheManager& cache, const char* text, const int fontId, const EpdFontFamily::Style style,
+                    const bool resolveBidi, const int baseDirection) {
   std::string visual;
   if (resolveBidi && BidiUtils::applyBidiVisual(text, visual, baseDirection) && !visual.empty()) {
     cache.recordText(visual.c_str(), fontId, style);
@@ -166,8 +166,7 @@ void TextBlock::collectFontText(FontCacheManager& cache, const int fontId) const
     const EpdFontFamily::Style style = wordStyle(i);
     const uint8_t boundary = focusBoundary(i);
     const bool resolveBidi = hasRtlScriptBytes(word);
-    const int baseDirection =
-        resolveBidi ? BidiUtils::detectParagraphLevel(word, blockStyle.isRtl ? 1 : 0) : 0;
+    const int baseDirection = resolveBidi ? BidiUtils::detectParagraphLevel(word, blockStyle.isRtl ? 1 : 0) : 0;
     if (boundary == 0) {
       recordFontText(cache, word, fontId, style, resolveBidi, baseDirection);
       continue;

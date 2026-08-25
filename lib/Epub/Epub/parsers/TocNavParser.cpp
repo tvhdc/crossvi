@@ -136,7 +136,8 @@ void XMLCALL TocNavParser::characterData(void* userData, const XML_Char* s, cons
 
   // Only collect text when inside an anchor within the TOC nav
   if (self->state == IN_ANCHOR) {
-    if (len < 0 || static_cast<size_t>(len) > MAX_ENTRY_TEXT_BYTES - std::min(self->currentLabel.size(), MAX_ENTRY_TEXT_BYTES)) {
+    if (len < 0 ||
+        static_cast<size_t>(len) > MAX_ENTRY_TEXT_BYTES - std::min(self->currentLabel.size(), MAX_ENTRY_TEXT_BYTES)) {
       self->failed = true;
       return;
     }

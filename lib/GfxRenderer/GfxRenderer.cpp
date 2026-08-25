@@ -1417,8 +1417,8 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       for (int bmpX = cropPixX; bmpX < bitmap.getWidth() - cropPixX; bmpX++) {
         const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
         const bool drawBlack = renderMode == BW && val < 3;
-        const bool drawWhite = (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) ||
-                               (renderMode == GRAYSCALE_LSB && val == 1);
+        const bool drawWhite =
+            (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) || (renderMode == GRAYSCALE_LSB && val == 1);
         if (!drawBlack && !drawWhite) continue;
 
         const int logicalX = bmpX - cropPixX;

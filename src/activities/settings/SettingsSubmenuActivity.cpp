@@ -110,8 +110,7 @@ SleepImageSource inspectSleepImageSource(const uint8_t mode) {
   const bool transparent = sleepModeUsesTransparentOverlay(mode);
   const char* invalidRoot = nullptr;
   if (transparent) {
-    for (const char* path : {SleepImageSelectionStore::OVERLAY_BMP_PATH,
-                             SleepImageSelectionStore::OVERLAY_PNG_PATH}) {
+    for (const char* path : {SleepImageSelectionStore::OVERLAY_BMP_PATH, SleepImageSelectionStore::OVERLAY_PNG_PATH}) {
       if (!Storage.exists(path)) continue;
       if (validSleepImage(path, true)) return {SleepImageSourceKind::File, path};
       if (!invalidRoot) invalidRoot = path;
@@ -215,8 +214,7 @@ bool saveNormalSleepImage(const std::string& sourcePath, const int width, const 
   const bool wroteTemp =
       FsHelpers::hasBmpExtension(sourcePath)
           ? (SleepImageValidation::normalBmp(sourcePath) && copyFileToTemp(sourcePath, tempPath))
-          : (FsHelpers::hasPngExtension(sourcePath) &&
-             convertPngToSleepBmpTemp(sourcePath, tempPath, width, height));
+          : (FsHelpers::hasPngExtension(sourcePath) && convertPngToSleepBmpTemp(sourcePath, tempPath, width, height));
   return wroteTemp && SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::NormalBmp, tempPath.c_str());
 }
 
@@ -439,8 +437,8 @@ void SettingsSubmenuActivity::handleSelection() {
                             : setting.valuePtr  ? SETTINGS.*(setting.valuePtr)
                                                 : 0;
     const bool sleepScreenSetting = page_ == Page::Sleep && setting.nameId == StrId::STR_SLEEP_SCREEN;
-    const auto select = [this, valuePtr = setting.valuePtr, setter = setting.valueSetter, sleepScreenSetting](
-                            const int index) {
+    const auto select = [this, valuePtr = setting.valuePtr, setter = setting.valueSetter,
+                         sleepScreenSetting](const int index) {
       if (setter) {
         setter(static_cast<uint8_t>(index));
       } else if (valuePtr) {
@@ -584,8 +582,7 @@ std::string SettingsSubmenuActivity::valueLabel(const int index) const {
   if (setting.type == SettingType::VALUE && setting.valuePtr) {
     if (setting.nameId == StrId::STR_SLEEP_IMAGE_ZOOM) {
       char value[12]{};
-      snprintf(value, sizeof(value), tr(STR_PERCENT_VALUE_FORMAT),
-               static_cast<unsigned>(SETTINGS.*(setting.valuePtr)));
+      snprintf(value, sizeof(value), tr(STR_PERCENT_VALUE_FORMAT), static_cast<unsigned>(SETTINGS.*(setting.valuePtr)));
       return value;
     }
     if (SETTINGS.*(setting.valuePtr) >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) {

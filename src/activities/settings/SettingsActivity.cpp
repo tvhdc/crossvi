@@ -360,9 +360,7 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::TextSettings:
         releaseSettingsLists();
         startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) {
-                                 rebuildSettingsLists();
-                               });
+                               [this](const ActivityResult&) { rebuildSettingsLists(); });
         break;
       case SettingAction::SleepSettings:
         openSubmenu(SettingsSubmenuActivity::Page::Sleep, {});

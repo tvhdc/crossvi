@@ -61,8 +61,7 @@ TEST(DailyBookReadingHistory, FullDayDoesNotDiscardLaterDaysInTheSameDelta) {
   DailyBookReadingDay first;
   DailyBookReadingDay second;
   ASSERT_EQ(DailyBookReadingHistory::load(firstDay, first), DailyBookReadingHistory::LoadStatus::Ok);
-  ASSERT_EQ(DailyBookReadingHistory::load(dayIndex(2026, 8, 23), second),
-            DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(DailyBookReadingHistory::load(dayIndex(2026, 8, 23), second), DailyBookReadingHistory::LoadStatus::Ok);
   EXPECT_EQ(first.count, DailyBookReadingDay::MAX_BOOKS);
   ASSERT_EQ(second.count, 1u);
   EXPECT_EQ(second.records[0].path, "/books/new.epub");

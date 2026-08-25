@@ -24,6 +24,60 @@ def load_git_branch():
 
 
 class CodegenTest(unittest.TestCase):
+    def test_vocabulary_dataset_switch_rolls_back_to_a_valid_runtime_dataset(self):
+        activity = (REPO_ROOT / "src/activities/reader/VocabularyLearningActivity.cpp").read_text(encoding="utf-8")
+        switch = activity[activity.index("bool VocabularyLearningActivity::selectDataset") :
+                          activity.index("void VocabularyLearningActivity::handleQuestionInput")]
+        self.assertIn("restored = crossvi::vocabulary::useExternalDataset(previousPath.c_str());", switch)
+        self.assertIn("if (!restored) crossvi::vocabulary::useBuiltInDataset();", switch)
+        self.assertIn("datasetLoadFailed_ = !restored;", switch)
+
+    def test_achievement_notice_is_acknowledged_after_its_banner_is_dismissed(self):
+        header = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.h").read_text(encoding="utf-8")
+        activity = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("bool pendingNoticeAcknowledgement_ = false;", header)
+        self.assertIn("pendingNoticeAcknowledgement_ = true;", activity)
+        on_exit = activity[activity.index("void ReadingAchievementsActivity::onExit") :
+                           activity.index("void ReadingAchievementsActivity::moveSelection")]
+        self.assertIn("if (pendingNoticeAcknowledgement_) ReadingAchievements::ackPendingNotification();", on_exit)
+
+    def test_production_i18n_build_uses_only_the_language_whitelist(self):
+        config = REPO_ROOT / "lib/I18n/build-languages.txt"
+        enabled = [
+            line.split("#", 1)[0].strip()
+            for line in config.read_text(encoding="utf-8").splitlines()
+            if line.split("#", 1)[0].strip()
+        ]
+        self.assertEqual(len(enabled), 16)
+        self.assertEqual(enabled[0], "EN")
+        self.assertEqual(len(set(enabled)), len(enabled))
+
+        translation_codes = set()
+        for translation in (REPO_ROOT / "lib/I18n/translations").glob("*.yaml"):
+            match = re.search(r'^_language_code:\s*"([A-Z0-9]+)"', translation.read_text(encoding="utf-8"), re.MULTILINE)
+            self.assertIsNotNone(match, translation.name)
+            translation_codes.add(match.group(1))
+        self.assertTrue(set(enabled) < translation_codes)
+
+        generated = (REPO_ROOT / "lib/I18n/I18nKeys.h").read_text(encoding="utf-8")
+        enum_block = generated[generated.index("enum class Language") : generated.index("// Language codes")]
+        generated_codes = re.findall(r"^  ([A-Z][A-Z0-9]*) = \d+,$", enum_block, re.MULTILINE)
+        self.assertEqual(generated_codes, enabled)
+
+        selector = re.search(r"SORTED_LANGUAGE_INDICES\[\] = \{([^}]*)\}", generated)
+        self.assertIsNotNone(selector)
+        self.assertEqual(len(selector.group(1).split(",")), len(enabled))
+        self.assertIn("Language::EN /* RO unavailable */", generated)
+
+        strings = (REPO_ROOT / "lib/I18n/I18nStrings.cpp").read_text(encoding="utf-8")
+        blob_codes = re.findall(r"^const char STRINGS_([A-Z][A-Z0-9]*)_DATA\[\]", strings, re.MULTILINE)
+        offset_codes = re.findall(r"^const uint16_t OFFSETS_([A-Z][A-Z0-9]*)\[\]", strings, re.MULTILINE)
+        self.assertEqual(blob_codes, enabled)
+        self.assertEqual(offset_codes, enabled)
+        charset_start = strings.index("const char* const CHARACTER_SETS[]")
+        charset_end = strings.index("\n};", charset_start)
+        self.assertEqual(strings[charset_start:charset_end].count(",  //"), len(enabled))
+
     def test_vocabulary_data_is_exact_and_ui_font_covers_pronunciations(self):
         generated = (REPO_ROOT / "src/vocabulary/VocabularyData.generated.h").read_text(encoding="utf-8")
         self.assertIn("inline constexpr size_t ENTRY_COUNT = 3000;", generated)
@@ -225,7 +279,7 @@ class CodegenTest(unittest.TestCase):
         submenu = (REPO_ROOT / "src/activities/settings/SettingsSubmenuActivity.cpp").read_text(encoding="utf-8")
         sleep = (REPO_ROOT / "src/activities/boot_sleep/SleepActivity.cpp").read_text(encoding="utf-8")
         decoder = (REPO_ROOT / "lib/Epub/Epub/converters/PngToFramebufferConverter.cpp").read_text(encoding="utf-8")
-        sleep_tool = (REPO_ROOT / "docs/tools/sleep-image-converter/index.html").read_text(encoding="utf-8")
+        sleep_tool = (REPO_ROOT / "docs/tools/index.html").read_text(encoding="utf-8")
         render_config = (REPO_ROOT / "lib/Epub/Epub/converters/ImageToFramebufferDecoder.h").read_text(
             encoding="utf-8"
         )
@@ -278,7 +332,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("return { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight };", sleep_tool)
         self.assertIn("idx = alphas.length;", sleep_tool)
         self.assertNotIn("idx = palette.length;", sleep_tool)
-        self.assertIn('const LANGUAGE_KEY = "crossvi.sleepConverter.language.v2";', sleep_tool)
+        self.assertIn('const LANGUAGE_KEY = "crossvi.tools.language.v1";', sleep_tool)
         placement_select = sleep_tool[sleep_tool.index('<select id="fit">') : sleep_tool.index("</select>", sleep_tool.index('<select id="fit">'))]
         self.assertLess(placement_select.index('value="fill" selected'), placement_select.index('value="height"'))
         self.assertLess(placement_select.index('value="height"'), placement_select.index('value="width"'))
@@ -1043,7 +1097,7 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("ClockDateFormat::format", day_detail)
         self.assertIn("ReadingCalendarRenderer::formatDuration", day_detail)
 
-    def test_reading_achievements_paginate_open_details_and_use_trophy_icon(self):
+    def test_reading_achievements_paginate_open_details_and_use_upright_medal_icon(self):
         activity = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.cpp").read_text(
             encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/ReadingAchievementsActivity.h").read_text(encoding="utf-8")
@@ -1060,8 +1114,21 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("bool showDetail_ = false;", header)
         self.assertIn("PAYLOAD_VERSION = 3", achievements)
         self.assertIn("LEGACY_PAYLOAD_VERSION = 1", achievements)
-        self.assertIn("UIIcon::Trophy", menu)
-        self.assertIn("return TrophyIcon;", theme)
+        self.assertIn("UIIcon::Medal", menu)
+        self.assertIn("return MedalIcon;", theme)
+        self.assertIn("renderer.drawIcon(MedalIcon", activity)
+
+        medal = (REPO_ROOT / "src/components/icons/medal.h").read_text(encoding="utf-8")
+        bitmap = [int(value, 16) for value in re.findall(r"0x([0-9A-F]{2})", medal)]
+        self.assertEqual(len(bitmap), 128)
+        rendered = []
+        for row in range(32):
+            for column in range(32):
+                if bitmap[row * 4 + column // 8] & (1 << (7 - column % 8)) == 0:
+                    rendered.append((31 - row, column))
+        rendered_width = max(x for x, _ in rendered) - min(x for x, _ in rendered) + 1
+        rendered_height = max(y for _, y in rendered) - min(y for _, y in rendered) + 1
+        self.assertGreater(rendered_height, rendered_width)
 
     def test_all_readers_record_the_per_book_daily_breakdown_after_canonical_stats_save(self):
         for filename in ("EpubReaderActivity.cpp", "TxtReaderActivity.cpp", "XtcReaderActivity.cpp"):

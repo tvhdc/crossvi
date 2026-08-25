@@ -184,16 +184,19 @@ TEST(SettingsJsonIntegration, PersistsAndValidatesVocabularySettings) {
   SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_30;
   SETTINGS.vocabularyQuestionTime = CrossPointSettings::VOCABULARY_TIME_UNLIMITED;
   SETTINGS.vocabularyAnswerCount = CrossPointSettings::VOCABULARY_ANSWERS_4;
+  std::strcpy(SETTINGS.vocabularyDatasetPath, "/sets/travel.cvocab");
   ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
 
   SETTINGS.vocabularyQuizSize = CrossPointSettings::VOCABULARY_QUIZ_5;
   SETTINGS.vocabularyQuestionTime = CrossPointSettings::VOCABULARY_TIME_10_SECONDS;
   SETTINGS.vocabularyAnswerCount = CrossPointSettings::VOCABULARY_ANSWERS_3;
+  SETTINGS.vocabularyDatasetPath[0] = '\0';
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
   EXPECT_EQ(SETTINGS.vocabularyQuizSize, CrossPointSettings::VOCABULARY_QUIZ_30);
   EXPECT_EQ(SETTINGS.vocabularyQuestionTime, CrossPointSettings::VOCABULARY_TIME_UNLIMITED);
   EXPECT_EQ(SETTINGS.vocabularyAnswerCount, CrossPointSettings::VOCABULARY_ANSWERS_4);
+  EXPECT_STREQ(SETTINGS.vocabularyDatasetPath, "/sets/travel.cvocab");
 
   needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(
@@ -203,6 +206,11 @@ TEST(SettingsJsonIntegration, PersistsAndValidatesVocabularySettings) {
   EXPECT_EQ(SETTINGS.vocabularyQuizSize, CrossPointSettings::VOCABULARY_QUIZ_10);
   EXPECT_EQ(SETTINGS.vocabularyQuestionTime, CrossPointSettings::VOCABULARY_TIME_15_SECONDS);
   EXPECT_EQ(SETTINGS.vocabularyAnswerCount, CrossPointSettings::VOCABULARY_ANSWERS_3);
+  EXPECT_TRUE(needsResave);
+
+  needsResave = false;
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"vocabularyDatasetPath":"relative.cvocab"})", &needsResave));
+  EXPECT_STREQ(SETTINGS.vocabularyDatasetPath, "");
   EXPECT_TRUE(needsResave);
 }
 
@@ -215,6 +223,29 @@ TEST(SettingsJsonIntegration, PersistsLanguageByStableCodeAcrossReload) {
   bool needsResave = false;
   ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, LegacySettingsTestSupport::lastSavedJson().c_str(), &needsResave));
   EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::VI));
+}
+
+TEST(SettingsJsonIntegration, RemovedLanguageFallsBackToEnglishAndIsCanonicalized) {
+  bool needsResave = false;
+  SETTINGS.language = static_cast<uint8_t>(Language::VI);
+
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, R"({"language":"AR"})", &needsResave));
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::EN));
+  EXPECT_TRUE(needsResave);
+}
+
+TEST(SettingsJsonIntegration, RemovedLanguageAndLegacyIndexUpgradeSafelyToEnglish) {
+  resetFakes();
+  const std::string json = R"({"language":"RO"})";
+  Storage.setFile(SETTINGS_JSON, std::vector<uint8_t>(json.begin(), json.end()));
+  Storage.setFile(LANGUAGE_BIN_BAK, {1, 8});  // V1 index 8 was Romanian.
+
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::EN));
+  EXPECT_NE(LegacySettingsTestSupport::lastSavedJson().find("\"language\":\"EN\""), std::string::npos);
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
 }
 
 TEST(SettingsJsonIntegration, PersistsValidatedOtaBadge) {

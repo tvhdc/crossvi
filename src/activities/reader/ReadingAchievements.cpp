@@ -99,13 +99,12 @@ PathStatus readPath(const char* path, ReadingAchievementState* state = nullptr) 
     return PathStatus::NewerVersion;
   }
   if (outcome.decodeResult != ReadingStatsEnvelope::DecodeResult::Ok || outcome.payloadSize < 2 ||
-      (payload[0] != LEGACY_PAYLOAD_VERSION && payload[0] != DATED_PAYLOAD_VERSION &&
-       payload[0] != PAYLOAD_VERSION) ||
+      (payload[0] != LEGACY_PAYLOAD_VERSION && payload[0] != DATED_PAYLOAD_VERSION && payload[0] != PAYLOAD_VERSION) ||
       (payload[0] == LEGACY_PAYLOAD_VERSION && outcome.payloadSize != LEGACY_PAYLOAD_SIZE) ||
       (payload[0] == DATED_PAYLOAD_VERSION && outcome.payloadSize != DATED_PAYLOAD_SIZE) ||
       (payload[0] == PAYLOAD_VERSION && outcome.payloadSize != PAYLOAD_SIZE) ||
-      (payload[1] & ~(payload[0] == PAYLOAD_VERSION ? FLAG_INITIALIZED | FLAG_PENDING_HISTORICAL
-                                                    : FLAG_INITIALIZED)) != 0 ||
+      (payload[1] & ~(payload[0] == PAYLOAD_VERSION ? FLAG_INITIALIZED | FLAG_PENDING_HISTORICAL : FLAG_INITIALIZED)) !=
+          0 ||
       (payload[2 + ReadingAchievementState::BYTE_COUNT - 1] & 0xC0u) != 0) {
     return PathStatus::Invalid;
   }
@@ -345,14 +344,16 @@ bool ReadingAchievements::reset() {
       !Storage.exists(ACHIEVEMENTS_TEMP_PATH)) {
     return true;
   }
-  const ReadingAchievementState empty;
-  return saveState(empty) && saveState(empty);
+  const ReadingAchievementState cleared;
+  if (!saveState(cleared)) return false;
+  return saveState(cleared);
 }
 
 bool ReadingAchievements::peekPendingNotification(ReadingAchievementNotification& notification) {
   ReadingAchievementState state;
   const LoadStatus status = load(state);
-  if (status == LoadStatus::Invalid || status == LoadStatus::NewerVersion || status == LoadStatus::IoError) return false;
+  if (status == LoadStatus::Invalid || status == LoadStatus::NewerVersion || status == LoadStatus::IoError)
+    return false;
   const uint8_t count = state.pendingNotificationCount();
   if (count == 0) return false;
   notification = {count, state.firstPendingNotificationId(), state.pendingHistoricalNotification};
@@ -362,7 +363,8 @@ bool ReadingAchievements::peekPendingNotification(ReadingAchievementNotification
 bool ReadingAchievements::ackPendingNotification() {
   ReadingAchievementState state;
   const LoadStatus status = load(state);
-  if (status == LoadStatus::Invalid || status == LoadStatus::NewerVersion || status == LoadStatus::IoError) return false;
+  if (status == LoadStatus::Invalid || status == LoadStatus::NewerVersion || status == LoadStatus::IoError)
+    return false;
   if (state.pendingNotificationCount() == 0 && !state.pendingHistoricalNotification) return true;
   state.markAllAnnounced();
   return saveState(state);

@@ -92,8 +92,8 @@ inline size_t preserveWordBreak(const std::string& text, const size_t largestFit
 // shaped glyphs keeps differential rounding and greedy ligatures identical to
 // GfxRenderer::getTextAdvanceX(), even when prefix widths are not monotonic.
 template <typename Advance, typename Kerning, typename Ligature>
-size_t findLargestFittingShapedLineBreak(const std::string& text, const int maxWidth, Advance advance,
-                                         Kerning kerning, Ligature ligature) {
+size_t findLargestFittingShapedLineBreak(const std::string& text, const int maxWidth, Advance advance, Kerning kerning,
+                                         Ligature ligature) {
   const auto* const begin = reinterpret_cast<const unsigned char*>(text.c_str());
   const auto* cursor = begin;
 
@@ -127,17 +127,15 @@ size_t findLargestFittingShapedLineBreak(const std::string& text, const int maxW
     } else if (const uint32_t joined = ligature(currentCp, cp); joined != 0) {
       currentCp = joined;
       currentAdvance = static_cast<int32_t>(advance(joined));
-      widthBeforeCurrent = previousCp == 0
-                               ? 0
-                               : widthBeforePrevious + fp4::toPixel(previousAdvance + kerning(previousCp, currentCp));
+      widthBeforeCurrent =
+          previousCp == 0 ? 0 : widthBeforePrevious + fp4::toPixel(previousAdvance + kerning(previousCp, currentCp));
     } else {
       widthBeforePrevious = widthBeforeCurrent;
       previousCp = currentCp;
       previousAdvance = currentAdvance;
       currentCp = cp;
       currentAdvance = static_cast<int32_t>(advance(cp));
-      widthBeforeCurrent =
-          widthBeforePrevious + fp4::toPixel(previousAdvance + kerning(previousCp, currentCp));
+      widthBeforeCurrent = widthBeforePrevious + fp4::toPixel(previousAdvance + kerning(previousCp, currentCp));
     }
 
     prefixWidth = widthBeforeCurrent + fp4::toPixel(currentAdvance);

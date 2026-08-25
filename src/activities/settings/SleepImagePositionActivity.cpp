@@ -15,8 +15,8 @@
 #include <utility>
 
 #include "Bitmap.h"
-#include "CrossPointState.h"
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "FsHelpers.h"
 #include "activities/ActivityResult.h"
 #include "activities/boot_sleep/SleepFrameStore.h"

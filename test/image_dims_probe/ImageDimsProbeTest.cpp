@@ -222,9 +222,8 @@ TEST(ImageDimsProbeTest, ValidatesCompleteSupportedPngIhdr) {
 
 TEST(ImageDimsProbeTest, FramebufferPreflightAcceptsOnlyFormatsTheRuntimeDecoderSupports) {
   PngFramebufferHeader header;
-  for (const auto& [colorType, bitDepth] :
-       std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {0, 2}, {0, 4}, {0, 8}, {2, 8}, {3, 1},
-                                                {3, 2}, {3, 4}, {3, 8}, {4, 8}, {6, 8}}) {
+  for (const auto& [colorType, bitDepth] : std::vector<std::pair<uint8_t, uint8_t>>{
+           {0, 1}, {0, 2}, {0, 4}, {0, 8}, {2, 8}, {3, 1}, {3, 2}, {3, 4}, {3, 8}, {4, 8}, {6, 8}}) {
     const auto bytes = pngIhdr(528, 792, bitDepth, colorType);
     ASSERT_TRUE(parsePngFramebufferHeader(bytes.data(), bytes.size(), header))
         << "color=" << static_cast<int>(colorType) << " depth=" << static_cast<int>(bitDepth);

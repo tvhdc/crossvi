@@ -30,13 +30,13 @@
 #include "components/icons/hotspot.h"
 #include "components/icons/image24.h"
 #include "components/icons/library.h"
+#include "components/icons/medal.h"
 #include "components/icons/pin.h"
 #include "components/icons/recent.h"
 #include "components/icons/search24.h"
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
-#include "components/icons/trophy.h"
 #include "components/icons/wifi.h"
 #include "components/themes/HomeMenuLayout.h"
 #include "components/themes/crossvi/CrossViLayout.h"
@@ -91,8 +91,8 @@ const uint8_t* iconForName(const UIIcon icon, const int size = 32) {
       return WifiIcon;
     case UIIcon::Hotspot:
       return HotspotIcon;
-    case UIIcon::Trophy:
-      return TrophyIcon;
+    case UIIcon::Medal:
+      return MedalIcon;
     default:
       return nullptr;
   }

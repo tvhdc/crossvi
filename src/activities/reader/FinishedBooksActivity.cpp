@@ -9,8 +9,8 @@
 #include <memory>
 #include <utility>
 
-#include "BookStatsLoader.h"
 #include "BookReadingStats.h"
+#include "BookStatsLoader.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "ReadingStatsActivity.h"
@@ -34,7 +34,7 @@ std::string subtitleFor(const LibraryBookRecord& book, const uint32_t finishedDa
     char formatted[32]{};
     const char separator = ClockDateFormat::separatorChar(SETTINGS.dateSeparator);
     if (ClockDateFormat::format(date.year, date.month, date.day, SETTINGS.dateFormat, separator, formatted,
-                               sizeof(formatted), I18N.getLanguage() == Language::VI)) {
+                                sizeof(formatted), I18N.getLanguage() == Language::VI)) {
       value = formatted;
     }
   }
@@ -234,14 +234,14 @@ void FinishedBooksActivity::render(RenderLock&&) {
         empty ? -1 : static_cast<int>(selected_),
         [this, empty](const int index) {
           const LibraryBookRecord* book = visibleRecord(static_cast<size_t>(index));
-          return empty ? std::string(I18N.get(catalogScanPartial_ ? StrId::STR_FINISHED_BOOKS_PARTIAL
-                                                                 : StrId::STR_STATS_NO_DATA))
-                       : book ? titleFor(*book) : std::string(tr(STR_STATS_UNAVAILABLE));
+          return empty  ? std::string(I18N.get(catalogScanPartial_ ? StrId::STR_FINISHED_BOOKS_PARTIAL
+                                                                   : StrId::STR_STATS_NO_DATA))
+                 : book ? titleFor(*book)
+                        : std::string(tr(STR_STATS_UNAVAILABLE));
         },
         [this, empty](const int index) {
           const LibraryBookRecord* book = visibleRecord(static_cast<size_t>(index));
-          return empty || !book ? std::string{}
-                                : subtitleFor(*book, books_[static_cast<size_t>(index)].finishedDay);
+          return empty || !book ? std::string{} : subtitleFor(*book, books_[static_cast<size_t>(index)].finishedDay);
         },
         [this, empty](const int index) {
           const LibraryBookRecord* book = visibleRecord(static_cast<size_t>(index));

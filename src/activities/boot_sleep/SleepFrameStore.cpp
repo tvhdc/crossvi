@@ -72,16 +72,17 @@ std::array<uint8_t, SLEEP_FRAME_HEADER_SIZE> encodeHeader(const SleepFrameSpec& 
 }
 
 bool decodeHeader(const uint8_t* header, const SleepFrameSpec& expected, uint32_t& payloadHash) {
-  if (!std::equal(SLEEP_FRAME_MAGIC.begin(), SLEEP_FRAME_MAGIC.end(), header) ||
-      header[4] != SLEEP_FRAME_VERSION || header[5] != expected.model || header[6] != 0 || header[7] != 0 ||
-      readU16(header + 8) != expected.width || readU16(header + 10) != expected.height ||
-      readU32(header + 12) != expected.payloadSize || readU32(header + 20) != 0) {
+  if (!std::equal(SLEEP_FRAME_MAGIC.begin(), SLEEP_FRAME_MAGIC.end(), header) || header[4] != SLEEP_FRAME_VERSION ||
+      header[5] != expected.model || header[6] != 0 || header[7] != 0 || readU16(header + 8) != expected.width ||
+      readU16(header + 10) != expected.height || readU32(header + 12) != expected.payloadSize ||
+      readU32(header + 20) != 0) {
     return false;
   }
   payloadHash = readU32(header + 16);
   return true;
 }
 
+// cppcheck-suppress constParameterCallback; StagedFileTransaction::Validator requires void* context.
 bool validateSleepFrameFile(const char* path, void* context) {
   const auto& expected = *static_cast<const SleepFrameSpec*>(context);
   HalFile file;
@@ -153,8 +154,8 @@ bool save(const GfxRenderer& renderer) {
 bool ready(const bool deviceIsX3) {
   SleepFrameSpec expected;
   frameSpec(deviceIsX3 ? 528 : 480, deviceIsX3 ? 792 : 800, expected);
-  if (StagedFileTransaction::recover(SLEEP_FRAME_FILE, SLEEP_FRAME_BACKUP_FILE, validateSleepFrameFile,
-                                     &expected) == StagedFileTransaction::Status::IoError) {
+  if (StagedFileTransaction::recover(SLEEP_FRAME_FILE, SLEEP_FRAME_BACKUP_FILE, validateSleepFrameFile, &expected) ==
+      StagedFileTransaction::Status::IoError) {
     return false;
   }
   if (validateSleepFrameFile(SLEEP_FRAME_FILE, &expected)) return true;
@@ -162,6 +163,7 @@ bool ready(const bool deviceIsX3) {
   return false;
 }
 
+// cppcheck-suppress constParameterReference; loading writes through the display framebuffer.
 bool load(HalDisplay& display, const bool consume) {
   SleepFrameSpec expected;
   if (!frameSpec(display.getDisplayWidth(), display.getDisplayHeight(), expected) ||

@@ -130,7 +130,7 @@ enum UIIcon {
   Hotspot,
   Bookmark,
   Search,
-  Trophy
+  Medal
 };
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };

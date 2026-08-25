@@ -168,10 +168,9 @@ PathStatus loadRekeyIdentity(RekeyIdentity& identity) {
 }
 
 bool removeRekeyArtifacts() {
-  for (const char* path : {REKEY_TEMP_PATH, REKEY_BACKUP_PATH, REKEY_PATH}) {
-    if (Storage.exists(path) && !Storage.remove(path)) return false;
-  }
-  return true;
+  constexpr std::array paths = {REKEY_TEMP_PATH, REKEY_BACKUP_PATH, REKEY_PATH};
+  return std::all_of(paths.begin(), paths.end(),
+                     [](const char* path) { return !Storage.exists(path) || Storage.remove(path); });
 }
 
 bool saveRekeyIdentity(const RekeyIdentity& identity, const PathStatus primaryStatus) {
@@ -186,8 +185,7 @@ bool saveRekeyIdentity(const RekeyIdentity& identity, const PathStatus primarySt
   writeLe16(bytes.get(), 8, static_cast<uint16_t>(identity.newPath.size()));
   memcpy(bytes.get() + REKEY_HEADER_SIZE, identity.oldPath.data(), identity.oldPath.size());
   memcpy(bytes.get() + REKEY_HEADER_SIZE + identity.oldPath.size(), identity.newPath.data(), identity.newPath.size());
-  writeLe32(bytes.get(), size - sizeof(uint32_t),
-            ReadingStatsEnvelope::crc32(bytes.get(), size - sizeof(uint32_t)));
+  writeLe32(bytes.get(), size - sizeof(uint32_t), ReadingStatsEnvelope::crc32(bytes.get(), size - sizeof(uint32_t)));
   if (!Storage.exists("/.crosspoint") && !Storage.mkdir("/.crosspoint")) return false;
   return ReadingStatsStorage::writeAtomic(REKEY_PATH, REKEY_BACKUP_PATH, primaryStatus == PathStatus::Valid,
                                           bytes.get(), size);
@@ -256,15 +254,13 @@ bool rekeyDay(const uint32_t day, const RekeyIdentity& identity) {
       status == DailyBookReadingHistory::LoadStatus::Invalid) {
     return false;
   }
-  auto oldRecord = std::find_if(data.records.begin(), data.records.begin() + data.count,
-                                [&identity](const DailyBookReadingRecord& record) {
-                                  return record.path == identity.oldPath;
-                                });
+  auto oldRecord =
+      std::find_if(data.records.begin(), data.records.begin() + data.count,
+                   [&identity](const DailyBookReadingRecord& record) { return record.path == identity.oldPath; });
   if (oldRecord == data.records.begin() + data.count) return true;
-  auto newRecord = std::find_if(data.records.begin(), data.records.begin() + data.count,
-                                [&identity](const DailyBookReadingRecord& record) {
-                                  return record.path == identity.newPath;
-                                });
+  auto newRecord =
+      std::find_if(data.records.begin(), data.records.begin() + data.count,
+                   [&identity](const DailyBookReadingRecord& record) { return record.path == identity.newPath; });
   if (newRecord != data.records.begin() + data.count) {
     newRecord->seconds =
         std::min<uint32_t>(24U * 3600U, addReadingStatsSaturated(newRecord->seconds, oldRecord->seconds));
@@ -355,8 +351,7 @@ DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const uint
   return saveDay(day, data, primaryStatus) ? RecordStatus::Ok : RecordStatus::IoError;
 }
 
-DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const std::string& path,
-                                                                      const std::string& title,
+DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const std::string& path, const std::string& title,
                                                                       const DailyReadingHistoryDelta& delta) {
   if (delta.empty()) return RecordStatus::Ok;
   if (delta.overflowed()) return RecordStatus::IoError;
@@ -495,6 +490,7 @@ bool DailyBookReadingHistory::canReset() {
 
 bool DailyBookReadingHistory::reset() {
   if (!canReset()) return false;
-  const bool directoryReset = !Storage.exists(DIRECTORY) || (Storage.removeDir(DIRECTORY) && !Storage.exists(DIRECTORY));
+  const bool directoryReset =
+      !Storage.exists(DIRECTORY) || (Storage.removeDir(DIRECTORY) && !Storage.exists(DIRECTORY));
   return directoryReset && removeRekeyArtifacts();
 }

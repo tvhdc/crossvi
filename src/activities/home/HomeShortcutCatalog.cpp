@@ -83,8 +83,6 @@ bool isHomeShortcutAvailable(const HomeShortcutId id, const GfxRenderer& rendere
       return halTiltSensor.isAvailable();
     case HomeShortcutId::TextAntiAliasing:
       return renderer.supportsStripGrayscale();
-    case HomeShortcutId::VocabularyLearning:
-      return I18N.getLanguage() == Language::VI;
     default:
       return findHomeShortcut(id) != nullptr;
   }

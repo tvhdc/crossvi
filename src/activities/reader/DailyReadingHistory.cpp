@@ -330,8 +330,9 @@ bool DailyReadingHistory::canReset() {
 
 bool DailyReadingHistory::reset() {
   if (!canReset()) return false;
-  const DailyReadingHistory empty;
-  return empty.save() && empty.save();
+  const DailyReadingHistory cleared;
+  if (!cleared.save()) return false;
+  return cleared.save();
 }
 
 DailyReadingHistory::BackupResult DailyReadingHistory::createBackup() {

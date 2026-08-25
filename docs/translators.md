@@ -1,9 +1,9 @@
 # Translators
 
 Below is a list of translator credits for languages with known contributors.
-Official UI language support is determined by the YAML files in
-`lib/I18n/translations/`; see [i18n.md](./i18n.md) for the current supported
-language list.
+Translation sources live in `lib/I18n/translations/`, while production UI language support is determined by
+[`lib/I18n/build-languages.txt`](../lib/I18n/build-languages.txt). See [build-languages.md](./build-languages.md) for the
+current build list.
 
 ## Contributing
 

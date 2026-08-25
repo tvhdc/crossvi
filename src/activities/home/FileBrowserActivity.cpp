@@ -132,6 +132,8 @@ bool FileBrowserActivity::stepFileLoad(const size_t maxEntries) {
       supported = FsHelpers::checkFileExtension(filename, ".bin");
     } else if (!isDirectory && mode == Mode::PickImage) {
       supported = FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename);
+    } else if (!isDirectory && mode == Mode::PickVocabulary) {
+      supported = FsHelpers::checkFileExtension(filename, ".cvocab");
     } else if (!isDirectory) {
       supported = FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
                   FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
@@ -719,6 +721,8 @@ void FileBrowserActivity::render(RenderLock&&) {
     folderName = tr(STR_SELECT_FIRMWARE_FILE);
   } else if (mode == Mode::PickImage) {
     folderName = tr(STR_SLEEP_SCREEN);
+  } else if (mode == Mode::PickVocabulary) {
+    folderName = tr(STR_VOCAB_SELECT_FILE);
   } else {
     folderName = basepath == "/" ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1);
   }
@@ -734,11 +738,8 @@ void FileBrowserActivity::render(RenderLock&&) {
   if (filesLoading) {
     renderer.drawCenteredText(UI_10_FONT_ID, contentTop + contentHeight / 2, tr(STR_LOADING));
   } else if (itemCount == 0) {
-    const char* emptyMsg =
-        searchActive
-            ? tr(STR_NO_SEARCH_RESULTS)
-            : (mode == Mode::PickFirmware ? tr(STR_NO_BIN_FILES)
-                                          : tr(STR_NO_FILES_FOUND));
+    const char* emptyMsg = searchActive ? tr(STR_NO_SEARCH_RESULTS)
+                                        : (mode == Mode::PickFirmware ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND));
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyMsg);
   } else {
     GUI.drawList(

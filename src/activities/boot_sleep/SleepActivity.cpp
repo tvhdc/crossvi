@@ -611,8 +611,7 @@ OverlayCandidate directoryImageCandidate(const char* directoryPath, Validator&& 
   uint16_t validCount = 0;
   uint16_t freshCount = 0;
   char name[257];
-  for (HalFile file = dir.openNextFile(); file && entries < MAX_SLEEP_DIRECTORY_ENTRIES;
-       file = dir.openNextFile()) {
+  for (HalFile file = dir.openNextFile(); file && entries < MAX_SLEEP_DIRECTORY_ENTRIES; file = dir.openNextFile()) {
     ++entries;
     if (entries % SLEEP_DIRECTORY_YIELD_INTERVAL == 0) yield();
     if (file.isDirectory()) {
@@ -691,19 +690,19 @@ bool renderBitmapWhiteKeyOverlay(Bitmap& bitmap, GfxRenderer& renderer) {
   for (int bmpY = 0; bmpY < bitmap.getHeight(); ++bmpY) {
     if (bitmap.readNextRow(outputRow.get(), rowBytes.get()) != BmpReaderError::Ok) return false;
     const int sourceY = bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY;
-    const int firstY = placement.y +
-                       static_cast<int>(static_cast<int64_t>(sourceY) * placement.height / bitmap.getHeight());
-    const int endY = placement.y +
-                     static_cast<int>(static_cast<int64_t>(sourceY + 1) * placement.height / bitmap.getHeight());
+    const int firstY =
+        placement.y + static_cast<int>(static_cast<int64_t>(sourceY) * placement.height / bitmap.getHeight());
+    const int endY =
+        placement.y + static_cast<int>(static_cast<int64_t>(sourceY + 1) * placement.height / bitmap.getHeight());
     if (firstY >= endY) continue;
 
     for (int bmpX = 0; bmpX < bitmap.getWidth(); ++bmpX) {
       const uint8_t value = (outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8))) & 0x03;
       if (value >= 3) continue;
-      const int firstX = placement.x +
-                         static_cast<int>(static_cast<int64_t>(bmpX) * placement.width / bitmap.getWidth());
-      const int endX = placement.x +
-                       static_cast<int>(static_cast<int64_t>(bmpX + 1) * placement.width / bitmap.getWidth());
+      const int firstX =
+          placement.x + static_cast<int>(static_cast<int64_t>(bmpX) * placement.width / bitmap.getWidth());
+      const int endX =
+          placement.x + static_cast<int>(static_cast<int64_t>(bmpX + 1) * placement.width / bitmap.getWidth());
       if (firstX >= endX) continue;
       const int clippedX = std::max(0, firstX);
       const int clippedY = std::max(0, firstY);
@@ -763,8 +762,7 @@ void SleepActivity::onEnter() {
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS ||
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM ||
-      (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM &&
-       !APP_STATE.lastSleepFromReader);
+      (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && !APP_STATE.lastSleepFromReader);
   if (!SleepImageSelectionStore::recover() && customImageRequired) {
     LOG_ERR("SLP", "Sleep image selection recovery failed; using default screen");
     return renderDefaultSleepScreen();
@@ -1060,9 +1058,8 @@ void SleepActivity::renderTransparentSleepScreen(const bool baseFrameSaved) {
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool applyCoverFilter,
                                             const bool withBookStats) {
   const SleepImagePlacement placement = placeSleepImage(renderer, bitmap.getWidth(), bitmap.getHeight());
-  LOG_DBG("SLP", "bitmap %d x %d -> %d x %d at %d,%d zoom=%u", bitmap.getWidth(), bitmap.getHeight(),
-          placement.width, placement.height, placement.x, placement.y,
-          static_cast<unsigned>(SETTINGS.sleepScreenImageZoom));
+  LOG_DBG("SLP", "bitmap %d x %d -> %d x %d at %d,%d zoom=%u", bitmap.getWidth(), bitmap.getHeight(), placement.width,
+          placement.height, placement.x, placement.y, static_cast<unsigned>(SETTINGS.sleepScreenImageZoom));
   renderer.clearScreen();
 
   const uint8_t filter =
@@ -1118,8 +1115,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool app
     // without touching the powered-down panel so normal wake can replay it.
     const bool rewound = bitmap.rewindToData() == BmpReaderError::Ok;
     renderer.clearScreen();
-    const bool coverReady = rewound && renderer.drawBitmap(bitmap, placement.x, placement.y, placement.width,
-                                                           placement.height, 0, 0, true);
+    const bool coverReady =
+        rewound && renderer.drawBitmap(bitmap, placement.x, placement.y, placement.width, placement.height, 0, 0, true);
     if (withBookStats) drawSleepBookStatsOverlay(renderer, statsSummary);
     if (filter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
       renderer.invertScreen();

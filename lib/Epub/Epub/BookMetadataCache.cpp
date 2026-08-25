@@ -71,9 +71,8 @@ bool inspectSpineEntry(HalFile& file, const size_t endPosition, const uint16_t t
   uint8_t linear = 0;
   uint32_t cumulative = 0;
   int16_t tocIndex = -1;
-  if (!readPodExact(file, linear) || linear > 1 || !readPodExact(file, cumulative) ||
-      !readPodExact(file, tocIndex) || file.position() != endPosition || tocIndex < -1 ||
-      tocIndex >= static_cast<int32_t>(tocCount)) {
+  if (!readPodExact(file, linear) || linear > 1 || !readPodExact(file, cumulative) || !readPodExact(file, tocIndex) ||
+      file.position() != endPosition || tocIndex < -1 || tocIndex >= static_cast<int32_t>(tocCount)) {
     return false;
   }
   if (cumulativeSize) *cumulativeSize = cumulative;
@@ -137,8 +136,7 @@ bool validateSpineScratchFile(HalFile& file, const uint16_t expectedCount) {
     uint32_t cumulativeSize = 0;
     int16_t tocIndex = -1;
     if (!consumeScratchString(file, fileSize) || !readPodExact(file, linear) || linear > 1 ||
-        !readPodExact(file, cumulativeSize) || !readPodExact(file, tocIndex) || cumulativeSize != 0 ||
-        tocIndex != -1) {
+        !readPodExact(file, cumulativeSize) || !readPodExact(file, tocIndex) || cumulativeSize != 0 || tocIndex != -1) {
       return false;
     }
   }
@@ -337,9 +335,8 @@ bool validateTocScratchEntry(F& file, const size_t fileSize, const uint16_t spin
   uint8_t level = 0;
   int16_t spineIndex = -1;
   return consumeScratchStringFrom(file, fileSize) && consumeScratchStringFrom(file, fileSize) &&
-         consumeScratchStringFrom(file, fileSize) && readScratchPod(file, level) &&
-         readScratchPod(file, spineIndex) && level > 0 && spineIndex >= -1 &&
-         spineIndex < static_cast<int32_t>(spineCount);
+         consumeScratchStringFrom(file, fileSize) && readScratchPod(file, level) && readScratchPod(file, spineIndex) &&
+         level > 0 && spineIndex >= -1 && spineIndex < static_cast<int32_t>(spineCount);
 }
 }  // namespace
 
@@ -714,8 +711,7 @@ BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const siz
     size_t processed = 0;
     while (state.nextEntry < tocCount && processed++ < maxEntries) {
       const auto entry = readTocEntryFrom(*state.tocIn);
-      if (entry.spineIndex >= 0 && entry.spineIndex < spineCount &&
-          state.spineToTocIndex[entry.spineIndex] == -1) {
+      if (entry.spineIndex >= 0 && entry.spineIndex < spineCount && state.spineToTocIndex[entry.spineIndex] == -1) {
         state.spineToTocIndex[entry.spineIndex] = static_cast<int16_t>(state.nextEntry);
       }
       ++state.nextEntry;
@@ -752,8 +748,7 @@ BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const siz
       const std::string path = FsHelpers::normalisePath(entry.href);
       if (path.size() > UINT16_MAX) return fail("Spine path exceeds ZIP lookup bounds");
       state.sizeTargets[state.nextEntry] = {ZipFile::fnvHash64(path.c_str(), path.size()),
-                                            static_cast<uint16_t>(path.size()),
-                                            static_cast<uint16_t>(state.nextEntry)};
+                                            static_cast<uint16_t>(path.size()), static_cast<uint16_t>(state.nextEntry)};
       ++state.nextEntry;
     }
     if (state.nextEntry < spineCount) return BuildStepResult::InProgress;
@@ -1032,8 +1027,8 @@ BookMetadataCache::LoadStepResult BookMetadataCache::beginLoad(const ZipFile::So
   const std::string path = cachePath + bookBinFile;
   const std::string backupPath = cachePath + bookBinBackupFile;
   auto recoveryIdentity = expectedSourceIdentity;
-  const auto recovered = StagedFileTransaction::recover(path.c_str(), backupPath.c_str(), validateBookCacheCandidate,
-                                                        &recoveryIdentity);
+  const auto recovered =
+      StagedFileTransaction::recover(path.c_str(), backupPath.c_str(), validateBookCacheCandidate, &recoveryIdentity);
   if (recovered == StagedFileTransaction::Status::IoError) {
     LOG_ERR("BMC", "Could not recover book.bin cache");
   }

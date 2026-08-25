@@ -570,7 +570,10 @@ class CrossPointSettings {
   uint8_t tiltPageTurn = TILT_OFF;
   // Language setting (Language enum index, default 0 = EN)
   uint8_t language = 0;
-  // Vietnamese-only vocabulary trainer, launched explicitly from Shortcuts.
+  // Optional custom vocabulary set on the SD card (empty = built-in set).
+  static constexpr size_t VOCABULARY_DATASET_PATH_CAPACITY = 256;
+  char vocabularyDatasetPath[VOCABULARY_DATASET_PATH_CAPACITY] = "";
+  // Vocabulary trainer settings, launched explicitly from Shortcuts.
   uint8_t vocabularyQuizSize = VOCABULARY_QUIZ_10;
   uint8_t vocabularyQuestionTime = VOCABULARY_TIME_15_SECONDS;
   uint8_t vocabularyAnswerCount = VOCABULARY_ANSWERS_3;

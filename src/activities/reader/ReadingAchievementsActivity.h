@@ -24,6 +24,7 @@ class ReadingAchievementsActivity final : public Activity {
   uint8_t selectedId_ = 0;
   uint8_t unlockNoticeCount_ = 0;
   bool unlockNoticeHistorical_ = false;
+  bool pendingNoticeAcknowledgement_ = false;
   bool available_ = false;
   bool showDetail_ = false;
   bool suppressInitialConfirmRelease_ = false;

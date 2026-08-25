@@ -418,8 +418,7 @@ void XtcReaderActivity::loop() {
   const bool atEndOfBook = pageSnapshot >= xtc->getPageCount();
   if (atEndOfBook) {
     if (endOfBookOptions.start(xtc->getPath())) requestUpdate();
-    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() &&
-        endOfBookOptions.stepSuggestions(8)) {
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() && endOfBookOptions.stepSuggestions(8)) {
       requestUpdate();
     }
   }
@@ -741,8 +740,8 @@ void XtcReaderActivity::render(RenderLock&&) {
     signalReadingPageHidden();
     BookReadingStats displayBookStats = bookReadingStats;
     if (!readingSessionCommitted) {
-      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr,
-                                 sessionReadingSeconds, pendingBookReadingSpans, pendingGlobalReadingSpans,
+      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr, sessionReadingSeconds,
+                                 pendingBookReadingSpans, pendingGlobalReadingSpans,
                                  hasSessionStartLocalDateTime ? &sessionStartLocalDateTime : nullptr);
     }
     renderer.clearScreen();

@@ -13,6 +13,7 @@ add_executable(LegacySettingsCodecTest
   ${REPO_ROOT}/src/CrossPointSettings.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/JsonSettingsIO.production.cpp
   ${REPO_ROOT}/src/LegacySettingsCodec.cpp
+  ${REPO_ROOT}/lib/I18n/I18nStrings.cpp
 )
 
 target_include_directories(LegacySettingsCodecTest PRIVATE

@@ -157,9 +157,8 @@ void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) 
 #ifdef ENABLE_SERIAL_LOG
   const uint32_t refreshId = nextRefreshTraceId();
   const unsigned long startedAt = millis();
-  LOG_DBG("EPD", "refresh_id=%lu op=gray-base begin fallback=%s off=%u x3=%u",
-          static_cast<unsigned long>(refreshId), halRefreshModeName(fallback), static_cast<unsigned>(turnOffScreen),
-          static_cast<unsigned>(gpio.deviceIsX3()));
+  LOG_DBG("EPD", "refresh_id=%lu op=gray-base begin fallback=%s off=%u x3=%u", static_cast<unsigned long>(refreshId),
+          halRefreshModeName(fallback), static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(gpio.deviceIsX3()));
 #endif
   // X3: a HALF fallback means the caller wants a clean base (e.g. the sleep
   // cover, a full-screen swap from arbitrary prior content). Without this, the

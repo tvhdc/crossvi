@@ -148,8 +148,8 @@ bool finish(const Marker& marker, const char* stagingPath) {
   if (!published && stagingPath && digestMatches(stagingPath, spec, marker.digest)) {
     Validator validator = spec.validator;
     published = StagedFileTransaction::publishAndVerify(spec.finalPath, stagingPath, spec.backupPath, marker.digest,
-                                                        transactionValidator, &validator) ==
-                StagedFileTransaction::Status::Published;
+                                                        transactionValidator,
+                                                        &validator) == StagedFileTransaction::Status::Published;
   }
   if (!published) return false;
   if (!removeConflictingOverlay(marker.target)) return false;
@@ -168,10 +168,8 @@ bool recoverCanonical(const Target target) {
 bool recover() {
   if (!Storage.exists(MARKER_PATH)) {
     if (!removeIfPresent(MARKER_TEMP_PATH)) return false;
-    for (const Target target : {Target::NormalBmp, Target::OverlayBmp, Target::OverlayPng}) {
-      if (!recoverCanonical(target)) return false;
-    }
-    return true;
+    constexpr std::array targets = {Target::NormalBmp, Target::OverlayBmp, Target::OverlayPng};
+    return std::all_of(targets.begin(), targets.end(), [](const Target target) { return recoverCanonical(target); });
   }
 
   Marker marker;
