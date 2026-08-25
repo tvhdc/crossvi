@@ -46,12 +46,12 @@ function firmwareImage(chipId = 0x0005) {
 }
 
 (async () => {
-  const x3 = flasher.parsePartitionTable(partitionBinary(flasher.X3_PARTITIONS));
-  const x4 = flasher.parsePartitionTable(partitionBinary(flasher.X4_PARTITIONS));
-  assert.equal(flasher.identifyLayout(x3).model, 'X3');
-  assert.equal(flasher.identifyLayout(x4).model, 'X4');
+  const legacy = flasher.parsePartitionTable(partitionBinary(flasher.LEGACY_PARTITIONS));
+  const standard = flasher.parsePartitionTable(partitionBinary(flasher.CROSSVI_PARTITIONS));
+  assert.equal(flasher.identifyLayout(legacy).name, 'CrossVi legacy');
+  assert.equal(flasher.identifyLayout(standard).name, 'CrossVi standard');
 
-  const unknown = x4.map(partition => ({ ...partition }));
+  const unknown = standard.map(partition => ({ ...partition }));
   unknown[2].size -= 0x1000;
   assert.throws(() => flasher.identifyLayout(unknown), error => error.code === 'partition-unsupported');
 
@@ -90,7 +90,7 @@ function firmwareImage(chipId = 0x0005) {
   webFlasher.connect = async () => {
     webFlasher.loader = {
       readFlash: async (offset, size) => {
-        if (offset === 0x8000) return partitionBinary(flasher.X4_PARTITIONS);
+        if (offset === 0x8000) return partitionBinary(flasher.CROSSVI_PARTITIONS);
         if (offset === 0xe000 && size === otaRaw.length) return otaRaw;
         throw new Error(`Unexpected read at ${offset.toString(16)}`);
       },
@@ -103,7 +103,13 @@ function firmwareImage(chipId = 0x0005) {
     };
   };
   webFlasher.disconnect = async () => {};
-  await webFlasher.flashFirmware(firmwareImage(), { validated: true });
+  let detected = null;
+  const result = await webFlasher.flashFirmware(firmwareImage(), {
+    validated: true,
+    onDevice: device => { detected = device; }
+  });
+  assert.deepEqual(detected, { layout: 'CrossVi standard', slot: 'app1' });
+  assert.deepEqual(result, { layout: 'CrossVi standard', slot: 'app1' });
   assert.deepEqual(writes.map(write => write.address), [0x650000, 0xe000]);
 
   console.log('FlashToolTest: PASS');

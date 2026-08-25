@@ -25,7 +25,7 @@
   const OTA_STATE_NEW = 0;
   const INVALID_OTA_STATES = new Set([3, 4]);
 
-  const X4_PARTITIONS = [
+  const CROSSVI_PARTITIONS = [
     { type: "data-nvs", offset: 0x9000, size: 0x5000 },
     { type: "data-ota", offset: 0xe000, size: 0x2000 },
     { type: "app-ota_0", offset: 0x10000, size: 0x640000 },
@@ -34,7 +34,7 @@
     { type: "data-coredump", offset: 0xff0000, size: 0x10000 }
   ];
 
-  const X3_PARTITIONS = [
+  const LEGACY_PARTITIONS = [
     { type: "data-nvs", offset: 0x9000, size: 0x5000 },
     { type: "data-ota", offset: 0xe000, size: 0x2000 },
     { type: "app-ota_0", offset: 0x10000, size: 0x770000 },
@@ -173,15 +173,15 @@
   }
 
   function identifyLayout(partitions) {
-    const model = matchesLayout(partitions, X3_PARTITIONS) ? "X3" :
-      matchesLayout(partitions, X4_PARTITIONS) ? "X4" : null;
-    if (!model) fail("partition-unsupported");
+    const name = matchesLayout(partitions, CROSSVI_PARTITIONS) ? "CrossVi standard" :
+      matchesLayout(partitions, LEGACY_PARTITIONS) ? "CrossVi legacy" : null;
+    if (!name) fail("partition-unsupported");
 
     const otadata = partitions.find(partition => partition.type === "data-ota");
     const app0 = partitions.find(partition => partition.type === "app-ota_0");
     const app1 = partitions.find(partition => partition.type === "app-ota_1");
     return {
-      model,
+      name,
       otadataOffset: otadata.offset,
       appSlots: [app0, app1]
     };
@@ -325,7 +325,7 @@
         if (firmware.length > destination.size) {
           fail("firmware-slot", { size: firmware.length, slotSize: destination.size });
         }
-        if (onDevice) onDevice({ model: layout.model, slot: `app${ota.inactiveApp}` });
+        if (onDevice) onDevice({ layout: layout.name, slot: `app${ota.inactiveApp}` });
         step(2, "done");
 
         step(3, "running");
@@ -363,7 +363,7 @@
         step(5, "running");
         await this.disconnect(false);
         step(5, "done");
-        return { model: layout.model, slot: `app${ota.inactiveApp}` };
+        return { layout: layout.name, slot: `app${ota.inactiveApp}` };
       } catch (error) {
         if (currentStep >= 0 && onStep) onStep(currentStep, "error");
         try { await this.disconnect(false); } catch (_) {}
@@ -375,8 +375,8 @@
   return {
     FlashError,
     CrossViWebFlasher,
-    X3_PARTITIONS,
-    X4_PARTITIONS,
+    CROSSVI_PARTITIONS,
+    LEGACY_PARTITIONS,
     buildOtadataSector,
     identifyLayout,
     parseOtadata,
