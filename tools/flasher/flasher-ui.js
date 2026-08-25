@@ -136,7 +136,7 @@
         // a user gesture before the first await.
         const port = await core.CrossViWebFlasher.requestPort();
         const flasher = new core.CrossViWebFlasher(port);
-        const result = await flasher.flashFirmware(firmware, {
+        await flasher.flashFirmware(firmware, {
           validated: true,
           onStep: (index, state) => {
             if (ui.steps[index]) ui.steps[index].dataset.state = state;
@@ -146,15 +146,15 @@
             ui.progress.value = percent;
             ui.progressText.textContent = `${percent}%`;
           },
-          onDevice: ({ model, slot }) => {
-            ui.device.textContent = tools.t("flashDetectedDevice", { model });
+          onDevice: ({ layout, slot }) => {
+            ui.device.textContent = tools.t("flashDetectedDevice", { layout });
             ui.target.textContent = slot;
           }
         });
         ui.progress.value = 100;
         ui.progressText.textContent = "100%";
         setBadge("solid", "flashCompleteBadge");
-        setStatus("", "flashComplete", { model: result.model });
+        setStatus("", "flashComplete");
       } catch (error) {
         const failure = errorText(error);
         setBadge("", "flashFailedBadge");
