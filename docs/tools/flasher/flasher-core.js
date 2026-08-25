@@ -330,7 +330,7 @@
 
         step(3, "running");
         await this.loader.writeFlash({
-          fileArray: [{ data: this.loader.ui8ToBstr(firmware), address: destination.offset }],
+          fileArray: [{ data: firmware, address: destination.offset }],
           flashSize: "keep",
           flashMode: "keep",
           flashFreq: "keep",
@@ -349,7 +349,7 @@
           ota.newSequence
         );
         await this.loader.writeFlash({
-          fileArray: [{ data: this.loader.ui8ToBstr(sector), address: layout.otadataOffset + sectorOffset }],
+          fileArray: [{ data: sector, address: layout.otadataOffset + sectorOffset }],
           flashSize: "keep",
           flashMode: "keep",
           flashFreq: "keep",

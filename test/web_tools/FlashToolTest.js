@@ -84,6 +84,28 @@ function firmwareImage(chipId = 0x0005) {
   assert.match(html, /\["sleep", "vocabulary", "flash"\]/);
   assert.doesNotMatch(html, /Erase entire flash|Xóa toàn bộ flash/i);
 
+  const otaRaw = new Uint8Array(0x2000).fill(0xff);
+  const writes = [];
+  const webFlasher = new flasher.CrossViWebFlasher({});
+  webFlasher.connect = async () => {
+    webFlasher.loader = {
+      readFlash: async (offset, size) => {
+        if (offset === 0x8000) return partitionBinary(flasher.X4_PARTITIONS);
+        if (offset === 0xe000 && size === otaRaw.length) return otaRaw;
+        throw new Error(`Unexpected read at ${offset.toString(16)}`);
+      },
+      writeFlash: async options => {
+        const [{ data, address }] = options.fileArray;
+        assert.ok(data instanceof Uint8Array, 'esptool-js 0.6.x requires Uint8Array flash data');
+        writes.push({ data, address });
+        if (address === 0xe000) otaRaw.set(data, 0);
+      }
+    };
+  };
+  webFlasher.disconnect = async () => {};
+  await webFlasher.flashFirmware(firmwareImage(), { validated: true });
+  assert.deepEqual(writes.map(write => write.address), [0x650000, 0xe000]);
+
   console.log('FlashToolTest: PASS');
 })().catch(error => {
   console.error(error);
