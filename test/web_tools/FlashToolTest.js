@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const flasher = require('../../docs/tools/flasher/flasher-core.js');
 
 function setU32(bytes, offset, value) {
@@ -45,6 +46,129 @@ function firmwareImage(chipId = 0x0005) {
   return data;
 }
 
+async function testFirmwareSelectionRace() {
+  const source = fs.readFileSync(path.join(__dirname, '../../docs/tools/flasher/flasher-ui.js'), 'utf8');
+  const windowListeners = {};
+  const elements = new Map();
+  const flashSteps = Array.from({ length: 4 }, () => ({ dataset: {} }));
+
+  function element(id) {
+    const listeners = {};
+    const value = {
+      id,
+      files: [],
+      disabled: false,
+      value: 0,
+      textContent: '',
+      className: '',
+      dataset: {},
+      classList: { add() {}, remove() {}, toggle() {} },
+      addEventListener(type, callback) { listeners[type] = callback; },
+      listeners
+    };
+    elements.set(id, value);
+    return value;
+  }
+
+  [
+    'firmwareFile', 'firmwareFileStatus', 'flashStart', 'flashStatus', 'flashBadge',
+    'flashProgress', 'flashProgressText', 'flashDevice', 'flashTarget', 'flashBrowserWarning'
+  ].forEach(element);
+
+  let rejectPort;
+  class MockWebFlasher {}
+  MockWebFlasher.requestPort = () => new Promise((resolve, reject) => { rejectPort = reject; });
+  const window = {
+    CrossViFlasher: {
+      CrossViWebFlasher: MockWebFlasher,
+      validateFirmwareImage: async () => {}
+    },
+    CrossViTools: {
+      t: (key, values = {}) => values.name ? `${key}:${values.name}` : key,
+      formatSize: size => String(size)
+    },
+    addEventListener(type, callback) {
+      (windowListeners[type] ||= []).push(callback);
+    }
+  };
+  const context = {
+    window,
+    document: {
+      getElementById: id => elements.get(id),
+      querySelectorAll: selector => selector === '[data-flash-step]' ? flashSteps : []
+    },
+    navigator: { serial: {} },
+    crypto: { subtle: {} },
+    Uint8Array,
+    console
+  };
+  vm.runInNewContext(source, context, { filename: 'flasher-ui.js' });
+  windowListeners.DOMContentLoaded[0]();
+
+  const fileInput = elements.get('firmwareFile');
+  const fileStatus = elements.get('firmwareFileStatus');
+  let finishOldRead;
+  fileInput.files = [{
+    name: 'old.bin',
+    size: 1,
+    arrayBuffer: () => new Promise(resolve => { finishOldRead = resolve; })
+  }];
+  const oldSelection = fileInput.listeners.change();
+
+  fileInput.files = [{
+    name: 'new.bin',
+    size: 1,
+    arrayBuffer: async () => Uint8Array.of(2).buffer
+  }];
+  await fileInput.listeners.change();
+  finishOldRead(Uint8Array.of(1).buffer);
+  await oldSelection;
+  assert.equal(fileStatus.textContent, 'flashFileReady:new.bin');
+
+  let finishLatestRead;
+  fileInput.files = [{
+    name: 'latest.bin',
+    size: 1,
+    arrayBuffer: () => new Promise(resolve => { finishLatestRead = resolve; })
+  }];
+  const latestSelection = fileInput.listeners.change();
+  assert.equal(elements.get('flashStart').disabled, true,
+    'choosing another file must disable Install until validation finishes');
+  finishLatestRead(Uint8Array.of(3).buffer);
+  await latestSelection;
+
+  const flash = elements.get('flashStart').listeners.click();
+  const disabledWhileBusy = fileInput.disabled;
+  elements.get('flashStart').textContent = 'flashStart';
+  windowListeners['crossvi-language-change'][0]();
+  assert.equal(elements.get('flashStart').textContent, 'flashWorking',
+    'changing language while flashing must preserve the busy button state');
+  rejectPort(Object.assign(new Error('cancelled'), { name: 'NotFoundError' }));
+  await flash;
+  assert.equal(disabledWhileBusy, true, 'firmware selection must be disabled while flashing');
+  assert.equal(fileInput.disabled, false, 'firmware selection must be restored after flashing');
+
+  MockWebFlasher.requestPort = async () => ({});
+  MockWebFlasher.prototype.flashFirmware = async (_firmware, options) => {
+    options.onStep(0, 'running');
+    options.onStep(0, 'done');
+    options.onStep(1, 'running');
+    options.onStep(1, 'done');
+    assert.equal(flashSteps[1].dataset.state, 'running',
+      'the combined device-check step must stay active until both checks finish');
+    options.onStep(2, 'running');
+    options.onStep(2, 'done');
+    options.onStep(3, 'running');
+    options.onStep(3, 'done');
+    options.onStep(4, 'running');
+    options.onStep(4, 'done');
+    options.onStep(5, 'running');
+    options.onStep(5, 'done');
+  };
+  await elements.get('flashStart').listeners.click();
+  assert.deepEqual(flashSteps.map(step => step.dataset.state), ['done', 'done', 'done', 'done']);
+}
+
 (async () => {
   const legacy = flasher.parsePartitionTable(partitionBinary(flasher.LEGACY_PARTITIONS));
   const standard = flasher.parsePartitionTable(partitionBinary(flasher.CROSSVI_PARTITIONS));
@@ -83,6 +207,18 @@ function firmwareImage(chipId = 0x0005) {
   assert.match(html, /flasher\/flasher-ui\.js/);
   assert.match(html, /\["sleep", "vocabulary", "flash"\]/);
   assert.doesNotMatch(html, /Erase entire flash|Xóa toàn bộ flash/i);
+  assert.equal((html.match(/data-flash-step=/g) || []).length, 4,
+    'the firmware installer should present four user-facing steps');
+  assert.doesNotMatch(html, /flashStep(?:Connect|Layout|Ota|Write|Verify|Restart)Hint/,
+    'technical step explanations should not be shown in the main flow');
+  assert.match(html, /<details class="flashTechnical">/,
+    'technical device details should remain available on demand');
+  assert.doesNotMatch(
+    html,
+    /for \(const el of \[els\.device, els\.mode, els\.fit, els\.zoom, els\.dither\]\) \{\s*el\.addEventListener\("input", render\);\s*el\.addEventListener\("change", render\);/,
+    'sleep-image controls must not run the full conversion twice for one committed change'
+  );
+  await testFirmwareSelectionRace();
 
   const otaRaw = new Uint8Array(0x2000).fill(0xff);
   const writes = [];
