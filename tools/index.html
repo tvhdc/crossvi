@@ -480,56 +480,53 @@
     .statusBox.warn { background: rgba(183, 121, 31, .14); color: var(--warning); }
     .statusBox.error { background: rgba(176, 60, 54, .12); color: #a13d38; }
 
-    .flashSafety {
-      margin-bottom: 16px;
-      padding: 14px;
-      border: 1px solid rgba(110, 154, 130, .32);
-      border-radius: 10px;
-      background: var(--accent-color-10);
+    .flashAssurance {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin: 12px 0 18px;
+      color: var(--accent-hover-color);
     }
 
-    .flashSafety strong { color: var(--title-color); }
-    .flashSafety p { margin: 5px 0 0; }
+    .flashAssurance::before {
+      content: "✓";
+      flex: 0 0 auto;
+      font-weight: 900;
+    }
+
+    .flashSectionLabel {
+      display: block;
+      margin: 18px 0 8px;
+      color: var(--title-color);
+      font-weight: 800;
+    }
 
     .flashStage {
       display: grid;
-      gap: 18px;
+      gap: 14px;
       padding: 20px;
       align-content: start;
-      background:
-        linear-gradient(90deg, transparent 49%, rgba(110, 154, 130, .08) 50%, transparent 51%),
-        var(--bg);
+      background: var(--bg);
     }
 
-    .flashDeviceCard {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 14px;
-      align-items: center;
-      padding: 16px;
+    .flashTechnical {
+      padding: 11px 13px;
       border: 1px solid var(--border-color);
       border-radius: 10px;
       background: var(--card-bg);
     }
 
-    .flashPort {
-      display: grid;
-      place-items: center;
-      width: 52px;
-      height: 66px;
-      border: 3px solid var(--accent-color);
-      border-radius: 8px 8px 13px 13px;
-      color: var(--accent-hover-color);
-      font-size: 12px;
-      font-weight: 900;
-      letter-spacing: .04em;
+    .flashTechnical summary {
+      cursor: pointer;
+      color: var(--label-color);
+      font-weight: 750;
     }
 
     .flashDeviceMeta {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
-      margin: 0;
+      margin: 12px 0 0;
     }
 
     .flashDeviceMeta div {
@@ -571,8 +568,6 @@
     }
 
     .flashSteps strong { color: var(--title-color); }
-    .flashSteps small { display: block; color: var(--label-color); }
-
     .stepMarker {
       display: grid;
       place-items: center;
@@ -627,8 +622,6 @@
       .previewStage { padding: 12px; }
       .vocabGrid { grid-template-columns: 1fr; }
       .toolTab { padding-inline: 8px; }
-      .flashDeviceCard { grid-template-columns: 1fr; }
-      .flashPort { display: none; }
       .flashDeviceMeta { grid-template-columns: 1fr; }
     }
   </style>
@@ -784,24 +777,15 @@
     </section>
 
     <section id="flashTool" class="hidden">
-      <div class="flow" aria-hidden="true">
-        <span data-i18n="flashFlowFile"></span><span class="arrow">→</span>
-        <span data-i18n="flashFlowConnect"></span><span class="arrow">→</span>
-        <span data-i18n="flashFlowCheck"></span><span class="arrow">→</span>
-        <span data-i18n="flashFlowInstall"></span>
-      </div>
       <div class="workspace">
         <section class="panel">
-          <div class="flashSafety">
-            <strong data-i18n="flashSafetyTitle"></strong>
-            <p data-i18n="flashSafetyText"></p>
-          </div>
-
           <label for="firmwareFile" data-i18n="flashFileLabel"></label>
           <input id="firmwareFile" type="file" accept=".bin,application/octet-stream">
           <p id="firmwareFileStatus" class="hint" data-i18n="flashFileHint"></p>
           <a class="secondaryButton" href="https://github.com/tvhdc/crossvi/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="flashDownloadLatest"></a>
+          <p class="flashAssurance" data-i18n="flashSafetyText"></p>
 
+          <span class="flashSectionLabel" data-i18n="flashConnectLabel"></span>
           <div id="flashBrowserWarning" class="statusBox warn hidden" data-i18n="flashBrowserUnsupported"></div>
           <button id="flashStart" class="download" type="button" disabled data-i18n="flashStart"></button>
           <div id="flashStatus" class="statusBox hidden" role="status" aria-live="polite"></div>
@@ -810,33 +794,30 @@
 
         <section class="previewPanel">
           <div class="previewHeader">
-            <div><strong data-i18n="flashProgressTitle"></strong><p class="hint" data-i18n="flashProgressHint"></p></div>
+            <strong data-i18n="flashProgressTitle"></strong>
             <span id="flashBadge" class="badge" data-i18n="flashDisconnected"></span>
           </div>
           <div class="flashStage">
-            <div class="flashDeviceCard">
-              <div class="flashPort" aria-hidden="true">USB-C</div>
-              <dl class="flashDeviceMeta">
-                <div><dt data-i18n="flashDeviceLabel"></dt><dd id="flashDevice" data-i18n="flashNotDetected"></dd></div>
-                <div><dt data-i18n="flashTargetLabel"></dt><dd id="flashTarget" data-i18n="flashNotSelected"></dd></div>
-              </dl>
-            </div>
-
             <ol class="flashSteps">
-              <li data-flash-step="0" data-state="idle"><span class="stepMarker"><span>1</span></span><div><strong data-i18n="flashStepConnect"></strong><small data-i18n="flashStepConnectHint"></small></div></li>
-              <li data-flash-step="1" data-state="idle"><span class="stepMarker"><span>2</span></span><div><strong data-i18n="flashStepLayout"></strong><small data-i18n="flashStepLayoutHint"></small></div></li>
-              <li data-flash-step="2" data-state="idle"><span class="stepMarker"><span>3</span></span><div><strong data-i18n="flashStepOta"></strong><small data-i18n="flashStepOtaHint"></small></div></li>
-              <li data-flash-step="3" data-state="idle"><span class="stepMarker"><span>4</span></span><div><strong data-i18n="flashStepWrite"></strong><small data-i18n="flashStepWriteHint"></small></div></li>
-              <li data-flash-step="4" data-state="idle"><span class="stepMarker"><span>5</span></span><div><strong data-i18n="flashStepVerify"></strong><small data-i18n="flashStepVerifyHint"></small></div></li>
-              <li data-flash-step="5" data-state="idle"><span class="stepMarker"><span>6</span></span><div><strong data-i18n="flashStepRestart"></strong><small data-i18n="flashStepRestartHint"></small></div></li>
+              <li data-flash-step="0" data-state="idle"><span class="stepMarker"><span>1</span></span><strong data-i18n="flashStepConnect"></strong></li>
+              <li data-flash-step="1" data-state="idle"><span class="stepMarker"><span>2</span></span><strong data-i18n="flashStepLayout"></strong></li>
+              <li data-flash-step="2" data-state="idle"><span class="stepMarker"><span>3</span></span><strong data-i18n="flashStepWrite"></strong></li>
+              <li data-flash-step="3" data-state="idle"><span class="stepMarker"><span>4</span></span><strong data-i18n="flashStepRestart"></strong></li>
             </ol>
 
             <div class="flashProgressRow">
               <progress id="flashProgress" max="100" value="0"></progress>
               <strong id="flashProgressText">0%</strong>
             </div>
+
+            <details class="flashTechnical">
+              <summary data-i18n="flashTechnicalDetails"></summary>
+              <dl class="flashDeviceMeta">
+                <div><dt data-i18n="flashDeviceLabel"></dt><dd id="flashDevice" data-i18n="flashNotDetected"></dd></div>
+                <div><dt data-i18n="flashTargetLabel"></dt><dd id="flashTarget" data-i18n="flashNotSelected"></dd></div>
+              </dl>
+            </details>
           </div>
-          <div class="previewFooter"><span data-i18n="flashFooterBrowser"></span><span data-i18n="flashFooterSafety"></span></div>
         </section>
       </div>
     </section>
@@ -941,49 +922,35 @@
         vocabAdjective: "Tính từ",
         vocabAdverb: "Trạng từ",
         vocabOther: "Khác",
-        flashFlowFile: "Chọn firmware",
-        flashFlowConnect: "Kết nối USB",
-        flashFlowCheck: "Kiểm tra máy",
-        flashFlowInstall: "Cài đặt",
-        flashSafetyTitle: "Cập nhật OTA an toàn",
-        flashSafetyText: "Công cụ chỉ ghi firmware vào vùng dự phòng rồi mới chuyển vùng khởi động. Nó không xóa sách, cài đặt hoặc toàn bộ bộ nhớ máy.",
-        flashFileLabel: "1. Chọn firmware CrossVi",
-        flashFileHint: "Chọn firmware.bin tải từ trang phát hành CrossVi. Tệp được kiểm tra trong trình duyệt trước khi kết nối máy.",
-        flashDownloadLatest: "Tải firmware CrossVi mới nhất",
+        flashSafetyText: "Sách và cài đặt của bạn được giữ nguyên.",
+        flashFileLabel: "1. Chọn tệp firmware",
+        flashFileHint: "Chọn tệp firmware.bin đã tải về.",
+        flashDownloadLatest: "Tải firmware mới nhất",
+        flashConnectLabel: "2. Kết nối X3 / X4",
         flashBrowserUnsupported: "Trình duyệt này không hỗ trợ kết nối USB. Hãy mở trang bằng Chrome hoặc Edge trên máy tính.",
-        flashStart: "Kết nối và cài firmware",
-        flashWorking: "Đang cài firmware…",
-        flashCableHint: "Giữ cáp USB-C kết nối và không đóng trang trong lúc cài. Nếu máy vẫn không xuất hiện sau khi đổi cáp/cổng USB, hãy dừng lại; công cụ này không mở khóa thiết bị bị khóa USB.",
-        flashProgressTitle: "Thiết bị và tiến trình",
-        flashProgressHint: "CrossVi kiểm tra bố cục phân vùng OTA tương thích trước khi ghi.",
+        flashStart: "Kết nối và cài đặt",
+        flashWorking: "Đang cài đặt…",
+        flashCableHint: "Giữ cáp USB kết nối và không đóng trang trong lúc cài.",
+        flashProgressTitle: "Tiến trình cài đặt",
         flashDisconnected: "Chưa kết nối",
         flashConnecting: "Đang kết nối",
         flashReady: "Firmware hợp lệ",
         flashInvalidFile: "Tệp không hợp lệ",
         flashCompleteBadge: "Đã hoàn tất",
         flashFailedBadge: "Cài đặt thất bại",
-        flashDeviceLabel: "Bố cục thiết bị",
-        flashTargetLabel: "Vùng sẽ ghi",
+        flashTechnicalDetails: "Thông tin kỹ thuật",
+        flashDeviceLabel: "Thiết bị",
+        flashTargetLabel: "Vùng cài đặt",
         flashNotDetected: "Chưa nhận diện",
         flashNotSelected: "Chưa chọn",
         flashDetectedDevice: "{layout}",
         flashStepConnect: "Kết nối thiết bị",
-        flashStepConnectHint: "Mở chế độ nạp qua USB và xác nhận ESP32-C3.",
-        flashStepLayout: "Kiểm tra phân vùng",
-        flashStepLayoutHint: "Chỉ chấp nhận bố cục OTA CrossVi tương thích.",
-        flashStepOta: "Chọn vùng dự phòng",
-        flashStepOtaHint: "Giữ nguyên firmware đang chạy cho tới khi ghi xong.",
-        flashStepWrite: "Ghi firmware",
-        flashStepWriteHint: "Không ngắt cáp trong bước này.",
-        flashStepVerify: "Xác minh và chuyển vùng",
-        flashStepVerifyHint: "Chỉ đổi vùng khởi động sau khi ghi thành công.",
+        flashStepLayout: "Kiểm tra thiết bị",
+        flashStepWrite: "Cài firmware",
         flashStepRestart: "Khởi động lại",
-        flashStepRestartHint: "Thiết bị khởi động bằng firmware mới.",
-        flashFooterBrowser: "Chrome / Edge trên máy tính",
-        flashFooterSafety: "Không xóa NVS, sách hoặc cài đặt",
         flashCheckingFile: "Đang kiểm tra firmware…",
-        flashFileReady: "{name} · {size} · ESP32-C3",
-        flashComplete: "Đã cài CrossVi thành công. Thiết bị đang khởi động lại.",
+        flashFileReady: "{name} · {size}",
+        flashComplete: "Đã cài CrossVi. Thiết bị đang khởi động lại.",
         flashCancelled: "Bạn đã hủy chọn cổng USB. Chưa có dữ liệu nào được ghi.",
         flashFirmwareReadError: "Không đọc được tệp firmware này.",
         flashFirmwareInvalid: "Tệp này không phải firmware CrossVi hợp lệ hoặc đã bị cắt thiếu.",
@@ -1092,49 +1059,35 @@
         vocabAdjective: "Adjective",
         vocabAdverb: "Adverb",
         vocabOther: "Other",
-        flashFlowFile: "Choose firmware",
-        flashFlowConnect: "Connect USB",
-        flashFlowCheck: "Check device",
-        flashFlowInstall: "Install",
-        flashSafetyTitle: "Safe OTA update",
-        flashSafetyText: "The tool writes firmware to the backup app slot, then changes the boot slot. It does not erase books, settings, or the whole device flash.",
-        flashFileLabel: "1. Choose CrossVi firmware",
-        flashFileHint: "Choose firmware.bin from a CrossVi release. The file is checked in this browser before the device is connected.",
-        flashDownloadLatest: "Download the latest CrossVi firmware",
+        flashSafetyText: "Your books and settings are kept.",
+        flashFileLabel: "1. Choose a firmware file",
+        flashFileHint: "Choose the downloaded firmware.bin file.",
+        flashDownloadLatest: "Download latest firmware",
+        flashConnectLabel: "2. Connect your X3 / X4",
         flashBrowserUnsupported: "This browser cannot connect to USB devices. Open this page in Chrome or Edge on a computer.",
-        flashStart: "Connect and install firmware",
-        flashWorking: "Installing firmware…",
-        flashCableHint: "Keep the USB-C cable connected and leave this page open while installing. If the device still does not appear after changing cable/USB port, stop here; this tool does not unlock USB-locked devices.",
-        flashProgressTitle: "Device and progress",
-        flashProgressHint: "CrossVi checks for a compatible OTA partition layout before writing.",
+        flashStart: "Connect and install",
+        flashWorking: "Installing…",
+        flashCableHint: "Keep USB connected and leave this page open while installing.",
+        flashProgressTitle: "Installation progress",
         flashDisconnected: "Not connected",
         flashConnecting: "Connecting",
         flashReady: "Firmware is valid",
         flashInvalidFile: "Invalid file",
         flashCompleteBadge: "Complete",
         flashFailedBadge: "Install failed",
-        flashDeviceLabel: "Device layout",
-        flashTargetLabel: "Write target",
+        flashTechnicalDetails: "Technical details",
+        flashDeviceLabel: "Device",
+        flashTargetLabel: "Install location",
         flashNotDetected: "Not detected",
         flashNotSelected: "Not selected",
         flashDetectedDevice: "{layout}",
         flashStepConnect: "Connect device",
-        flashStepConnectHint: "Enter USB download mode and confirm ESP32-C3.",
-        flashStepLayout: "Check partitions",
-        flashStepLayoutHint: "Only a compatible CrossVi OTA layout is accepted.",
-        flashStepOta: "Choose backup slot",
-        flashStepOtaHint: "Keep the running firmware intact until writing finishes.",
-        flashStepWrite: "Write firmware",
-        flashStepWriteHint: "Do not disconnect the cable during this step.",
-        flashStepVerify: "Verify and switch slot",
-        flashStepVerifyHint: "Change the boot slot only after a successful write.",
+        flashStepLayout: "Check device",
+        flashStepWrite: "Install firmware",
         flashStepRestart: "Restart device",
-        flashStepRestartHint: "Start the device with the new firmware.",
-        flashFooterBrowser: "Chrome / Edge on desktop",
-        flashFooterSafety: "Does not erase NVS, books, or settings",
         flashCheckingFile: "Checking firmware…",
-        flashFileReady: "{name} · {size} · ESP32-C3",
-        flashComplete: "CrossVi was installed successfully. The device is restarting.",
+        flashFileReady: "{name} · {size}",
+        flashComplete: "CrossVi is installed. The device is restarting.",
         flashCancelled: "USB port selection was cancelled. Nothing was written.",
         flashFirmwareReadError: "This firmware file could not be read.",
         flashFirmwareInvalid: "This is not a valid CrossVi firmware file, or the download is incomplete.",
@@ -1198,6 +1151,7 @@
     let sourceError = false;
     let downloadUrl = null;
     let downloadGeneration = 0;
+    let imageSelectionGeneration = 0;
     let language = initialLanguage();
     let refreshVocabularyLanguage = () => {};
 
@@ -1648,6 +1602,7 @@
     });
 
     els.file.addEventListener("change", () => {
+      const selectionGeneration = ++imageSelectionGeneration;
       const file = els.file.files && els.file.files[0];
       revokeDownload();
       sourceImage = null;
@@ -1660,7 +1615,12 @@
         return;
       }
       const img = new Image();
+      const imageUrl = URL.createObjectURL(file);
       img.onload = () => {
+        if (selectionGeneration !== imageSelectionGeneration) {
+          URL.revokeObjectURL(imageUrl);
+          return;
+        }
         sourceImage = img;
         sourceRect = detectSourceRect(img);
         sourceInfo = {
@@ -1671,16 +1631,20 @@
         sourceError = false;
         refreshStatus();
         render();
-        URL.revokeObjectURL(img.src);
+        URL.revokeObjectURL(imageUrl);
       };
       img.onerror = () => {
+        if (selectionGeneration !== imageSelectionGeneration) {
+          URL.revokeObjectURL(imageUrl);
+          return;
+        }
         sourceInfo = null;
         sourceError = true;
         refreshStatus();
         render();
-        URL.revokeObjectURL(img.src);
+        URL.revokeObjectURL(imageUrl);
       };
-      img.src = URL.createObjectURL(file);
+      img.src = imageUrl;
     });
 
     function stepZoom(delta) {
@@ -1692,8 +1656,8 @@
     els.zoomDown.addEventListener("click", () => stepZoom(-5));
     els.zoomUp.addEventListener("click", () => stepZoom(5));
 
-    for (const el of [els.device, els.mode, els.fit, els.zoom, els.dither]) {
-      el.addEventListener("input", render);
+    els.zoom.addEventListener("input", render);
+    for (const el of [els.device, els.mode, els.fit, els.dither]) {
       el.addEventListener("change", render);
     }
 
@@ -1748,6 +1712,7 @@
       let vocabRows = [];
       let vocabNormalized = { entries: [], errors: [] };
       let statusState = null;
+      let vocabFileSelectionGeneration = 0;
 
       function escapeHtml(value) {
         const node = document.createElement("span");
@@ -1842,12 +1807,15 @@
       }
 
       vocab.file.addEventListener("change", async event => {
+        const selectionGeneration = ++vocabFileSelectionGeneration;
         const file = event.target.files && event.target.files[0];
         if (!file) return;
         setVocabStatus("", "vocabReading");
         try {
           if (!window.XLSX) throw new Error("excel-unavailable");
-          const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellText: true, cellDates: false });
+          const buffer = await file.arrayBuffer();
+          if (selectionGeneration !== vocabFileSelectionGeneration) return;
+          const workbook = XLSX.read(buffer, { type: "array", cellText: true, cellDates: false });
           if (!workbook.SheetNames.length) throw new Error("no-sheets");
           vocabRows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
             header: 1, raw: false, defval: ""
@@ -1859,6 +1827,7 @@
           setVocabStatus("", null);
           updateVocabularyPreview();
         } catch (error) {
+          if (selectionGeneration !== vocabFileSelectionGeneration) return;
           vocabRows = [];
           vocabNormalized = { entries: [], errors: [] };
           vocab.mapping.classList.add("hidden");

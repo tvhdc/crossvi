@@ -25,6 +25,9 @@
     let fileInfo = null;
     let busy = false;
     let statusState = null;
+    let fileSelectionGeneration = 0;
+    const displayStepForCoreStep = [0, 1, 1, 2, 3, 3];
+    const completesDisplayStep = [true, false, true, true, false, true];
 
     function resetSteps() {
       ui.steps.forEach(step => { step.dataset.state = "idle"; });
@@ -53,7 +56,7 @@
         ui.fileStatus.textContent = tools.t("flashFileHint");
       }
       if (statusState) ui.status.textContent = tools.t(statusState.key, statusState.values);
-      if (!busy && firmware) ui.start.textContent = tools.t("flashStart");
+      ui.start.textContent = tools.t(busy ? "flashWorking" : "flashStart");
     }
 
     function errorText(error) {
@@ -88,16 +91,19 @@
 
     function updateStartState() {
       const supported = Boolean(navigator.serial && globalThis.crypto && globalThis.crypto.subtle);
+      ui.file.disabled = busy;
       ui.start.disabled = busy || !firmware || !supported;
       ui.browserWarning.classList.toggle("hidden", supported);
     }
 
     ui.file.addEventListener("change", async () => {
+      const selectionGeneration = ++fileSelectionGeneration;
       firmware = null;
       fileInfo = null;
       resetSteps();
       setBadge("", "flashDisconnected");
       setStatus("", null);
+      updateStartState();
       const file = ui.file.files && ui.file.files[0];
       if (!file) {
         ui.fileStatus.textContent = tools.t("flashFileHint");
@@ -108,12 +114,15 @@
       ui.fileStatus.textContent = tools.t("flashCheckingFile");
       try {
         const candidate = new Uint8Array(await file.arrayBuffer());
+        if (selectionGeneration !== fileSelectionGeneration) return;
         await core.validateFirmwareImage(candidate);
+        if (selectionGeneration !== fileSelectionGeneration) return;
         firmware = candidate;
         fileInfo = { name: file.name, size: tools.formatSize(file.size) };
         ui.fileStatus.textContent = tools.t("flashFileReady", fileInfo);
         setBadge("solid", "flashReady");
       } catch (error) {
+        if (selectionGeneration !== fileSelectionGeneration) return;
         const failure = errorText(error);
         setStatus("error", failure.key, failure.values);
         setBadge("", "flashInvalidFile");
@@ -139,7 +148,9 @@
         await flasher.flashFirmware(firmware, {
           validated: true,
           onStep: (index, state) => {
-            if (ui.steps[index]) ui.steps[index].dataset.state = state;
+            const step = ui.steps[displayStepForCoreStep[index]];
+            if (!step) return;
+            step.dataset.state = state === "done" && !completesDisplayStep[index] ? "running" : state;
           },
           onProgress: (written, total) => {
             const percent = total ? Math.min(100, Math.round((written * 100) / total)) : 0;
