@@ -1267,11 +1267,21 @@ class CodegenTest(unittest.TestCase):
 
     def test_network_directory_streamers_reject_unreadable_entry_names(self):
         server = (REPO_ROOT / "src/network/CrossPointWebServer.cpp").read_text(encoding="utf-8")
-        scan = server[server.index("void CrossPointWebServer::scanFiles") :]
+        scan = server[server.index("bool CrossPointWebServer::scanFiles") :]
         scan = scan[: scan.index("bool CrossPointWebServer::isEpubFile")]
         self.assertIn("const size_t nameLength = file.getName(name, sizeof(name));", scan)
         self.assertIn("name[0] == '\\0'", scan)
         self.assertIn("name[nameLength] != '\\0'", scan)
+        self.assertIn("const bool complete = root.getError() == 0;", scan)
+        self.assertIn("return complete;", scan)
+
+        listing = server[server.index("void CrossPointWebServer::handleFileListData") :]
+        listing = listing[: listing.index("void CrossPointWebServer::handleDownload")]
+        self.assertIn("const bool complete = scanFiles(", listing)
+        incomplete = listing[listing.index("if (!complete)") :]
+        self.assertIn("server->client().stop();", incomplete)
+        self.assertLess(incomplete.index("server->client().stop();"), incomplete.index("return;"))
+        self.assertLess(listing.index("if (!complete)"), listing.index("batch[context.batchLength++] = ']';"))
 
         webdav = (REPO_ROOT / "src/network/WebDAVHandler.cpp").read_text(encoding="utf-8")
         propfind = webdav[webdav.index("void WebDAVHandler::handlePropfind") :]
@@ -1279,6 +1289,11 @@ class CodegenTest(unittest.TestCase):
         self.assertIn("const size_t nameLength = file.getName(name, sizeof(name));", propfind)
         self.assertIn("name[0] == '\\0'", propfind)
         self.assertIn("name[nameLength] != '\\0'", propfind)
+        self.assertIn("if (root.getError() != 0)", propfind)
+        incomplete = propfind[propfind.index("if (root.getError() != 0)") :]
+        self.assertIn("s.client().stop();", incomplete)
+        self.assertLess(incomplete.index("s.client().stop();"), incomplete.index("return;"))
+        self.assertLess(propfind.index("if (root.getError() != 0)"), propfind.rindex('s.sendContent("</D:multistatus>'))
 
     def test_webdav_move_does_not_keep_an_unreachable_overwrite_status(self):
         webdav = (REPO_ROOT / "src/network/WebDAVHandler.cpp").read_text(encoding="utf-8")
@@ -2911,6 +2926,8 @@ class CodegenTest(unittest.TestCase):
         auth = (REPO_ROOT / "src/activities/settings/KOReaderAuthActivity.cpp").read_text(encoding="utf-8")
         authenticate = auth[auth.index("void KOReaderAuthActivity::onWifiSelectionComplete") :
                             auth.index("void KOReaderAuthActivity::performAuthentication")]
+        self.assertIn("WiFi.setSleep(false);", authenticate)
+        self.assertLess(authenticate.index("WiFi.setSleep(false);"), authenticate.index("performAuthentication();"))
         self.assertLess(authenticate.index("requestUpdateAndWait()"), authenticate.index("clearAllCaches()"))
         self.assertLess(authenticate.index("clearAllCaches()"), authenticate.index("performAuthentication();"))
 
@@ -4993,22 +5010,19 @@ class CodegenTest(unittest.TestCase):
                          source.index("void ClockSyncActivity::runSync")]
         self.assertIn("state = SUCCESS;", success)
 
-    def test_koreader_sync_reuses_successful_ntp_sync_from_wifi_selection(self):
+    def test_koreader_sync_starts_without_a_second_local_ntp_wait(self):
         source = (REPO_ROOT / "src/activities/reader/KOReaderSyncActivity.cpp").read_text(encoding="utf-8")
         header = (REPO_ROOT / "src/activities/reader/KOReaderSyncActivity.h").read_text(encoding="utf-8")
-        enter = source[source.index("void KOReaderSyncActivity::onEnter()") :
-                       source.index("void KOReaderSyncActivity::onExit()")]
         callback = source[source.index("void KOReaderSyncActivity::onWifiSelectionComplete") :
                           source.index("void KOReaderSyncActivity::performSync")]
 
-        self.assertIn("wifiSelectionAutoSyncExpected", header)
-        self.assertIn("ClockSyncPolicy::shouldSyncFromNetwork", enter)
-        self.assertIn("wifiSelectionAutoSyncExpected", callback)
-        self.assertIn("SETTINGS.clockHasBeenSynced", callback)
-        self.assertIn("halClock.isSystemTimeValid()", callback)
-        self.assertIn("if (!wifiSelectionAutoSyncCompleted)", callback)
-        ntp_guard = callback[callback.index("if (!wifiSelectionAutoSyncCompleted)") :]
-        self.assertIn("syncTimeWithNTP();", ntp_guard)
+        self.assertNotIn("wifiSelectionAutoSyncExpected", header)
+        self.assertNotIn("syncTimeWithNTP", source)
+        self.assertNotIn("esp_sntp", source)
+        self.assertIn("WiFi.setSleep(false);", callback)
+        self.assertIn("statusMessage = tr(STR_CALC_HASH);", callback)
+        self.assertLess(callback.index("WiFi.setSleep(false);"), callback.index("performSync();"))
+        self.assertLess(callback.index("statusMessage = tr(STR_CALC_HASH);"), callback.index("performSync();"))
 
     def test_web_settings_serializes_wifi_and_opds_mutations(self):
         page = (REPO_ROOT / "src/network/html/SettingsPage.html").read_text(encoding="utf-8")

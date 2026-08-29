@@ -513,17 +513,17 @@ void CrossPointWebServer::handleStatus() const {
   server->send(200, "application/json", response);
 }
 
-void CrossPointWebServer::scanFiles(const char* path, const FileVisitor visitor, void* context) const {
+bool CrossPointWebServer::scanFiles(const char* path, const FileVisitor visitor, void* context) const {
   HalFile root = Storage.open(path);
   if (!root) {
     LOG_DBG("WEB", "Failed to open directory: %s", path);
-    return;
+    return false;
   }
 
   if (!root.isDirectory()) {
     LOG_DBG("WEB", "Not a directory: %s", path);
     root.close();
-    return;
+    return false;
   }
 
   LOG_DBG("WEB", "Scanning files in: %s", path);
@@ -579,7 +579,10 @@ void CrossPointWebServer::scanFiles(const char* path, const FileVisitor visitor,
     resetTaskWatchdogIfSubscribed();  // Reset watchdog to prevent timeout on large directories
     file = root.openNextFile();
   }
+  const bool complete = root.getError() == 0;
+  if (!complete) LOG_ERR("WEB", "Directory listing failed before completion: %s", path);
   root.close();
+  return complete;
 }
 
 bool CrossPointWebServer::isEpubFile(const String& filename) const { return FsHelpers::hasEpubExtension(filename); }
@@ -621,7 +624,7 @@ void CrossPointWebServer::handleFileListData() const {
     server->sendContent("[");
   }
 
-  scanFiles(
+  const bool complete = scanFiles(
       currentPath.c_str(),
       [](const FileInfo& info, void* rawContext) {
         auto& context = *static_cast<FileListContext*>(rawContext);
@@ -653,6 +656,11 @@ void CrossPointWebServer::handleFileListData() const {
         context.seenFirst = true;
       },
       &context);
+
+  if (!complete) {
+    server->client().stop();
+    return;
+  }
 
   if (batch) {
     if (context.batchLength + 1 > BATCH_CAPACITY) {

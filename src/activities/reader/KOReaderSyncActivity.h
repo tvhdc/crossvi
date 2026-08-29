@@ -88,7 +88,6 @@ class KOReaderSyncActivity final : public Activity {
 
   // Tracks whether this session used WiFi so onExit can release the radio.
   bool wifiActivated = false;
-  bool wifiSelectionAutoSyncExpected = false;
 
   void onWifiSelectionComplete(bool success);
   void performSync();

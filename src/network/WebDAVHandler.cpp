@@ -290,6 +290,13 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
     }
   }
 
+  if (root.getError() != 0) {
+    LOG_ERR("DAV", "Directory listing failed before completion: %s", path.c_str());
+    root.close();
+    s.client().stop();
+    return;
+  }
+
   root.close();
   s.sendContent("</D:multistatus>\n");
   s.sendContent("");
