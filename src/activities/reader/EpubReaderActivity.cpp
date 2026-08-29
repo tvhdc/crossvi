@@ -322,6 +322,7 @@ void EpubReaderActivity::onEnter() {
   globalReadingStatsWritable = false;
   deferredOpenStatePending = true;
   deferredOpenStateReady = false;
+  postVisibleIdleGuard.reset();
   deferredGlobalPageTurns = 0;
   readingSessionTracker = ReadingSessionTracker{};
   sessionReadingSeconds = 0;
@@ -582,6 +583,7 @@ void EpubReaderActivity::consumeReadingViewSignal() {
   const uint32_t eventAtMs = pendingReadingViewAtMs.load(std::memory_order_relaxed);
   if (signal > 0) {
     deferredOpenStateReady = true;
+    postVisibleIdleGuard.pageVisible(eventAtMs);
     deferredCoverFirstPageVisible = true;
     if (!bookmarksLoaded) deferredBookmarkLoadPending = true;
     if (readingSessionTracker.pageVisible(eventAtMs)) {
@@ -1099,6 +1101,7 @@ void EpubReaderActivity::loop() {
                                mappedInput.isPressed(MappedInputManager::Button::Right) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageForward);
+  if (inputEdge) postVisibleIdleGuard.noteInput(static_cast<uint32_t>(millis()));
 
   if (safeModePromptRequested.exchange(false, std::memory_order_acq_rel)) {
     startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_EPUB_SAFE_MODE),
@@ -1486,7 +1489,8 @@ void EpubReaderActivity::loop() {
   const bool nextTriggered = pageGesture.next;
   const bool longPress = pageGesture.longPress;
   if (!prevTriggered && !nextTriggered) {
-    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() &&
+        postVisibleIdleGuard.canRunDeferredWork(static_cast<uint32_t>(millis()))) {
       {
         RenderLock progressLock(std::try_to_lock);
         if (progressLock.ownsLock() && !activityManager.hasPendingRender() && pendingPageTurnDelta == 0 &&

@@ -103,9 +103,9 @@ bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentatio
   if (!loadTrustedBookReadingStats(recent, bookStats, &plainText)) return false;
   ReadingStatsDateTime now;
   const ReadingStatsDateTime* current = getCurrentLocalReadingStatsDateTime(now) ? &now : nullptr;
-  presentation = buildReadingStatsPresentation(bookStats, true, GlobalReadingStats{}, false,
-                                               GlobalReadingStatsAggregation{}, current,
-                                               ReadingStatsMetric::unavailable(), false);
+  presentation =
+      buildReadingStatsPresentation(bookStats, true, GlobalReadingStats{}, false, GlobalReadingStatsAggregation{},
+                                    current, ReadingStatsMetric::unavailable(), false);
   if (plainText) markReadingStatsPageMetricsNotApplicable(presentation);
   return true;
 }

@@ -22,6 +22,7 @@ constexpr unsigned long GO_BACK_OR_HOME_MS = GO_HOME_MS;
 constexpr unsigned long SKIP_HOLD_MS = 700;
 constexpr unsigned long CONFIRM_HOLD_MS = 500;
 constexpr unsigned long BOOKMARK_MESSAGE_DURATION_MS = 2500;
+constexpr uint32_t POST_VISIBLE_IDLE_MS = 1000;
 constexpr uint8_t DEFAULT_AUTO_PAGE_TURN_SECONDS = 30;
 constexpr int8_t MAX_QUEUED_PAGE_TURNS = 8;
 constexpr size_t GRAYSCALE_STRIP_SCRATCH_BYTES = 13U * 1024U;
@@ -111,6 +112,33 @@ inline bool consumeInitialRelease(bool& armed, const bool wasReleased, const boo
   if (wasReleased || !isPressed) armed = false;
   return true;
 }
+
+// Keep optional SD work away from the first visible page and from fresh input.
+// Calls made before a page reaches the panel are deliberately ignored: loading
+// input must never be replayed once the reader becomes interactive.
+struct PostVisibleIdleGuard {
+  bool firstPageVisible = false;
+  uint32_t idleSinceMs = 0;
+
+  void reset() {
+    firstPageVisible = false;
+    idleSinceMs = 0;
+  }
+
+  void pageVisible(const uint32_t atMs) {
+    if (firstPageVisible) return;
+    firstPageVisible = true;
+    idleSinceMs = atMs;
+  }
+
+  void noteInput(const uint32_t atMs) {
+    if (firstPageVisible) idleSinceMs = atMs;
+  }
+
+  bool canRunDeferredWork(const uint32_t nowMs) const {
+    return firstPageVisible && nowMs - idleSinceMs >= POST_VISIBLE_IDLE_MS;
+  }
+};
 
 inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   switch (orientation) {

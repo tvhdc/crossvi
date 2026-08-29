@@ -102,6 +102,7 @@ class EpubReaderActivity final : public Activity {
   bool skipStartupRecentUpdate = false;
   bool deferredOpenStatePending = true;
   bool deferredOpenStateReady = false;
+  ReaderUtils::PostVisibleIdleGuard postVisibleIdleGuard;
   bool readerStateSaveRetryPending = false;
   uint32_t deferredGlobalPageTurns = 0;
   std::atomic<bool> safeModePromptRequested{false};

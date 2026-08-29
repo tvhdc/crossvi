@@ -3392,6 +3392,24 @@ class CodegenTest(unittest.TestCase):
             for phase in ("input", "queued", "render_begin", "visible"):
                 self.assertIn(f'"{phase}"', reader)
 
+    def test_reader_secondary_open_work_waits_for_post_visible_input_idle(self):
+        utils = (REPO_ROOT / "src/activities/reader/ReaderUtils.h").read_text(encoding="utf-8")
+        opening = (REPO_ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("struct PostVisibleIdleGuard", utils)
+        self.assertIn("POST_VISIBLE_IDLE_MS = 1000", utils)
+        self.assertNotIn("PostVisibleIdleGuard", opening)
+
+        for name in ("EpubReaderActivity", "TxtReaderActivity", "XtcReaderActivity"):
+            reader = (REPO_ROOT / f"src/activities/reader/{name}.cpp").read_text(encoding="utf-8")
+            header = (REPO_ROOT / f"src/activities/reader/{name}.h").read_text(encoding="utf-8")
+            loop = reader[reader.index(f"void {name}::loop()") :]
+            consume = reader[reader.index(f"void {name}::consumeReadingViewSignal()") :]
+
+            self.assertIn("ReaderUtils::PostVisibleIdleGuard postVisibleIdleGuard", header)
+            self.assertIn("postVisibleIdleGuard.noteInput", loop)
+            self.assertIn("postVisibleIdleGuard.canRunDeferredWork", loop)
+            self.assertIn("postVisibleIdleGuard.pageVisible(eventAtMs)", consume)
+
     def test_txt_page_index_recovery_keeps_backup_after_io_error(self):
         reader = (REPO_ROOT / "src/activities/reader/TxtReaderActivity.cpp").read_text(encoding="utf-8")
         recovery = reader[reader.index("bool TxtReaderActivity::loadPageIndexCache()") :]

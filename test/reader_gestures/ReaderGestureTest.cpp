@@ -98,6 +98,42 @@ TEST(ReaderGesture, UsesThirtySecondsOnlyWhenNoPreviousAutoTurnIntervalExists) {
   EXPECT_EQ(ReaderUtils::autoPageTurnShortcutSeconds(45), 45);
 }
 
+TEST(ReaderGesture, DefersSecondaryWorkUntilOneSecondAfterTheFirstVisiblePage) {
+  ReaderUtils::PostVisibleIdleGuard guard;
+
+  EXPECT_FALSE(guard.canRunDeferredWork(5000));
+  guard.pageVisible(5000);
+  EXPECT_FALSE(guard.canRunDeferredWork(5000 + ReaderUtils::POST_VISIBLE_IDLE_MS - 1));
+  EXPECT_TRUE(guard.canRunDeferredWork(5000 + ReaderUtils::POST_VISIBLE_IDLE_MS));
+}
+
+TEST(ReaderGesture, RestartsThePostVisibleIdleWindowAfterInput) {
+  ReaderUtils::PostVisibleIdleGuard guard;
+
+  guard.pageVisible(100);
+  guard.noteInput(800);
+  EXPECT_FALSE(guard.canRunDeferredWork(800 + ReaderUtils::POST_VISIBLE_IDLE_MS - 1));
+  EXPECT_TRUE(guard.canRunDeferredWork(800 + ReaderUtils::POST_VISIBLE_IDLE_MS));
+}
+
+TEST(ReaderGesture, IgnoresInputTimingBeforeTheFirstPageIsVisible) {
+  ReaderUtils::PostVisibleIdleGuard guard;
+
+  guard.noteInput(900);
+  guard.pageVisible(1000);
+  EXPECT_FALSE(guard.canRunDeferredWork(1000 + ReaderUtils::POST_VISIBLE_IDLE_MS - 1));
+  EXPECT_TRUE(guard.canRunDeferredWork(1000 + ReaderUtils::POST_VISIBLE_IDLE_MS));
+}
+
+TEST(ReaderGesture, HandlesMillisWrapInThePostVisibleIdleWindow) {
+  ReaderUtils::PostVisibleIdleGuard guard;
+  constexpr uint32_t visibleAt = UINT32_MAX - 200;
+
+  guard.pageVisible(visibleAt);
+  EXPECT_FALSE(guard.canRunDeferredWork(visibleAt + ReaderUtils::POST_VISIBLE_IDLE_MS - 1));
+  EXPECT_TRUE(guard.canRunDeferredWork(visibleAt + ReaderUtils::POST_VISIBLE_IDLE_MS));
+}
+
 TEST(ReaderGesture, SkipsTheEpubCoverOnlyForAnOrdinaryFirstOpen) {
   EXPECT_TRUE(ReaderUtils::shouldSkipInitialEpubCover(true, false, false));
   EXPECT_FALSE(ReaderUtils::shouldSkipInitialEpubCover(false, false, false));

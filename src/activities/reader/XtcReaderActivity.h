@@ -54,6 +54,7 @@ class XtcReaderActivity final : public Activity {
   bool skipStartupRecentUpdate = false;
   bool deferredOpenStatePending = true;
   bool deferredOpenStateReady = false;
+  ReaderUtils::PostVisibleIdleGuard postVisibleIdleGuard;
   bool readerStateSaveRetryPending = false;
   uint32_t deferredGlobalPageTurns = 0;
   // Next-book suggestion menu for the End-of-Book screen

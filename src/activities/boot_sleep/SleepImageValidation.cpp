@@ -69,7 +69,6 @@ Bmp32HeaderStatus readBmp32Header(HalFile& file, Bmp32Header& out) {
     uint32_t redMask = 0;
     uint32_t greenMask = 0;
     uint32_t blueMask = 0;
-    uint32_t alphaMask = 0;
     if (!readLE32(file, redMask) || !readLE32(file, greenMask) || !readLE32(file, blueMask) ||
         redMask != 0x00FF0000UL || greenMask != 0x0000FF00UL || blueMask != 0x000000FFUL) {
       return Bmp32HeaderStatus::Invalid;
@@ -77,6 +76,7 @@ Bmp32HeaderStatus readBmp32Header(HalFile& file, Bmp32Header& out) {
     externalMaskBytes = dibSize == 40 ? 12ULL : 0ULL;
     const bool alphaMaskPresent = dibSize >= 56 || (dibSize == 40 && pixelOffset >= 70);
     if (alphaMaskPresent) {
+      uint32_t alphaMask = 0;
       if (!readLE32(file, alphaMask) || (alphaMask != 0 && alphaMask != 0xFF000000UL)) {
         return Bmp32HeaderStatus::Invalid;
       }

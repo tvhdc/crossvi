@@ -65,7 +65,7 @@ BitmapCacheState Bitmap::inspectDerivedCache(const std::string& finalPath) {
     }
     if (!Storage.rename(backupPath.c_str(), finalPath.c_str())) return BitmapCacheState::IoError;
     return inspectFile(finalPath.c_str()) == BitmapFileStatus::Valid ? BitmapCacheState::Ready
-                                                                    : BitmapCacheState::IoError;
+                                                                     : BitmapCacheState::IoError;
   }
   if (backupStatus == BitmapFileStatus::Invalid && !Storage.remove(backupPath.c_str())) {
     return BitmapCacheState::IoError;

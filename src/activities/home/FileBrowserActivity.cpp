@@ -196,7 +196,7 @@ const std::string* FileBrowserActivity::visibleEntry(const size_t index) const {
 
 void FileBrowserActivity::launchSearch() {
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_BOOKS),
-                         searchQuery, BOOK_SEARCH_QUERY_BYTES),
+                                                                 searchQuery, BOOK_SEARCH_QUERY_BYTES),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
                              lockLongPressBack = true;

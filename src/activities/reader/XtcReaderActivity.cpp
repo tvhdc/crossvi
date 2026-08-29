@@ -126,6 +126,7 @@ void XtcReaderActivity::onEnter() {
   globalReadingStatsWritable = false;
   deferredOpenStatePending = true;
   deferredOpenStateReady = false;
+  postVisibleIdleGuard.reset();
   deferredGlobalPageTurns = 0;
   readingSessionTracker = ReadingSessionTracker{};
   sessionReadingSeconds = 0;
@@ -400,6 +401,7 @@ void XtcReaderActivity::loop() {
                                mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageForward);
   if (inputEdge) {
+    postVisibleIdleGuard.noteInput(static_cast<uint32_t>(millis()));
     deferredCoverLastInputAt = static_cast<uint32_t>(millis());
     if (xtc->thumbnailPreparationActive()) xtc->cancelThumbnailPreparation();
   }
@@ -556,7 +558,7 @@ void XtcReaderActivity::loop() {
     }
   }
   if (!prevTriggered && !nextTriggered) {
-    if (!inputEdge && !readerInputHeld) {
+    if (!inputEdge && !readerInputHeld && postVisibleIdleGuard.canRunDeferredWork(static_cast<uint32_t>(millis()))) {
       finishDeferredOpenState();
       if (static_cast<uint32_t>(millis()) - deferredCoverLastInputAt >= DEFERRED_COVER_IDLE_MS) {
         pumpDeferredCoverPreparation();
@@ -980,6 +982,7 @@ void XtcReaderActivity::consumeReadingViewSignal() {
   const uint32_t eventAtMs = pendingReadingViewAtMs.load(std::memory_order_relaxed);
   if (signal > 0) {
     deferredOpenStateReady = true;
+    postVisibleIdleGuard.pageVisible(eventAtMs);
     if (readingSessionTracker.pageVisible(eventAtMs)) {
       ReadingStatsDateTime localStart;
       hasActiveReadingSpanStartLocalDateTime = getCurrentLocalReadingStatsDateTime(localStart);

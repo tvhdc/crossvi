@@ -181,6 +181,7 @@ void TxtReaderActivity::onEnter() {
   globalReadingStatsWritable = false;
   deferredOpenStatePending = true;
   deferredOpenStateReady = false;
+  postVisibleIdleGuard.reset();
   deferredGlobalPageTurns = 0;
   readingSessionTracker = ReadingSessionTracker{};
   sessionReadingSeconds = 0;
@@ -304,6 +305,7 @@ void TxtReaderActivity::loop() {
                                mappedInput.isPressed(MappedInputManager::Button::Right) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
                                mappedInput.isPressed(MappedInputManager::Button::PageForward);
+  if (inputEdge) postVisibleIdleGuard.noteInput(static_cast<uint32_t>(millis()));
   const bool indexWorkPending = pageIndexing.load(std::memory_order_acquire);
   const bool readerReady =
       initialized.load(std::memory_order_acquire) && !initializationFailed && pageIndexComplete && pageOffsetCount > 0;
@@ -407,7 +409,8 @@ void TxtReaderActivity::loop() {
     }
   }
   if (!prevTriggered && !nextTriggered) {
-    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender()) {
+    if (!inputEdge && !readerInputHeld && !activityManager.hasPendingRender() &&
+        postVisibleIdleGuard.canRunDeferredWork(static_cast<uint32_t>(millis()))) {
       finishDeferredOpenState();
     }
     return;
@@ -1483,6 +1486,7 @@ void TxtReaderActivity::consumeReadingViewSignal() {
   const uint32_t eventAtMs = pendingReadingViewAtMs.load(std::memory_order_relaxed);
   if (signal > 0) {
     deferredOpenStateReady = true;
+    postVisibleIdleGuard.pageVisible(eventAtMs);
     if (readingSessionTracker.pageVisible(eventAtMs)) {
       ReadingStatsDateTime localStart;
       hasActiveReadingSpanStartLocalDateTime = getCurrentLocalReadingStatsDateTime(localStart);
