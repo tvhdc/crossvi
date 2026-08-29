@@ -14,14 +14,15 @@
 
 CrossVi extends
 [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)
-with a richer library, reading statistics, configurable Home layouts, and
-additional safeguards for data stored on the SD card.
+with a faster library, detailed reading statistics and achievements, flexible
+sleep screens, user-made vocabulary sets, and additional safeguards for data
+stored on the SD card.
 
 > [!WARNING]
 > CrossVi has not yet been validated on every newer X3/X4 hardware revision.
 > Read [Hardware compatibility](#hardware-compatibility) before flashing.
 
-**[Download v1.1.2](https://github.com/tvhdc/crossvi/releases/download/v1.1.2/firmware.bin) ·
+**[Download v1.1.3](https://github.com/tvhdc/crossvi/releases/download/v1.1.3/firmware.bin) ·
 [Installation](#installation) · [User Guide](USER_GUIDE.md) ·
 [CrossVi Tools](https://tvhdc.github.io/crossvi/tools/) ·
 [Report a Bug](https://github.com/tvhdc/crossvi/issues/new?template=bug_report.yml) ·
@@ -31,24 +32,41 @@ additional safeguards for data stored on the SD card.
 
 - **Reading:** EPUB, TXT, Markdown, XTC, XTCH, and BMP.
 - **Library:** Four Home layouts, list and cover views, search, sorting, paging,
-  pinning, incremental updates, EPUB image optimization, and reusable cover caches.
+  pinning, responsive incremental loading, EPUB image optimization, and
+  reusable cover caches.
 - **Reader tools:** Bookmarks, highlights, dictionary lookup, in-book search,
-  clipping export, screenshots, and device, book, and calendar statistics.
-- **Customization:** Built-in Noto Serif and downloadable fonts up to 28 pt, per-book
-  typography, margins, spacing, orientation, image handling, and reader dark mode.
+  clipping export, screenshots, finished-book details, reading achievements,
+  and device, book, and calendar statistics.
+- **Customization:** Built-in Noto Serif and downloadable fonts up to 28 pt,
+  per-book typography, margins, spacing, orientation, image handling, and
+  reader dark mode.
+- **Sleep screens:** Default, cover, reading-statistics, and custom BMP/PNG modes;
+  custom images support transparency and keep independent size and position
+  settings.
 - **Learning and migration:** Vocabulary quizzes using the built-in 3,000-word
   English-Vietnamese set or a user-made spreadsheet set, plus one-time
   reading-statistics import from CPR-vCodex.
-- **Connectivity:** Wi-Fi file transfer, OPDS, Calibre/WebDAV, KOReader Sync, OTA, and Nearby Sync.
+- **Connectivity and tools:** Wi-Fi file transfer, OPDS, Calibre/WebDAV, KOReader
+  Sync, OTA, Nearby Sync, and browser tools for sleep images, vocabulary sets,
+  and firmware installation.
 - **Device and reliability:** Configurable buttons, sleep screens, Quick Resume,
-  clock, automatic and tilt page turns, plus transactional storage for important data.
+  clock, automatic and tilt page turns, plus transactional storage for important
+  data.
 
 ## Installation
 
 Download [`firmware.bin`](https://github.com/tvhdc/crossvi/releases/latest/download/firmware.bin)
-from the latest [CrossVi release](https://github.com/tvhdc/crossvi/releases), then select
-**Custom .bin** in the [CrossPoint web flasher](https://crosspointreader.com/#flash-tools).
-Back up the SD card before flashing.
+from the latest [CrossVi release](https://github.com/tvhdc/crossvi/releases).
+
+For an existing CrossVi installation with a compatible OTA layout, open
+[CrossVi Tools](https://tvhdc.github.io/crossvi/tools/) in Chrome or Edge on a
+desktop computer, choose **Install firmware**, and select the downloaded file.
+The installer writes the inactive application slot and keeps books and settings.
+
+CrossVi Tools is not an unlocker or a first-install tool. For a first installation
+on a known-compatible, recoverable device, select **Custom .bin** in the
+[CrossPoint web flasher](https://crosspointreader.com/#flash-tools). Back up the
+SD card before either installation method.
 
 ## Hardware compatibility
 
@@ -62,7 +80,7 @@ display or power hardware.
   [controller work](https://github.com/crosspoint-reader/crosspoint-reader/pull/2707).
 - **New X4 units:** Some revisions require a
   [battery-latch fix](https://github.com/crosspoint-reader/crosspoint-reader/pull/2774)
-  to remain powered without USB. CrossVi 1.1.2 includes that behavior, but it
+  to remain powered without USB. CrossVi 1.1.3 includes that behavior, but it
   has not yet been validated on a new-revision X4.
 
 Keep the SD card backed up and flash only a recoverable device.

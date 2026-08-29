@@ -3804,10 +3804,10 @@ class CodegenTest(unittest.TestCase):
 
     def test_version_mapping_preserves_existing_environment_contract(self):
         module = load_git_branch()
-        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.2")
-        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.2-slim")
-        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.2-simulator")
-        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.2-simulator")
+        self.assertEqual(module.compute_version("gh_release", str(REPO_ROOT)), "1.1.3")
+        self.assertEqual(module.compute_version("slim", str(REPO_ROOT)), "1.1.3-slim")
+        self.assertEqual(module.compute_version("simulator_x3", str(REPO_ROOT)), "1.1.3-simulator")
+        self.assertEqual(module.compute_version("simulator_x4", str(REPO_ROOT)), "1.1.3-simulator")
 
     def test_ota_valid_mark_retries_transient_failures(self):
         main = (REPO_ROOT / "src/main.cpp").read_text(encoding="utf-8")
