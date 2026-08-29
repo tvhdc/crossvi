@@ -2,6 +2,7 @@
 
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -23,6 +24,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ClockSyncPolicy.h"
 #include "util/WifiLifecycle.h"
 
 namespace {
@@ -131,18 +133,26 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
 
   LOG_DBG("KOSync", "WiFi connected, starting sync");
 
+  const bool wifiSelectionAutoSyncCompleted =
+      wifiSelectionAutoSyncExpected && SETTINGS.clockHasBeenSynced && halClock.isSystemTimeValid();
+  if (!wifiSelectionAutoSyncCompleted) {
+    {
+      RenderLock lock(*this);
+      state = SYNCING;
+      statusMessage = tr(STR_SYNCING_TIME);
+    }
+    requestUpdate(true);
+
+    // Sync time with NTP before making API requests. WifiSelectionActivity
+    // already did this when the connection required automatic clock sync.
+    syncTimeWithNTP();
+  } else {
+    LOG_DBG("KOSync", "Reusing NTP sync completed while WiFi was connecting");
+  }
+
   {
     RenderLock lock(*this);
     state = SYNCING;
-    statusMessage = tr(STR_SYNCING_TIME);
-  }
-  requestUpdate(true);
-
-  // Sync time with NTP before making API requests
-  syncTimeWithNTP();
-
-  {
-    RenderLock lock(*this);
     statusMessage = tr(STR_CALC_HASH);
   }
   requestUpdate(true);
@@ -152,6 +162,7 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
 
 void KOReaderSyncActivity::performSync() {
   const DocumentMatchMethod primaryMethod = KOREADER_STORE.getMatchMethod();
+  const bool smartSync = smartSyncEnabled();
   documentHash = calculateDocumentHashForMethod(epubPath, primaryMethod);
   if (documentHash.empty()) {
     {
@@ -183,7 +194,7 @@ void KOReaderSyncActivity::performSync() {
           matchMethodName(primaryMethod), result, KOReaderSyncClient::lastHttpCode, documentHash.c_str(),
           localProgress.percentage, remoteProgress.percentage, remoteProgress.progress.c_str());
 
-  if (smartSyncEnabled()) {
+  if (smartSync && (result == KOReaderSyncClient::OK || result == KOReaderSyncClient::NOT_FOUND)) {
     const DocumentMatchMethod altMethod = alternateMatchMethod(primaryMethod);
     const std::string altHash = calculateDocumentHashForMethod(epubPath, altMethod);
     if (!altHash.empty() && altHash != documentHash) {
@@ -193,8 +204,12 @@ void KOReaderSyncActivity::performSync() {
               matchMethodName(altMethod), altResult, KOReaderSyncClient::lastHttpCode, altHash.c_str(),
               localProgress.percentage, altProgress.percentage, altProgress.progress.c_str());
 
-      if (altResult == KOReaderSyncClient::OK &&
-          (result == KOReaderSyncClient::NOT_FOUND || altProgress.percentage > remoteProgress.percentage)) {
+      if (altResult != KOReaderSyncClient::OK && altResult != KOReaderSyncClient::NOT_FOUND) {
+        // Smart sync must not upload or apply progress while either identity
+        // probe has a hard failure: the unseen record may be further ahead.
+        result = altResult;
+      } else if (altResult == KOReaderSyncClient::OK &&
+                 (result == KOReaderSyncClient::NOT_FOUND || altProgress.percentage > remoteProgress.percentage)) {
         documentHash = altHash;
         remoteProgress = std::move(altProgress);
         result = KOReaderSyncClient::OK;
@@ -203,7 +218,7 @@ void KOReaderSyncActivity::performSync() {
   }
 
   if (result == KOReaderSyncClient::NOT_FOUND) {
-    if (smartSyncEnabled()) {
+    if (smartSync) {
       LOG_DBG("KOSync", "Smart sync: no remote progress found for known document hashes; uploading local %.6f",
               localProgress.percentage);
       performUpload();
@@ -230,6 +245,25 @@ void KOReaderSyncActivity::performSync() {
     return;
   }
 
+  if (smartSync) {
+    static constexpr float SAME_PROGRESS_EPSILON = 0.001f;  // 0.1 percentage points
+    const float delta = localProgress.percentage - remoteProgress.percentage;
+    LOG_DBG("KOSync", "Smart compare: doc=%s local=%.6f remote=%.6f delta=%.6f remoteXpath=%s", documentHash.c_str(),
+            localProgress.percentage, remoteProgress.percentage, delta, remoteProgress.progress.c_str());
+    if (std::fabs(delta) <= SAME_PROGRESS_EPSILON) {
+      completeAlreadySynced();
+      return;
+    }
+
+    if (delta > 0) {
+      // Alternate hashes are only probes for newer remote state. Keep uploads
+      // on the user's configured matching method so its primary record heals.
+      documentHash = primaryHash;
+      performUpload();
+      return;
+    }
+  }
+
   // Epub was released before sync to free RAM for the TLS handshake — reload it now.
   hasRemoteProgress = true;
   ensureEpubLoaded();
@@ -254,25 +288,11 @@ void KOReaderSyncActivity::performSync() {
     }
   }
 
-  if (smartSyncEnabled()) {
-    static constexpr float SAME_PROGRESS_EPSILON = 0.001f;  // 0.1 percentage points
+  if (smartSync) {
     const float delta = localProgress.percentage - remoteProgress.percentage;
-    LOG_DBG("KOSync", "Smart decision: doc=%s local=%.6f remote=%.6f delta=%.6f remoteXpath=%s mapped=%d/%d",
+    LOG_DBG("KOSync", "Smart apply: doc=%s local=%.6f remote=%.6f delta=%.6f remoteXpath=%s mapped=%d/%d",
             documentHash.c_str(), localProgress.percentage, remoteProgress.percentage, delta,
             remoteProgress.progress.c_str(), remotePosition.spineIndex, remotePosition.pageNumber);
-    if (std::fabs(delta) <= SAME_PROGRESS_EPSILON) {
-      completeAlreadySynced();
-      return;
-    }
-
-    if (delta > 0) {
-      // Alternate hashes are only probes for newer remote state. Keep uploads
-      // on the user's configured matching method so its primary record heals.
-      documentHash = primaryHash;
-      performUpload();
-      return;
-    }
-
     saveProgressAndReturn(remotePosition.spineIndex, remotePosition.pageNumber);
     return;
   }
@@ -392,6 +412,8 @@ void KOReaderSyncActivity::onEnter() {
 
   // Launch WiFi selection subactivity
   LOG_DBG("KOSync", "Launching WifiSelectionActivity...");
+  wifiSelectionAutoSyncExpected =
+      ClockSyncPolicy::shouldSyncFromNetwork(SETTINGS.clockHasBeenSynced, halClock.isSystemTimeValid());
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }

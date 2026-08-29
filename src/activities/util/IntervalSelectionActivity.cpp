@@ -22,13 +22,14 @@ void IntervalSelectionActivity::onEnter() {
 }
 
 void IntervalSelectionActivity::adjustValue(const int delta) {
+  const int previous = value;
   const int candidate = value + delta;
   if (minBoundaryLabelId != StrId::STR_NONE_OPT && candidate > minValue && candidate < minValue + smallStep) {
     value = delta > 0 ? minValue + smallStep : minValue;
   } else {
     value = clampedValue(candidate);
   }
-  requestUpdate();
+  if (value != previous) requestUpdate();
 }
 
 void IntervalSelectionActivity::drawStepHintLine(const int y, const StrId labelId, const int step) {

@@ -7,6 +7,9 @@
       "name": "Julia Nguyen"
     }
   ],
+  "dependencies": {
+    "Serialization": "*"
+  },
   "build": {
     "extraScript": "run_simulator.py"
   }

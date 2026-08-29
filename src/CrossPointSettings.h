@@ -56,8 +56,10 @@ class CrossPointSettings {
     SLEEP_SCREEN_READING_CALENDAR = 4,
     SLEEP_SCREEN_COVER_STATS = 5,
     SLEEP_SCREEN_CUSTOM_STATS = 6,
+    SLEEP_SCREEN_SELECTION_COUNT = 7,
+    // Legacy UI index accepted when older callers still pass the removed
+    // transparent-screen selection. It is no longer part of the visible list.
     SLEEP_SCREEN_TRANSPARENT = 7,
-    SLEEP_SCREEN_SELECTION_COUNT
   };
   static constexpr uint8_t sleepScreenSelection(const uint8_t mode) {
     switch (mode) {
@@ -65,6 +67,7 @@ class CrossPointSettings {
       case COVER_CUSTOM:
         return SLEEP_SCREEN_COVER;
       case CUSTOM:
+      case TRANSPARENT_CUSTOM:
         return SLEEP_SCREEN_CUSTOM;
       case BLANK:
         return SLEEP_SCREEN_BLANK;
@@ -74,8 +77,6 @@ class CrossPointSettings {
         return SLEEP_SCREEN_COVER_STATS;
       case CUSTOM_STATS:
         return SLEEP_SCREEN_CUSTOM_STATS;
-      case TRANSPARENT_CUSTOM:
-        return SLEEP_SCREEN_TRANSPARENT;
       case DARK:
       case LIGHT:
       case QUICK_RESUME:
@@ -88,7 +89,9 @@ class CrossPointSettings {
       case SLEEP_SCREEN_COVER:
         return COVER;
       case SLEEP_SCREEN_CUSTOM:
-        return CUSTOM;
+        // The unified Custom flow uses the overlay-capable renderer. Keeping
+        // its persisted mode at 10 also preserves useful downgrade behavior.
+        return TRANSPARENT_CUSTOM;
       case SLEEP_SCREEN_BLANK:
         return BLANK;
       case SLEEP_SCREEN_READING_CALENDAR:
@@ -533,7 +536,7 @@ class CrossPointSettings {
   char deviceDisplayName[64] = "";
   // Show the local device name in the Home header.
   uint8_t showDeviceNameOnHome = 1;
-  // Sunlight fading compensation
+  // Retained only to consume the old binary setting during migration.
   uint8_t fadingFix = 0;
   // Power button return from footnotes (1 = enabled, 0 = disabled)
   uint8_t pwrBtnFootnoteBack = 1;
@@ -604,9 +607,6 @@ class CrossPointSettings {
   }
   int getReaderFontId() const;
   int getDictionaryFontId() const;
-
-  // If count_only is true, returns the number of settings items that would be written.
-  uint8_t writeSettings(HalFile& file, bool count_only = false) const;
 
   bool saveToFile() const;
   bool loadFromFile();

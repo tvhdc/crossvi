@@ -381,7 +381,7 @@ void ReadingStatsActivity::loop() {
   }
   if (page == Page::Book && isCompletedBook(presentation) && !bookPath.empty()) {
     startActivityForResult(std::make_unique<BookReadingHistoryActivity>(renderer, mappedInput, bookPath, bookTitle),
-                           [this](const ActivityResult&) { requestUpdate(); });
+                           [](const ActivityResult&) {});
     return;
   }
   if (page == Page::Device) {

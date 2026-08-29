@@ -379,18 +379,19 @@ bool ReaderActivity::beginXtcLoad(const std::string& path) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return false;
   }
+  const bool preparedIdentityReusable = matchingPreparedIdentity && !replacementArtifactWasPresent &&
+                                        !hasBookFileReplacementArtifacts(path) && Storage.probeMedia();
 
-  if (preparedXtc && preparedXtc->getPath() == path && !recoverBookCacheUserState(preparedXtc->getCachePath(), path)) {
-    LOG_ERR("READER", "Could not recover staged XTC state: %s", preparedXtc->getCachePath().c_str());
-    return false;
-  }
-  if (preparedXtc && matchingPreparedIdentity && !replacementArtifactWasPresent &&
-      !hasBookFileReplacementArtifacts(path) && Storage.probeMedia()) {
+  if (preparedXtc && preparedIdentityReusable) {
     HalFile preparedFile;
     const bool sameDirectoryEntry = Storage.openFileForRead("READER", path, preparedFile) &&
                                     preparedSourceIdentity->matchesOpenFile(path, preparedFile);
     preparedFile.close();
     if (sameDirectoryEntry) {
+      if (!recoverBookCacheUserState(preparedXtc->getCachePath(), path)) {
+        LOG_ERR("READER", "Could not recover staged XTC state: %s", preparedXtc->getCachePath().c_str());
+        return false;
+      }
       LOG_DBG("READER", "Reusing prepared XTC source: %s", path.c_str());
       openingXtc = std::move(preparedXtc);
       return true;
@@ -407,11 +408,7 @@ bool ReaderActivity::beginXtcLoad(const std::string& path) {
     openingXtc.reset();
     return false;
   }
-  const RawSourceIdentityHandoff* reusableIdentity = nullptr;
-  if (matchingPreparedIdentity && !replacementArtifactWasPresent && !hasBookFileReplacementArtifacts(path) &&
-      Storage.probeMedia()) {
-    reusableIdentity = &*preparedSourceIdentity;
-  }
+  const RawSourceIdentityHandoff* reusableIdentity = preparedIdentityReusable ? &*preparedSourceIdentity : nullptr;
   if (!openingXtc->beginLoad(reusableIdentity)) {
     LOG_ERR("READER", "Failed to begin XTC load");
     openingXtc.reset();
@@ -464,13 +461,6 @@ bool ReaderActivity::finishXtcLoad(bool& deferCoverPreparation) {
       LOG_ERR("READER", "Could not persist XTC source identity: %s", initialBookPath.c_str());
       return false;
     }
-    ZipFile::SourceIdentity verifiedIdentity;
-    if (SourceIdentityStore::load(openingXtc->getCachePath(), verifiedIdentity) !=
-            SourceIdentityStore::LoadStatus::Primary ||
-        verifiedIdentity != currentIdentity) {
-      LOG_ERR("READER", "Could not verify XTC source identity: %s", initialBookPath.c_str());
-      return false;
-    }
   }
 
   const bool skipCoverCacheBuild = skipDerivedCoverCacheBuild();
@@ -504,9 +494,10 @@ bool ReaderActivity::beginTxtLoad(const std::string& path) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return false;
   }
+  const bool preparedIdentityReusable = matchingPreparedIdentity && !replacementArtifactWasPresent &&
+                                        !hasBookFileReplacementArtifacts(path) && Storage.probeMedia();
 
-  if (preparedTxt && matchingPreparedIdentity && !replacementArtifactWasPresent &&
-      !hasBookFileReplacementArtifacts(path) && Storage.probeMedia()) {
+  if (preparedTxt && preparedIdentityReusable) {
     HalFile preparedFile;
     const bool sameDirectoryEntry = Storage.openFileForRead("READER", path, preparedFile) &&
                                     preparedSourceIdentity->matchesOpenFile(path, preparedFile);
@@ -537,11 +528,7 @@ bool ReaderActivity::beginTxtLoad(const std::string& path) {
     openingTxt.reset();
     return false;
   }
-  const RawSourceIdentityHandoff* reusableIdentity = nullptr;
-  if (matchingPreparedIdentity && !replacementArtifactWasPresent && !hasBookFileReplacementArtifacts(path) &&
-      Storage.probeMedia()) {
-    reusableIdentity = &*preparedSourceIdentity;
-  }
+  const RawSourceIdentityHandoff* reusableIdentity = preparedIdentityReusable ? &*preparedSourceIdentity : nullptr;
   if (!openingTxt->beginLoad(reusableIdentity)) {
     LOG_ERR("READER", "Failed to begin TXT load");
     openingTxt.reset();
@@ -595,13 +582,6 @@ bool ReaderActivity::finishTxtLoad() {
         SourceIdentityStore::save(openingTxt->getCachePath(), currentIdentity);
     if (saved != SourceIdentityStore::SaveStatus::Saved && saved != SourceIdentityStore::SaveStatus::Unchanged) {
       LOG_ERR("READER", "Could not persist TXT source identity: %s", initialBookPath.c_str());
-      return false;
-    }
-    ZipFile::SourceIdentity verifiedIdentity;
-    if (SourceIdentityStore::load(openingTxt->getCachePath(), verifiedIdentity) !=
-            SourceIdentityStore::LoadStatus::Primary ||
-        verifiedIdentity != currentIdentity) {
-      LOG_ERR("READER", "Could not verify TXT source identity: %s", initialBookPath.c_str());
       return false;
     }
   }

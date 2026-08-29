@@ -184,6 +184,7 @@ void XtcReaderActivity::onExit() {
   readerWaveform.leaveReader();
 
   pendingPageTurnDelta = 0;
+  retryBlockedProgressSave();
   commitReadingSession();
   saveReadingStats();
 
@@ -199,6 +200,7 @@ void XtcReaderActivity::onExit() {
 void XtcReaderActivity::onPause() {
   readerWaveform.leaveReader();
   pendingPageTurnDelta = 0;
+  retryBlockedProgressSave();
   clearBlockingFeedback();
   if (xtc) xtc->cancelThumbnailPreparation();
   consumeReadingViewSignal();
@@ -244,10 +246,7 @@ void XtcReaderActivity::openReaderMenu() {
           EpubReaderMenuActivity::ReaderKind::FixedLayout, false, false, hasChapters, bookReadingStats.isCompleted),
       [this](const ActivityResult& result) {
         const auto* menu = std::get_if<MenuResult>(&result.data);
-        if (!menu) {
-          requestUpdate();
-          return;
-        }
+        if (!menu) return;
         if (menu->autoPageTurnChanged) {
           autoPageTurnSeconds = menu->autoPageTurnSeconds;
           automaticPageTurnActive = autoPageTurnSeconds != 0;
@@ -255,8 +254,6 @@ void XtcReaderActivity::openReaderMenu() {
         lastPageTurnTime = millis();
         if (!result.isCancelled) {
           handleReaderMenuAction(menu->action);
-        } else {
-          requestUpdate();
         }
       });
 }
@@ -308,10 +305,12 @@ void XtcReaderActivity::openGoToPage() {
                            if (!result.isCancelled) {
                              const uint32_t selected = std::get<IntervalResult>(result.data).value;
                              RenderLock lock(*this);
-                             if (xtc && selected > 0 && selected <= xtc->getPageCount()) currentPage = selected - 1;
+                             if (xtc && selected > 0 && selected <= xtc->getPageCount()) {
+                               currentPage = selected - 1;
+                               completionAttemptBlocked = false;
+                             }
                            }
                            lastPageTurnTime = millis();
-                           requestUpdate();
                          });
 }
 
@@ -320,7 +319,6 @@ void XtcReaderActivity::confirmMarkBookCompleted() {
                                                                 tr(STR_MARK_BOOK_COMPLETE_CONFIRM)),
                          [this](const ActivityResult& result) {
                            if (!result.isCancelled) markBookCompleted();
-                           requestUpdate();
                          });
 }
 
@@ -378,6 +376,7 @@ void XtcReaderActivity::openChapterSelection() {
                              if (!result.isCancelled) {
                                RenderLock lock;
                                currentPage = std::get<PageResult>(result.data).page;
+                               completionAttemptBlocked = false;
                              }
                            });
   }
@@ -464,6 +463,7 @@ void XtcReaderActivity::loop() {
             automaticPageTurnActive = false;
           } else {
             currentPage = lockedPage + 1;
+            completionAttemptBlocked = false;
             refreshEstimatedTimeLeft();
           }
           lastPageTurnTime = millis();
@@ -506,6 +506,7 @@ void XtcReaderActivity::loop() {
       case EndOfBookOptions::Action::LastPage: {
         RenderLock lock;
         currentPage = xtc->getPageCount() > 0 ? xtc->getPageCount() - 1 : 0;
+        completionAttemptBlocked = false;
       }
         requestUpdate();
         return;
@@ -579,6 +580,7 @@ void XtcReaderActivity::loop() {
       {
         RenderLock lock;
         currentPage = xtc->getPageCount() - 1;
+        completionAttemptBlocked = false;
       }
       requestUpdate();
     }
@@ -635,6 +637,7 @@ void XtcReaderActivity::loop() {
       consumeReadingViewSignal();
       stopReadingPage(false, static_cast<uint32_t>(millis()));
       currentPage = currentPage >= static_cast<uint32_t>(skipAmount) ? currentPage - skipAmount : 0;
+      completionAttemptBlocked = false;
       changed = true;
     }
     lock.unlock();
@@ -649,15 +652,17 @@ void XtcReaderActivity::loop() {
       if (pageCount > 0 && lastSuccessfullyRenderedPage.load(std::memory_order_acquire) == pageCount - 1) {
         markBookCompleted();
         completionFailed = pendingStatsCompletionError;
-        if (!completionFailed) {
+        if (!completionFailed && bookReadingStats.isCompleted) {
           currentPage = pageCount;
           automaticPageTurnActive = false;
         }
       } else {
         currentPage = pageCount > 0 ? pageCount - 1 : 0;
+        completionAttemptBlocked = false;
       }
     } else {
       currentPage = static_cast<uint32_t>(requested);
+      completionAttemptBlocked = false;
       refreshEstimatedTimeLeft();
     }
     lock.unlock();
@@ -749,11 +754,12 @@ void XtcReaderActivity::render(RenderLock&&) {
         renderer, mappedInput,
         EndOfBookSummary{book->getTitle(), book->getAuthor(), displayBookStats, bookReadingStatsTrusted});
     if (pendingBookmarkStorageError.exchange(false)) {
-      GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
+      drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
     } else if (pendingShortcutUnsupportedNotice.exchange(false)) {
-      GUI.drawPopup(renderer, tr(STR_SHORTCUT_NOT_SUPPORTED));
+      drawTransientPopup(StrId::STR_SHORTCUT_NOT_SUPPORTED);
+    } else {
+      renderer.displayBuffer();
     }
-    renderer.displayBuffer();
     if (pendingScreenshot.exchange(false)) {
       ScreenshotUtil::takeScreenshot(renderer);
     }
@@ -774,7 +780,16 @@ void XtcReaderActivity::render(RenderLock&&) {
       readerOpenStagesPending = false;
     }
     signalReadingPageVisible();
-    if (page != lastSavedPage && saveProgress(book, page)) lastSavedPage = page;
+    if (page != progressSaveRetryBlockedPage) {
+      progressSaveRetryBlockedPage = std::numeric_limits<uint32_t>::max();
+    }
+    if (page != lastSavedPage && page != progressSaveRetryBlockedPage) {
+      if (saveProgress(book, page)) {
+        lastSavedPage = page;
+      } else {
+        pendingProgressSaveError = true;
+      }
+    }
     if (pendingScreenshot.exchange(false)) {
       ScreenshotUtil::takeScreenshot(renderer);
     }
@@ -786,13 +801,16 @@ void XtcReaderActivity::render(RenderLock&&) {
   }
   if (pendingStatsCompletionError.exchange(false)) {
     signalReadingPageHidden();
-    GUI.drawPopup(renderer, tr(STR_COMPLETE_BOOK_STATS_FAILED));
+    drawTransientPopup(StrId::STR_COMPLETE_BOOK_STATS_FAILED);
+  } else if (pendingProgressSaveError.exchange(false)) {
+    signalReadingPageHidden();
+    drawTransientPopup(StrId::STR_SAVE_PROGRESS_FAILED);
   } else if (pendingBookmarkStorageError.exchange(false)) {
     signalReadingPageHidden();
-    GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
   } else if (pendingShortcutUnsupportedNotice.exchange(false)) {
     signalReadingPageHidden();
-    GUI.drawPopup(renderer, tr(STR_SHORTCUT_NOT_SUPPORTED));
+    drawTransientPopup(StrId::STR_SHORTCUT_NOT_SUPPORTED);
   } else if (showBookmarkMessage) {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
@@ -899,9 +917,9 @@ void XtcReaderActivity::openSavedItems() {
                              if (page && xtc && page->page < xtc->getPageCount()) {
                                RenderLock lock(*this);
                                currentPage = page->page;
+                               completionAttemptBlocked = false;
                              }
                            }
-                           requestUpdate();
                          });
 }
 
@@ -1152,7 +1170,6 @@ void XtcReaderActivity::openReadingStats() {
   if (!xtc) return;
 
   BookReadingStats displayBookStats;
-  GlobalReadingStats displayDeviceStats;
   ReadingStatsMetric progress = ReadingStatsMetric::unavailable();
   {
     RenderLock lock(*this);
@@ -1160,10 +1177,8 @@ void XtcReaderActivity::openReadingStats() {
     stopReadingPage(false, static_cast<uint32_t>(millis()));
     finishDeferredOpenState();
     displayBookStats = bookReadingStats;
-    displayDeviceStats = globalReadingStats;
     if (!readingSessionCommitted) {
-      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr,
-                                 globalReadingStatsWritable ? &displayDeviceStats : nullptr, sessionReadingSeconds,
+      previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr, sessionReadingSeconds,
                                  pendingBookReadingSpans, pendingGlobalReadingSpans,
                                  hasSessionStartLocalDateTime ? &sessionStartLocalDateTime : nullptr);
     }
@@ -1177,12 +1192,11 @@ void XtcReaderActivity::openReadingStats() {
     }
   }
 
-  const GlobalReadingStatsAggregation allSyncedStats = GlobalReadingStats::loadAggregatedWithReport(displayDeviceStats);
   ReadingStatsDateTime now;
   const ReadingStatsDateTime* currentDateTime = getCurrentLocalReadingStatsDateTime(now) ? &now : nullptr;
   ReadingStatsPresentation presentation =
-      buildReadingStatsPresentation(displayBookStats, bookReadingStatsTrusted, displayDeviceStats,
-                                    globalReadingStatsTrusted, allSyncedStats, currentDateTime, progress, false);
+      buildReadingStatsPresentation(displayBookStats, bookReadingStatsTrusted, GlobalReadingStats{}, false,
+                                    GlobalReadingStatsAggregation{}, currentDateTime, progress, false);
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, xtc->getTitle(), std::move(presentation),
                                              ReadingStatsActivity::Page::Book, bookReadingStatsWritable, false,
@@ -1191,7 +1205,6 @@ void XtcReaderActivity::openReadingStats() {
         const auto* action = std::get_if<ReadingStatsActionResult>(&result.data);
         if (!action || action->action != ReadingStatsActionResult::Action::EditBookDates || !xtc ||
             !bookReadingStatsWritable) {
-          requestUpdate();
           return;
         }
         const std::string cachePath = xtc->getCachePath();
@@ -1205,7 +1218,6 @@ void XtcReaderActivity::openReadingStats() {
                 bookReadingStatsWritable = bookReadingStatsTrusted && BookReadingStats::canPublish(cachePath);
                 bookReadingStatsDirty = false;
               }
-              requestUpdate();
             });
       });
 }
@@ -1686,10 +1698,24 @@ bool XtcReaderActivity::saveProgress(const std::shared_ptr<Xtc>& book, const uin
           saved ? 1 : 0);
 #endif
   if (!saved) {
+    progressSaveRetryBlockedPage = page;
     LOG_ERR("XTR", "Failed to save progress: page %lu", page);
     return false;
   }
+  progressSaveRetryBlockedPage = std::numeric_limits<uint32_t>::max();
   return true;
+}
+
+void XtcReaderActivity::retryBlockedProgressSave() {
+  const std::shared_ptr<Xtc> book = xtc;
+  if (!book || currentPage >= book->getPageCount() || currentPage != progressSaveRetryBlockedPage ||
+      currentPage == lastSavedPage) {
+    return;
+  }
+  if (saveProgress(book, currentPage)) {
+    lastSavedPage = currentPage;
+    pendingProgressSaveError.store(false, std::memory_order_release);
+  }
 }
 
 void XtcReaderActivity::loadProgress() {

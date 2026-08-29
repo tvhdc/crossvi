@@ -64,14 +64,17 @@ void FontSizeSelectionActivity::buildSizeOptions() {
 void FontSizeSelectionActivity::previewSelection(const int index) {
   // Wait for a possible preview render before changing its settings source.
   RenderLock lock(*this);
-  selectedIndex_ = std::clamp(index, 0, static_cast<int>(sizeOptions_.size()) - 1);
-  SETTINGS.fontSize = sizeOptions_[selectedIndex_];
+  const int nextIndex = std::clamp(index, 0, static_cast<int>(sizeOptions_.size()) - 1);
+  const uint8_t nextSize = sizeOptions_[nextIndex];
+  if (nextIndex == selectedIndex_ && SETTINGS.fontSize == nextSize) return;
+  selectedIndex_ = nextIndex;
+  SETTINGS.fontSize = nextSize;
   sdFontSystem.releaseLoadedFont(renderer);
   requestUpdate();
 }
 
 void FontSizeSelectionActivity::loop() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     {
       RenderLock lock(*this);
       SETTINGS.fontFamily = originalFontFamily_;
@@ -115,12 +118,6 @@ std::string FontSizeSelectionActivity::sizeLabel(const int index) const {
   snprintf(label, sizeof(label), "%u pt",
            static_cast<unsigned>(actual ? actual : ReaderFontSize::pointSize(logicalSize)));
   return label;
-}
-
-std::string FontSizeSelectionActivity::actualSizeLabel(const int index) const {
-  (void)index;
-  // The primary label already shows the physical size that will be rendered.
-  return {};
 }
 
 void FontSizeSelectionActivity::render(RenderLock&&) {
@@ -167,7 +164,7 @@ void FontSizeSelectionActivity::render(RenderLock&&) {
   GUI.drawList(
       renderer, Rect{0, listTop, screenWidth, std::max(0, screenHeight - bottomReserved - listTop)},
       static_cast<int>(sizeOptions_.size()), selectedIndex_, [this](const int index) { return sizeLabel(index); },
-      nullptr, nullptr, [this](const int index) { return actualSizeLabel(index); }, true);
+      nullptr, nullptr, nullptr, true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

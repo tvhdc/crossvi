@@ -24,6 +24,7 @@ class InBookSearchActivity final : public Activity {
         startOffset(startOffset) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return running; }
@@ -46,6 +47,7 @@ class InBookSearchActivity final : public Activity {
   BookSearchQuery normalized;
   std::string overlap;
   std::unique_ptr<uint8_t[]> buffer;
+  HalFile contentFile;
   size_t cursor = 0;
   size_t total = 0;
   size_t startOffset = 0;

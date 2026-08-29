@@ -55,7 +55,7 @@ int OpdsServerListActivity::getItemCount() const {
 void OpdsServerListActivity::onEnter() {
   Activity::onEnter();
 
-  // Reload from disk in case servers were added/removed by a subactivity or the web UI
+  // Ensure the shared store is loaded before the list reads it.
   OPDS_STORE.loadFromFile();
   selectedIndex = 0;
   requestUpdate();
@@ -110,10 +110,15 @@ void OpdsServerListActivity::handleSelection() {
       if (!result.isCancelled) {
         const auto& kb = std::get<KeyboardResult>(result.data);
         const std::string norm = normalizeFolder(kb.text);
+        if (norm == SETTINGS.opdsDownloadFolder) return;
+        const std::string previous = SETTINGS.opdsDownloadFolder;
         strncpy(SETTINGS.opdsDownloadFolder, norm.c_str(), sizeof(SETTINGS.opdsDownloadFolder) - 1);
         SETTINGS.opdsDownloadFolder[sizeof(SETTINGS.opdsDownloadFolder) - 1] = '\0';
-        SETTINGS.saveToFile();
-        requestUpdate();
+        if (!SETTINGS.saveToFile()) {
+          strncpy(SETTINGS.opdsDownloadFolder, previous.c_str(), sizeof(SETTINGS.opdsDownloadFolder) - 1);
+          SETTINGS.opdsDownloadFolder[sizeof(SETTINGS.opdsDownloadFolder) - 1] = '\0';
+          showSaveError = true;
+        }
       }
     };
     startActivityForResult(
@@ -125,19 +130,19 @@ void OpdsServerListActivity::handleSelection() {
 
   // "Filename format": tap cycles through the available formats.
   if (selectedIndex == serverCount + 2) {
+    const uint8_t previous = SETTINGS.opdsFilenameFormat;
     SETTINGS.opdsFilenameFormat =
         static_cast<uint8_t>((SETTINGS.opdsFilenameFormat + 1) % static_cast<uint8_t>(OpdsFilenameFormat::Count));
-    SETTINGS.saveToFile();
+    if (!SETTINGS.saveToFile()) {
+      SETTINGS.opdsFilenameFormat = previous;
+      showSaveError = true;
+    }
     requestUpdate();
     return;
   }
 
   // Settings mode: open editor for selected server, or create a new one
-  auto resultHandler = [this](const ActivityResult&) {
-    // Reload server list when returning from editor
-    OPDS_STORE.loadFromFile();
-    selectedIndex = 0;
-  };
+  auto resultHandler = [this](const ActivityResult&) { selectedIndex = 0; };
 
   if (selectedIndex < serverCount) {
     startActivityForResult(std::make_unique<OpdsSettingsActivity>(renderer, mappedInput, selectedIndex), resultHandler);
@@ -199,6 +204,12 @@ void OpdsServerListActivity::render(RenderLock&&) {
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  if (showSaveError) {
+    showSaveError = false;
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
+  }
 
   renderer.displayBuffer();
 }

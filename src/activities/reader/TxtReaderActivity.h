@@ -27,6 +27,7 @@ class TxtReaderActivity final : public Activity {
 
   int currentPage = 0;
   int lastSavedPage = -1;
+  int progressSaveRetryBlockedPage = -1;
   ProgressFile::WriteSession progressWriteSession;
   std::atomic<int> lastSuccessfullyRenderedPage{-1};
   std::atomic<int8_t> pendingPageTurnDelta{0};
@@ -106,6 +107,7 @@ class TxtReaderActivity final : public Activity {
   bool automaticPageTurnActive = false;
   unsigned long lastPageTurnTime = 0;
   bool ignoreNextConfirmRelease = false;
+  bool suppressSearchBackRelease = false;
   ReaderUtils::HoldGestureState confirmHold;
   ReaderUtils::PageTurnGestureState pageTurnGesture;
   bool pendingShortcutUnsupportedNotice = false;
@@ -173,6 +175,7 @@ class TxtReaderActivity final : public Activity {
   bool loadPageIndexCache();
   void savePageIndexCache() const;
   bool saveProgress();
+  void retryBlockedProgressSave();
   void rememberCurrentByteOffset();
   void loadProgress();
   void openReadingStats();
@@ -233,7 +236,7 @@ class TxtReaderActivity final : public Activity {
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);
-      pagesUntilFullRefresh = 1;
+      pagesUntilFullRefresh = -1;
     }
     requestUpdate();
     return true;

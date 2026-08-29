@@ -15,9 +15,11 @@
 #include <esp_efuse_table.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <string_view>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -317,7 +319,9 @@ void CrossPointWebServer::stop() {
 }
 
 void CrossPointWebServer::handleClient() {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   static unsigned long lastDebugPrint = 0;
+#endif
 
   // Check running flag FIRST before accessing server
   if (!running) {
@@ -331,10 +335,12 @@ void CrossPointWebServer::handleClient() {
   }
 
   // Print debug every 10 seconds to confirm handleClient is being called
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   if (millis() - lastDebugPrint > 10000) {
     LOG_DBG("WEB", "handleClient active, server running on port %d", port);
     lastDebugPrint = millis();
   }
+#endif
 
   server->handleClient();
 
@@ -525,7 +531,17 @@ void CrossPointWebServer::scanFiles(const char* path, const FileVisitor visitor,
   HalFile file = root.openNextFile();
   char name[500];
   while (file) {
-    file.getName(name, sizeof(name));
+    name[0] = '\0';
+    name[sizeof(name) - 1] = '\0';
+    const size_t nameLength = file.getName(name, sizeof(name));
+    if (nameLength == 0 || nameLength >= sizeof(name) || name[0] == '\0' || name[nameLength] != '\0') {
+      LOG_ERR("WEB", "Failed to read a directory entry name in: %s", path);
+      file.close();
+      yield();
+      resetTaskWatchdogIfSubscribed();
+      file = root.openNextFile();
+      continue;
+    }
     auto fileName = String(name);
 
     // Skip hidden items (starting with ".")
@@ -719,18 +735,24 @@ void CrossPointWebServer::handleDownload() const {
   file.close();
 }
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
 // Diagnostic counters for upload performance analysis
 static unsigned long uploadStartTime = 0;
 static unsigned long totalWriteTime = 0;
 static size_t writeCount = 0;
+#endif
 
 bool CrossPointWebServer::flushUploadBuffer(UploadState& state) {
   if (state.bufferPos > 0 && state.file) {
     resetTaskWatchdogIfSubscribed();  // Reset watchdog before potentially slow SD write
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const unsigned long writeStart = millis();
+#endif
     const size_t written = state.file.write(transferBuffer.data(), state.bufferPos);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     totalWriteTime += millis() - writeStart;
     writeCount++;
+#endif
     resetTaskWatchdogIfSubscribed();  // Reset watchdog after SD write
 
     if (written != state.bufferPos) {
@@ -752,10 +774,14 @@ bool CrossPointWebServer::flushCooperativeUploadBuffer() {
   }
 
   resetTaskWatchdogIfSubscribed();
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const unsigned long writeStart = millis();
+#endif
   const size_t written = state.file.write(transferBuffer.data(), state.bufferPos);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   totalWriteTime += millis() - writeStart;
   ++writeCount;
+#endif
   resetTaskWatchdogIfSubscribed();
   if (written != state.bufferPos) {
     LOG_ERR("WEB", "[UPLOAD-COOP] Buffer flush failed: expected=%u wrote=%u", static_cast<unsigned>(state.bufferPos),
@@ -958,9 +984,11 @@ void CrossPointWebServer::handleCooperativeUploadData() {
           return;
         }
         state.ownsStagingFile = true;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
         uploadStartTime = millis();
         totalWriteTime = 0;
         writeCount = 0;
+#endif
         LOG_DBG("WEB", "[UPLOAD-COOP] START: type=%s %s (%u bytes) to %s", uploadType.c_str(), state.fileName.c_str(),
                 static_cast<unsigned>(state.total), state.finalPath.c_str());
 #ifndef SIMULATOR
@@ -1060,6 +1088,7 @@ void CrossPointWebServer::handleCooperativeUploadData() {
 
   state.committed += state.requestReceived;
   state.requestComplete = true;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   if (state.committed - state.lastLoggedSize >= 1024U * 1024U || state.committed == state.total) {
     const unsigned long elapsed = millis() - uploadStartTime;
     const float kbps = elapsed > 0 ? (state.committed / 1024.0f) / (elapsed / 1000.0f) : 0;
@@ -1067,11 +1096,11 @@ void CrossPointWebServer::handleCooperativeUploadData() {
             static_cast<unsigned>(state.total), kbps, static_cast<unsigned>(writeCount));
     state.lastLoggedSize = state.committed;
   }
+#endif
   if (state.committed < state.total) return;
 
-  state.file.flush();
   const bool sizeMatches = state.file.size() == state.total;
-  const bool synced = state.file.sync();
+  const bool synced = sizeMatches && state.file.sync();
   const bool closed = state.file.close();
   if (!sizeMatches || !synced || !closed) {
     failRequest(500, "Could not safely store uploaded file", true);
@@ -1115,10 +1144,12 @@ void CrossPointWebServer::handleCooperativeUploadData() {
     lastCompleteSize = state.total;
     lastCompleteAt = millis();
   }
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const unsigned long elapsed = millis() - uploadStartTime;
   const float writePercent = elapsed > 0 ? totalWriteTime * 100.0f / elapsed : 0;
   LOG_DBG("WEB", "[UPLOAD-COOP] Complete: %s (%u bytes in %lu ms, %u writes, SD %.1f%%)", state.fileName.c_str(),
           static_cast<unsigned>(state.total), elapsed, static_cast<unsigned>(writeCount), writePercent);
+#endif
 }
 
 void CrossPointWebServer::handleCooperativeUploadPost() {
@@ -1199,10 +1230,14 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
     state.success = false;
     state.error = "";
     state.stagingPath = "";
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     uploadStartTime = millis();
+#endif
     state.bufferPos = 0;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     totalWriteTime = 0;
     writeCount = 0;
+#endif
 
     if (!UploadPathGuard::isSafeLeafName(state.fileName.c_str())) {
       state.error = "Invalid file name";
@@ -1299,15 +1334,19 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
   } else if (upload.status == UPLOAD_FILE_END) {
     if (state.file) {
       // Flush any remaining buffered data
-      if (!flushUploadBuffer(state)) {
-        state.error = "Failed to write final data to SD card";
+      bool synced = false;
+      if (state.error.isEmpty()) {
+        if (!flushUploadBuffer(state)) {
+          state.error = "Failed to write final data to SD card";
+        } else {
+          synced = state.file.sync();
+        }
       }
-      state.file.flush();
-      const bool synced = state.file.sync();
       const bool closed = state.file.close();
       const bool durable = synced && closed;
 
       if (state.error.isEmpty() && durable) {
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
         const unsigned long elapsed = millis() - uploadStartTime;
         const float avgKbps = (elapsed > 0) ? (state.size / 1024.0) / (elapsed / 1000.0) : 0;
         const float writePercent = (elapsed > 0) ? (totalWriteTime * 100.0 / elapsed) : 0;
@@ -1315,6 +1354,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) {
                 elapsed, avgKbps);
         LOG_DBG("WEB", "[UPLOAD] Diagnostics: %d writes, write=%lu ms (%.1f%%), free=%u maxalloc=%u", writeCount,
                 totalWriteTime, writePercent, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+#endif
 
         String filePath = state.path;
         if (!filePath.endsWith("/")) filePath += "/";
@@ -1774,26 +1814,25 @@ void CrossPointWebServer::handleSettingsPage() const {
 }
 
 void CrossPointWebServer::handleGetSettings() const {
-  // The web UI can use a language different from the device language.  Render
-  // this one response in the requested language, then restore the firmware
-  // language before returning to the main loop.
-  const Language previousLanguage = I18N.getLanguage();
+  // The web UI can use a language different from the device language. Resolve
+  // it locally so the render task never observes a temporary firmware language.
+  Language responseLanguage = I18N.getLanguage();
   if (server->hasArg("lang")) {
     const String requestedLanguage = server->arg("lang");
     // Web UI uses lower-case BCP-47-style tags, while firmware settings use
     // upper-case ISO tags.  Do not pass the lower-case tag through
     // languageFromCode(), which would silently fall back to English.
     if (requestedLanguage == "vi") {
-      I18N.setLanguage(Language::VI);
+      responseLanguage = Language::VI;
     } else if (requestedLanguage == "en") {
-      I18N.setLanguage(Language::EN);
+      responseLanguage = Language::EN;
     }
   }
 
   // Pass the SD font registry so the fontFamily setting's enumStringValues
   // includes SD-resident families — otherwise the web API only exposes the
   // three built-in fonts.
-  const auto& settings = getSettingsList(&sdFontSystem.registry());
+  const auto& settings = getSettingsList(&sdFontSystem.registry(), nullptr, responseLanguage);
 
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
@@ -1810,8 +1849,8 @@ void CrossPointWebServer::handleGetSettings() const {
 
     doc.clear();
     doc["key"] = s.key;
-    doc["name"] = I18N.get(s.nameId);
-    doc["category"] = I18N.get(s.category);
+    doc["name"] = I18N.get(s.nameId, responseLanguage);
+    doc["category"] = I18N.get(s.category, responseLanguage);
 
     switch (s.type) {
       case SettingType::TOGGLE: {
@@ -1835,7 +1874,7 @@ void CrossPointWebServer::handleGetSettings() const {
           }
         } else {
           for (const auto& opt : s.enumValues) {
-            options.add(I18N.get(opt));
+            options.add(I18N.get(opt, responseLanguage));
           }
         }
         break;
@@ -1883,7 +1922,6 @@ void CrossPointWebServer::handleGetSettings() const {
 
   server->sendContent("]");
   server->sendContent("");
-  I18N.setLanguage(previousLanguage);
   LOG_DBG("WEB", "Served settings API");
 }
 
@@ -1896,20 +1934,134 @@ void CrossPointWebServer::handlePostSettings() {
     server->send(400, "text/plain", String("Invalid JSON: ") + err.c_str());
     return;
   }
+  if (!doc.is<JsonObjectConst>() || doc.as<JsonObjectConst>().size() == 0) {
+    server->send(400, "text/plain", "Settings payload must be a non-empty JSON object");
+    return;
+  }
 
   const auto& settings = getSettingsList(&sdFontSystem.registry());
   int applied = 0;
+  bool hasDeviceSettings = false;
+  bool hasKoReaderSettings = false;
 
-  for (const auto& s : settings) {
-    if (!s.key || s.type != SettingType::ENUM || !doc[s.key].is<JsonVariant>()) continue;
+  const auto isKoReaderSetting = [](const SettingInfo& setting) {
+    return setting.category == StrId::STR_KOREADER_SYNC;
+  };
 
-    const int val = doc[s.key].as<int>();
-    const size_t optionCount = s.enumStringValues.empty() ? s.enumValues.size() : s.enumStringValues.size();
-    if (!SettingsApiUtils::isValidEnumIndex(val, optionCount)) {
-      server->send(400, "text/plain", String("Invalid enum index for setting: ") + s.key);
+  const auto maximumStringBytes = [](const SettingInfo& setting) -> size_t {
+    if (setting.stringMaxLen > 0) return setting.stringMaxLen - 1;
+    if (!setting.key) return 0;
+    if (std::strcmp(setting.key, "koUsername") == 0) return KOReaderCredentialStore::MAX_USERNAME_BYTES;
+    if (std::strcmp(setting.key, "koPassword") == 0) return KOReaderCredentialStore::MAX_PASSWORD_BYTES;
+    if (std::strcmp(setting.key, "koServerUrl") == 0) return KOReaderCredentialStore::MAX_SERVER_URL_BYTES;
+    return 0;
+  };
+
+  const JsonObjectConst request = doc.as<JsonObjectConst>();
+  for (const JsonPairConst entry : request) {
+    const auto setting = std::find_if(settings.begin(), settings.end(), [&entry](const SettingInfo& candidate) {
+      return candidate.key && std::strcmp(candidate.key, entry.key().c_str()) == 0;
+    });
+    if (setting == settings.end()) {
+      server->send(400, "text/plain", "Unknown setting");
       return;
     }
+
+    const JsonVariantConst value = entry.value();
+    const auto reject = [this](const char* reason) { server->send(400, "text/plain", reason); };
+    switch (setting->type) {
+      case SettingType::TOGGLE:
+        if (!value.is<int>() || !SettingsApiUtils::isValidToggle(value.as<int>())) {
+          reject("Invalid toggle value for setting");
+          return;
+        }
+        break;
+      case SettingType::ENUM: {
+        const size_t optionCount =
+            setting->enumStringValues.empty() ? setting->enumValues.size() : setting->enumStringValues.size();
+        if (!value.is<int>() || !SettingsApiUtils::isValidEnumIndex(value.as<int>(), optionCount)) {
+          reject("Invalid enum index for setting");
+          return;
+        }
+        break;
+      }
+      case SettingType::VALUE:
+        if (!value.is<int>() ||
+            !SettingsApiUtils::isValidValue(value.as<int>(), setting->valueRange.min, setting->valueRange.max)) {
+          reject("Invalid numeric value for setting");
+          return;
+        }
+        break;
+      case SettingType::STRING: {
+        if (!value.is<const char*>()) {
+          reject("Invalid text value for setting");
+          return;
+        }
+        const size_t maximum = maximumStringBytes(*setting);
+        if (maximum == 0 || !SettingsApiUtils::isValidStringLength(std::strlen(value.as<const char*>()), maximum)) {
+          reject("Text value is too long for setting");
+          return;
+        }
+        break;
+      }
+      case SettingType::ACTION:
+        reject("Setting cannot be changed through the web API");
+        return;
+    }
+
+    if (isKoReaderSetting(*setting)) {
+      hasKoReaderSettings = true;
+    } else {
+      hasDeviceSettings = true;
+    }
   }
+
+  if (hasDeviceSettings && !SETTINGS.isPersistenceWritable()) {
+    server->send(503, "text/plain", "Device settings are read-only until their storage is recovered");
+    return;
+  }
+  if (hasKoReaderSettings && (!KOREADER_STORE.ensureLoaded() || !KOREADER_STORE.isPersistenceWritable())) {
+    server->send(503, "text/plain", "KOReader settings are read-only until their storage is recovered");
+    return;
+  }
+
+  struct OriginalSettingValue {
+    const SettingInfo* setting;
+    uint16_t numericValue = 0;
+    std::string stringValue;
+  };
+  struct DynamicDeviceState {
+    uint8_t sleepScreen = SETTINGS.sleepScreen;
+    uint8_t screenMargin = SETTINGS.screenMargin;
+    uint8_t fontFamily = SETTINGS.fontFamily;
+    uint8_t fontSize = SETTINGS.fontSize;
+    uint8_t tiltPageTurn = SETTINGS.tiltPageTurn;
+    std::array<char, CrossPointSettings::SD_FONT_FAMILY_NAME_CAPACITY> sdFontFamilyName{};
+
+    DynamicDeviceState() { std::memcpy(sdFontFamilyName.data(), SETTINGS.sdFontFamilyName, sdFontFamilyName.size()); }
+
+    void restore() const {
+      SETTINGS.sleepScreen = sleepScreen;
+      SETTINGS.screenMargin = screenMargin;
+      SETTINGS.fontFamily = fontFamily;
+      SETTINGS.fontSize = fontSize;
+      SETTINGS.tiltPageTurn = tiltPageTurn;
+      std::memcpy(SETTINGS.sdFontFamilyName, sdFontFamilyName.data(), sdFontFamilyName.size());
+    }
+  };
+  const DynamicDeviceState originalDynamicDeviceState;
+  std::vector<OriginalSettingValue> originalValues;
+  originalValues.reserve(std::min(settings.size(), doc.as<JsonObjectConst>().size()));
+  bool deviceChanged = false;
+  bool koReaderChanged = false;
+
+  const auto markChanged = [&isKoReaderSetting, &deviceChanged, &koReaderChanged](const SettingInfo& setting) {
+    if (isKoReaderSetting(setting)) {
+      koReaderChanged = true;
+    } else {
+      deviceChanged = true;
+    }
+  };
 
   for (const auto& s : settings) {
     if (!s.key) continue;
@@ -1919,9 +2071,12 @@ void CrossPointWebServer::handlePostSettings() {
       case SettingType::TOGGLE: {
         const int val = doc[s.key].as<int>() ? 1 : 0;
         if (s.valuePtr) {
+          if (SETTINGS.*(s.valuePtr) == val) break;
+          originalValues.push_back({&s, SETTINGS.*(s.valuePtr), {}});
           SETTINGS.*(s.valuePtr) = val;
+          markChanged(s);
+          applied++;
         }
-        applied++;
         break;
       }
       case SettingType::ENUM: {
@@ -1929,10 +2084,18 @@ void CrossPointWebServer::handlePostSettings() {
         const size_t optionCount = s.enumStringValues.empty() ? s.enumValues.size() : s.enumStringValues.size();
         if (SettingsApiUtils::isValidEnumIndex(val, optionCount)) {
           if (s.valuePtr) {
+            if (SETTINGS.*(s.valuePtr) == val) break;
+            originalValues.push_back({&s, SETTINGS.*(s.valuePtr), {}});
             SETTINGS.*(s.valuePtr) = static_cast<uint8_t>(val);
           } else if (s.valueSetter) {
+            const uint8_t previous = s.valueGetter ? s.valueGetter() : uint8_t{0};
+            if (previous == val) break;
+            originalValues.push_back({&s, previous, {}});
             s.valueSetter(static_cast<uint8_t>(val));
+          } else {
+            break;
           }
+          markChanged(s);
           applied++;
         }
         break;
@@ -1941,10 +2104,17 @@ void CrossPointWebServer::handlePostSettings() {
         const int val = doc[s.key].as<int>();
         if (val >= s.valueRange.min && val <= s.valueRange.max) {
           if (s.valuePtr) {
+            if (SETTINGS.*(s.valuePtr) == val) break;
+            originalValues.push_back({&s, SETTINGS.*(s.valuePtr), {}});
             SETTINGS.*(s.valuePtr) = static_cast<uint8_t>(val);
           } else if (s.value16Ptr) {
+            if (SETTINGS.*(s.value16Ptr) == val) break;
+            originalValues.push_back({&s, SETTINGS.*(s.value16Ptr), {}});
             SETTINGS.*(s.value16Ptr) = static_cast<uint16_t>(val);
+          } else {
+            break;
           }
+          markChanged(s);
           applied++;
         }
         break;
@@ -1952,12 +2122,20 @@ void CrossPointWebServer::handlePostSettings() {
       case SettingType::STRING: {
         const std::string val = doc[s.key].as<std::string>();
         if (s.stringSetter) {
+          const std::string previous = s.stringGetter ? s.stringGetter() : std::string{};
+          if (previous == val) break;
+          originalValues.push_back({&s, 0, previous});
           s.stringSetter(val);
         } else if (s.stringMaxLen > 0) {
           char* ptr = reinterpret_cast<char*>(&SETTINGS) + s.stringOffset;
+          if (val == ptr) break;
+          originalValues.push_back({&s, 0, ptr});
           strncpy(ptr, val.c_str(), s.stringMaxLen - 1);
           ptr[s.stringMaxLen - 1] = '\0';
+        } else {
+          break;
         }
+        markChanged(s);
         applied++;
         break;
       }
@@ -1966,7 +2144,56 @@ void CrossPointWebServer::handlePostSettings() {
     }
   }
 
-  SETTINGS.saveToFile();
+  const auto rollbackSettings = [&originalValues, &isKoReaderSetting,
+                                 &originalDynamicDeviceState](const bool koReader) {
+    for (auto original = originalValues.rbegin(); original != originalValues.rend(); ++original) {
+      const SettingInfo& setting = *original->setting;
+      if (isKoReaderSetting(setting) != koReader) continue;
+
+      switch (setting.type) {
+        case SettingType::TOGGLE:
+        case SettingType::ENUM:
+          if (setting.valuePtr) {
+            SETTINGS.*(setting.valuePtr) = static_cast<uint8_t>(original->numericValue);
+          } else if (setting.valueSetter && koReader) {
+            setting.valueSetter(static_cast<uint8_t>(original->numericValue));
+          }
+          break;
+        case SettingType::VALUE:
+          if (setting.valuePtr) {
+            SETTINGS.*(setting.valuePtr) = static_cast<uint8_t>(original->numericValue);
+          } else if (setting.value16Ptr) {
+            SETTINGS.*(setting.value16Ptr) = original->numericValue;
+          }
+          break;
+        case SettingType::STRING:
+          if (setting.stringSetter) {
+            setting.stringSetter(original->stringValue);
+          } else if (setting.stringMaxLen > 0) {
+            char* destination = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+            strncpy(destination, original->stringValue.c_str(), setting.stringMaxLen - 1);
+            destination[setting.stringMaxLen - 1] = '\0';
+          }
+          break;
+        case SettingType::ACTION:
+          break;
+      }
+    }
+    if (!koReader) originalDynamicDeviceState.restore();
+  };
+
+  const auto persistenceResult = SettingsApiUtils::persistBatches(
+      deviceChanged, koReaderChanged, [] { return SETTINGS.saveToFile(); }, [] { return KOREADER_STORE.saveToFile(); },
+      [&rollbackSettings] { rollbackSettings(false); }, [&rollbackSettings] { rollbackSettings(true); });
+  if (persistenceResult != SettingsApiUtils::PersistenceResult::Saved) {
+    const bool partial = persistenceResult == SettingsApiUtils::PersistenceResult::KoReaderFailed && deviceChanged;
+    LOG_ERR("WEB", "Failed to persist %s web settings; rolled back unsaved memory",
+            persistenceResult == SettingsApiUtils::PersistenceResult::DeviceFailed ? "device" : "KOReader");
+    server->send(500, "text/plain",
+                 partial ? "Device settings saved, but KOReader settings failed"
+                         : "Failed to save settings; no changes were kept");
+    return;
+  }
 
   LOG_DBG("WEB", "Applied %d setting(s)", applied);
   server->send(200, "text/plain", String("Applied ") + String(applied) + " setting(s)");
@@ -2278,6 +2505,11 @@ void CrossPointWebServer::handleFontDelete() {
   }
 
   const char* familyName = doc["family"];
+  if (cooperativeUpload.ownsStagingFile && cooperativeUpload.kind == CooperativeUploadKind::Font &&
+      cooperativeUpload.familyName.equalsIgnoreCase(familyName)) {
+    server->send(409, "application/json", "{\"error\":\"Font upload in progress\"}");
+    return;
+  }
   FontInstaller installer(sdFontSystem.registry());
   auto result = installer.deleteFamily(familyName);
 

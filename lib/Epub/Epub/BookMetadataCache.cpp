@@ -47,12 +47,13 @@ constexpr size_t BOOK_CACHE_LUT_CHUNK_SIZE = 64;
 constexpr size_t BOOK_CACHE_MIN_FILE_SIZE =
     BOOK_CACHE_FIXED_HEADER_SIZE + BOOK_CACHE_MIN_METADATA_SIZE + sizeof(BOOK_CACHE_COMMIT_MARKER);
 
-template <typename T>
-bool readPodExact(HalFile& file, T& value) {
-  return file.read(&value, sizeof(value)) == static_cast<int>(sizeof(value));
+template <typename F, typename T>
+bool readPodExact(F& file, T& value) {
+  return static_cast<size_t>(file.read(&value, sizeof(value))) == sizeof(value);
 }
 
-bool consumeBoundedString(HalFile& file, const size_t endPosition, std::string* value) {
+template <typename F>
+bool consumeBoundedString(F& file, const size_t endPosition, std::string* value) {
   uint32_t length = 0;
   if (!readPodExact(file, length)) return false;
 
@@ -62,11 +63,12 @@ bool consumeBoundedString(HalFile& file, const size_t endPosition, std::string* 
   if (!value) return file.seek(position + length);
 
   value->resize(length);
-  return length == 0 || file.read(value->data(), length) == static_cast<int>(length);
+  return length == 0 || static_cast<size_t>(file.read(value->data(), length)) == length;
 }
 
-bool inspectSpineEntry(HalFile& file, const size_t endPosition, const uint16_t tocCount,
-                       uint32_t* cumulativeSize = nullptr, int16_t* parsedTocIndex = nullptr) {
+template <typename F>
+bool inspectSpineEntry(F& file, const size_t endPosition, const uint16_t tocCount, uint32_t* cumulativeSize = nullptr,
+                       int16_t* parsedTocIndex = nullptr) {
   if (!consumeBoundedString(file, endPosition, nullptr)) return false;
   uint8_t linear = 0;
   uint32_t cumulative = 0;
@@ -80,7 +82,8 @@ bool inspectSpineEntry(HalFile& file, const size_t endPosition, const uint16_t t
   return true;
 }
 
-bool inspectTocEntry(HalFile& file, const size_t endPosition, const uint16_t spineCount) {
+template <typename F>
+bool inspectTocEntry(F& file, const size_t endPosition, const uint16_t spineCount) {
   if (!consumeBoundedString(file, endPosition, nullptr) || !consumeBoundedString(file, endPosition, nullptr) ||
       !consumeBoundedString(file, endPosition, nullptr)) {
     return false;
@@ -229,35 +232,57 @@ bool validateBookCacheCandidate(const char* path, void* context) {
       break;
     }
 
+    const size_t dataEndOffset = static_cast<size_t>(dataEnd);
+    serialization::BufferedFileReader input(file, BUILD_IO_BUFFER_SIZE);
+    std::array<uint32_t, BOOK_CACHE_LUT_CHUNK_SIZE + 1> offsets;
     uint32_t previousCumulativeSize = 0;
+    uint32_t index = 0;
     valid = true;
-    for (uint32_t index = 0; index < entryCount; ++index) {
-      size_t entryStart = 0;
-      size_t entryEnd = 0;
-      if (!readEntryBounds(file, candidateLutOffset, entryCount, index, static_cast<size_t>(dataEnd), entryStart,
-                           entryEnd) ||
-          (index == 0 && entryStart != dataStart) || !file.seek(entryStart)) {
+    while (valid && index < entryCount) {
+      const size_t chunkCount = std::min<size_t>(BOOK_CACHE_LUT_CHUNK_SIZE, entryCount - index);
+      const bool hasNextOffset = index + chunkCount < entryCount;
+      const size_t offsetCount = chunkCount + (hasNextOffset ? 1 : 0);
+      const uint64_t lutPosition =
+          static_cast<uint64_t>(candidateLutOffset) + static_cast<uint64_t>(index) * sizeof(uint32_t);
+      if (lutPosition > SIZE_MAX || !input.seek(static_cast<size_t>(lutPosition)) ||
+          input.read(offsets.data(), offsetCount * sizeof(uint32_t)) != offsetCount * sizeof(uint32_t)) {
         valid = false;
         break;
       }
 
-      if (index < candidateSpineCount) {
-        uint32_t cumulativeSize = 0;
-        if (!inspectSpineEntry(file, entryEnd, candidateTocCount, &cumulativeSize) ||
-            cumulativeSize < previousCumulativeSize) {
+      for (size_t withinChunk = 0; withinChunk < chunkCount; ++withinChunk, ++index) {
+        const uint32_t entryStart = offsets[withinChunk];
+        const uint32_t entryEnd =
+            withinChunk + 1 < offsetCount ? offsets[withinChunk + 1] : static_cast<uint32_t>(dataEndOffset);
+        if (!validEntryBounds(candidateLutOffset, entryCount, dataEndOffset, entryStart, entryEnd) ||
+            (index == 0 && entryStart != dataStart) || (input.position() != entryStart && !input.seek(entryStart))) {
           valid = false;
           break;
         }
-        previousCumulativeSize = cumulativeSize;
-      } else if (!inspectTocEntry(file, entryEnd, candidateSpineCount)) {
-        valid = false;
-        break;
+
+        if (index < candidateSpineCount) {
+          uint32_t cumulativeSize = 0;
+          if (!inspectSpineEntry(input, entryEnd, candidateTocCount, &cumulativeSize) ||
+              cumulativeSize < previousCumulativeSize) {
+            valid = false;
+            break;
+          }
+          previousCumulativeSize = cumulativeSize;
+        } else if (!inspectTocEntry(input, entryEnd, candidateSpineCount)) {
+          valid = false;
+          break;
+        }
       }
     }
   } while (false);
 
   const bool closed = file.close();
   return valid && closed;
+}
+
+void updateBookCacheDigest(void* context, const uint8_t* data, const size_t size) {
+  auto* digest = static_cast<StagedFileTransaction::Digest*>(context);
+  StagedFileTransaction::updateDigest(*digest, data, size);
 }
 
 // Entry (de)serializers, templated so they run over HalFile and the Buffered*
@@ -395,6 +420,7 @@ class BookMetadataCache::BuildState {
   std::unique_ptr<uint32_t[]> spineSizes;
   std::unique_ptr<ZipFile::SizeTarget[]> sizeTargets;
   std::unique_ptr<ZipFile> zip;
+  StagedFileTransaction::Digest outputDigest;
 };
 
 BookMetadataCache::BookMetadataCache(std::string cachePath)
@@ -440,11 +466,11 @@ bool BookMetadataCache::endContentOpfPass() {
   const bool flushed = !passOut || passOut->flush();
   passOut.reset();
   // Explicit close() required: member variable persists beyond function scope
-  spineFile.close();
-  if (!flushed) {
+  const bool closed = spineFile.close();
+  if (!flushed || !closed) {
     LOG_ERR("BMC", "Failed writing spine tmp file");
   }
-  return flushed;
+  return flushed && closed;
 }
 
 bool BookMetadataCache::beginTocPass() {
@@ -497,18 +523,18 @@ bool BookMetadataCache::beginTocPass() {
 bool BookMetadataCache::endTocPass() {
   const bool flushed = !passOut || passOut->flush();
   passOut.reset();
-  if (!flushed) {
+  const bool closed = tocFile.close();
+  if (!flushed || !closed) {
     LOG_ERR("BMC", "Failed writing toc tmp file");
   }
   // Explicit close() required: member variables persist beyond function scope
-  tocFile.close();
   spineFile.close();
 
   spineHrefIndex.clear();
   spineHrefIndex.shrink_to_fit();
   useSpineHrefIndex = false;
 
-  return flushed;
+  return flushed && closed;
 }
 
 bool BookMetadataCache::restartTocPass() {
@@ -644,7 +670,8 @@ BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const siz
         !Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) {
       return fail("Could not reopen metadata scratch files");
     }
-    state.bookOut = makeUniqueNoThrow<serialization::BufferedFileWriter>(bookFile, BUILD_IO_BUFFER_SIZE);
+    state.bookOut = makeUniqueNoThrow<serialization::BufferedFileWriter>(bookFile, BUILD_IO_BUFFER_SIZE,
+                                                                         updateBookCacheDigest, &state.outputDigest);
     state.spineIn = makeUniqueNoThrow<serialization::BufferedFileReader>(spineFile, BUILD_IO_BUFFER_SIZE);
     state.tocIn = makeUniqueNoThrow<serialization::BufferedFileReader>(tocFile, BUILD_IO_BUFFER_SIZE);
     if (!state.bookOut || !state.spineIn || !state.tocIn) {
@@ -836,8 +863,9 @@ BookMetadataCache::BuildStepResult BookMetadataCache::stepBuildBookBin(const siz
     const std::string finalPath = cachePath + bookBinFile;
     const std::string stagingPath = cachePath + bookBinStagingFile;
     const std::string backupPath = cachePath + bookBinBackupFile;
-    const auto published = StagedFileTransaction::publish(finalPath.c_str(), stagingPath.c_str(), backupPath.c_str(),
-                                                          validateBookCacheCandidate, &state.sourceIdentity);
+    const auto published =
+        StagedFileTransaction::publishAndVerify(finalPath.c_str(), stagingPath.c_str(), backupPath.c_str(),
+                                                state.outputDigest, validateBookCacheCandidate, &state.sourceIdentity);
     if (published != StagedFileTransaction::Status::Published) {
       return fail("Failed publishing book.bin");
     }
@@ -863,14 +891,6 @@ void BookMetadataCache::cancelBuildBookBin() {
   if (tocFile) tocFile.close();
   buildState.reset();
   if (removeOutput) Storage.remove((cachePath + bookBinStagingFile).c_str());
-}
-
-bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
-                                     const ZipFile::SourceIdentity& sourceIdentity) {
-  if (!beginBuildBookBin(epubPath, metadata, sourceIdentity)) return false;
-  BuildStepResult result = BuildStepResult::InProgress;
-  while (result == BuildStepResult::InProgress) result = stepBuildBookBin(64);
-  return result == BuildStepResult::Built;
 }
 
 bool BookMetadataCache::cleanupTmpFiles() const {
@@ -1313,5 +1333,3 @@ BookMetadataCache::TocEntry BookMetadataCache::getTocEntry(const int index) {
 BookMetadataCache::SpineEntry BookMetadataCache::readSpineEntry(HalFile& file) const {
   return readSpineEntryFrom(file);
 }
-
-BookMetadataCache::TocEntry BookMetadataCache::readTocEntry(HalFile& file) const { return readTocEntryFrom(file); }

@@ -289,6 +289,28 @@ TEST(NearbySyncExchange, ReceiverRetriesALostAckDuringSettle) {
   EXPECT_EQ(receiver.state(), NearbySyncExchange::State::Accepted);
 }
 
+TEST(NearbySyncExchange, ReceiverRetriesWhenTheInitialAckCannotBeQueued) {
+  NearbySyncExchange sender;
+  NearbySyncExchange receiver;
+  pairReaders(sender, receiver);
+  confirmAndDeliverOffer(sender, receiver);
+
+  receiver.failNextTestSends(1);
+  EXPECT_TRUE(receiver.acknowledgePeerOffer(20));
+  EXPECT_EQ(receiver.state(), NearbySyncExchange::State::WaitingForComplete);
+  NearbySyncRadio::TestPacket unexpected;
+  EXPECT_FALSE(tryTakePacket(receiver, NearbySync::PacketType::Ack, unexpected));
+
+  receiver.update(170);
+  const auto retry = takePacket(receiver, NearbySync::PacketType::Ack);
+  deliver(sender, SECOND_MAC, retry, 171);
+  EXPECT_EQ(sender.state(), NearbySyncExchange::State::Accepted);
+  const auto complete = takePacket(sender, NearbySync::PacketType::Complete);
+  deliver(receiver, FIRST_MAC, complete, 172);
+  EXPECT_EQ(receiver.state(), NearbySyncExchange::State::Accepted);
+  EXPECT_EQ(receiver.error(), NearbySyncExchange::Error::None);
+}
+
 TEST(NearbySyncExchange, ReceiverDoesNotFalseCompleteWhenAllAcksAreLostPastTheOldSettleWindow) {
   NearbySyncExchange sender;
   NearbySyncExchange receiver;

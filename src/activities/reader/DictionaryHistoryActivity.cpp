@@ -97,7 +97,7 @@ void DictionaryHistoryActivity::lookupSelected() {
   }
   DICTIONARY_HISTORY.record(entries_[selected_]);
   refreshEntries();
-  startActivityForResult(std::move(definitionActivity), [this](const ActivityResult&) { requestUpdate(); });
+  startActivityForResult(std::move(definitionActivity), [](const ActivityResult&) {});
 }
 
 void DictionaryHistoryActivity::confirmClear() {
@@ -106,12 +106,12 @@ void DictionaryHistoryActivity::confirmClear() {
                          [this](const ActivityResult& result) {
                            if (!result.isCancelled) {
                              if (!DICTIONARY_HISTORY.clear()) {
+                               errorMessage_ = StrId::STR_DICT_ERROR;
                                error_ = true;
                                errorAt_ = millis();
                              }
                              refreshEntries();
                            }
-                           requestUpdate();
                          });
 }
 

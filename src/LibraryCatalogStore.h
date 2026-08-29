@@ -122,6 +122,8 @@ class LibraryCatalogStore final {
           if (!read || !closed) existing.clear();
         }
       }
+      if (opened && (existing == marker || (existing.size() == 1 && static_cast<uint8_t>(existing.front()) == 1)))
+        return;
       if (!opened || existing.empty() || existing != marker) {
         markDirty();
         return;
@@ -129,10 +131,14 @@ class LibraryCatalogStore final {
     }
     Storage.ensureDirectoryExists("/.crosspoint");
     HalFile file;
-    if (!Storage.openFileForWrite("LIB", "/.crosspoint/library.dirty", file) ||
-        file.write(marker.data(), marker.size()) != marker.size() || !file.sync() || !file.close()) {
-      markDirty();
+    bool stored = false;
+    if (Storage.openFileForWrite("LIB", "/.crosspoint/library.dirty", file)) {
+      const bool written = file.write(marker.data(), marker.size()) == marker.size();
+      const bool synced = written && file.sync();
+      const bool closed = file.close();
+      stored = written && synced && closed;
     }
+    if (!stored) markDirty();
   }
 
   struct DirectoryFrame {

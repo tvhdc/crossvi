@@ -28,6 +28,7 @@ namespace {
 constexpr char LOG_TAG[] = "VCDXIMP";
 constexpr char MARKER_PATH[] = "/.crosspoint/vcodex_stats_import_v1.bin";
 constexpr char MARKER_BACKUP_PATH[] = "/.crosspoint/vcodex_stats_import_v1.bin.bak";
+constexpr char MARKER_TEMP_PATH[] = "/.crosspoint/vcodex_stats_import_v1.bin.tmp";
 constexpr size_t MARKER_SIZE = 20;
 constexpr uint8_t MARKER_VERSION = 1;
 constexpr uint32_t UNIX_DAYS_TO_2000 = 10957;
@@ -56,22 +57,34 @@ void writeLe32(uint8_t* data, const size_t offset, const uint32_t value) {
   data[offset + 3] = static_cast<uint8_t>(value >> 24);
 }
 
-MarkerStatus loadMarker(Marker& marker) {
+MarkerStatus loadMarkerPath(const char* path, Marker& marker) {
   std::array<uint8_t, MARKER_SIZE> data{};
+  const ReadingStatsStorage::ReadOutcome read = ReadingStatsStorage::read(path, data.data(), data.size());
+  if (read.result == ReadingStatsStorage::ReadResult::Missing) return MarkerStatus::Missing;
+  if (read.result != ReadingStatsStorage::ReadResult::Ok) return MarkerStatus::IoError;
+  if (read.size != data.size() || memcmp(data.data(), "VCIM", 4) != 0 || data[4] != MARKER_VERSION ||
+      data[5] < static_cast<uint8_t>(MarkerState::Declined) || data[5] > static_cast<uint8_t>(MarkerState::Failed) ||
+      readLe32(data.data(), 16) != ReadingStatsEnvelope::crc32(data.data(), 16)) {
+    return MarkerStatus::Invalid;
+  }
+  marker.state = static_cast<MarkerState>(data[5]);
+  marker.sourceSize = readLe32(data.data(), 8);
+  marker.sourceHash = readLe32(data.data(), 12);
+  return MarkerStatus::Valid;
+}
+
+MarkerStatus loadMarker(Marker& marker) {
   bool sawInvalid = false;
-  for (const char* path : {MARKER_PATH, MARKER_BACKUP_PATH, "/.crosspoint/vcodex_stats_import_v1.bin.tmp"}) {
-    const ReadingStatsStorage::ReadOutcome read = ReadingStatsStorage::read(path, data.data(), data.size());
-    if (read.result == ReadingStatsStorage::ReadResult::Missing) continue;
-    if (read.result != ReadingStatsStorage::ReadResult::Ok) return MarkerStatus::IoError;
-    if (read.size != data.size() || memcmp(data.data(), "VCIM", 4) != 0 || data[4] != MARKER_VERSION ||
-        data[5] < static_cast<uint8_t>(MarkerState::Declined) || data[5] > static_cast<uint8_t>(MarkerState::Failed) ||
-        readLe32(data.data(), 16) != ReadingStatsEnvelope::crc32(data.data(), 16)) {
+  for (const char* path : {MARKER_PATH, MARKER_BACKUP_PATH, MARKER_TEMP_PATH}) {
+    Marker candidate;
+    const MarkerStatus status = loadMarkerPath(path, candidate);
+    if (status == MarkerStatus::Missing) continue;
+    if (status == MarkerStatus::IoError) return MarkerStatus::IoError;
+    if (status == MarkerStatus::Invalid) {
       sawInvalid = true;
       continue;
     }
-    marker.state = static_cast<MarkerState>(data[5]);
-    marker.sourceSize = readLe32(data.data(), 8);
-    marker.sourceHash = readLe32(data.data(), 12);
+    marker = candidate;
     return MarkerStatus::Valid;
   }
   return sawInvalid ? MarkerStatus::Invalid : MarkerStatus::Missing;
@@ -87,8 +100,15 @@ bool saveMarker(const MarkerState state, const uint32_t sourceSize, const uint32
   writeLe32(data.data(), 12, sourceHash);
   writeLe32(data.data(), 16, ReadingStatsEnvelope::crc32(data.data(), 16));
   Marker ignored;
-  const bool rotate = loadMarker(ignored) == MarkerStatus::Valid;
-  return ReadingStatsStorage::writeAtomic(MARKER_PATH, MARKER_BACKUP_PATH, rotate, data.data(), data.size());
+  const MarkerStatus primaryStatus = loadMarkerPath(MARKER_PATH, ignored);
+  const MarkerStatus backupStatus = loadMarkerPath(MARKER_BACKUP_PATH, ignored);
+  const MarkerStatus tempStatus = loadMarkerPath(MARKER_TEMP_PATH, ignored);
+  if (primaryStatus == MarkerStatus::IoError || backupStatus == MarkerStatus::IoError ||
+      tempStatus == MarkerStatus::IoError) {
+    return false;
+  }
+  return ReadingStatsStorage::writeAtomic(MARKER_PATH, MARKER_BACKUP_PATH, primaryStatus == MarkerStatus::Valid,
+                                          data.data(), data.size());
 }
 
 bool validBookPath(const std::string& path) {
@@ -666,7 +686,7 @@ bool crossViStatsEmpty(const bool allowImportedPartial = false) {
   }
 
   HalFile root = Storage.open("/.crosspoint");
-  if (!root) return true;
+  if (!root) return false;
   if (!root.isDirectory()) {
     root.close();
     return false;
@@ -675,8 +695,11 @@ bool crossViStatsEmpty(const bool allowImportedPartial = false) {
   for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
     const bool directory = entry.isDirectory();
     const size_t length = entry.getName(name, sizeof(name));
-    entry.close();
-    if (!directory || length == 0 || length >= sizeof(name) ||
+    if (!entry.close() || length == 0 || length >= sizeof(name)) {
+      root.close();
+      return false;
+    }
+    if (!directory ||
         (strncmp(name, "epub_", 5) != 0 && strncmp(name, "txt_", 4) != 0 && strncmp(name, "xtc_", 4) != 0)) {
       continue;
     }
@@ -689,8 +712,9 @@ bool crossViStatsEmpty(const bool allowImportedPartial = false) {
       return false;
     }
   }
+  const bool iterationOk = root.getError() == 0;
   const bool closed = root.close();
-  return closed;
+  return iterationOk && closed;
 }
 
 struct ImportContext {
@@ -895,10 +919,12 @@ VCodexStatsImporter::ProbeResult VCodexStatsImporter::probeManual(VCodexStatsImp
 }
 
 VCodexStatsImporter::ImportResult VCodexStatsImporter::import(const int16_t utcOffsetMinutes) {
-  VCodexStatsImportSummary ignored;
-  const ProbeResult probeResult = probeInternal(ignored, true);
-  if (probeResult == ProbeResult::CrossViNotEmpty) return ImportResult::NotEmpty;
-  if (probeResult != ProbeResult::Offer) return ImportResult::NotAvailable;
+  Marker marker;
+  const MarkerStatus markerStatus = loadMarker(marker);
+  if (markerStatus == MarkerStatus::IoError ||
+      (markerStatus == MarkerStatus::Valid && marker.state == MarkerState::Pending)) {
+    return ImportResult::NotAvailable;
+  }
   return performImport(utcOffsetMinutes, false);
 }
 

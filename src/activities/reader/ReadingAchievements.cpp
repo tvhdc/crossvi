@@ -108,13 +108,18 @@ PathStatus readPath(const char* path, ReadingAchievementState* state = nullptr) 
       (payload[2 + ReadingAchievementState::BYTE_COUNT - 1] & 0xC0u) != 0) {
     return PathStatus::Invalid;
   }
+  if (payload[0] == PAYLOAD_VERSION) {
+    for (size_t byte = 0; byte < ReadingAchievementState::BYTE_COUNT; ++byte) {
+      const uint8_t announcedLocked = payload[ANNOUNCED_OFFSET + byte] & static_cast<uint8_t>(~payload[2 + byte]);
+      if (announcedLocked != 0) return PathStatus::Invalid;
+    }
+  }
   if (state) {
     state->initialized = (payload[1] & FLAG_INITIALIZED) != 0;
     std::copy_n(payload.begin() + 2, ReadingAchievementState::BYTE_COUNT, state->unlocked.begin());
     if (payload[0] == PAYLOAD_VERSION) {
       state->pendingHistoricalNotification = (payload[1] & FLAG_PENDING_HISTORICAL) != 0;
       std::copy_n(payload.begin() + ANNOUNCED_OFFSET, ReadingAchievementState::BYTE_COUNT, state->announced.begin());
-      if ((state->announced.back() & 0xC0u) != 0) return PathStatus::Invalid;
       for (size_t id = 0; id < ReadingAchievements::COUNT; ++id) {
         state->unlockRecognitionDays[id] = readU32(payload.data() + RECOGNITION_DAYS_OFFSET + id * sizeof(uint32_t));
       }
@@ -298,7 +303,8 @@ ReadingAchievements::LoadStatus ReadingAchievements::load(ReadingAchievementStat
 }
 
 bool ReadingAchievements::reconcile(const GlobalReadingStats& stats, const DailyReadingHistory& history,
-                                    ReadingAchievementEvaluation* evaluation) {
+                                    ReadingAchievementEvaluation* evaluation,
+                                    ReadingAchievementState* reconciledState) {
   ReadingAchievementState state;
   const LoadStatus status = load(state);
   if (status == LoadStatus::NewerVersion || status == LoadStatus::IoError) return false;
@@ -316,6 +322,7 @@ bool ReadingAchievements::reconcile(const GlobalReadingStats& stats, const Daily
   if ((historical || unlocked.newlyUnlocked != 0) && !saveState(state)) return false;
 
   if (evaluation) *evaluation = unlocked;
+  if (reconciledState) *reconciledState = state;
   return true;
 }
 

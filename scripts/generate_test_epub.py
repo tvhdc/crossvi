@@ -10,7 +10,6 @@ Creates EPUBs with annotated JPEG and PNG images to verify:
 - Page serialization
 """
 
-import os
 import sys
 import zipfile
 from pathlib import Path
@@ -26,8 +25,6 @@ except ImportError:
     exit(1)
 
 OUTPUT_DIR = Path(__file__).parent.parent / "test" / "epubs"
-SCREEN_WIDTH = 480
-SCREEN_HEIGHT = 800
 
 def get_font(size=20):
     """Get a font, falling back to default if needed."""
@@ -45,30 +42,6 @@ def draw_text_centered(draw, y, text, font, fill=0):
     text_width = bbox[2] - bbox[0]
     x = (draw.im.size[0] - text_width) // 2
     draw.text((x, y), text, font=font, fill=fill)
-
-def draw_text_wrapped(draw, x, y, text, font, max_width, fill=0):
-    """Draw text with word wrapping."""
-    words = text.split()
-    lines = []
-    current_line = []
-
-    for word in words:
-        test_line = ' '.join(current_line + [word])
-        bbox = draw.textbbox((0, 0), test_line, font=font)
-        if bbox[2] - bbox[0] <= max_width:
-            current_line.append(word)
-        else:
-            if current_line:
-                lines.append(' '.join(current_line))
-            current_line = [word]
-    if current_line:
-        lines.append(' '.join(current_line))
-
-    line_height = font.size + 4 if hasattr(font, 'size') else 20
-    for i, line in enumerate(lines):
-        draw.text((x, y + i * line_height), line, font=font, fill=fill)
-
-    return len(lines) * line_height
 
 def create_grayscale_test_image(filename, is_png=True):
     """

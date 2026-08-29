@@ -52,9 +52,6 @@ void WifiSelectionActivity::onEnter() {
            mac[3], mac[4], mac[5]);
   cachedMacAddress = std::string(macStr);
 
-  // Trigger first update to show scanning message
-  requestUpdate();
-
   // Attempt to auto-connect to known networks. Try the last successful
   // network first for speed, then scan and try any visible saved networks by
   // signal strength. The user can interrupt this and show the scan result.
@@ -280,7 +277,6 @@ bool WifiSelectionActivity::tryAutoConnectCredential(const WifiCredential& cred)
   autoConnecting = true;
   manualNetworkListRequested = false;
   attemptConnection();
-  requestUpdate();
   return true;
 }
 
@@ -382,16 +378,8 @@ void WifiSelectionActivity::checkConnectionStatus() {
     // clock is valid (X4 has no external RTC; X3 may have lost RTC validity).
     if (ClockSyncPolicy::shouldSyncFromNetwork(SETTINGS.clockHasBeenSynced, halClock.isSystemTimeValid())) {
       if (halClock.syncFromNTP()) {
-        SETTINGS.clockHasBeenSynced = 1;
-        SETTINGS.saveToFile();
+        if (!ClockSyncPolicy::markSynced(SETTINGS)) LOG_ERR("WIFI", "Failed to persist successful clock sync");
       }
-    }
-
-    // Save this as the last connected network - SD card operations need lock as
-    // we use SPI for both
-    {
-      RenderLock lock(*this);
-      WIFI_STORE.setLastConnectedSsid(selectedSSID);
     }
 
     // If we entered a new password, ask if user wants to save it
@@ -402,6 +390,12 @@ void WifiSelectionActivity::checkConnectionStatus() {
       requestUpdate();
     } else {
       // Using saved password or open network - complete immediately
+      // Only a stored credential can be auto-connected later. Do not persist
+      // an unsaved open network as a last-connected candidate.
+      if (WIFI_STORE.hasSavedCredential(selectedSSID)) {
+        RenderLock lock(*this);
+        WIFI_STORE.setLastConnectedSsid(selectedSSID);
+      }
       LOG_DBG("WIFI",
               "Connected with saved/open credentials, "
               "completing immediately");
@@ -511,9 +505,11 @@ void WifiSelectionActivity::loop() {
       }
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       if (savePromptSelection == 0) {
-        // User chose "Yes" - save the password
+        // Save the credential and last-connected marker in one transaction.
         RenderLock lock(*this);
-        WIFI_STORE.addCredential(selectedSSID, enteredPassword);
+        if (!WIFI_STORE.addCredential(selectedSSID, enteredPassword, true)) {
+          LOG_ERR("WIFI", "Failed to save credentials for connected network");
+        }
       }
       // Complete - parent will start web server
       onComplete(true);
@@ -542,13 +538,7 @@ void WifiSelectionActivity::loop() {
       if (forgetPromptSelection == 1) {
         RenderLock lock(*this);
         // User chose "Forget network" - forget the network
-        WIFI_STORE.removeCredential(selectedSSID);
-        // Update the network list to reflect the change
-        const auto network = find_if(networks.begin(), networks.end(),
-                                     [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
-        if (network != networks.end()) {
-          network->hasSavedPassword = false;
-        }
+        if (!WIFI_STORE.removeCredential(selectedSSID)) LOG_ERR("WIFI", "Failed to forget saved network");
       }
       // Go back to network list (whether Cancel or Forget network was selected)
       startWifiScan();

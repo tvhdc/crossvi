@@ -19,8 +19,6 @@
 
 // Internal constants
 namespace {
-constexpr int homeMenuMargin = 20;
-constexpr int homeMarginTop = 30;
 constexpr int subtitleY = 738;
 constexpr int bookmarkStatusIconWidth = 16;
 constexpr int bookmarkStatusIconHeight = 14;
@@ -517,31 +515,6 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) cons
   return Rect{x, y, w, h};
 }
 
-void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int barHeight = metrics.popupProgressBarHeight;
-  const int barWidth =
-      std::max(0, layout.width - metrics.popupMarginX * 2);  // twice the margin in drawPopup to match text width
-  const int barX = layout.x + (layout.width - barWidth) / 2;
-  const int barY = layout.y + layout.height - metrics.popupMarginY / 2 - barHeight / 2 - 1;
-  if (barWidth <= 0 || barHeight <= 0) {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    return;
-  }
-
-  const int scaledProgress = metrics.popupProgressClampPercent ? std::clamp(progress, 0, 100) : progress;
-  const int fillWidth = barWidth * scaledProgress / 100;
-
-  if (metrics.popupProgressDrawOutline) {
-    renderer.drawRect(barX, barY, barWidth, barHeight, 1, metrics.popupProgressOutlineInverted);
-  }
-  if (fillWidth > 0) {
-    renderer.fillRect(barX, barY, fillWidth, barHeight, metrics.popupProgressFillInverted);
-  }
-
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-}
-
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, const std::string& title, const int paddingBottom,
                               const int textYOffset, const bool fillMargin, const bool isPageBookmarked,
@@ -805,7 +778,7 @@ void BaseTheme::drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const ch
 }
 
 void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
-                                int selectedIndex) const {
+                                int selectedIndex, const char* footer) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -821,6 +794,8 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
 
   const int optionLineHeight = renderer.getLineHeight(optionFontId);
   const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const bool hasFooter = footer && footer[0] != '\0';
+  const int footerLineHeight = hasFooter ? renderer.getLineHeight(SMALL_FONT_ID) : 0;
   const int rowHeight = optionLineHeight + selectionVPadding * 2;
 
   int maxTextWidth = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
@@ -828,12 +803,14 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
     int w = renderer.getTextWidth(optionFontId, opt.c_str(), optionStyle);
     if (w > maxTextWidth) maxTextWidth = w;
   }
+  if (hasFooter) maxTextWidth = std::max(maxTextWidth, renderer.getTextWidth(SMALL_FONT_ID, footer));
 
   const int optionCount = static_cast<int>(options.size());
   const int listHeight = rowHeight * optionCount + itemSpacing * (optionCount - 1);
   const int dialogW = std::min((maxTextWidth + innerPadding * 2 + selectionHPadding * 2) * 12 / 10,
                                pageWidth - metrics.optionPopupDialogSideMargin * 2);
-  const int contentHeight = titleLineHeight + metrics.optionPopupTitleGap + listHeight;
+  const int footerGap = hasFooter ? metrics.optionPopupTitleGap : 0;
+  const int contentHeight = titleLineHeight + metrics.optionPopupTitleGap + listHeight + footerGap + footerLineHeight;
   const int dialogH = contentHeight + innerPadding * 2;
   const int dialogX = (pageWidth - dialogW) / 2;
   const int dialogY = (pageHeight - dialogH) / 2;
@@ -897,5 +874,12 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const char* title, 
     // Selected on light bg: text stays dark (invert=true).
     const bool invertText = selected ? metrics.optionPopupSelectionLight : true;
     renderer.drawText(optionFontId, textX, textY, labelText, invertText, optionStyle);
+  }
+
+  if (hasFooter) {
+    const std::string text = renderer.truncatedText(SMALL_FONT_ID, footer, itemRectW);
+    const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, text.c_str());
+    const int footerY = y + listHeight + footerGap;
+    renderer.drawText(SMALL_FONT_ID, itemRectX + (itemRectW - textWidth) / 2, footerY, text.c_str());
   }
 }

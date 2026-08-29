@@ -7,12 +7,16 @@
 #include <utility>
 #include <vector>
 
+#include "FsHelpers.h"
+#include "ImageDecoderFactory.h"
 #include "ImageDimsProbe.h"
 #include "InflateStream.h"
+#include "JpegToFramebufferConverter.h"
 #include "PixelCacheValidation.h"
 #include "PngFramebufferPreflight.h"
 #include "PngToBmpConverter.h"
 #include "PngToBmpConverter/PngImageSafety.h"
+#include "PngToFramebufferConverter.h"
 
 namespace allocation_failure_test {
 bool enabled = false;
@@ -57,6 +61,31 @@ void* operator new[](const std::size_t size, const std::nothrow_t&) noexcept {
 
 void operator delete(void* ptr, const std::nothrow_t&) noexcept { ::operator delete(ptr); }
 void operator delete[](void* ptr, const std::nothrow_t&) noexcept { ::operator delete[](ptr); }
+
+bool JpegToFramebufferConverter::getDimensionsStatic(const std::string&, ImageDimensions&) { return false; }
+bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string&, GfxRenderer&, const RenderConfig&) {
+  return false;
+}
+bool JpegToFramebufferConverter::supportsFormat(const std::string& extension) {
+  return FsHelpers::hasJpgExtension(extension);
+}
+
+bool PngToFramebufferConverter::getDimensionsStatic(const std::string&, ImageDimensions&) { return false; }
+bool PngToFramebufferConverter::getSupportedDimensionsStatic(const std::string&, ImageDimensions&) { return false; }
+bool PngToFramebufferConverter::decodeToFramebuffer(const std::string&, GfxRenderer&, const RenderConfig&) {
+  return false;
+}
+bool PngToFramebufferConverter::supportsFormat(const std::string& extension) {
+  return FsHelpers::hasPngExtension(extension);
+}
+
+TEST(ImageDecoderFactoryTest, SupportCheckDoesNotDependOnDecoderAllocation) {
+  allocation_failure_test::ScopedFailure failFirstAllocation(0);
+
+  EXPECT_TRUE(ImageDecoderFactory::isFormatSupported("OPS/cover.PNG"));
+  EXPECT_TRUE(ImageDecoderFactory::isFormatSupported("OPS/cover.JpEg"));
+  EXPECT_FALSE(ImageDecoderFactory::isFormatSupported("OPS/cover.webp"));
+}
 
 class ImageDimensionValidator final : public ImageToFramebufferDecoder {
  public:

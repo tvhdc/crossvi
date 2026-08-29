@@ -568,7 +568,7 @@ void LibraryCatalogStore::validateOneSource() {
     // A source disappeared outside CrossVi, so no dirty marker exists. Reuse
     // the normal cooperative rebuild; it removes every stale entry and also
     // discovers any other external changes without blocking the input loop.
-    if (!beginBuild()) phase_ = Phase::Error;
+    beginBuild();
     return;
   }
 
@@ -583,7 +583,7 @@ void LibraryCatalogStore::validateOneSource() {
     // Metadata and thumbnail paths are derived from the source. Rebuild the
     // complete cooperative catalog so an in-place replacement cannot retain
     // the previous book's title, author, cover or ordering data.
-    if (!beginBuild()) phase_ = Phase::Error;
+    beginBuild();
     return;
   }
 
@@ -703,10 +703,7 @@ bool LibraryCatalogStore::beginUpdateLocate() {
 }
 
 void LibraryCatalogStore::stepUpdate() {
-  const auto rebuild = [this]() {
-    resetUpdate(true);
-    if (!beginBuild()) phase_ = Phase::Error;
-  };
+  const auto rebuild = [this]() { beginBuild(); };
   if (updateStage_ == UpdateStage::Metadata) {
     BookMetadataCache::BookMetadata metadata;
     const Epub::CoreMetadataStepResult result = updateEpub_->stepCoreMetadataRead(metadata);
@@ -1255,8 +1252,6 @@ bool LibraryCatalogStore::loadRecord(const size_t index, LibraryBookRecord& reco
 bool LibraryCatalogStore::startOrderBuild(const uint8_t sortMode) {
   if (!isReady() || sortMode >= CrossPointSettings::LIBRARY_SORT_COUNT || isOrderBuilding()) return false;
   resetOrderBuild(true);
-  Storage.remove(ORDER_WORK_A_PATH);
-  Storage.remove(ORDER_WORK_B_PATH);
   if (!Storage.openFileForWrite("LIB", ORDER_WORK_A_PATH, orderOutput_) ||
       !Storage.openFileForRead("LIB", activePath(), orderCatalog_)) {
     resetOrderBuild(true);
@@ -1427,7 +1422,6 @@ bool LibraryCatalogStore::stepOrderBuild() {
   header.crc = structureCrc(header);
   const bool written = orderOutput_.seekSet(0) && exactWrite(orderOutput_, &header, sizeof(header)) &&
                        orderOutput_.sync() && orderOutput_.close() && orderInput_.close() &&
-                       validateOrder(ORDER_TEMP_PATH, nullptr) &&
                        StagedFileTransaction::publish(ORDER_PATH, ORDER_TEMP_PATH, ORDER_BACKUP_PATH, validateOrder) ==
                            StagedFileTransaction::Status::Published;
   resetOrderBuild(true);

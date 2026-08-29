@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "HalStorage.h"
 #include "ReaderFontSize.h"
 #include "SdCardFontRegistry.h"
 
@@ -81,6 +82,94 @@ TEST(ReaderFontSizeMappingTest, PointSizeContractPreservesLegacyValues) {
   EXPECT_EQ(ReaderFontSize::pointSize(3), 18);
   EXPECT_EQ(ReaderFontSize::closestIndex(21), 4);
   EXPECT_EQ(ReaderFontSize::closestIndex(27), 7);
+}
+
+TEST(SdCardFontRegistryTest, TransientEnumerationFailurePreservesTheLastCompleteSnapshot) {
+  Storage.resetTestTree();
+  Storage.addTestDirectory(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+  Storage.addTestDirectory("/.fonts/Bookerly");
+  Storage.addTestFile("/.fonts/Bookerly/Bookerly_14.cpfont");
+
+  SdCardFontRegistry registry;
+  ASSERT_TRUE(registry.discover());
+  ASSERT_TRUE(registry.lastDiscoverySucceeded());
+  ASSERT_NE(registry.findFamily("Bookerly"), nullptr);
+
+  Storage.failDirectoryIterationAfter(SdCardFontRegistry::FONTS_DIR_HIDDEN, 0);
+  EXPECT_TRUE(registry.discover());
+  EXPECT_FALSE(registry.lastDiscoverySucceeded());
+  EXPECT_NE(registry.findFamily("Bookerly"), nullptr);
+}
+
+TEST(SdCardFontRegistryTest, SuccessfulEmptyScanReplacesAStaleSnapshot) {
+  Storage.resetTestTree();
+  Storage.addTestDirectory(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+  Storage.addTestDirectory("/.fonts/Bookerly");
+  Storage.addTestFile("/.fonts/Bookerly/Bookerly_14.cpfont");
+
+  SdCardFontRegistry registry;
+  ASSERT_TRUE(registry.discover());
+
+  Storage.resetTestTree();
+  EXPECT_FALSE(registry.discover());
+  EXPECT_TRUE(registry.lastDiscoverySucceeded());
+  EXPECT_EQ(registry.findFamily("Bookerly"), nullptr);
+}
+
+TEST(SdCardFontRegistryTest, FamilyDirectoryReadFailureAlsoRejectsThePartialScan) {
+  Storage.resetTestTree();
+  Storage.addTestDirectory(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+  Storage.addTestDirectory("/.fonts/Bookerly");
+  Storage.addTestFile("/.fonts/Bookerly/Bookerly_14.cpfont");
+
+  SdCardFontRegistry registry;
+  ASSERT_TRUE(registry.discover());
+  Storage.failDirectoryIterationAfter("/.fonts/Bookerly", 0);
+
+  EXPECT_TRUE(registry.discover());
+  EXPECT_FALSE(registry.lastDiscoverySucceeded());
+  EXPECT_NE(registry.findFamily("Bookerly"), nullptr);
+}
+
+TEST(SdCardFontRegistryTest, UnavailableStorageDoesNotProduceATrustedEmptySnapshot) {
+  Storage.resetTestTree();
+  Storage.setReady(false);
+
+  SdCardFontRegistry registry;
+  EXPECT_FALSE(registry.discover());
+  EXPECT_FALSE(registry.lastDiscoverySucceeded());
+  EXPECT_EQ(registry.getFamilyCount(), 0);
+}
+
+TEST(SdCardFontRegistryTest, DirectoryCloseFailurePreservesTheLastCompleteSnapshot) {
+  Storage.resetTestTree();
+  Storage.addTestDirectory(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+  Storage.addTestDirectory("/.fonts/Bookerly");
+  Storage.addTestFile("/.fonts/Bookerly/Bookerly_14.cpfont");
+
+  SdCardFontRegistry registry;
+  ASSERT_TRUE(registry.discover());
+  Storage.failClose(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+
+  EXPECT_TRUE(registry.discover());
+  EXPECT_FALSE(registry.lastDiscoverySucceeded());
+  EXPECT_NE(registry.findFamily("Bookerly"), nullptr);
+}
+
+TEST(SdCardFontRegistryTest, NonDirectoryFontRootDoesNotReplaceTheLastCompleteSnapshot) {
+  Storage.resetTestTree();
+  Storage.addTestDirectory(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+  Storage.addTestDirectory("/.fonts/Bookerly");
+  Storage.addTestFile("/.fonts/Bookerly/Bookerly_14.cpfont");
+
+  SdCardFontRegistry registry;
+  ASSERT_TRUE(registry.discover());
+  Storage.resetTestTree();
+  Storage.addTestFile(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+
+  EXPECT_TRUE(registry.discover());
+  EXPECT_FALSE(registry.lastDiscoverySucceeded());
+  EXPECT_NE(registry.findFamily("Bookerly"), nullptr);
 }
 
 }  // namespace

@@ -115,7 +115,6 @@ class BookMetadataCache {
   uint32_t writeSpineEntry(HalFile& file, const SpineEntry& entry) const;
   uint32_t writeTocEntry(HalFile& file, const TocEntry& entry) const;
   SpineEntry readSpineEntry(HalFile& file) const;
-  TocEntry readTocEntry(HalFile& file) const;
 
  public:
   BookMetadata coreMetadata;
@@ -144,9 +143,6 @@ class BookMetadataCache {
   BuildStepResult stepBuildBookBin(size_t maxEntries);
   void cancelBuildBookBin();
   bool isBuildingBookBin() const { return buildState != nullptr; }
-  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
-                    const ZipFile::SourceIdentity& sourceIdentity);
-
   // Reading phase (read mode)
   LoadStatus load(const ZipFile::SourceIdentity& expectedSourceIdentity);
   LoadStepResult beginLoad(const ZipFile::SourceIdentity& expectedSourceIdentity);

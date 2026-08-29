@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -36,12 +37,15 @@ class SettingsSubmenuActivity final : public Activity {
   int selectedIndex_ = 0;
   ButtonNavigator buttonNavigator_;
   OptionPopup optionPopup_;
+  enum class SleepImageNotice : uint8_t { None, Ready, Optimized, TooLarge, Invalid, IoError };
+  SleepImageNotice sleepImageNotice_ = SleepImageNotice::None;
+  uint64_t sleepImageSourceBytes_ = 0;
+  uint64_t sleepImageOutputBytes_ = 0;
 
   StrId title() const;
   void rebuildSettings();
   void handleSelection();
   void openSleepTimeoutPicker();
-  void openSleepImageZoomPicker();
   void showSleepImageDialog(uint8_t mode);
   void openSleepImagePicker(uint8_t mode);
   void applySleepImageSelection(uint8_t mode, const std::string& path);

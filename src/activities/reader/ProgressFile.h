@@ -193,7 +193,6 @@ inline bool writeVerified(const std::string& path, const uint8_t* data, const si
     file.close();
     return false;
   }
-  file.flush();
   const bool synced = file.sync();
   const bool closed = file.close();
   return synced && closed && verifyExact(path, data, size);

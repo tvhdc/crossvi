@@ -85,6 +85,7 @@ void TimeSettingsActivity::handleSelection() {
     case ITEM_FORMAT:
       optionPopup.show(StrId::STR_CLOCK_FORMAT, clockFormatNames, CLOCK_FORMAT_ITEMS, SETTINGS.clockFormat,
                        [this](const int index) {
+                         if (index == SETTINGS.clockFormat) return;
                          SETTINGS.clockFormat = static_cast<uint8_t>(index);
                          SETTINGS.saveToFile();
                        });
@@ -92,11 +93,12 @@ void TimeSettingsActivity::handleSelection() {
       return;
     case ITEM_UTC_OFFSET:
       startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
+                             [](const ActivityResult&) {});
       return;
     case ITEM_DATE_FORMAT:
       optionPopup.show(tr(STR_DATE_FORMAT), ClockDateFormat::FORMAT_PATTERNS, ClockDateFormat::FormatCount,
                        SETTINGS.dateFormat, [this](const int index) {
+                         if (index == SETTINGS.dateFormat) return;
                          SETTINGS.dateFormat = static_cast<uint8_t>(index);
                          SETTINGS.saveToFile();
                        });
@@ -105,14 +107,14 @@ void TimeSettingsActivity::handleSelection() {
     case ITEM_DATE_SEPARATOR:
       optionPopup.show(StrId::STR_DATE_SEPARATOR, dateSeparatorNames, CrossPointSettings::DATE_SEPARATOR_COUNT,
                        SETTINGS.dateSeparator, [this](const int index) {
+                         if (index == SETTINGS.dateSeparator) return;
                          SETTINGS.dateSeparator = static_cast<uint8_t>(index);
                          SETTINGS.saveToFile();
                        });
       requestUpdate();
       return;
     case ITEM_SYNC:
-      startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
+      startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), [](const ActivityResult&) {});
       return;
     default:
       return;

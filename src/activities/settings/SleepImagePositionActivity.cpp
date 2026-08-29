@@ -1,13 +1,10 @@
 #include "SleepImagePositionActivity.h"
 
-#include <Epub.h>
 #include <Epub/converters/PngToFramebufferConverter.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
-#include <Txt.h>
-#include <Xtc.h>
 
 #include <algorithm>
 #include <cmath>
@@ -15,8 +12,6 @@
 #include <utility>
 
 #include "Bitmap.h"
-#include "CrossPointSettings.h"
-#include "CrossPointState.h"
 #include "FsHelpers.h"
 #include "activities/ActivityResult.h"
 #include "activities/boot_sleep/SleepFrameStore.h"
@@ -76,26 +71,27 @@ bool pngDimensions(const std::string& path, int& width, int& height) {
   height = dimensions.height;
   return width > 0 && height > 0;
 }
-
-std::string cachedCoverPath() {
-  const std::string& bookPath = APP_STATE.openEpubPath;
-  if (bookPath.empty()) return {};
-  if (FsHelpers::hasEpubExtension(bookPath)) return Epub(bookPath, "/.crosspoint").getCoverBmpPath(false);
-  if (FsHelpers::hasXtcExtension(bookPath)) return Xtc(bookPath, "/.crosspoint").getCoverBmpPath();
-  if (FsHelpers::hasTxtExtension(bookPath) || FsHelpers::hasMarkdownExtension(bookPath)) {
-    return Txt(bookPath, "/.crosspoint").getCoverBmpPath();
-  }
-  return {};
-}
 }  // namespace
 
 void SleepImagePositionActivity::onEnter() {
   Activity::onEnter();
-  zoom_ = std::clamp<uint8_t>(SETTINGS.sleepScreenImageZoom, SLEEP_IMAGE_MIN_ZOOM, SLEEP_IMAGE_MAX_ZOOM);
-  offsetX_ = static_cast<int16_t>(
-      std::clamp<int>(SETTINGS.sleepScreenImageOffsetX, -renderer.getScreenWidth() / 2, renderer.getScreenWidth() / 2));
-  offsetY_ = static_cast<int16_t>(std::clamp<int>(SETTINGS.sleepScreenImageOffsetY, -renderer.getScreenHeight() / 2,
-                                                  renderer.getScreenHeight() / 2));
+  catalog_ = {};
+  imageAvailable_ = false;
+  saveFailed_ = SleepImageSelectionStore::loadCatalog(catalog_) != SleepImageSelectionStore::CatalogStatus::Ok;
+  if (const auto* image = SleepImageSelectionStore::findImage(catalog_, imageId_)) {
+    sourcePath_ = image->path;
+    zoom_ = std::clamp<uint8_t>(image->transform.zoom, SLEEP_IMAGE_MIN_ZOOM, SLEEP_IMAGE_MAX_ZOOM);
+    offsetX_ = static_cast<int16_t>(
+        std::clamp<int>(image->transform.offsetX, -renderer.getScreenWidth() / 2, renderer.getScreenWidth() / 2));
+    offsetY_ = static_cast<int16_t>(
+        std::clamp<int>(image->transform.offsetY, -renderer.getScreenHeight() / 2, renderer.getScreenHeight() / 2));
+    initialZoom_ = zoom_;
+    initialOffsetX_ = offsetX_;
+    initialOffsetY_ = offsetY_;
+    imageAvailable_ = true;
+  } else {
+    sourcePath_.clear();
+  }
   resetHoldHandled_ = false;
   resolveSourceGeometry();
   requestUpdate();
@@ -104,45 +100,35 @@ void SleepImagePositionActivity::onEnter() {
 void SleepImagePositionActivity::resolveSourceGeometry() {
   sourceWidth_ = 0;
   sourceHeight_ = 0;
-  sourceSizeVaries_ = false;
-  SleepImageSelectionStore::recover();
-
-  std::string path;
-  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM) {
-    if (Storage.exists(SleepImageSelectionStore::OVERLAY_BMP_PATH)) {
-      path = SleepImageSelectionStore::OVERLAY_BMP_PATH;
-    } else if (Storage.exists(SleepImageSelectionStore::OVERLAY_PNG_PATH)) {
-      path = SleepImageSelectionStore::OVERLAY_PNG_PATH;
-    } else if (Storage.exists("/.sleep-overlay") || Storage.exists("/sleep-overlay")) {
-      sourceSizeVaries_ = true;
-      return;
-    }
-  } else if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
-             SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS) {
-    path = cachedCoverPath();
-  } else {
-    path = SleepImageSelectionStore::NORMAL_BMP_PATH;
+  if (sourcePath_.empty() || !Storage.exists(sourcePath_.c_str())) return;
+  bool loaded = false;
+  if (FsHelpers::hasPngExtension(sourcePath_)) {
+    loaded = pngDimensions(sourcePath_, sourceWidth_, sourceHeight_);
+  } else if (FsHelpers::hasBmpExtension(sourcePath_)) {
+    loaded = bmpDimensions(sourcePath_, sourceWidth_, sourceHeight_);
   }
-
-  if (path.empty() || !Storage.exists(path.c_str())) return;
-  if (FsHelpers::hasPngExtension(path)) {
-    pngDimensions(path, sourceWidth_, sourceHeight_);
-  } else if (FsHelpers::hasBmpExtension(path)) {
-    bmpDimensions(path, sourceWidth_, sourceHeight_);
+  if (!loaded) {
+    sourceWidth_ = 0;
+    sourceHeight_ = 0;
   }
 }
 
 void SleepImagePositionActivity::adjustZoom(const int delta) {
-  zoom_ = static_cast<uint8_t>(std::clamp(static_cast<int>(zoom_) + delta, static_cast<int>(SLEEP_IMAGE_MIN_ZOOM),
-                                          static_cast<int>(SLEEP_IMAGE_MAX_ZOOM)));
+  const uint8_t nextZoom = static_cast<uint8_t>(std::clamp(
+      static_cast<int>(zoom_) + delta, static_cast<int>(SLEEP_IMAGE_MIN_ZOOM), static_cast<int>(SLEEP_IMAGE_MAX_ZOOM)));
+  if (nextZoom == zoom_) return;
+  zoom_ = nextZoom;
   requestUpdate();
 }
 
 void SleepImagePositionActivity::move(const int dx, const int dy) {
-  offsetX_ = static_cast<int16_t>(
+  const int16_t nextX = static_cast<int16_t>(
       std::clamp(static_cast<int>(offsetX_) + dx, -renderer.getScreenWidth() / 2, renderer.getScreenWidth() / 2));
-  offsetY_ = static_cast<int16_t>(
+  const int16_t nextY = static_cast<int16_t>(
       std::clamp(static_cast<int>(offsetY_) + dy, -renderer.getScreenHeight() / 2, renderer.getScreenHeight() / 2));
+  if (nextX == offsetX_ && nextY == offsetY_) return;
+  offsetX_ = nextX;
+  offsetY_ = nextY;
   requestUpdate();
 }
 
@@ -159,9 +145,23 @@ void SleepImagePositionActivity::resetTransform() {
 }
 
 void SleepImagePositionActivity::saveAndFinish() {
-  SETTINGS.sleepScreenImageZoom = zoom_;
-  SETTINGS.sleepScreenImageOffsetX = offsetX_;
-  SETTINGS.sleepScreenImageOffsetY = offsetY_;
+  if (!imageAvailable_) {
+    saveFailed_ = true;
+    requestUpdate();
+    return;
+  }
+  if (zoom_ == initialZoom_ && offsetX_ == initialOffsetX_ && offsetY_ == initialOffsetY_) {
+    setResult(ActivityResult{});
+    finish();
+    return;
+  }
+  const SleepImageSelectionStore::ImageTransform transform{zoom_, offsetX_, offsetY_};
+  if (SleepImageSelectionStore::updateTransform(catalog_, imageId_, transform) !=
+      SleepImageSelectionStore::CatalogStatus::Ok) {
+    saveFailed_ = true;
+    requestUpdate();
+    return;
+  }
   SleepFrameStore::discard();
   setResult(ActivityResult{});
   finish();
@@ -182,6 +182,7 @@ void SleepImagePositionActivity::loop() {
     resetTransform();
   }
   if (confirmReleased) {
+    resetHoldHandled_ = false;
     saveAndFinish();
     return;
   }
@@ -260,9 +261,7 @@ void SleepImagePositionActivity::render(RenderLock&&) {
   renderer.drawCenteredText(SMALL_FONT_ID, previewTop - 48, tr(STR_SLEEP_IMAGE_SCREEN_FRAME_HINT));
   renderer.drawCenteredText(SMALL_FONT_ID, previewTop - 26, tr(STR_SLEEP_IMAGE_FRAME_HINT));
   if (!hasSourceGeometry) {
-    renderer.drawCenteredText(
-        SMALL_FONT_ID, previewTop + previewHeight / 2,
-        I18N.get(sourceSizeVaries_ ? StrId::STR_SLEEP_IMAGE_SIZE_VARIES : StrId::STR_SLEEP_IMAGE_SIZE_UNAVAILABLE));
+    renderer.drawCenteredText(SMALL_FONT_ID, previewTop + previewHeight / 2, tr(STR_SLEEP_IMAGE_SIZE_UNAVAILABLE));
   }
 
   const int footerTop = previewTop + previewHeight + 24;
@@ -282,5 +281,10 @@ void SleepImagePositionActivity::render(RenderLock&&) {
                           ? mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_DONE), "-", "+")
                           : mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_DONE), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (saveFailed_) {
+    saveFailed_ = false;
+    drawTransientPopup(StrId::STR_SLEEP_IMAGE_SAVE_FAILED);
+    return;
+  }
   renderer.displayBuffer();
 }

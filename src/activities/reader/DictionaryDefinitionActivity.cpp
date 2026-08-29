@@ -167,7 +167,7 @@ void DictionaryDefinitionActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     startActivityForResult(std::make_unique<DictionaryHistoryActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) { requestUpdate(); });
+                           [](const ActivityResult&) {});
     return;
   }
 

@@ -170,14 +170,10 @@ void BookReaderSettingsActivity::toggleSelected() {
     startActivityForResult(
         std::make_unique<FontSizeSelectionActivity>(renderer, mappedInput),
         [this, previousFontFamily, previousSize, previousSdFontFamily](const ActivityResult& result) {
-          if (result.isCancelled) {
-            requestUpdate();
-            return;
-          }
+          if (result.isCancelled) return;
 
           if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.fontSize == previousSize &&
               SETTINGS.sdFontFamilyName == previousSdFontFamily) {
-            requestUpdate();
             return;
           }
 
@@ -193,7 +189,6 @@ void BookReaderSettingsActivity::toggleSelected() {
           customEnabled = true;
           savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
                                               savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);
-          requestUpdate();
         });
     return;
   }
@@ -206,7 +201,6 @@ void BookReaderSettingsActivity::toggleSelected() {
         [this, previousFontFamily, previousFontSize, previousSdFontFamily](const ActivityResult&) {
           if (SETTINGS.fontFamily == previousFontFamily && SETTINGS.fontSize == previousFontSize &&
               SETTINGS.sdFontFamilyName == previousSdFontFamily) {
-            requestUpdate();
             return;
           }
 
@@ -222,7 +216,6 @@ void BookReaderSettingsActivity::toggleSelected() {
           customEnabled = true;
           savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval,
                                               savedCustom.autoPageTurnSeconds, savedCustom.autoPageTurnStartsOnOpen);
-          requestUpdate();
         });
     return;
   }
@@ -245,7 +238,6 @@ void BookReaderSettingsActivity::toggleSelected() {
       if (renderMode) SETTINGS.epubRenderModeOverride = 1;
       savedCustom = captureReaderSettings(true, savedCustom.hasAutoPageTurnInterval, savedCustom.autoPageTurnSeconds,
                                           savedCustom.autoPageTurnStartsOnOpen);
-      requestUpdate();
     };
     if (!setting.enumStringValues.empty()) {
       optionPopup.show(setting.nameId, setting.enumStringValues, current, std::move(onSelect));

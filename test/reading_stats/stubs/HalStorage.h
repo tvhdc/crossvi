@@ -97,6 +97,9 @@ class HalStorage {
     return true;
   }
   HalFile open(const char* path) {
+    const size_t call = ++openCallsByPath_[path];
+    const auto failCall = failOpenCalls_.find(path);
+    if (failCall != failOpenCalls_.end() && failCall->second == call) return {};
     if (directories_.count(path) == 0) {
       const auto found = files_.find(path);
       return found == files_.end() ? HalFile{} : makeFile(path, false);
@@ -120,6 +123,7 @@ class HalStorage {
   }
   bool openFileForRead(const char*, const char* path, HalFile& file) {
     ++openReadCalls_;
+    ++openReadCallsByPath_[path];
     if (unreadablePaths_.count(path) != 0 || files_.count(path) == 0) return false;
     file = makeFile(path, false);
     return true;
@@ -156,9 +160,15 @@ class HalStorage {
   void failRenameOnCall(const size_t call) { failRenameCall_ = call; }
   void failRemoveOnCall(const size_t call) { failRemoveCall_ = call; }
   void failDirectoryIterationAfter(const size_t entryCount) { failDirectoryIterationAfter_ = entryCount; }
+  void failOpenForOnCall(std::string path, const size_t call) { failOpenCalls_[std::move(path)] = call; }
   void failGetNameFor(std::string path) { failGetNamePaths_.insert(std::move(path)); }
+  void failGetNameForOnCall(std::string path, const size_t call) { failGetNameCalls_[std::move(path)] = call; }
   void failCloseFor(std::string path) { failClosePaths_.insert(std::move(path)); }
   size_t openReadCallCount() const { return openReadCalls_; }
+  size_t openReadCallCount(const std::string& path) const {
+    const auto it = openReadCallsByPath_.find(path);
+    return it == openReadCallsByPath_.end() ? 0 : it->second;
+  }
   size_t writeCallCount() const { return writeCalls_; }
   size_t renameCallCount() const { return renameCalls_; }
   void resetFaultInjection() {
@@ -173,12 +183,17 @@ class HalStorage {
     failRemoveCall_ = 0;
     corruptRenameCall_ = 0;
     openReadCalls_ = 0;
+    openReadCallsByPath_.clear();
     writeCalls_ = 0;
     syncCalls_ = 0;
     renameCalls_ = 0;
     removeCalls_ = 0;
     failDirectoryIterationAfter_ = SIZE_MAX;
+    openCallsByPath_.clear();
+    failOpenCalls_.clear();
     failGetNamePaths_.clear();
+    getNameCalls_.clear();
+    failGetNameCalls_.clear();
     failClosePaths_.clear();
   }
 
@@ -198,12 +213,17 @@ class HalStorage {
   size_t failRemoveCall_ = 0;
   size_t corruptRenameCall_ = 0;
   size_t openReadCalls_ = 0;
+  std::map<std::string, size_t> openReadCallsByPath_;
   size_t writeCalls_ = 0;
   size_t syncCalls_ = 0;
   size_t renameCalls_ = 0;
   size_t removeCalls_ = 0;
   size_t failDirectoryIterationAfter_ = SIZE_MAX;
+  std::map<std::string, size_t> openCallsByPath_;
+  std::map<std::string, size_t> failOpenCalls_;
   std::set<std::string> failGetNamePaths_;
+  std::map<std::string, size_t> getNameCalls_;
+  std::map<std::string, size_t> failGetNameCalls_;
   std::set<std::string> failClosePaths_;
 
   HalFile makeFile(const std::string& path, const bool writable) {
@@ -269,7 +289,10 @@ inline bool HalFile::close() {
 
 inline size_t HalFile::getName(char* name, const size_t length) const {
   if (!open_ || !name || length == 0) return 0;
-  if (storage_->failGetNamePaths_.count(path_) != 0) {
+  const size_t call = ++storage_->getNameCalls_[path_];
+  const auto failCall = storage_->failGetNameCalls_.find(path_);
+  if (storage_->failGetNamePaths_.count(path_) != 0 ||
+      (failCall != storage_->failGetNameCalls_.end() && failCall->second == call)) {
     error_ = 1;
     return 0;
   }

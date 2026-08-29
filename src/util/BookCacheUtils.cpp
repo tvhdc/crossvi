@@ -95,8 +95,10 @@ bool readDirectory(const std::string& path, std::vector<CacheEntry>& entries) {
   for (HalFile file = directory.openNextFile(); file; file = directory.openNextFile()) {
     const bool entryIsDirectory = file.isDirectory();
     const size_t nameLength = file.getName(name, sizeof(name));
-    file.close();
-    if (nameLength == 0 || nameLength >= sizeof(name)) {
+    const bool entryHadError = file.getError() != 0;
+    const bool entryClosed = file.close();
+    const bool entryOk = !entryHadError && entryClosed;
+    if (!entryOk || nameLength == 0 || nameLength >= sizeof(name)) {
       directory.close();
       return false;
     }
@@ -109,7 +111,9 @@ bool readDirectory(const std::string& path, std::vector<CacheEntry>& entries) {
     }
     entries.push_back({std::move(entryName), entryIsDirectory});
   }
-  return directory.close();
+  const bool iterationOk = directory.getError() == 0;
+  const bool directoryClosed = directory.close();
+  return iterationOk && directoryClosed;
 }
 
 bool isDecimalRange(const std::string& value, const size_t begin, const size_t end) {
@@ -386,7 +390,9 @@ bool filesEqual(const std::string& leftPath, const std::string& rightPath) {
     }
     remaining -= chunk;
   }
-  return true;
+  const bool leftClosed = left.close();
+  const bool rightClosed = right.close();
+  return leftClosed && rightClosed;
 }
 
 bool copyFileExact(const std::string& sourcePath, const std::string& destinationPath) {
@@ -410,9 +416,10 @@ bool copyFileExact(const std::string& sourcePath, const std::string& destination
     }
     remaining -= chunk;
   }
-  destination.flush();
-  copied = copied && destination.sync() && destination.close();
-  source.close();
+  const bool synced = copied && destination.sync();
+  const bool destinationClosed = destination.close();
+  const bool sourceClosed = source.close();
+  copied = copied && synced && destinationClosed && sourceClosed;
   if (!copied || !filesEqual(sourcePath, destinationPath)) {
     Storage.remove(destinationPath.c_str());
     return false;
@@ -522,7 +529,7 @@ bool readMoveIdentity(const std::string& stagingPath, MoveIdentity& identity) {
     paths[i]->resize(lengths[i]);
     if (marker.read(paths[i]->data(), lengths[i]) != static_cast<int>(lengths[i])) return false;
   }
-  return validMoveIdentity(identity);
+  return marker.close() && validMoveIdentity(identity);
 }
 
 bool writeMoveReadyMarker(const std::string& stagingPath, const MoveIdentity& identity) {
@@ -533,7 +540,6 @@ bool writeMoveReadyMarker(const std::string& stagingPath, const MoveIdentity& id
   HalFile marker;
   if (!Storage.openFileForWrite("BookCache", markerPath, marker)) return false;
   const bool written = marker.write(encoded.data(), encoded.size()) == encoded.size();
-  marker.flush();
   if (!written || !marker.sync() || !marker.close()) return false;
 
   MoveIdentity verified;
@@ -789,7 +795,7 @@ bool discardMovesWhoseSourceWasReplaced(const std::string& bookPath) {
   HalFile root = Storage.open("/.crosspoint");
   if (!root || !root.isDirectory()) {
     if (root) root.close();
-    return true;
+    return false;
   }
 
   struct PendingDiscard {
@@ -798,10 +804,16 @@ bool discardMovesWhoseSourceWasReplaced(const std::string& bookPath) {
   };
   std::vector<PendingDiscard> pending;
   char name[256]{};
+  bool scanSucceeded = true;
   for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
     const bool directory = entry.isDirectory();
     const size_t length = entry.getName(name, sizeof(name));
-    entry.close();
+    const bool entryHadError = entry.getError() != 0;
+    const bool entryClosed = entry.close();
+    if (entryHadError || !entryClosed) {
+      scanSucceeded = false;
+      break;
+    }
     if (!directory || length == 0 || length >= sizeof(name)) continue;
 
     const std::string entryName(name, length);
@@ -832,7 +844,9 @@ bool discardMovesWhoseSourceWasReplaced(const std::string& bookPath) {
     }
     pending.push_back({path, std::move(identity)});
   }
-  root.close();
+  const bool iterationSucceeded = root.getError() == 0;
+  const bool rootClosed = root.close();
+  if (!scanSucceeded || !iterationSucceeded || !rootClosed) return false;
 
   bool discarded = true;
   for (const PendingDiscard& item : pending) {
@@ -951,19 +965,6 @@ bool isBookCacheDirectoryName(const char* name) {
   return strncmp(name, EPUB_PREFIX, std::size(EPUB_PREFIX) - 1) == 0 ||
          strncmp(name, TXT_PREFIX, std::size(TXT_PREFIX) - 1) == 0 ||
          strncmp(name, XTC_PREFIX, std::size(XTC_PREFIX) - 1) == 0;
-}
-
-void clearBookCache(const std::string& path) {
-  if (FsHelpers::hasEpubExtension(path)) {
-    Epub(path, "/.crosspoint").clearCache();
-  } else if (FsHelpers::hasXtcExtension(path)) {
-    Xtc(path, "/.crosspoint").clearCache();
-  } else if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
-    Txt(path, "/.crosspoint").clearCache();
-  } else {
-    return;
-  }
-  LOG_DBG("BookCache", "Done checking metadata cache for: %s", path.c_str());
 }
 
 bool clearBookCacheDirectoryPreservingUserState(const std::string& rawCachePath) {

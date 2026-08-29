@@ -475,6 +475,61 @@ std::vector<uint8_t> makeSpineOnlyBookCache(const ZipFile::SourceIdentity& ident
   return bytes;
 }
 
+std::vector<uint8_t> makeLargeBookCache(const ZipFile::SourceIdentity& identity, const uint16_t spineCount,
+                                        const uint16_t tocCount) {
+  constexpr uint8_t version = 13;
+  constexpr uint32_t commitMarker = 0x424D434B;
+  SourceIdentityCodec::Payload identityPayload{};
+  EXPECT_TRUE(SourceIdentityCodec::encodePayload(identity, identityPayload));
+
+  std::vector<uint8_t> bytes;
+  appendPod(bytes, version);
+  const size_t lutOffsetPosition = bytes.size();
+  appendPod(bytes, uint32_t{0});
+  appendPod(bytes, spineCount);
+  appendPod(bytes, tocCount);
+  bytes.insert(bytes.end(), identityPayload.begin(), identityPayload.end());
+  appendPod(bytes, SourceIdentityCodec::crc32(identityPayload.data(), identityPayload.size()));
+  for (const std::string value : {"Large book", "Author", "en", "", ""}) appendString(bytes, value);
+
+  const uint32_t lutOffset = static_cast<uint32_t>(bytes.size());
+  overwritePod(bytes, lutOffsetPosition, lutOffset);
+  const uint32_t entryCount = static_cast<uint32_t>(spineCount) + tocCount;
+  std::vector<size_t> lutPositions;
+  lutPositions.reserve(entryCount);
+  for (uint32_t index = 0; index < entryCount; ++index) {
+    lutPositions.push_back(bytes.size());
+    appendPod(bytes, uint32_t{0});
+  }
+
+  for (uint16_t index = 0; index < spineCount; ++index) {
+    overwritePod(bytes, lutPositions[index], static_cast<uint32_t>(bytes.size()));
+    appendString(bytes, "chapter-" + std::to_string(index));
+    appendPod(bytes, uint8_t{1});
+    appendPod(bytes, static_cast<uint32_t>(index + 1));
+    appendPod(bytes, index < tocCount ? static_cast<int16_t>(index) : int16_t{-1});
+  }
+  for (uint16_t index = 0; index < tocCount; ++index) {
+    overwritePod(bytes, lutPositions[static_cast<size_t>(spineCount) + index], static_cast<uint32_t>(bytes.size()));
+    appendString(bytes, "Chapter " + std::to_string(index));
+    appendString(bytes, "chapter-" + std::to_string(index));
+    appendString(bytes, "");
+    appendPod(bytes, uint8_t{1});
+    appendPod(bytes, static_cast<int16_t>(index));
+  }
+  appendPod(bytes, commitMarker);
+  return bytes;
+}
+
+bool buildBookBinToCompletion(BookMetadataCache& cache, const BookMetadataCache::BookMetadata& metadata,
+                              const ZipFile::SourceIdentity& identity) {
+  const std::string epubPath = EPUB_PATH;
+  if (!cache.beginBuildBookBin(epubPath, metadata, identity)) return false;
+  BookMetadataCache::BuildStepResult result = BookMetadataCache::BuildStepResult::InProgress;
+  while (result == BookMetadataCache::BuildStepResult::InProgress) result = cache.stepBuildBookBin(64);
+  return result == BookMetadataCache::BuildStepResult::Built;
+}
+
 class EpubSourceIdentityTest : public testing::Test {
  protected:
   void SetUp() override {
@@ -517,6 +572,21 @@ TEST_F(EpubSourceIdentityTest, CentralDirectoryIdentityCanBeHashedInBoundedSteps
   EXPECT_GT(steps, 1U);
   EXPECT_EQ(actual, expected);
   EXPECT_LE(Storage.maxRead(), 1024U);
+}
+
+TEST_F(EpubSourceIdentityTest, CentralDirectoryIdentityRejectsFinalSourceCloseFailure) {
+  Storage.setFile(EPUB_PATH, makeZip());
+  Storage.failCloseFor(EPUB_PATH);
+
+  ZipSourceIdentityJob job;
+  ASSERT_TRUE(job.begin(EPUB_PATH));
+  ZipFile::SourceIdentity identity;
+  ZipSourceIdentityJob::StepStatus status = ZipSourceIdentityJob::StepStatus::InProgress;
+  while (status == ZipSourceIdentityJob::StepStatus::InProgress) status = job.step(64U * 1024U, identity);
+
+  EXPECT_EQ(status, ZipSourceIdentityJob::StepStatus::Error);
+  EXPECT_EQ(identity.fileSize, 0U);
+  EXPECT_EQ(identity.totalEntries, 0U);
 }
 
 TEST_F(EpubSourceIdentityTest, VerifiedRecoveryIdentityAvoidsInitialArchiveRescan) {
@@ -763,7 +833,7 @@ TEST_F(EpubSourceIdentityTest, NcxTargetsResolveRelativeToTheNcxDirectory) {
   ASSERT_EQ(epub.getSpineItemsCount(), 1);
   ASSERT_EQ(epub.getTocItemsCount(), 1);
   EXPECT_EQ(epub.getTocItem(0).href, "OPS/toc/ch1.xhtml");
-  EXPECT_EQ(epub.getSpineIndexForTocIndex(0), 0);
+  EXPECT_EQ(epub.getTocItem(0).spineIndex, 0);
 }
 
 TEST_F(EpubSourceIdentityTest, EmptyEpub3NavigationFallsBackToNcxWithoutKeepingPartialEntries) {
@@ -860,7 +930,10 @@ TEST_F(EpubSourceIdentityTest, ReaderLinksResolveRelativeToTheCurrentSpineDirect
   ASSERT_EQ(epub.getSpineItem(2).href, "OPS/other/ch1.xhtml");
   ASSERT_EQ(epub.getSpineItem(3).href, "OPS/part2/ch1.xhtml");
   EXPECT_EQ(epub.resolveHrefToSpineIndex("../part2/ch1.xhtml#note", 1), 3);
+
+  Storage.resetIoCounters();
   EXPECT_EQ(epub.resolveHrefToSpineIndex("ch1.xhtml#note", -1), -1);
+  EXPECT_LE(Storage.readCalls(), 28U);
 }
 
 TEST_F(EpubSourceIdentityTest, RejectsMalformedBoundsAndConcurrentGrowth) {
@@ -877,6 +950,18 @@ TEST_F(EpubSourceIdentityTest, RejectsMalformedBoundsAndConcurrentGrowth) {
   Storage.growOnReadCall(2);
   ZipFile changingZip(path);
   EXPECT_FALSE(changingZip.getSourceIdentity(identity));
+}
+
+TEST_F(EpubSourceIdentityTest, FilePathEnumerationRejectsMalformedCentralDirectory) {
+  auto malformed = makeZip();
+  put32(malformed, 32, 0xDEADBEEFU);
+  Storage.setFile(EPUB_PATH, std::move(malformed));
+
+  const std::string path = EPUB_PATH;
+  ZipFile zip(path);
+  size_t pathsSeen = 0;
+  EXPECT_FALSE(zip.enumerateFilePaths([&](std::string_view) { ++pathsSeen; }));
+  EXPECT_EQ(pathsSeen, 0U);
 }
 
 TEST_F(EpubSourceIdentityTest, OpensOnlyTheBoundedPayloadOfAStoredEntry) {
@@ -1101,6 +1186,19 @@ TEST_F(EpubSourceIdentityTest, CooperativeStreamJobCancellationStopsBeforeTheNex
   job.cancel();
   EXPECT_EQ(job.step(), ZipStreamReadJob::StepStatus::Error);
   EXPECT_EQ(output.fileSize64(), 4U);
+  EXPECT_TRUE(output.close());
+}
+
+TEST_F(EpubSourceIdentityTest, CooperativeStreamJobReportsBufferAllocationFailureAsOutOfMemory) {
+  constexpr char entryName[] = "chapter.xhtml";
+  Storage.setFile(EPUB_PATH, makeStoredZip({{entryName, "payload", true}}));
+
+  HalFile output;
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", "/oom.bin", output));
+  ZipStreamReadJob job;
+  EXPECT_EQ(job.begin(EPUB_PATH, entryName, output, std::numeric_limits<size_t>::max(), 1024, true),
+            ZipStreamReadJob::BeginStatus::OutOfMemory);
+  EXPECT_EQ(output.fileSize64(), 0U);
   EXPECT_TRUE(output.close());
 }
 
@@ -1688,6 +1786,29 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheRejectsCorruptSpineScratchBefore
   EXPECT_EQ(Storage.invalidOperationCount(), 0U);
 }
 
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheReportsSpineScratchCloseFailure) {
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_TRUE(cache.beginWrite());
+  ASSERT_TRUE(cache.beginContentOpfPass());
+  cache.createSpineEntry("a.xht");
+
+  Storage.failCloseFor(std::string(CACHE_PATH) + "/spine.bin.tmp");
+  EXPECT_FALSE(cache.endContentOpfPass());
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheReportsTocScratchCloseFailure) {
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_TRUE(cache.beginWrite());
+  ASSERT_TRUE(cache.beginContentOpfPass());
+  cache.createSpineEntry("a.xht");
+  ASSERT_TRUE(cache.endContentOpfPass());
+  ASSERT_TRUE(cache.beginTocPass());
+  cache.createTocEntry("Chapter", "a.xht", "", 1);
+
+  Storage.failCloseFor(std::string(CACHE_PATH) + "/toc.bin.tmp");
+  EXPECT_FALSE(cache.endTocPass());
+}
+
 TEST_F(EpubSourceIdentityTest, BookMetadataCacheValidatesScratchBeforeReplacingExistingCache) {
   const auto identity = identify(makeZip());
   BookMetadataCache cache(CACHE_PATH);
@@ -1707,7 +1828,7 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheValidatesScratchBeforeReplacingE
   Storage.setFile(BOOK_CACHE_PATH, existingCache);
 
   BookMetadataCache::BookMetadata metadata;
-  EXPECT_FALSE(cache.buildBookBin(EPUB_PATH, metadata, identity));
+  EXPECT_FALSE(buildBookBinToCompletion(cache, metadata, identity));
   EXPECT_EQ(Storage.file(BOOK_CACHE_PATH), existingCache);
   EXPECT_EQ(Storage.invalidOperationCount(), 0U);
 }
@@ -1757,6 +1878,96 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheLoadRecoversBackupAfterInterrupt
   EXPECT_EQ(Storage.invalidOperationCount(), 0U);
 }
 
+TEST_F(EpubSourceIdentityTest, BookMetadataCachePublicationDoesNotRereadStagingPayload) {
+  const auto identity = identify(makeZip());
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_TRUE(cache.beginWrite());
+  ASSERT_TRUE(cache.beginContentOpfPass());
+  cache.createSpineEntry("a.xht");
+  ASSERT_TRUE(cache.endContentOpfPass());
+  ASSERT_TRUE(cache.beginTocPass());
+  cache.createTocEntry("Chapter", "a.xht", "", 1);
+  ASSERT_TRUE(cache.endTocPass());
+  ASSERT_TRUE(cache.endWrite());
+
+  Storage.resetIoCounters();
+  BookMetadataCache::BookMetadata metadata;
+  ASSERT_TRUE(buildBookBinToCompletion(cache, metadata, identity));
+
+  EXPECT_EQ(Storage.openReadAttemptsFor(std::string(CACHE_PATH) + "/book.bin.tmp"), 1U);
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheRecoveryValidationSeeksByLutChunk) {
+  const auto identity = identify(makeZip());
+  Storage.setFile(std::string(CACHE_PATH) + "/book.bin.bak", makeSpineOnlyBookCache(identity, 129));
+
+  Storage.resetIoCounters();
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_EQ(cache.load(identity), BookMetadataCache::LoadStatus::Loaded);
+
+  // Recovery validates backup and promoted final in chunks. The subsequent
+  // cooperative load still has its own per-entry cursor work.
+  EXPECT_LE(Storage.seekCalls(), 192U);
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheValidatesTheReportedLargeBookShapeWithChunkedSeeks) {
+  constexpr uint16_t spineCount = 1409;
+  constexpr uint16_t tocCount = 1407;
+  const auto identity = identify(makeZip());
+  Storage.setFile(std::string(CACHE_PATH) + "/book.bin.bak", makeLargeBookCache(identity, spineCount, tocCount));
+
+  Storage.resetIoCounters();
+  BookMetadataCache cache(CACHE_PATH);
+  ASSERT_EQ(cache.load(identity), BookMetadataCache::LoadStatus::Loaded);
+  EXPECT_EQ(cache.getSpineCount(), spineCount);
+  EXPECT_EQ(cache.getTocCount(), tocCount);
+  EXPECT_EQ(cache.getSpineEntry(spineCount - 1).href, "chapter-1408");
+  EXPECT_EQ(cache.getTocEntry(tocCount - 1).title, "Chapter 1406");
+  // The cooperative load still resolves each entry through its LUT slot. The
+  // recovery validators add only chunk-boundary seeks, keeping the combined
+  // total close to two seeks per entry instead of four or more.
+  EXPECT_LE(Storage.seekCalls(), 6000U);
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheRejectsCorruptionAcrossLargeLutChunks) {
+  constexpr uint16_t spineCount = 1409;
+  constexpr uint16_t tocCount = 1407;
+  const auto identity = identify(makeZip());
+  const auto valid = makeLargeBookCache(identity, spineCount, tocCount);
+  uint32_t lutOffset = 0;
+  memcpy(&lutOffset, valid.data() + 1, sizeof(lutOffset));
+
+  constexpr std::array<uint32_t, 6> corruptIndices = {0, 63, 64, 1408, 1409, 2815};
+  for (const uint32_t index : corruptIndices) {
+    SCOPED_TRACE(index);
+    auto corrupt = valid;
+    overwritePod(corrupt, lutOffset + index * sizeof(uint32_t), uint32_t{0});
+    Storage.setFile(BOOK_CACHE_PATH, std::move(corrupt));
+    BookMetadataCache cache(CACHE_PATH);
+    EXPECT_EQ(cache.load(identity), BookMetadataCache::LoadStatus::Invalid);
+  }
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
+TEST_F(EpubSourceIdentityTest, BookMetadataCacheRecoveryRejectsCorruptLutChunkBoundary) {
+  const auto identity = identify(makeZip());
+  auto cacheBytes = makeSpineOnlyBookCache(identity, 66);
+  uint32_t lutOffset = 0;
+  memcpy(&lutOffset, cacheBytes.data() + 1, sizeof(lutOffset));
+  overwritePod(cacheBytes, lutOffset + 64U * sizeof(uint32_t), 0U);
+  const std::string backupPath = std::string(CACHE_PATH) + "/book.bin.bak";
+  Storage.setFile(backupPath, std::move(cacheBytes));
+
+  BookMetadataCache cache(CACHE_PATH);
+  EXPECT_EQ(cache.load(identity), BookMetadataCache::LoadStatus::Missing);
+  EXPECT_FALSE(Storage.exists(BOOK_CACHE_PATH));
+  EXPECT_FALSE(Storage.exists(backupPath.c_str()));
+  EXPECT_EQ(Storage.invalidOperationCount(), 0U);
+}
+
 TEST_F(EpubSourceIdentityTest, BookMetadataCacheBatchSizeLookupPreservesCumulativeSpineSizes) {
   const auto identity = identify(makeZip());
   BookMetadataCache cache(CACHE_PATH);
@@ -1770,7 +1981,7 @@ TEST_F(EpubSourceIdentityTest, BookMetadataCacheBatchSizeLookupPreservesCumulati
   ASSERT_TRUE(cache.endWrite());
 
   BookMetadataCache::BookMetadata metadata;
-  ASSERT_TRUE(cache.buildBookBin(EPUB_PATH, metadata, identity));
+  ASSERT_TRUE(buildBookBinToCompletion(cache, metadata, identity));
   ASSERT_EQ(cache.load(identity), BookMetadataCache::LoadStatus::Loaded);
   ASSERT_EQ(cache.getSpineCount(), spineCount);
   EXPECT_EQ(cache.getSpineCumulativeSize(spineCount - 1), static_cast<uint32_t>(spineCount) * 20U);
@@ -1829,6 +2040,21 @@ TEST_F(EpubSourceIdentityTest, FastMetadataWithoutCoverWritesVerifiedNoCoverMark
   EXPECT_FALSE(epub.hasVerifiedNoCoverThumbnail(thumbnailHeight));
 
   EXPECT_EQ(epub.ensureSharedThumbnail(), Epub::ThumbnailStatus::NoCover);
+  EXPECT_TRUE(epub.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT));
+}
+
+TEST_F(EpubSourceIdentityTest, LegacyNoCoverProofMigrationReadsMarkerOnlyOnce) {
+  identify(makeCssTestEpub());
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  ASSERT_TRUE(epub.bindCurrentSource());
+
+  const std::string markerPath = epub.getThumbBmpPath(Epub::SHARED_THUMB_HEIGHT) + ".nocover";
+  ASSERT_TRUE(Storage.exists(epub.getCachePath().c_str()));
+  Storage.setFile(markerPath, {'C', 'V', 'N', 'C', '1', '\0'});
+  Storage.resetIoCounters();
+
+  EXPECT_EQ(epub.ensureSharedThumbnail(), Epub::ThumbnailStatus::NoCover);
+  EXPECT_EQ(Storage.openReadAttemptsFor(markerPath), 1U);
   EXPECT_TRUE(epub.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT));
 }
 
@@ -1982,6 +2208,22 @@ TEST_F(EpubSourceIdentityTest, ReadCoreMetadataWithEmptyCachedCoverFallsBackAndW
   EXPECT_TRUE(Storage.exists((epub.getThumbBmpPath(thumbnailHeight) + ".nocover").c_str()));
 }
 
+TEST_F(EpubSourceIdentityTest, ReadCoreMetadataReusesEmptyCoverCacheAfterVerifiedNoCoverResult) {
+  const auto identity = identify(makeCssTestEpub());
+  Epub markerWriter(EPUB_PATH, "/.crosspoint");
+  const std::string cachePath = markerWriter.getCachePath();
+  ASSERT_TRUE(Storage.mkdir(cachePath.c_str()));
+  Storage.setFile(cachePath + "/book.bin", makeBookCache(identity, /*withCover=*/false));
+  ASSERT_EQ(markerWriter.ensureSharedThumbnail(), Epub::ThumbnailStatus::NoCover);
+  ASSERT_TRUE(markerWriter.hasVerifiedNoCoverThumbnail(Epub::SHARED_THUMB_HEIGHT));
+
+  Epub cached(EPUB_PATH, "/.crosspoint");
+  BookMetadataCache::BookMetadata metadata;
+  ASSERT_TRUE(cached.readCoreMetadata(metadata));
+  EXPECT_EQ(metadata.title, "A safe title");
+  EXPECT_TRUE(metadata.coverItemHref.empty());
+}
+
 TEST_F(EpubSourceIdentityTest, EmptyCachedCoverDoesNotHideReParsedGuideCover) {
   const auto identity = identify(makeGuideCoverEpub(R"(<html><body><img src="images/cover.jpg"/></body></html>)"));
   ThumbnailConverterStub::reset(true);
@@ -2078,12 +2320,15 @@ TEST_F(EpubSourceIdentityTest, DirectSdBatchExtractsCoverOnceForSharedAndX3Carou
   EXPECT_TRUE(Storage.exists((epub.getThumbBmpPath(Epub::CAROUSEL_THUMB_HEIGHT) + ".fit-v2.identity").c_str()));
 
   ThumbnailConverterStub::reset(true);
+  Storage.resetIoCounters();
   const Epub::ThumbnailSetStatus cached = epub.ensureThumbnails({true, true, true});
   EXPECT_EQ(cached.shared, Epub::ThumbnailStatus::Ready);
   EXPECT_EQ(cached.carousel, Epub::ThumbnailStatus::Ready);
   EXPECT_EQ(ThumbnailConverterStub::callCount, 0U);
   EXPECT_EQ(ThumbnailConverterStub::batchCallCount, 0U);
   EXPECT_EQ(Storage.openWriteAttemptsFor(scratch), 0U);
+  EXPECT_EQ(Storage.openReadAttemptsFor(epub.getThumbBmpPath(Epub::SHARED_THUMB_HEIGHT) + ".nocover"), 0U);
+  EXPECT_EQ(Storage.openReadAttemptsFor(epub.getThumbBmpPath(Epub::CAROUSEL_THUMB_HEIGHT) + ".nocover"), 0U);
 }
 
 TEST_F(EpubSourceIdentityTest, DeflatedSingleVariantRequestYieldsThenCreatesOnlyRequestedThumbnailCache) {
@@ -2436,6 +2681,57 @@ TEST_F(EpubSourceIdentityTest, InvalidNoCoverBackupDoesNotBlockVerifiedMarker) {
   EXPECT_FALSE(Storage.exists(backupPath.c_str()));
 }
 
+TEST_F(EpubSourceIdentityTest, ReplacingInvalidNoCoverMarkerDoesNotInspectItTwice) {
+  identify(makeCssTestEpub());
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  BookMetadataCache::BookMetadata metadata;
+  ASSERT_TRUE(epub.readCoreMetadata(metadata));
+  ASSERT_TRUE(metadata.coverItemHref.empty());
+
+  constexpr int thumbnailHeight = 120;
+  const std::string markerPath = epub.getThumbBmpPath(thumbnailHeight) + ".nocover";
+  Storage.setFile(markerPath, {'b', 'a', 'd'});
+  Storage.resetIoCounters();
+
+  EXPECT_FALSE(epub.generateThumbBmp(thumbnailHeight));
+  EXPECT_EQ(Storage.openReadAttemptsFor(markerPath), 5U);
+  EXPECT_TRUE(Storage.exists(markerPath.c_str()));
+}
+
+TEST_F(EpubSourceIdentityTest, VerifiedNoCoverBackupIsNotDiscardedByTransientSecondReadFailure) {
+  identify(makeCssTestEpub());
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  BookMetadataCache::BookMetadata metadata;
+  ASSERT_TRUE(epub.readCoreMetadata(metadata));
+  ASSERT_TRUE(metadata.coverItemHref.empty());
+
+  constexpr int thumbnailHeight = 120;
+  const std::string markerPath = epub.getThumbBmpPath(thumbnailHeight) + ".nocover";
+  const std::string backupPath = markerPath + ".bak";
+  const std::string stagingPath = markerPath + ".tmp";
+  Storage.setFile(markerPath, {'b', 'a', 'd'});
+  Storage.setFile(backupPath, {'C', 'V', 'N', 'C', '1', '\0'});
+  Storage.resetIoCounters();
+  Storage.failOpenReadOnAttempt(backupPath, 2U);
+
+  EXPECT_FALSE(epub.generateThumbBmp(thumbnailHeight));
+  EXPECT_EQ(Storage.openWriteAttemptsFor(stagingPath), 0U);
+  EXPECT_EQ(Storage.file(markerPath), (std::vector<uint8_t>{'C', 'V', 'N', 'C', '1', '\0'}));
+  EXPECT_FALSE(Storage.exists(backupPath.c_str()));
+}
+
+TEST_F(EpubSourceIdentityTest, ValidNoCoverMarkerNeedsNoSeparateExistenceProbe) {
+  Epub epub(EPUB_PATH, "/.crosspoint");
+  constexpr int thumbnailHeight = 120;
+  const std::string markerPath = epub.getThumbBmpPath(thumbnailHeight) + ".nocover";
+  Storage.setFile(markerPath, {'C', 'V', 'N', 'C', '1', '\0'});
+  Storage.resetIoCounters();
+
+  EXPECT_FALSE(epub.generateThumbBmp(thumbnailHeight));
+  EXPECT_EQ(Storage.openReadAttemptsFor(markerPath), 1U);
+  EXPECT_EQ(Storage.existsAttemptsFor(markerPath), 0U);
+}
+
 TEST_F(EpubSourceIdentityTest, UnreadableNoCoverMarkerIsPreservedWithoutReplacement) {
   identify(makeCssTestEpub());
   Epub epub(EPUB_PATH, "/.crosspoint");
@@ -2586,6 +2882,26 @@ TEST_F(EpubSourceIdentityTest, FullModeDescendantRulesAreBoundedAndSurviveTheCss
   EXPECT_TRUE(cached.defined.textAlign);
   EXPECT_EQ(cached.textAlign, CssTextAlign::Right);
   EXPECT_TRUE(cached.defined.textIndent);
+}
+
+TEST_F(EpubSourceIdentityTest, DescendantStyleIsNotOverwrittenByTheLowerPriorityElementRule) {
+  const std::string css = "p { text-align: left; } section p { text-align: right; } p.lead { text-align: center; }";
+  Storage.setFile("/descendant-priority.css", std::vector<uint8_t>(css.begin(), css.end()));
+  HalFile source;
+  ASSERT_TRUE(Storage.openFileForRead("TEST", "/descendant-priority.css", source));
+
+  CssParser parser(CACHE_PATH);
+  ASSERT_TRUE(parser.loadFromStream(source));
+  ASSERT_TRUE(source.close());
+
+  const std::vector<CssParser::AncestorEntry> matching = {{"section", "note"}};
+  const CssStyle resolved = parser.resolveStyle("p", "", matching);
+  ASSERT_TRUE(resolved.defined.textAlign);
+  EXPECT_EQ(resolved.textAlign, CssTextAlign::Right);
+
+  const CssStyle classResolved = parser.resolveStyle("p", "lead", matching);
+  ASSERT_TRUE(classResolved.defined.textAlign);
+  EXPECT_EQ(classResolved.textAlign, CssTextAlign::Center);
 }
 
 TEST_F(EpubSourceIdentityTest, CssRuleGrowthStopsSafelyWhenHeapIsLow) {
@@ -3031,6 +3347,25 @@ TEST_F(EpubSourceIdentityTest, StoreWriteFaultLeavesVerifiedFallback) {
   ZipFile::SourceIdentity loaded;
   EXPECT_EQ(SourceIdentityStore::load(CACHE_PATH, loaded), SourceIdentityStore::LoadStatus::Primary);
   EXPECT_EQ(loaded, first);
+}
+
+TEST_F(EpubSourceIdentityTest, UnchangedIdentityDiscardsTempFromFailedPublish) {
+  const auto first = identify(makeZip());
+  const auto second = identify(makeZip(0x87654321U));
+  const std::string primaryPath = std::string(CACHE_PATH) + "/source_identity.bin";
+  const std::string tempPath = primaryPath + ".tmp";
+  ASSERT_EQ(SourceIdentityStore::save(CACHE_PATH, first), SourceIdentityStore::SaveStatus::Saved);
+  Storage.failRenameTo(primaryPath);
+  ASSERT_EQ(SourceIdentityStore::save(CACHE_PATH, second), SourceIdentityStore::SaveStatus::IoError);
+  ASSERT_TRUE(Storage.exists(primaryPath.c_str()));
+  ASSERT_TRUE(Storage.exists(tempPath.c_str()));
+
+  EXPECT_EQ(SourceIdentityStore::save(CACHE_PATH, first), SourceIdentityStore::SaveStatus::Unchanged);
+  EXPECT_FALSE(Storage.exists(tempPath.c_str()));
+
+  ASSERT_TRUE(Storage.remove(primaryPath.c_str()));
+  ZipFile::SourceIdentity loaded;
+  EXPECT_EQ(SourceIdentityStore::load(CACHE_PATH, loaded), SourceIdentityStore::LoadStatus::Missing);
 }
 
 TEST_F(EpubSourceIdentityTest, TrulyMissingSidecarCanBeAdoptedForLegacyMigration) {

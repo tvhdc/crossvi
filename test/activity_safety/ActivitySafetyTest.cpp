@@ -22,6 +22,19 @@ TEST(PressReleaseLatchTest, AcceptsSyntheticPressAndReleaseInSameFrame) {
   EXPECT_TRUE(latch.update(true, true));
 }
 
+TEST(InputIdleGateTest, IgnoresInheritedInputUntilAnIdleSample) {
+  InputIdleGate gate;
+
+  EXPECT_FALSE(gate.update(true, false));  // Parent's button is still held.
+  EXPECT_FALSE(gate.update(false, true));  // Its release still belongs to the parent.
+  EXPECT_TRUE(gate.update(false, false));  // The child can arm only after an idle sample.
+  EXPECT_TRUE(gate.update(true, true));    // A fresh press now belongs to the child.
+  EXPECT_TRUE(gate.update(false, true));   // Its matching release remains accepted.
+
+  gate.reset();
+  EXPECT_FALSE(gate.update(false, true));
+}
+
 TEST(ReleaseDebounceGuardTest, CoalescesReleaseBounceButAcceptsTheNextClick) {
   ReleaseDebounceGuard guard;
 

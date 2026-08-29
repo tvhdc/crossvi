@@ -108,7 +108,9 @@ class CrossPointWebServer {
     size_t requestSize = 0;
     size_t requestReceived = 0;
     size_t bufferPos = 0;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     size_t lastLoggedSize = 0;
+#endif
     int responseStatus = 400;
     bool ownsStagingFile = false;
     bool requestAccepted = false;
@@ -129,7 +131,6 @@ class CrossPointWebServer {
   // File scanning
   using FileVisitor = void (*)(const FileInfo& info, void* context);
   void scanFiles(const char* path, FileVisitor visitor, void* context) const;
-  String formatFileSize(size_t bytes) const;
   bool isEpubFile(const String& filename) const;
 
   // Request handlers

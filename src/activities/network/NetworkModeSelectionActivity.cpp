@@ -33,7 +33,7 @@ void NetworkModeSelectionActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     if (selectedIndex == 3) {
       startActivityForResult(std::make_unique<NearbyStatsSyncActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
+                             [](const ActivityResult&) {});
       return;
     }
     NetworkMode mode = NetworkMode::JOIN_NETWORK;

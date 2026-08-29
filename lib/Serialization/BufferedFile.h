@@ -13,7 +13,7 @@ namespace serialization {
 // SdFat keeps ONE shared 512-byte sector cache per volume, so interleaving small
 // reads/writes across two or more files evicts and reloads that sector on nearly
 // every call -- each 4-byte pod becomes a full SD transaction (measured: 31s to
-// stream ~200KB through BookMetadataCache::buildBookBin on a 1,732-spine EPUB).
+// stream ~200KB through the cooperative book.bin build on a 1,732-spine EPUB).
 // Batching into chunk-sized transfers keeps each file at sequential SD speed.
 //
 // Heap: one fixed buffer per wrapper, allocated once at construction and freed at
@@ -25,14 +25,25 @@ namespace serialization {
 
 class BufferedFileWriter {
  public:
-  BufferedFileWriter(HalFile& file, const size_t capacity)
+  using WriteObserver = void (*)(void* context, const uint8_t* data, size_t size);
+
+  BufferedFileWriter(HalFile& file, const size_t capacity, const WriteObserver observer = nullptr,
+                     void* const observerContext = nullptr)
       : file(file),
         buf(makeUniqueNoThrow<uint8_t[]>(capacity)),
         data(buf.get()),
         cap(data ? capacity : 0),
-        pos(file.position()) {}
-  BufferedFileWriter(HalFile& file, uint8_t* externalBuffer, const size_t capacity)
-      : file(file), data(externalBuffer), cap(data ? capacity : 0), pos(file.position()) {}
+        pos(file.position()),
+        observer(observer),
+        observerContext(observerContext) {}
+  BufferedFileWriter(HalFile& file, uint8_t* externalBuffer, const size_t capacity,
+                     const WriteObserver observer = nullptr, void* const observerContext = nullptr)
+      : file(file),
+        data(externalBuffer),
+        cap(data ? capacity : 0),
+        pos(file.position()),
+        observer(observer),
+        observerContext(observerContext) {}
   ~BufferedFileWriter() { flush(); }
   BufferedFileWriter(const BufferedFileWriter&) = delete;
   BufferedFileWriter& operator=(const BufferedFileWriter&) = delete;
@@ -40,6 +51,7 @@ class BufferedFileWriter {
   void write(const void* src, const size_t len) {
     pos += len;
     const auto* p = static_cast<const uint8_t*>(src);
+    if (observer) observer(observerContext, p, len);
     if (fill + len > cap) {
       flushBuffer();
     }
@@ -74,6 +86,8 @@ class BufferedFileWriter {
   const size_t cap;
   size_t fill = 0;
   size_t pos;
+  const WriteObserver observer;
+  void* const observerContext;
   bool okFlag = true;
 };
 

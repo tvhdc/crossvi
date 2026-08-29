@@ -163,6 +163,26 @@ static void writeBmpHeader2bit(Print& bmpOut, const int width, const int height)
 
 namespace {
 
+class CheckedPrint final : public Print {
+ public:
+  explicit CheckedPrint(Print& output) : output_(output) {}
+  using Print::write;
+
+  size_t write(const uint8_t value) override { return write(&value, 1); }
+  size_t write(const uint8_t* data, const size_t length) override {
+    if (failed_) return 0;
+    const size_t written = output_.write(data, length);
+    if (written != length) failed_ = true;
+    return written;
+  }
+
+  bool failed() const { return failed_; }
+
+ private:
+  Print& output_;
+  bool failed_ = false;
+};
+
 // Max MCU height supported by any JPEG (4:2:0 chroma = 16 rows, 4:4:4 = 8 rows)
 constexpr int MAX_MCU_HEIGHT = 16;
 constexpr size_t JPEG_DECODER_SIZE = 20 * 1024;
@@ -703,14 +723,15 @@ bool initialiseOutput(BmpOutputCtx& ctx, const BmpTargetSpec& target, const int 
 
   // Do not leave a plausible partial bitmap behind when any working
   // allocation fails.
+  CheckedPrint checkedOutput(*target.output);
   if (USE_8BIT_OUTPUT && !target.oneBit) {
-    writeBmpHeader8bit(*target.output, target.outWidth, target.outHeight);
+    writeBmpHeader8bit(checkedOutput, target.outWidth, target.outHeight);
   } else if (target.oneBit) {
-    writeBmpHeader1bit(*target.output, target.outWidth, target.outHeight);
+    writeBmpHeader1bit(checkedOutput, target.outWidth, target.outHeight);
   } else {
-    writeBmpHeader2bit(*target.output, target.outWidth, target.outHeight);
+    writeBmpHeader2bit(checkedOutput, target.outWidth, target.outHeight);
   }
-  return true;
+  return !checkedOutput.failed();
 }
 
 uint8_t convertJpegToBmpStreams(HalFile& jpegFile, const uint64_t sourceOffset, const uint32_t sourceLength,
@@ -824,12 +845,16 @@ uint8_t convertJpegToBmpStreams(HalFile& jpegFile, const uint64_t sourceOffset, 
   }
   memset(ctx.mcuBuf.get(), 0, MAX_MCU_HEIGHT * ctx.srcWidth);
 
+  size_t readyOutputs = 0;
   for (size_t outputIndex = 0; outputIndex < targetCount; outputIndex++) {
     if (!initialiseOutput(ctx.outputs[outputIndex], targets[outputIndex], scaleSrcWidth, scaleSrcHeight,
                           progressiveDecode)) {
       ctx.outputs[outputIndex].error = true;
+    } else {
+      ++readyOutputs;
     }
   }
+  if (readyOutputs == 0) return 0;
 
   jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
   jpeg->setUserPointer(&ctx);
@@ -882,15 +907,6 @@ bool JpegToBmpConverter::jpegFileToBmpStream(HalFile& jpegFile, Print& bmpOut, b
   if (length == 0 || length > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) return false;
   return jpegFileToBmpStreamInternal(jpegFile, 0, static_cast<uint32_t>(length), bmpOut, targetWidth, targetHeight,
                                      false, crop);
-}
-
-// Convert with custom target size (for thumbnails, 2-bit)
-bool JpegToBmpConverter::jpegFileToBmpStreamWithSize(HalFile& jpegFile, Print& bmpOut, int targetMaxWidth,
-                                                     int targetMaxHeight) {
-  const uint64_t length = jpegFile.fileSize64();
-  if (length == 0 || length > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) return false;
-  return jpegFileToBmpStreamInternal(jpegFile, 0, static_cast<uint32_t>(length), bmpOut, targetMaxWidth,
-                                     targetMaxHeight, false);
 }
 
 // Convert to 1-bit BMP (black and white only, no grays) for fast home screen rendering

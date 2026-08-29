@@ -155,7 +155,8 @@ void TextSettingsActivity::onEnter() {
   sdFontSystem.refreshIfDirty();
   sdFontSystem.releaseLoadedFont(renderer);
 
-  if (SETTINGS.sdFontFamilyName[0] != '\0' && !sdFontSystem.registry().findFamily(SETTINGS.sdFontFamilyName)) {
+  if (SETTINGS.sdFontFamilyName[0] != '\0' && sdFontSystem.registry().lastDiscoverySucceeded() &&
+      !sdFontSystem.registry().findFamily(SETTINGS.sdFontFamilyName)) {
     SETTINGS.sdFontFamilyName[0] = '\0';
     if (SETTINGS.fontSize >= ReaderFontSize::BUILTIN_COUNT) {
       SETTINGS.fontSize = CrossPointSettings::EXTRA_LARGE;
@@ -231,7 +232,6 @@ void TextSettingsActivity::loop() {
       selectedRow_ = -1;
       requestUpdate();
     } else {
-      if (settingsSavePending_) persistSettings();
       finish();
     }
     return;
@@ -361,8 +361,9 @@ void TextSettingsActivity::handleSelection() {
   if (setting.type != SettingType::ENUM) return;
 
   const uint8_t current = setting.valueGetter ? setting.valueGetter() : SETTINGS.*(setting.valuePtr);
-  auto select = [this, settingId = setting.nameId, valuePtr = setting.valuePtr,
+  auto select = [this, current, settingId = setting.nameId, valuePtr = setting.valuePtr,
                  setter = setting.valueSetter](const int index) {
+    if (index == current) return;
     if (setter) {
       setter(static_cast<uint8_t>(index));
     } else if (valuePtr) {

@@ -134,6 +134,7 @@ void StatusBarSettingsActivity::handleSelection() {
   switch (visibleItems[selectedIndex]) {
     case ITEM_TITLE:
       optionPopup.show(StrId::STR_TITLE, titleNames, TITLE_ITEMS, SETTINGS.statusBarTitle, [this](int idx) {
+        if (idx == SETTINGS.statusBarTitle) return;
         SETTINGS.statusBarTitle = idx;
         SETTINGS.saveToFile();
       });
@@ -147,6 +148,7 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_PROGRESS_BAR:
       optionPopup.show(StrId::STR_PROGRESS_BAR, progressBarNames, PROGRESS_BAR_ITEMS, SETTINGS.statusBarProgressBar,
                        [this](int idx) {
+                         if (idx == SETTINGS.statusBarProgressBar) return;
                          SETTINGS.statusBarProgressBar = idx;
                          SETTINGS.saveToFile();
                          rebuildVisibleItems();
@@ -155,6 +157,7 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_PROGRESS_BAR_THICKNESS:
       optionPopup.show(StrId::STR_PROGRESS_BAR_THICKNESS, progressBarThicknessNames, PROGRESS_BAR_THICKNESS_ITEMS,
                        SETTINGS.statusBarProgressBarThickness, [this](int idx) {
+                         if (idx == SETTINGS.statusBarProgressBarThickness) return;
                          SETTINGS.statusBarProgressBarThickness = idx;
                          SETTINGS.saveToFile();
                        });
@@ -162,6 +165,7 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_XTC_STATUS_BAR:
       optionPopup.show(StrId::STR_XTC_STATUS_BAR, xtcStatusBarNames, XTC_STATUS_BAR_ITEMS, SETTINGS.xtcStatusBarMode,
                        [this](int idx) {
+                         if (idx == SETTINGS.xtcStatusBarMode) return;
                          SETTINGS.xtcStatusBarMode = idx;
                          SETTINGS.saveToFile();
                        });

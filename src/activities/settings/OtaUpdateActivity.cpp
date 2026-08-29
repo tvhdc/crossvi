@@ -43,8 +43,10 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 
   if (!updater.isUpdateNewer()) {
     LOG_DBG("OTA", "No new update available");
-    SETTINGS.availableOtaVersion[0] = '\0';
-    SETTINGS.saveToFile();
+    if (SETTINGS.availableOtaVersion[0] != '\0') {
+      SETTINGS.availableOtaVersion[0] = '\0';
+      SETTINGS.saveToFile();
+    }
     {
       RenderLock lock(*this);
       state = NO_UPDATE;
@@ -52,10 +54,12 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
-  std::strncpy(SETTINGS.availableOtaVersion, updater.getLatestVersion().c_str(),
-               CrossPointSettings::OTA_VERSION_CAPACITY - 1);
-  SETTINGS.availableOtaVersion[CrossPointSettings::OTA_VERSION_CAPACITY - 1] = '\0';
-  SETTINGS.saveToFile();
+  if (updater.getLatestVersion() != SETTINGS.availableOtaVersion) {
+    std::strncpy(SETTINGS.availableOtaVersion, updater.getLatestVersion().c_str(),
+                 CrossPointSettings::OTA_VERSION_CAPACITY - 1);
+    SETTINGS.availableOtaVersion[CrossPointSettings::OTA_VERSION_CAPACITY - 1] = '\0';
+    SETTINGS.saveToFile();
+  }
 
   {
     RenderLock lock(*this);
@@ -65,10 +69,6 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 
 void OtaUpdateActivity::onEnter() {
   Activity::onEnter();
-
-  // Turn on WiFi immediately
-  LOG_DBG("OTA", "Turning on WiFi...");
-  WiFi.mode(WIFI_STA);
 
   // Launch WiFi selection subactivity
   LOG_DBG("OTA", "Launching WifiSelectionActivity...");
@@ -89,16 +89,6 @@ void OtaUpdateActivity::onExit() {
 }
 
 void OtaUpdateActivity::render(RenderLock&&) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
-  renderer.clearScreen();
-
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_UPDATE));
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - height) / 2;
-
   float updaterProgress = 0;
   if (state == UPDATE_IN_PROGRESS) {
     LOG_DBG("OTA", "Update progress: %u / %u", static_cast<unsigned>(updater.getProcessedSize()),
@@ -112,6 +102,16 @@ void OtaUpdateActivity::render(RenderLock&&) {
     }
     lastUpdaterPercentage = static_cast<int>(updaterProgress * 100);
   }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  renderer.clearScreen();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_UPDATE));
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
+  const auto top = (pageHeight - height) / 2;
 
   if (state == CHECKING_FOR_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_CHECKING_UPDATE));

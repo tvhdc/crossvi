@@ -42,12 +42,13 @@ class Dictionary {
   bool open(const char* folderName);
   bool isOpen() const { return !basePath.empty(); }
 
-  // True when the .qidx sidecar is missing or stale — call buildIndex() first
-  // so the UI can show an "Indexing…" message for the slow first pass.
+  // True when a lookup sidecar is missing or stale — call buildIndex() first
+  // so the UI can show an "Indexing…" message for any required scan.
   bool needsIndex();
 
-  // One streaming pass over .idx writing the .qidx sidecar. yieldFn (optional)
-  // is called every ~64KB consumed to feed the watchdog / repaint the UI.
+  // Build any missing or stale lookup sidecars. Rebuilding .qidx makes one
+  // streaming pass over .idx; yieldFn (optional) is called every ~64KB
+  // consumed to feed the watchdog / repaint the UI.
   bool buildIndex(void (*yieldFn)(void*) = nullptr, void* ctx = nullptr, IndexResult* outResult = nullptr);
 
   // Clean the word, look it up, and on a miss retry mini stem variants

@@ -107,6 +107,12 @@ bool OpdsServerStore::updateServer(size_t index, const OpdsServer& server) {
     return false;
   }
 
+  const auto& current = servers[index];
+  if (current.name == server.name && current.url == server.url && current.username == server.username &&
+      current.password == server.password) {
+    return true;
+  }
+
   OpdsServer previous = std::move(servers[index]);
   servers[index] = server;
   LOG_DBG("OPS", "Updated server: %s", server.name.c_str());

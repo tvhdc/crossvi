@@ -1,6 +1,7 @@
 #pragma once
 
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
 /**
@@ -18,8 +19,16 @@ class KOReaderSettingsActivity final : public Activity {
 
  private:
   ButtonNavigator buttonNavigator;
+  OptionPopup optionPopup;
 
   size_t selectedIndex = 0;
+  bool showSaveError = false;
 
   void handleSelection();
+  void showServerPicker();
+  void showCustomServerActions(size_t customIndex);
+  void openCustomServerEditor(size_t customIndex);
+  void openNewServerEditor();
+  void confirmCustomServerDelete(size_t customIndex);
+  void reportSaveResult(bool saved);
 };

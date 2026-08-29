@@ -43,18 +43,24 @@ void ButtonRemapActivity::loop() {
   // Side buttons:
   // - Up: reset mapping to defaults and exit.
   // - Down: cancel without saving.
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+  // Finish on release so Settings cannot consume the same side-button release
+  // as a row-navigation action after this child is popped.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+    const bool defaultsChanged = SETTINGS.frontButtonBack != CrossPointSettings::FRONT_HW_BACK ||
+                                 SETTINGS.frontButtonConfirm != CrossPointSettings::FRONT_HW_CONFIRM ||
+                                 SETTINGS.frontButtonLeft != CrossPointSettings::FRONT_HW_LEFT ||
+                                 SETTINGS.frontButtonRight != CrossPointSettings::FRONT_HW_RIGHT;
     // Persist default mapping immediately so the user can recover quickly.
     SETTINGS.frontButtonBack = CrossPointSettings::FRONT_HW_BACK;
     SETTINGS.frontButtonConfirm = CrossPointSettings::FRONT_HW_CONFIRM;
     SETTINGS.frontButtonLeft = CrossPointSettings::FRONT_HW_LEFT;
     SETTINGS.frontButtonRight = CrossPointSettings::FRONT_HW_RIGHT;
-    SETTINGS.saveToFile();
+    if (defaultsChanged) SETTINGS.saveToFile();
     finish();
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     // Exit without changing settings.
     finish();
     return;
@@ -82,8 +88,9 @@ void ButtonRemapActivity::loop() {
 
     if (currentStep >= kRoleCount) {
       // All roles assigned; save to settings and exit.
+      const bool changed = mappingChanged();
       applyTempMapping();
-      SETTINGS.saveToFile();
+      if (changed) SETTINGS.saveToFile();
       finish();
       return;
     }
@@ -153,6 +160,11 @@ void ButtonRemapActivity::applyTempMapping() {
   SETTINGS.frontButtonConfirm = tempMapping[1];
   SETTINGS.frontButtonLeft = tempMapping[2];
   SETTINGS.frontButtonRight = tempMapping[3];
+}
+
+bool ButtonRemapActivity::mappingChanged() const {
+  return SETTINGS.frontButtonBack != tempMapping[0] || SETTINGS.frontButtonConfirm != tempMapping[1] ||
+         SETTINGS.frontButtonLeft != tempMapping[2] || SETTINGS.frontButtonRight != tempMapping[3];
 }
 
 bool ButtonRemapActivity::validateUnassigned(const uint8_t pressedButton) {

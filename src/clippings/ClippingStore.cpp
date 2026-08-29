@@ -133,7 +133,6 @@ bool writeRekeyIdentity(const std::string& markerPath, const std::string_view bo
   HalFile marker;
   if (!Storage.openFileForWrite("CLIP", markerPath, marker)) return false;
   const bool written = marker.write(encoded.data(), encoded.size()) == encoded.size();
-  marker.flush();
   if (!written || !marker.sync() || !marker.close()) return false;
   RekeyIdentity verified;
   return readRekeyIdentity(markerPath, bookType, verified) && verified == identity;
@@ -296,7 +295,6 @@ bool createExactLegacyBackup(const std::string& canonicalPath, const ClippingCod
       }
       remaining -= chunk;
     }
-    temp.flush();
     if (copied) copied = temp.sync();
     if (!temp.close()) copied = false;
     source.close();
@@ -930,7 +928,6 @@ ClippingStore::ExportResult ClippingStore::exportCatalog(const Catalog& catalog,
     if (!source.close()) return fail(ExportResult::IoError);
   }
 
-  output.flush();
   const bool durable = output.sync();
   const bool closed = output.close();
   outputOpen = false;

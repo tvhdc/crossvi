@@ -13,13 +13,12 @@
 #include "FsHelpers.h"
 #include "HalStorage.h"
 #include "OtaUpdateActivity.h"
-#include "PngToBmpConverter.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
-#include "SleepImagePositionActivity.h"
+#include "SleepImageManagerActivity.h"
 #include "activities/ActivityResult.h"
 #include "activities/boot_sleep/SleepFrameStore.h"
-#include "activities/boot_sleep/SleepImagePlacement.h"
+#include "activities/boot_sleep/SleepImageNormalizer.h"
 #include "activities/boot_sleep/SleepImageSelectionStore.h"
 #include "activities/boot_sleep/SleepImageValidation.h"
 #include "activities/home/FileBrowserActivity.h"
@@ -39,24 +38,18 @@ SettingInfo sleepScreenSetting() {
   return SettingInfo::DynamicEnum(
       StrId::STR_SLEEP_SCREEN,
       {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT, StrId::STR_READING_STATS,
-       StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS, StrId::STR_TRANSPARENT_SLEEP},
+       StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS},
       [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
       [](const uint8_t value) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(value); });
 }
 
-bool sleepModeUsesCustomImage(const uint8_t mode) {
+bool sleepModeUsesManagedCustomImages(const uint8_t mode) {
   return mode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
-         mode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS ||
          mode == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
 }
 
-bool sleepModeUsesSleepImagePlacement(const uint8_t mode) {
-  return mode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
-         mode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS || sleepModeUsesCustomImage(mode);
-}
-
-bool sleepModeUsesTransparentOverlay(const uint8_t mode) {
-  return mode == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
+bool sleepModeUsesLegacyCustomImage(const uint8_t mode) {
+  return mode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS;
 }
 
 std::string fileNameFromPath(const std::string& path) {
@@ -64,20 +57,23 @@ std::string fileNameFromPath(const std::string& path) {
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-enum class SleepImageSourceKind : uint8_t { None, File, Folder, Invalid };
-
-struct SleepImageSource {
-  SleepImageSourceKind kind = SleepImageSourceKind::None;
-  std::string path;
-};
-
-bool validSleepImage(const std::string& path, const bool transparent) {
-  if (FsHelpers::hasPngExtension(path)) return transparent && SleepImageValidation::overlayPng(path);
-  if (!FsHelpers::hasBmpExtension(path)) return false;
-  return transparent ? SleepImageValidation::overlayBmp(path) : SleepImageValidation::normalBmp(path);
+void formatSleepImageBytes(const uint64_t bytes, char* const output, const size_t outputSize) {
+  constexpr uint64_t KIB = 1024;
+  constexpr uint64_t MIB = KIB * KIB;
+  if (bytes >= MIB) {
+    const uint64_t tenths = (bytes * 10 + MIB / 2) / MIB;
+    snprintf(output, outputSize, "%llu.%llu MB", static_cast<unsigned long long>(tenths / 10),
+             static_cast<unsigned long long>(tenths % 10));
+    return;
+  }
+  snprintf(output, outputSize, "%llu KB", static_cast<unsigned long long>((bytes + KIB - 1) / KIB));
 }
 
-bool directoryHasValidSleepImage(const char* directoryPath, const bool transparent) {
+bool validSleepImage(const std::string& path) {
+  return FsHelpers::hasBmpExtension(path) && SleepImageValidation::normalBmp(path);
+}
+
+bool directoryHasValidSleepImage(const char* directoryPath) {
   HalFile directory = Storage.open(directoryPath);
   if (!directory || !directory.isDirectory()) {
     if (directory) directory.close();
@@ -96,7 +92,7 @@ bool directoryHasValidSleepImage(const char* directoryPath, const bool transpare
     name[length] = '\0';
     if (name[0] == '.') continue;
     const std::string path = std::string(directoryPath) + "/" + name;
-    if (validSleepImage(path, transparent)) {
+    if (validSleepImage(path)) {
       directory.close();
       return true;
     }
@@ -105,132 +101,26 @@ bool directoryHasValidSleepImage(const char* directoryPath, const bool transpare
   return false;
 }
 
-SleepImageSource inspectSleepImageSource(const uint8_t mode) {
-  if (!SleepImageSelectionStore::recover()) return {SleepImageSourceKind::Invalid, {}};
-  const bool transparent = sleepModeUsesTransparentOverlay(mode);
-  const char* invalidRoot = nullptr;
-  if (transparent) {
-    for (const char* path : {SleepImageSelectionStore::OVERLAY_BMP_PATH, SleepImageSelectionStore::OVERLAY_PNG_PATH}) {
-      if (!Storage.exists(path)) continue;
-      if (validSleepImage(path, true)) return {SleepImageSourceKind::File, path};
-      if (!invalidRoot) invalidRoot = path;
-    }
-    for (const char* path : {"/.sleep-overlay", "/sleep-overlay"}) {
-      if (directoryHasValidSleepImage(path, true)) return {SleepImageSourceKind::Folder, path};
-    }
-  } else {
-    const char* path = SleepImageSelectionStore::NORMAL_BMP_PATH;
-    if (Storage.exists(path)) {
-      if (validSleepImage(path, false)) return {SleepImageSourceKind::File, path};
-      invalidRoot = path;
-    }
-    for (const char* directory : {"/.sleep", "/sleep"}) {
-      if (directoryHasValidSleepImage(directory, false)) return {SleepImageSourceKind::Folder, directory};
+struct CurrentSleepImage {
+  bool valid = false;
+  std::string label;
+};
+
+CurrentSleepImage currentSleepImage(const uint8_t mode) {
+  if (!SleepImageSelectionStore::recover()) return {};
+  (void)mode;
+  const char* path = SleepImageSelectionStore::NORMAL_BMP_PATH;
+  if (Storage.exists(path) && validSleepImage(path)) return {true, fileNameFromPath(path)};
+  for (const char* directory : {"/.sleep", "/sleep"}) {
+    if (directoryHasValidSleepImage(directory)) {
+      char label[320];
+      snprintf(label, sizeof(label), tr(STR_SLEEP_IMAGE_SOURCE_FOLDER), directory);
+      return {true, label};
     }
   }
-  return invalidRoot ? SleepImageSource{SleepImageSourceKind::Invalid, invalidRoot} : SleepImageSource{};
+  return {};
 }
 
-std::string sleepImageSourceLabel(const SleepImageSource& source) {
-  if (source.kind == SleepImageSourceKind::None) return tr(STR_NOT_SET);
-  char label[320];
-  if (source.kind == SleepImageSourceKind::Folder) {
-    snprintf(label, sizeof(label), tr(STR_SLEEP_IMAGE_SOURCE_FOLDER), source.path.c_str());
-  } else if (source.kind == SleepImageSourceKind::Invalid) {
-    snprintf(label, sizeof(label), tr(STR_SLEEP_IMAGE_SOURCE_INVALID),
-             source.path.empty() ? "?" : fileNameFromPath(source.path).c_str());
-  } else {
-    snprintf(label, sizeof(label), "%s", fileNameFromPath(source.path).c_str());
-  }
-  return label;
-}
-
-bool removeIfPresent(const char* path) { return !Storage.exists(path) || Storage.remove(path); }
-
-bool copyFileToTemp(const std::string& sourcePath, const std::string& tempPath) {
-  if (!removeIfPresent(tempPath.c_str())) return false;
-
-  HalFile input;
-  HalFile output;
-  if (!Storage.openFileForRead("SLP", sourcePath, input)) return false;
-  if (!Storage.openFileForWrite("SLP", tempPath, output)) {
-    input.close();
-    return false;
-  }
-
-  char buffer[2048];
-  const uint64_t expected = input.fileSize64();
-  uint64_t copied = 0;
-  bool ok = true;
-  while (copied < expected) {
-    const size_t wanted = static_cast<size_t>(std::min<uint64_t>(sizeof(buffer), expected - copied));
-    const int bytesRead = input.read(buffer, wanted);
-    if (bytesRead <= 0) {
-      ok = false;
-      break;
-    }
-    if (output.write(buffer, static_cast<size_t>(bytesRead)) != static_cast<size_t>(bytesRead)) {
-      ok = false;
-      break;
-    }
-    copied += static_cast<uint64_t>(bytesRead);
-  }
-  output.flush();
-  ok = ok && copied == expected && output.sync();
-  const bool outputClosed = output.close();
-  input.close();
-  if (!ok || !outputClosed) {
-    removeIfPresent(tempPath.c_str());
-    return false;
-  }
-  return true;
-}
-
-bool convertPngToSleepBmpTemp(const std::string& sourcePath, const std::string& tempPath, const int width,
-                              const int height) {
-  if (!removeIfPresent(tempPath.c_str())) return false;
-
-  HalFile input;
-  HalFile output;
-  if (!Storage.openFileForRead("SLP", sourcePath, input)) return false;
-  if (!Storage.openFileForWrite("SLP", tempPath, output)) {
-    input.close();
-    return false;
-  }
-  bool ok = PngToBmpConverter::pngFileToBmpStreamWithSize(input, output, width, height, false);
-  output.flush();
-  ok = ok && output.sync();
-  const bool outputClosed = output.close();
-  input.close();
-  if (!ok || !outputClosed || !SleepImageValidation::normalBmp(tempPath)) {
-    removeIfPresent(tempPath.c_str());
-    return false;
-  }
-  return true;
-}
-
-bool saveNormalSleepImage(const std::string& sourcePath, const int width, const int height) {
-  const std::string tempPath = std::string(SleepImageSelectionStore::NORMAL_BMP_PATH) + ".tmp";
-  const bool wroteTemp =
-      FsHelpers::hasBmpExtension(sourcePath)
-          ? (SleepImageValidation::normalBmp(sourcePath) && copyFileToTemp(sourcePath, tempPath))
-          : (FsHelpers::hasPngExtension(sourcePath) && convertPngToSleepBmpTemp(sourcePath, tempPath, width, height));
-  return wroteTemp && SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::NormalBmp, tempPath.c_str());
-}
-
-bool saveTransparentSleepImage(const std::string& sourcePath) {
-  if (FsHelpers::hasBmpExtension(sourcePath)) {
-    if (!SleepImageValidation::overlayBmp(sourcePath)) return false;
-    const std::string tempPath = std::string(SleepImageSelectionStore::OVERLAY_BMP_PATH) + ".tmp";
-    return copyFileToTemp(sourcePath, tempPath) &&
-           SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayBmp, tempPath.c_str());
-  }
-
-  if (!FsHelpers::hasPngExtension(sourcePath) || !SleepImageValidation::overlayPng(sourcePath)) return false;
-  const std::string tempPath = std::string(SleepImageSelectionStore::OVERLAY_PNG_PATH) + ".tmp";
-  return copyFileToTemp(sourcePath, tempPath) &&
-         SleepImageSelectionStore::publish(SleepImageSelectionStore::Target::OverlayPng, tempPath.c_str());
-}
 }  // namespace
 
 StrId SettingsSubmenuActivity::title() const {
@@ -298,10 +188,9 @@ void SettingsSubmenuActivity::rebuildSettings() {
                                             sleepGhostingTreatmentLabels()));
       if (!quickResume) {
         settings_.push_back(sleepScreenSetting());
-        if (sleepModeUsesSleepImagePlacement(SETTINGS.sleepScreen)) {
-          settings_.push_back(SettingInfo::Value(StrId::STR_SLEEP_IMAGE_ZOOM, &CrossPointSettings::sleepScreenImageZoom,
-                                                 {SLEEP_IMAGE_MIN_ZOOM, SLEEP_IMAGE_MAX_ZOOM, 1}));
-          settings_.push_back(SettingInfo::Action(StrId::STR_SLEEP_IMAGE_POSITION, SettingAction::SleepImagePosition));
+        if (sleepModeUsesManagedCustomImages(SETTINGS.sleepScreen)) {
+          settings_.push_back(
+              SettingInfo::Action(StrId::STR_CUSTOMIZE_SLEEP_IMAGE_POSITION, SettingAction::SleepImagePosition));
         }
         if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
             SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS) {
@@ -421,10 +310,6 @@ void SettingsSubmenuActivity::handleSelection() {
     openSleepTimeoutPicker();
     return;
   }
-  if (setting.nameId == StrId::STR_SLEEP_IMAGE_ZOOM) {
-    openSleepImageZoomPicker();
-    return;
-  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr) {
     SETTINGS.*(setting.valuePtr) = !(SETTINGS.*(setting.valuePtr));
     SETTINGS.saveToFile();
@@ -437,8 +322,30 @@ void SettingsSubmenuActivity::handleSelection() {
                             : setting.valuePtr  ? SETTINGS.*(setting.valuePtr)
                                                 : 0;
     const bool sleepScreenSetting = page_ == Page::Sleep && setting.nameId == StrId::STR_SLEEP_SCREEN;
-    const auto select = [this, valuePtr = setting.valuePtr, setter = setting.valueSetter,
+    const auto select = [this, current, valuePtr = setting.valuePtr, setter = setting.valueSetter,
                          sleepScreenSetting](const int index) {
+      if (sleepScreenSetting) {
+        const uint8_t mode = CrossPointSettings::sleepScreenMode(static_cast<uint8_t>(index));
+        if (sleepModeUsesManagedCustomImages(mode)) {
+          const uint8_t previousMode = SETTINGS.sleepScreen;
+          SETTINGS.sleepScreen = mode;
+          if (mode != previousMode && !SETTINGS.saveToFile()) {
+            SETTINGS.sleepScreen = previousMode;
+            sleepImageNotice_ = SleepImageNotice::IoError;
+            rebuildSettings();
+            return;
+          }
+          startActivityForResult(std::make_unique<SleepImageManagerActivity>(renderer, mappedInput,
+                                                                             SleepImageManagerActivity::Mode::Manage),
+                                 [this](const ActivityResult&) { rebuildSettings(); });
+          return;
+        }
+        if (sleepModeUsesLegacyCustomImage(mode)) {
+          showSleepImageDialog(mode);
+          return;
+        }
+      }
+      if (index == current) return;
       if (setter) {
         setter(static_cast<uint8_t>(index));
       } else if (valuePtr) {
@@ -446,11 +353,6 @@ void SettingsSubmenuActivity::handleSelection() {
       }
       SETTINGS.saveToFile();
       rebuildSettings();
-      if (sleepScreenSetting && sleepModeUsesCustomImage(SETTINGS.sleepScreen)) {
-        showSleepImageDialog(SETTINGS.sleepScreen);
-        return;
-      }
-      requestUpdate();
     };
     if (!setting.enumStringValues.empty()) {
       optionPopup_.show(setting.nameId, setting.enumStringValues, current, select);
@@ -479,30 +381,36 @@ void SettingsSubmenuActivity::openSleepTimeoutPicker() {
       });
 }
 
-void SettingsSubmenuActivity::openSleepImageZoomPicker() {
-  startActivityForResult(
-      std::make_unique<SleepImagePositionActivity>(renderer, mappedInput, SleepImagePositionActivity::Mode::Zoom),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled) SETTINGS.saveToFile();
-        rebuildSettings();
-        requestUpdate();
-      });
-}
-
 void SettingsSubmenuActivity::showSleepImageDialog(const uint8_t mode) {
-  std::string title = std::string(tr(STR_SLEEP_SCREEN)) + ": ";
-  title += sleepImageSourceLabel(inspectSleepImageSource(mode));
+  const CurrentSleepImage current = currentSleepImage(mode);
+  char footer[384];
+  snprintf(footer, sizeof(footer), tr(STR_SLEEP_IMAGE_CURRENT_FORMAT),
+           current.valid ? current.label.c_str() : tr(STR_SLEEP_IMAGE_NOT_SELECTED));
 
-  const std::string choose = tr(STR_SLEEP_IMAGE_SELECT_FILE);
-  const std::string cancel = tr(STR_CANCEL);
-  const char* options[] = {choose.c_str(), cancel.c_str()};
-  optionPopup_.show(title.c_str(), options, 2, 0, [this, mode](const int index) {
-    if (index == 0) {
-      openSleepImagePicker(mode);
-    } else {
-      requestUpdate();
-    }
-  });
+  if (current.valid) {
+    constexpr StrId options[] = {StrId::STR_KEEP_CURRENT, StrId::STR_CHOOSE_ANOTHER_IMAGE, StrId::STR_CANCEL};
+    optionPopup_.show(
+        StrId::STR_CHOOSE_SLEEP_SCREEN, options, 3, 0,
+        [this, mode](const int index) {
+          if (index == 0) {
+            SETTINGS.sleepScreen = mode;
+            SETTINGS.saveToFile();
+            rebuildSettings();
+            requestUpdate();
+          } else if (index == 1) {
+            openSleepImagePicker(mode);
+          }
+        },
+        footer);
+  } else {
+    constexpr StrId options[] = {StrId::STR_SLEEP_IMAGE_SELECT_FILE, StrId::STR_CANCEL};
+    optionPopup_.show(
+        StrId::STR_CHOOSE_SLEEP_SCREEN, options, 2, 0,
+        [this, mode](const int index) {
+          if (index == 0) openSleepImagePicker(mode);
+        },
+        footer);
+  }
   requestUpdate();
 }
 
@@ -520,30 +428,38 @@ void SettingsSubmenuActivity::openSleepImagePicker(const uint8_t mode) {
 }
 
 void SettingsSubmenuActivity::applySleepImageSelection(const uint8_t mode, const std::string& path) {
-  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-  const bool ok = sleepModeUsesTransparentOverlay(mode)
-                      ? saveTransparentSleepImage(path)
-                      : saveNormalSleepImage(path, renderer.getScreenWidth(), renderer.getScreenHeight());
-  if (ok) {
+  GUI.drawPopup(renderer, tr(STR_SLEEP_IMAGE_PREPARING));
+  SleepImageNormalizer::Result result;
+  {
+    GfxRenderer::FrameBufferLoan loan(renderer);
+    result = SleepImageNormalizer::prepare(path, false, renderer.getDisplayHeight(), renderer.getDisplayWidth());
+  }
+
+  if (result.status == SleepImageNormalizer::Status::Ready &&
+      SleepImageSelectionStore::publish(result.target, SleepImageNormalizer::stagingPath(result.target))) {
     SETTINGS.sleepScreen = mode;
-    SETTINGS.saveToFile();
+    const bool settingsSaved = SETTINGS.saveToFile();
     SleepFrameStore::discard();
+    sleepImageSourceBytes_ = result.sourceBytes;
+    sleepImageOutputBytes_ = result.outputBytes;
+    sleepImageNotice_ = !settingsSaved     ? SleepImageNotice::IoError
+                        : result.optimized ? SleepImageNotice::Optimized
+                                           : SleepImageNotice::Ready;
+  } else if (result.status == SleepImageNormalizer::Status::TooLarge) {
+    sleepImageNotice_ = SleepImageNotice::TooLarge;
+  } else if (result.status == SleepImageNormalizer::Status::Invalid) {
+    sleepImageNotice_ = SleepImageNotice::Invalid;
+  } else {
+    sleepImageNotice_ = SleepImageNotice::IoError;
   }
   rebuildSettings();
-  GUI.drawPopup(renderer, ok ? tr(STR_DONE) : tr(STR_FAILED_LOWER));
-  delay(800);
-  requestUpdate();
 }
 
 void SettingsSubmenuActivity::openAction(const SettingAction action) {
   if (action == SettingAction::SleepImagePosition) {
     startActivityForResult(
-        std::make_unique<SleepImagePositionActivity>(renderer, mappedInput, SleepImagePositionActivity::Mode::Position),
-        [this](const ActivityResult& result) {
-          if (!result.isCancelled) SETTINGS.saveToFile();
-          rebuildSettings();
-          requestUpdate();
-        });
+        std::make_unique<SleepImageManagerActivity>(renderer, mappedInput, SleepImageManagerActivity::Mode::Placement),
+        [this](const ActivityResult&) { rebuildSettings(); });
     return;
   }
 
@@ -558,10 +474,10 @@ void SettingsSubmenuActivity::openAction(const SettingAction action) {
     default:
       return;
   }
-  startActivityForResult(std::move(activity), [this](const ActivityResult&) {
-    SETTINGS.saveToFile();
-    rebuildSettings();
-    requestUpdate();
+  startActivityForResult(std::move(activity), [action](const ActivityResult&) {
+    // OTA may update the cached available version and uses this parent save as
+    // a retry boundary. The SD firmware picker never mutates SETTINGS.
+    if (action == SettingAction::CheckForUpdates) SETTINGS.saveToFile();
   });
 }
 
@@ -580,11 +496,6 @@ std::string SettingsSubmenuActivity::valueLabel(const int index) const {
     if (value < setting.enumValues.size()) return I18N.get(setting.enumValues[value]);
   }
   if (setting.type == SettingType::VALUE && setting.valuePtr) {
-    if (setting.nameId == StrId::STR_SLEEP_IMAGE_ZOOM) {
-      char value[12]{};
-      snprintf(value, sizeof(value), tr(STR_PERCENT_VALUE_FORMAT), static_cast<unsigned>(SETTINGS.*(setting.valuePtr)));
-      return value;
-    }
     if (SETTINGS.*(setting.valuePtr) >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) {
       return I18N.get(StrId::STR_SLEEP_NEVER);
     }
@@ -592,10 +503,6 @@ std::string SettingsSubmenuActivity::valueLabel(const int index) const {
     snprintf(value, sizeof(value), tr(STR_SLEEP_TIMER_VALUE_FORMAT),
              static_cast<unsigned>(SETTINGS.*(setting.valuePtr)));
     return value;
-  }
-  if (setting.type == SettingType::ACTION && setting.nameId == StrId::STR_SLEEP_IMAGE_POSITION) {
-    return SETTINGS.sleepScreenImageOffsetX == 0 && SETTINGS.sleepScreenImageOffsetY == 0 ? tr(STR_CENTER)
-                                                                                          : tr(STR_CUSTOM);
   }
   return {};
 }
@@ -625,5 +532,26 @@ void SettingsSubmenuActivity::render(RenderLock&&) {
   const char* confirmLabel = settings_.empty() ? "" : toggle ? tr(STR_TOGGLE) : tr(STR_SELECT);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  const SleepImageNotice notice = sleepImageNotice_;
+  sleepImageNotice_ = SleepImageNotice::None;
+  if (notice == SleepImageNotice::Optimized) {
+    char sourceSize[24];
+    char outputSize[24];
+    char message[160];
+    formatSleepImageBytes(sleepImageSourceBytes_, sourceSize, sizeof(sourceSize));
+    formatSleepImageBytes(sleepImageOutputBytes_, outputSize, sizeof(outputSize));
+    snprintf(message, sizeof(message), tr(STR_SLEEP_IMAGE_OPTIMIZED_FORMAT), sourceSize, outputSize);
+    drawTransientPopup(message);
+    return;
+  }
+  if (notice != SleepImageNotice::None) {
+    const StrId message = notice == SleepImageNotice::Ready      ? StrId::STR_SLEEP_IMAGE_READY
+                          : notice == SleepImageNotice::TooLarge ? StrId::STR_SLEEP_IMAGE_TOO_LARGE
+                          : notice == SleepImageNotice::Invalid  ? StrId::STR_SLEEP_IMAGE_INVALID
+                                                                 : StrId::STR_SLEEP_IMAGE_SAVE_FAILED;
+    drawTransientPopup(message);
+    return;
+  }
   renderer.displayBuffer();
 }

@@ -15,7 +15,6 @@ struct GlobalReadingStatsAggregation;
 struct GlobalReadingStats {
   static constexpr uint8_t CURRENT_FILE_VERSION = 3;
   static constexpr size_t CURRENT_FILE_SIZE = 159;
-  static constexpr size_t MIN_SUPPORTED_FILE_SIZE = 13;
   static constexpr size_t MAX_SYNCED_DEVICE_SNAPSHOTS = 32;
 
   uint32_t totalSessions = 0;

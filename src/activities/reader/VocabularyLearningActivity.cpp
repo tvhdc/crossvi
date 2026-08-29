@@ -130,6 +130,15 @@ void VocabularyLearningActivity::loop() {
   }
 }
 
+void VocabularyLearningActivity::persistQuizSetting(uint8_t& setting, const uint8_t value) {
+  if (setting == value) return;
+  const uint8_t previous = setting;
+  setting = value;
+  if (SETTINGS.saveToFile()) return;
+  setting = previous;
+  pendingSettingsSaveError_ = true;
+}
+
 void VocabularyLearningActivity::handleSettingsInput() {
   constexpr int ITEM_COUNT = 7;
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -157,26 +166,22 @@ void VocabularyLearningActivity::handleSettingsInput() {
       showDatasetPicker();
       break;
     case 3:
-      optionPopup_.show(StrId::STR_VOCAB_QUIZ_SIZE, QUIZ_SIZE_LABELS.data(), QUIZ_SIZE_LABELS.size(),
-                        SETTINGS.vocabularyQuizSize, [this](const int index) {
-                          SETTINGS.vocabularyQuizSize = static_cast<uint8_t>(index);
-                          SETTINGS.saveToFile();
-                        });
+      optionPopup_.show(
+          StrId::STR_VOCAB_QUIZ_SIZE, QUIZ_SIZE_LABELS.data(), QUIZ_SIZE_LABELS.size(), SETTINGS.vocabularyQuizSize,
+          [this](const int index) { persistQuizSetting(SETTINGS.vocabularyQuizSize, static_cast<uint8_t>(index)); });
       requestUpdate();
       break;
     case 4:
       optionPopup_.show(StrId::STR_VOCAB_QUESTION_TIME, QUESTION_TIME_LABELS.data(), QUESTION_TIME_LABELS.size(),
                         SETTINGS.vocabularyQuestionTime, [this](const int index) {
-                          SETTINGS.vocabularyQuestionTime = static_cast<uint8_t>(index);
-                          SETTINGS.saveToFile();
+                          persistQuizSetting(SETTINGS.vocabularyQuestionTime, static_cast<uint8_t>(index));
                         });
       requestUpdate();
       break;
     case 5:
       optionPopup_.show(StrId::STR_VOCAB_ANSWER_COUNT, ANSWER_COUNT_LABELS.data(), ANSWER_COUNT_LABELS.size(),
                         SETTINGS.vocabularyAnswerCount, [this](const int index) {
-                          SETTINGS.vocabularyAnswerCount = static_cast<uint8_t>(index);
-                          SETTINGS.saveToFile();
+                          persistQuizSetting(SETTINGS.vocabularyAnswerCount, static_cast<uint8_t>(index));
                         });
       requestUpdate();
       break;
@@ -194,7 +199,6 @@ void VocabularyLearningActivity::showDatasetPicker() {
                     [this](const int index) {
                       if (index == 0) {
                         selectDataset(nullptr);
-                        requestUpdate();
                         return;
                       }
                       openDatasetFilePicker();
@@ -210,14 +214,16 @@ void VocabularyLearningActivity::openDatasetFilePicker() {
         const auto* selected = std::get_if<FilePathResult>(&result.data);
         if (!selected) return;
         GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-        if (!selectDataset(selected->path.c_str())) GUI.drawPopup(renderer, tr(STR_VOCAB_SET_INVALID));
+        pendingDatasetLoadError_ = !selectDataset(selected->path.c_str());
       });
 }
 
 bool VocabularyLearningActivity::selectDataset(const char* path) {
+  const bool external = path && path[0] != '\0';
+  if (!external && SETTINGS.vocabularyDatasetPath[0] == '\0' && !crossvi::vocabulary::activeDatasetInfo().external)
+    return true;
   if (reviewStoreReady_ && !VOCABULARY_REVIEW.flush()) return false;
   const std::string previousPath = SETTINGS.vocabularyDatasetPath;
-  const bool external = path && path[0] != '\0';
   const bool activated =
       external ? crossvi::vocabulary::useExternalDataset(path) : (crossvi::vocabulary::useBuiltInDataset(), true);
   if (!activated) return false;
@@ -350,9 +356,10 @@ void VocabularyLearningActivity::beginReviewQuiz() {
   if (available == 0) return;
 
   const size_t target = std::min<size_t>(configuredQuestionCount(), available);
+  const size_t totalEntries = crossvi::vocabulary::entryCount();
   size_t selected = 0;
   size_t seen = 0;
-  for (size_t entryIndex = 0; entryIndex < crossvi::vocabulary::entryCount(); ++entryIndex) {
+  for (size_t entryIndex = 0; entryIndex < totalEntries; ++entryIndex) {
     if (!VOCABULARY_REVIEW.needsReview(entryIndex)) continue;
     ++seen;
     if (selected < target) {
@@ -386,18 +393,28 @@ void VocabularyLearningActivity::startQuiz(const uint8_t count, const bool revie
 }
 
 void VocabularyLearningActivity::prepareQuestion() {
+  const size_t totalEntries = crossvi::vocabulary::entryCount();
   size_t entryIndex = reviewOnly_ ? reviewEntryIndices_[currentQuestion_] : 0;
   if (!reviewOnly_) {
-    for (size_t attempt = 0; attempt < crossvi::vocabulary::entryCount(); ++attempt) {
-      entryIndex = nextRandom(randomState_) % crossvi::vocabulary::entryCount();
-      bool duplicate = false;
+    const auto alreadyUsed = [this](const size_t candidate) {
       for (uint8_t previous = 0; previous < currentQuestion_; ++previous) {
-        if (records_[previous].entryIndex == entryIndex) {
-          duplicate = true;
+        if (records_[previous].entryIndex == candidate) return true;
+      }
+      return false;
+    };
+    bool duplicate = true;
+    for (size_t attempt = 0; attempt < totalEntries; ++attempt) {
+      entryIndex = nextRandom(randomState_) % totalEntries;
+      duplicate = alreadyUsed(entryIndex);
+      if (!duplicate) break;
+    }
+    if (duplicate && currentQuestion_ < totalEntries) {
+      for (size_t candidate = 0; candidate < totalEntries; ++candidate) {
+        if (!alreadyUsed(candidate)) {
+          entryIndex = candidate;
           break;
         }
       }
-      if (!duplicate) break;
     }
   }
   QuestionRecord& record = records_[currentQuestion_];
@@ -516,6 +533,10 @@ void VocabularyLearningActivity::render(RenderLock&&) {
       break;
     case Screen::Results:
       renderResults();
+      if (reviewSaveFailed_) {
+        reviewSaveFailed_ = false;
+        return;
+      }
       break;
     case Screen::Review:
       renderReview();
@@ -523,6 +544,16 @@ void VocabularyLearningActivity::render(RenderLock&&) {
     case Screen::Source:
       renderSource();
       break;
+  }
+  if (pendingDatasetLoadError_) {
+    pendingDatasetLoadError_ = false;
+    drawTransientPopup(StrId::STR_VOCAB_SET_INVALID);
+    return;
+  }
+  if (pendingSettingsSaveError_) {
+    pendingSettingsSaveError_ = false;
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
   }
   renderer.displayBuffer();
 }
@@ -568,7 +599,8 @@ void VocabularyLearningActivity::renderSettings() {
 }
 
 void VocabularyLearningActivity::drawAnswerCard(const int slot, const int x, const int y, const int width,
-                                                const int height, const bool showFeedback) const {
+                                                const int height, const bool showFeedback,
+                                                const char* correctMeaning) const {
   const QuestionRecord& record = records_[currentQuestion_];
   const bool correct = slot == record.correctSlot;
   const bool chosen = slot == record.selectedSlot;
@@ -579,10 +611,15 @@ void VocabularyLearningActivity::drawAnswerCard(const int slot, const int x, con
   } else {
     renderer.drawRoundedRect(x, y, width, height, 1, 5, true);
   }
-  const auto answer = crossvi::vocabulary::entryAt(record.answerIndices[slot]);
+  crossvi::vocabulary::Entry answer;
+  const char* meaning = correct ? correctMeaning : nullptr;
+  if (!correct) {
+    answer = crossvi::vocabulary::entryAt(record.answerIndices[slot]);
+    meaning = answer.meaning;
+  }
   const int textWidth = width - 28;
   const int answerFont = height < 42 ? SMALL_FONT_ID : UI_10_FONT_ID;
-  const auto lines = renderer.wrappedText(answerFont, answer.meaning, textWidth, 2);
+  const auto lines = renderer.wrappedText(answerFont, meaning, textWidth, 2);
   const int lineHeight = renderer.getLineHeight(answerFont);
   const int blockHeight = static_cast<int>(lines.size()) * lineHeight;
   int textY = y + std::max(4, (height - blockHeight) / 2);
@@ -651,7 +688,7 @@ void VocabularyLearningActivity::renderQuestion(const bool showFeedback) {
   const int optionH = compact ? (answerCount_ == 4 ? 38 : 44) : (answerCount_ == 4 ? 56 : 64);
   const int optionsY = cardY + cardH + (compact ? 8 : 12);
   for (int slot = 0; slot < answerCount_; ++slot) {
-    drawAnswerCard(slot, x, optionsY + slot * (optionH + optionGap), contentWidth, optionH, showFeedback);
+    drawAnswerCard(slot, x, optionsY + slot * (optionH + optionGap), contentWidth, optionH, showFeedback, word.meaning);
   }
   if (showFeedback) {
     const QuestionRecord& record = records_[currentQuestion_];
@@ -670,8 +707,7 @@ void VocabularyLearningActivity::renderQuestion(const bool showFeedback) {
     const int titleY = iconY + std::max(0, (iconSize - renderer.getLineHeight(UI_12_FONT_ID)) / 2);
     renderer.drawText(UI_12_FONT_ID, iconX + iconSize + statusGap, titleY, feedbackTitle, true, EpdFontFamily::BOLD);
 
-    const auto answer = crossvi::vocabulary::entryAt(record.answerIndices[record.correctSlot]);
-    std::string answerText = std::string(tr(STR_VOCAB_CORRECT_ANSWER)) + ": " + answer.meaning;
+    std::string answerText = std::string(tr(STR_VOCAB_CORRECT_ANSWER)) + ": " + word.meaning;
     const auto answerLines =
         renderer.wrappedText(UI_10_FONT_ID, answerText.c_str(), contentWidth - 24, compact ? 1 : 2);
     int answerY = feedbackY + (compact ? 42 : 68);
@@ -716,9 +752,9 @@ void VocabularyLearningActivity::renderResults() {
   GUI.drawList(renderer, Rect{0, listY, width, 110}, 2, selectedResultAction_, [](const int index) {
     return std::string(I18N.get(index == 0 ? StrId::STR_VOCAB_REVIEW : StrId::STR_VOCAB_TRY_AGAIN));
   });
-  if (reviewSaveFailed_) GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
   const auto labelsHint = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labelsHint.btn1, labelsHint.btn2, labelsHint.btn3, labelsHint.btn4);
+  if (reviewSaveFailed_) drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
 }
 
 void VocabularyLearningActivity::renderReview() {
@@ -750,9 +786,15 @@ void VocabularyLearningActivity::renderReview() {
                     EpdFontFamily::BOLD);
   const int chosenLabelWidth = renderer.getTextWidth(SMALL_FONT_ID, tr(STR_VOCAB_YOUR_ANSWER));
   renderer.drawText(SMALL_FONT_ID, x + (boxW - chosenLabelWidth) / 2, firstY + 52, tr(STR_VOCAB_YOUR_ANSWER));
+  crossvi::vocabulary::Entry chosenEntry;
   const char* chosen = tr(STR_VOCAB_NOT_ANSWERED);
   if (record.selectedSlot >= 0) {
-    chosen = crossvi::vocabulary::entryAt(record.answerIndices[record.selectedSlot]).meaning;
+    if (record.selectedSlot == record.correctSlot) {
+      chosen = word.meaning;
+    } else {
+      chosenEntry = crossvi::vocabulary::entryAt(record.answerIndices[record.selectedSlot]);
+      chosen = chosenEntry.meaning;
+    }
   }
   const auto chosenLines = renderer.wrappedText(UI_10_FONT_ID, chosen, boxW - 24, compact ? 1 : 2);
   int y = firstY + 78;
@@ -767,7 +809,7 @@ void VocabularyLearningActivity::renderReview() {
   const int correctLabelWidth = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_VOCAB_CORRECT_ANSWER), EpdFontFamily::BOLD);
   renderer.drawText(UI_10_FONT_ID, x + (boxW - correctLabelWidth) / 2, secondY + (compact ? 20 : 28),
                     tr(STR_VOCAB_CORRECT_ANSWER), false, EpdFontFamily::BOLD);
-  const char* correct = crossvi::vocabulary::entryAt(record.answerIndices[record.correctSlot]).meaning;
+  const char* correct = word.meaning;
   const auto correctLines = renderer.wrappedText(UI_10_FONT_ID, correct, boxW - 24, 2);
   y = secondY + (compact ? 50 : 60);
   for (const auto& line : correctLines) {

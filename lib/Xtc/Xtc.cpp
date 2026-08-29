@@ -393,13 +393,26 @@ class Xtc::ThumbnailPairJob {
     return matches && closed;
   }
 
+  void cleanupStaging(std::string& finalPath) {
+    if (finalPath.empty()) return;
+    const std::string stagingPath = finalPath + ".tmp";
+    bool removed = !Storage.exists(stagingPath.c_str()) || Storage.remove(stagingPath.c_str());
+    if (!removed) removed = !Storage.exists(stagingPath.c_str()) || Storage.remove(stagingPath.c_str());
+    if (removed) finalPath.clear();
+  }
+
   void cleanup() {
     if (outputFile.isOpen()) outputFile.close();
     if (secondPlaneFile.isOpen()) secondPlaneFile.close();
     if (sourceFile.isOpen()) sourceFile.close();
-    if (!outputStagingPath.empty()) Storage.remove(outputStagingPath.c_str());
-    if (!sharedPath.empty()) Storage.remove((sharedPath + ".tmp").c_str());
-    if (!carouselPath.empty()) Storage.remove((carouselPath + ".tmp").c_str());
+    outputStagingPath.clear();
+    if (phase == Phase::Done) {
+      sharedPath.clear();
+      carouselPath.clear();
+      return;
+    }
+    cleanupStaging(sharedPath);
+    cleanupStaging(carouselPath);
   }
 
   ThumbnailPreparationStatus fail() {
@@ -796,7 +809,7 @@ bool Xtc::generateCoverBmp() const {
     }
   }
 
-  const bool synced = coverBmp.sync();
+  const bool synced = writeOk && coverBmp.sync();
   const bool closed = coverBmp.close();
   free(rowBuffer);
   free(pageBuffer);

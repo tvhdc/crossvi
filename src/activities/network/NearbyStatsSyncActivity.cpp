@@ -98,8 +98,12 @@ void NearbyStatsSyncActivity::onEnter() {
   Activity::onEnter();
 #ifdef SIMULATOR
   setError(tr(STR_NEARBY_ERROR_SIMULATOR));
+  return;
 #else
-  if (esp_efuse_mac_get_default(localMac_.data()) != ESP_OK) setError(tr(STR_NEARBY_ERROR_DEVICE_ID));
+  if (esp_efuse_mac_get_default(localMac_.data()) != ESP_OK) {
+    setError(tr(STR_NEARBY_ERROR_DEVICE_ID));
+    return;
+  }
 #endif
   GlobalReadingStats::LoadStatus statsStatus = GlobalReadingStats::LoadStatus::Missing;
   localStats_ = GlobalReadingStats::load(&statsStatus);
@@ -277,6 +281,7 @@ void NearbyStatsSyncActivity::startExchange(const NearbySync::Role role) {
   if (!exchange_.start(NearbySync::Kind::Stats, role, localMac_, deviceName(localMac_),
                        sender ? localOffer_.data() : nullptr, sender ? localOffer_.size() : 0, millis())) {
     setError(exchangeErrorMessage(exchange_.error()));
+    return;
   }
   requestUpdate();
 }

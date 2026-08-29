@@ -1,7 +1,5 @@
 #include "Bitmap.h"
 
-#include <StagedFileTransaction.h>
-
 #include <climits>
 #include <cstdlib>
 #include <cstring>
@@ -48,25 +46,31 @@ BitmapCacheState Bitmap::inspectDerivedCache(const std::string& finalPath) {
   const std::string backupPath = finalPath + ".bak";
   const BitmapFileStatus finalStatus = inspectFile(finalPath.c_str());
   if (finalStatus == BitmapFileStatus::Valid) {
-    // A stale backup cleanup failure must not hide an already verified final.
-    StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateFile, nullptr);
+    // The final was already verified above. Revalidating it through recover()
+    // adds SD I/O and can replace it with a stale backup if that second read
+    // fails transiently. Backup cleanup remains best-effort.
+    if (Storage.exists(backupPath.c_str())) Storage.remove(backupPath.c_str());
     return BitmapCacheState::Ready;
   }
   if (finalStatus == BitmapFileStatus::IoError) return BitmapCacheState::IoError;
 
   const BitmapFileStatus backupStatus = inspectFile(backupPath.c_str());
   if (backupStatus == BitmapFileStatus::IoError) return BitmapCacheState::IoError;
-  if (backupStatus == BitmapFileStatus::Valid &&
-      StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateFile, nullptr) ==
-          StagedFileTransaction::Status::IoError) {
+  if (backupStatus == BitmapFileStatus::Valid) {
+    // Both candidates have already been classified. Avoid asking the generic
+    // recovery helper to read the backup again: a transient second-read error
+    // would otherwise discard this verified recovery candidate.
+    if (finalStatus == BitmapFileStatus::Invalid && !Storage.remove(finalPath.c_str())) {
+      return BitmapCacheState::IoError;
+    }
+    if (!Storage.rename(backupPath.c_str(), finalPath.c_str())) return BitmapCacheState::IoError;
+    return inspectFile(finalPath.c_str()) == BitmapFileStatus::Valid ? BitmapCacheState::Ready
+                                                                    : BitmapCacheState::IoError;
+  }
+  if (backupStatus == BitmapFileStatus::Invalid && !Storage.remove(backupPath.c_str())) {
     return BitmapCacheState::IoError;
   }
-  if (backupStatus == BitmapFileStatus::Invalid && !Storage.remove(backupPath.c_str()))
-    return BitmapCacheState::IoError;
-
-  const BitmapFileStatus current = inspectFile(finalPath.c_str());
-  if (current == BitmapFileStatus::Valid) return BitmapCacheState::Ready;
-  return current == BitmapFileStatus::IoError ? BitmapCacheState::IoError : BitmapCacheState::Generate;
+  return BitmapCacheState::Generate;
 }
 
 bool Bitmap::readLE16(HalFile& f, uint16_t& value) {

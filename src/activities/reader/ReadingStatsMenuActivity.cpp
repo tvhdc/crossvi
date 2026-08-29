@@ -29,7 +29,6 @@ constexpr std::array<StrId, 5> SUBTITLES = {
 constexpr std::array<UIIcon, 5> ICONS = {UIIcon::Book, UIIcon::Library, UIIcon::Recent, UIIcon::Book, UIIcon::Medal};
 
 bool loadDevicePresentation(ReadingStatsPresentation& presentation) {
-  if (!Storage.probeMedia()) return false;
   GlobalReadingStats::LoadStatus status = GlobalReadingStats::LoadStatus::Missing;
   const GlobalReadingStats stats = GlobalReadingStats::load(&status);
   if (!GlobalReadingStats::isTrustedLoadStatus(status)) return false;
@@ -42,6 +41,16 @@ bool loadDevicePresentation(ReadingStatsPresentation& presentation) {
                                                ReadingStatsMetric::notApplicable(), false);
   return true;
 }
+
+bool loadDeviceCalendar(ReadingCalendarSnapshot& calendar) {
+  GlobalReadingStats::LoadStatus status = GlobalReadingStats::LoadStatus::Missing;
+  const GlobalReadingStats stats = GlobalReadingStats::load(&status);
+  if (!GlobalReadingStats::isTrustedLoadStatus(status)) return false;
+  ReadingStatsDateTime now;
+  const ReadingStatsDate* today = getCurrentLocalReadingStatsDateTime(now) && now.isValid() ? &now.date : nullptr;
+  calendar = buildReadingCalendarSnapshot(stats, true, today);
+  return true;
+}
 }  // namespace
 
 void ReadingStatsMenuActivity::onEnter() {
@@ -50,11 +59,15 @@ void ReadingStatsMenuActivity::onEnter() {
   requestUpdate();
 }
 
-void ReadingStatsMenuActivity::setNotice(const Notice notice) {
+void ReadingStatsMenuActivity::storeNotice(const Notice notice) {
   {
     RenderLock lock(*this);
     notice_ = notice;
   }
+}
+
+void ReadingStatsMenuActivity::setNotice(const Notice notice) {
+  storeNotice(notice);
   requestUpdate();
 }
 
@@ -64,7 +77,7 @@ void ReadingStatsMenuActivity::openOverview() {
     setNotice(Notice::Unavailable);
     return;
   }
-  setNotice(Notice::None);
+  storeNotice(Notice::None);
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, std::string{}, std::move(presentation),
                                              ReadingStatsActivity::Page::Device, false, true),
@@ -72,30 +85,31 @@ void ReadingStatsMenuActivity::openOverview() {
 }
 
 void ReadingStatsMenuActivity::openCalendar() {
-  ReadingStatsPresentation presentation;
-  if (!loadDevicePresentation(presentation)) {
+  ReadingCalendarSnapshot calendar;
+  if (!loadDeviceCalendar(calendar)) {
     setNotice(Notice::Unavailable);
     return;
   }
-  setNotice(Notice::None);
-  startActivityForResult(std::make_unique<ReadingCalendarActivity>(renderer, mappedInput, presentation.deviceCalendar),
-                         [this](const ActivityResult&) { requestUpdate(); });
+  storeNotice(Notice::None);
+  startActivityForResult(std::make_unique<ReadingCalendarActivity>(renderer, mappedInput, std::move(calendar)),
+                         [](const ActivityResult&) {});
 }
 
 void ReadingStatsMenuActivity::handleStatsAction(const ActivityResult& result) {
   const auto* action = std::get_if<ReadingStatsActionResult>(&result.data);
   if (!action) {
-    setNotice(Notice::None);
+    storeNotice(Notice::None);
     return;
   }
   if (action->action == ReadingStatsActionResult::Action::BackupDeviceStats) {
-    setNotice(GlobalReadingStats::createBackup() == GlobalReadingStats::BackupResult::Ok ? Notice::BackupDone
-                                                                                         : Notice::BackupFailed);
+    storeNotice(GlobalReadingStats::createBackup() == GlobalReadingStats::BackupResult::Ok ? Notice::BackupDone
+                                                                                           : Notice::BackupFailed);
     return;
   }
   if (action->action == ReadingStatsActionResult::Action::ImportVCodexStats) {
+    storeNotice(Notice::None);
     startActivityForResult(VCodexStatsImportActivity::forManualImport(renderer, mappedInput),
-                           [this](const ActivityResult&) { setNotice(Notice::None); });
+                           [](const ActivityResult&) {});
     return;
   }
   if (action->action != ReadingStatsActionResult::Action::RestoreDeviceStats) return;
@@ -103,16 +117,16 @@ void ReadingStatsMenuActivity::handleStatsAction(const ActivityResult& result) {
                                                                 tr(STR_STATS_RESTORE_PROMPT)),
                          [this](const ActivityResult& confirmation) {
                            if (confirmation.isCancelled) {
-                             setNotice(Notice::None);
+                             storeNotice(Notice::None);
                              return;
                            }
                            const GlobalReadingStats::BackupResult restored = GlobalReadingStats::restoreBackup();
                            if (restored == GlobalReadingStats::BackupResult::Ok) {
-                             setNotice(Notice::RestoreDone);
+                             storeNotice(Notice::RestoreDone);
                            } else if (restored == GlobalReadingStats::BackupResult::Missing) {
-                             setNotice(Notice::NoBackup);
+                             storeNotice(Notice::NoBackup);
                            } else {
-                             setNotice(Notice::RestoreFailed);
+                             storeNotice(Notice::RestoreFailed);
                            }
                          });
 }
@@ -132,22 +146,22 @@ void ReadingStatsMenuActivity::openSelected() {
       openOverview();
       break;
     case 1:
-      setNotice(Notice::None);
+      storeNotice(Notice::None);
       startActivityForResult(std::make_unique<BookStatsSelectionActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { setNotice(Notice::None); });
+                             [](const ActivityResult&) {});
       break;
     case 2:
       openCalendar();
       break;
     case 3:
-      setNotice(Notice::None);
+      storeNotice(Notice::None);
       startActivityForResult(std::make_unique<FinishedBooksActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { setNotice(Notice::None); });
+                             [](const ActivityResult&) {});
       break;
     case 4:
-      setNotice(Notice::None);
+      storeNotice(Notice::None);
       startActivityForResult(std::make_unique<ReadingAchievementsActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { setNotice(Notice::None); });
+                             [](const ActivityResult&) {});
       break;
     default:
       break;
@@ -214,8 +228,10 @@ void ReadingStatsMenuActivity::render(RenderLock&&) {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_STATS_PREVIOUS), tr(STR_STATS_NEXT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   if (notice_ != Notice::None) {
+    const Notice notice = notice_;
+    notice_ = Notice::None;
     StrId message = StrId::STR_STATS_BACKUP_FAILED;
-    switch (notice_) {
+    switch (notice) {
       case Notice::Unavailable:
         message = StrId::STR_STATS_UNAVAILABLE;
         break;
@@ -235,7 +251,7 @@ void ReadingStatsMenuActivity::render(RenderLock&&) {
       case Notice::None:
         break;
     }
-    GUI.drawPopup(renderer, I18N.get(message));
+    drawTransientPopup(message);
     return;
   }
   renderer.displayBuffer();

@@ -55,11 +55,14 @@ class VocabularyLearningActivity final : public Activity {
   bool reviewStoreReady_ = false;
   bool reviewSaveFailed_ = false;
   bool datasetLoadFailed_ = false;
+  bool pendingDatasetLoadError_ = false;
+  bool pendingSettingsSaveError_ = false;
   ReaderUtils::HoldGestureState skipHold_;
   std::array<QuestionRecord, MAX_QUESTIONS> records_{};
   std::array<uint16_t, MAX_QUESTIONS> reviewEntryIndices_{};
 
   void handleSettingsInput();
+  void persistQuizSetting(uint8_t& setting, uint8_t value);
   void handleQuestionInput();
   void handleFeedbackInput();
   void handleResultsInput();
@@ -87,7 +90,8 @@ class VocabularyLearningActivity final : public Activity {
   void renderResults();
   void renderReview();
   void renderSource();
-  void drawAnswerCard(int slot, int x, int y, int width, int height, bool showFeedback) const;
+  void drawAnswerCard(int slot, int x, int y, int width, int height, bool showFeedback,
+                      const char* correctMeaning) const;
   void drawAnswerStateIcon(AnswerState state, int x, int y, int size) const;
   const char* answerStateLabel(AnswerState state) const;
 };

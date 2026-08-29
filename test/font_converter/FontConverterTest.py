@@ -10,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO / "lib" / "EpdFont" / "scripts"
@@ -31,6 +32,39 @@ MANIFEST_SPEC.loader.exec_module(MANIFEST)
 
 
 class FontConverterContractTest(unittest.TestCase):
+    def test_manifest_reads_each_font_once_for_both_checksums(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            font_path = Path(tmp) / "Example_14.cpfont"
+            payload = b"cpfont-test-payload"
+            font_path.write_bytes(payload)
+
+            with mock.patch("builtins.open", wraps=open) as open_spy:
+                crc32, sha256 = MANIFEST.compute_checksums(font_path)
+
+            self.assertEqual(open_spy.call_count, 1)
+            self.assertEqual(crc32, MANIFEST.zlib.crc32(payload) & 0xFFFFFFFF)
+            self.assertEqual(sha256, hashlib.sha256(payload).hexdigest())
+
+    def test_manifest_loads_description_and_metadata_from_one_yaml_parse(self):
+        yaml_module = sys.modules.get("yaml")
+        if not yaml_module or not hasattr(yaml_module, "safe_load"):
+            self.skipTest("PyYAML is required for manifest metadata checks")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "fonts.yaml"
+            config_path.write_text(
+                "families:\n"
+                "  - name: Example\n"
+                "    description: Example font\n"
+                "    license: OFL-1.1\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(yaml_module, "safe_load", wraps=yaml_module.safe_load) as load_spy:
+                descriptions, metadata = MANIFEST.load_family_data_from_yaml(config_path)
+
+            self.assertEqual(load_spy.call_count, 1)
+            self.assertEqual(descriptions, {"Example": "Example font"})
+            self.assertEqual(metadata, {"Example": {"license": "OFL-1.1"}})
+
     def test_manifest_records_sha256_for_every_font_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             font_path = Path(tmp) / "Example_14.cpfont"

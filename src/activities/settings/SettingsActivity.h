@@ -196,6 +196,7 @@ class SettingsActivity final : public Activity {
   int selectedCategoryIndex = 0;  // Currently selected category
   int selectedSettingIndex = 0;
   int settingsCount = 0;
+  bool showSaveError = false;
   int pendingNavigation = 0;
   ReaderUtils::HoldGestureState holdUp;
   ReaderUtils::HoldGestureState holdDown;

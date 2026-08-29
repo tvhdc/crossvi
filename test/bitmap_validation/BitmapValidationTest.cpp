@@ -91,6 +91,19 @@ TEST_F(BitmapValidationTest, ValidDerivedBitmapRemainsReadyWhenStaleBackupCleanu
   EXPECT_TRUE(Storage.exists(BACKUP_PATH));
 }
 
+TEST_F(BitmapValidationTest, VerifiedFinalIsNotReplacedWhenASecondReadWouldFail) {
+  const auto final = validBmp(0x80U);
+  const auto staleBackup = validBmp(0x00U);
+  Storage.setFile(FINAL_PATH, final);
+  Storage.setFile(BACKUP_PATH, staleBackup);
+  Storage.failOpenReadOnAttempt(FINAL_PATH, 2);
+
+  EXPECT_EQ(Bitmap::inspectDerivedCache(FINAL_PATH), BitmapCacheState::Ready);
+  EXPECT_EQ(Storage.file(FINAL_PATH), final);
+  EXPECT_FALSE(Storage.exists(BACKUP_PATH));
+  EXPECT_EQ(Storage.openReadAttemptsFor(FINAL_PATH), 1U);
+}
+
 TEST_F(BitmapValidationTest, StructurallyInvalidDerivedBackupIsDiscardedForRegeneration) {
   Storage.setFile(BACKUP_PATH, {0x42U, 0x4DU});
 
@@ -105,6 +118,17 @@ TEST_F(BitmapValidationTest, ValidDerivedBackupRestoresMissingFinal) {
   EXPECT_EQ(Bitmap::inspectDerivedCache(FINAL_PATH), BitmapCacheState::Ready);
   EXPECT_EQ(Storage.file(FINAL_PATH), backup);
   EXPECT_FALSE(Storage.exists(BACKUP_PATH));
+}
+
+TEST_F(BitmapValidationTest, VerifiedBackupIsNotDiscardedWhenASecondReadWouldFail) {
+  const auto backup = validBmp();
+  Storage.setFile(BACKUP_PATH, backup);
+  Storage.failOpenReadOnAttempt(BACKUP_PATH, 2);
+
+  EXPECT_EQ(Bitmap::inspectDerivedCache(FINAL_PATH), BitmapCacheState::Ready);
+  EXPECT_EQ(Storage.file(FINAL_PATH), backup);
+  EXPECT_FALSE(Storage.exists(BACKUP_PATH));
+  EXPECT_EQ(Storage.openReadAttemptsFor(BACKUP_PATH), 1U);
 }
 
 TEST_F(BitmapValidationTest, FailedInvalidBackupRemovalFailsClosed) {

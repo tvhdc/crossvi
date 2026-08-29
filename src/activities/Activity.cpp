@@ -12,9 +12,15 @@ void Activity::onEnter() { LOG_DBG("ACT", "Entering activity: %s", name.c_str())
 
 void Activity::onExit() { LOG_DBG("ACT", "Exiting activity: %s", name.c_str()); }
 
-void Activity::requestUpdate(bool immediate) { activityManager.requestUpdate(immediate); }
+void Activity::requestUpdate(bool immediate) {
+  cancelTransientPopup();
+  activityManager.requestUpdate(immediate);
+}
 
-void Activity::requestUpdateAndWait() { activityManager.requestUpdateAndWait(); }
+void Activity::requestUpdateAndWait() {
+  cancelTransientPopup();
+  activityManager.requestUpdateAndWait();
+}
 
 bool Activity::handleSafeGlobalShortcut(const GlobalShortcut shortcut) {
   return activityManager.handleSafeGlobalShortcut(shortcut);
@@ -83,6 +89,25 @@ bool Activity::renderBlockingFeedbackOverlay() {
   if (message == StrId::_COUNT) return false;
   GUI.drawPopup(renderer, I18N.get(message));
   return true;
+}
+
+void Activity::drawTransientPopup(const StrId message) { drawTransientPopup(I18N.get(message)); }
+
+void Activity::drawTransientPopup(const char* const message) {
+  GUI.drawPopup(renderer, message);
+  uint32_t deadline = static_cast<uint32_t>(millis()) + TRANSIENT_POPUP_DURATION_MS;
+  // Zero means "inactive"; remap the single wrap-around value without losing
+  // the deadline's wrap-safe comparison semantics.
+  deadline += static_cast<uint32_t>(deadline == 0);
+  transientPopupDeadlineMs.store(deadline, std::memory_order_release);
+}
+
+void Activity::cancelTransientPopup() { transientPopupDeadlineMs.store(0, std::memory_order_release); }
+
+bool Activity::dismissTransientPopupIfExpired() {
+  uint32_t deadline = transientPopupDeadlineMs.load(std::memory_order_acquire);
+  if (deadline == 0 || static_cast<int32_t>(static_cast<uint32_t>(millis()) - deadline) < 0) return false;
+  return transientPopupDeadlineMs.compare_exchange_strong(deadline, 0, std::memory_order_acq_rel);
 }
 
 void Activity::onSelectBook(const std::string& path) { openBookWithFeedback(path); }

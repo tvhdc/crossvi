@@ -5,7 +5,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 
 class ZipStreamReadJob;
 class ZipSourceIdentityJob;
@@ -86,7 +85,6 @@ class ZipFile {
   const std::string& filePath;
   HalFile file;
   ZipDetails zipDetails = {0, 0, 0, false};
-  std::unordered_map<std::string, FileStatSlim> fileStatSlimCache;
 
   // Cursor for sequential central-dir scanning optimization
   uint32_t lastCentralDirPos = 0;
@@ -109,7 +107,6 @@ class ZipFile {
   bool isOpen() const { return !!file; }
   bool open();
   bool close();
-  bool loadAllFileStatSlims();
   bool getSourceIdentity(SourceIdentity& identity);
   // Read the central-directory metadata for one entry without inflating it.
   // Callers use this for small, intentionally stored assets.
@@ -133,13 +130,6 @@ class ZipFile {
 
   template <typename F>
   bool enumerateFilePaths(F&& callback) {
-    if (!fileStatSlimCache.empty()) {
-      for (const auto& entry : fileStatSlimCache) {
-        callback(std::string_view{entry.first});
-      }
-      return true;
-    }
-
     const bool wasOpen = isOpen();
     if (!wasOpen && !open()) {
       return false;
@@ -152,39 +142,56 @@ class ZipFile {
       return false;
     }
 
-    file.seek(zipDetails.centralDirOffset);
+    bool complete = file.seek(zipDetails.centralDirOffset);
+    const uint64_t centralDirEnd = static_cast<uint64_t>(zipDetails.centralDirOffset) + zipDetails.centralDirSize;
 
-    uint32_t sig;
+    uint32_t sig = 0;
     char itemName[256];
 
-    while (file.available()) {
-      file.read(&sig, 4);
-      if (sig != 0x02014b50) {
+    for (uint16_t entry = 0; complete && entry < zipDetails.totalEntries; ++entry) {
+      const uint64_t entryStart = file.position();
+      if (entryStart > centralDirEnd || centralDirEnd - entryStart < 46U || file.read(&sig, 4) != 4 ||
+          sig != 0x02014b50) {
+        complete = false;
         break;
       }
 
-      file.seekCur(24);
-      uint16_t nameLen, m, k;
-      file.read(&nameLen, 2);
-      file.read(&m, 2);
-      file.read(&k, 2);
-      file.seekCur(12);
-
-      if (nameLen < sizeof(itemName)) {
-        file.read(itemName, nameLen);
-        itemName[nameLen] = '\0';
-        callback(std::string_view{itemName, nameLen});
-      } else {
-        file.seekCur(nameLen);
+      uint16_t nameLen = 0;
+      uint16_t extraLen = 0;
+      uint16_t commentLen = 0;
+      if (!file.seekCur(24) || file.read(&nameLen, 2) != 2 || file.read(&extraLen, 2) != 2 ||
+          file.read(&commentLen, 2) != 2 || !file.seekCur(12)) {
+        complete = false;
+        break;
       }
 
-      file.seekCur(m + k);
+      const uint64_t tailLength = static_cast<uint64_t>(nameLen) + extraLen + commentLen;
+      const uint64_t tailStart = file.position();
+      if (tailStart > centralDirEnd || tailLength > centralDirEnd - tailStart) {
+        complete = false;
+        break;
+      }
+
+      if (nameLen < sizeof(itemName)) {
+        if (file.read(itemName, nameLen) != nameLen) {
+          complete = false;
+          break;
+        }
+        itemName[nameLen] = '\0';
+        callback(std::string_view{itemName, nameLen});
+      } else if (!file.seekCur(nameLen)) {
+        complete = false;
+        break;
+      }
+
+      if (!file.seekCur(static_cast<int64_t>(extraLen) + commentLen)) {
+        complete = false;
+        break;
+      }
     }
 
-    if (!wasOpen) {
-      close();
-    }
-    return true;
+    if (!wasOpen && !close()) complete = false;
+    return complete;
   }
 };
 
@@ -213,7 +220,7 @@ class ZipSourceIdentityJob {
 
 class ZipStreamReadJob {
  public:
-  enum class BeginStatus : uint8_t { Started, NotApplicable, Error };
+  enum class BeginStatus : uint8_t { Started, NotApplicable, Error, OutOfMemory };
   enum class StepStatus : uint8_t { InProgress, Done, Error };
 
   ZipStreamReadJob();

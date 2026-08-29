@@ -40,8 +40,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     return;  // invalid state
   }
 
-  auto wifiMode = WiFi.getMode();
-  if (wifiMode != WIFI_MODE_NULL) {
+  if (enabled && WiFi.getMode() != WIFI_MODE_NULL) {
     // Wifi is active, force disabling power saving
     enabled = false;
   }

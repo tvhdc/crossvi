@@ -265,7 +265,7 @@ bool Txt::generateCoverBmp() const {
 
   const bool inputOk = source.getError() == 0;
   const bool inputClosed = source.close();
-  const bool outputSynced = output.sync();
+  const bool outputSynced = converted && inputOk && inputClosed && output.sync();
   const bool outputClosed = output.close();
   const auto published = converted && inputOk && inputClosed && outputSynced && outputClosed
                              ? StagedFileTransaction::publish(finalPath.c_str(), stagingPath.c_str(),
@@ -312,7 +312,7 @@ bool Txt::readContent(uint8_t* buffer, size_t offset, size_t length) const {
 bool Txt::readContent(HalFile& file, uint8_t* buffer, size_t offset, size_t length) const {
   if (!loaded || !file || (!buffer && length != 0)) return false;
 
-  if (!file.seek(offset)) {
+  if (file.position() != offset && !file.seek(offset)) {
     return false;
   }
 

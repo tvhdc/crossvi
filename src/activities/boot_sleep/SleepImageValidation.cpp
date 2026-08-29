@@ -62,6 +62,8 @@ Bmp32HeaderStatus readBmp32Header(HalFile& file, Bmp32Header& out) {
     return Bmp32HeaderStatus::Invalid;
   }
 
+  bool hasExplicitAlpha = false;
+  uint64_t externalMaskBytes = 0;
   if (compression == 3) {
     if (!file.seek64(14ULL + 40ULL)) return Bmp32HeaderStatus::Invalid;
     uint32_t redMask = 0;
@@ -69,13 +71,21 @@ Bmp32HeaderStatus readBmp32Header(HalFile& file, Bmp32Header& out) {
     uint32_t blueMask = 0;
     uint32_t alphaMask = 0;
     if (!readLE32(file, redMask) || !readLE32(file, greenMask) || !readLE32(file, blueMask) ||
-        !readLE32(file, alphaMask) || redMask != 0x00FF0000UL || greenMask != 0x0000FF00UL ||
-        blueMask != 0x000000FFUL || alphaMask != 0xFF000000UL) {
+        redMask != 0x00FF0000UL || greenMask != 0x0000FF00UL || blueMask != 0x000000FFUL) {
       return Bmp32HeaderStatus::Invalid;
+    }
+    externalMaskBytes = dibSize == 40 ? 12ULL : 0ULL;
+    const bool alphaMaskPresent = dibSize >= 56 || (dibSize == 40 && pixelOffset >= 70);
+    if (alphaMaskPresent) {
+      if (!readLE32(file, alphaMask) || (alphaMask != 0 && alphaMask != 0xFF000000UL)) {
+        return Bmp32HeaderStatus::Invalid;
+      }
+      hasExplicitAlpha = alphaMask == 0xFF000000UL;
+      if (dibSize == 40) externalMaskBytes = 16ULL;
     }
   }
 
-  const uint64_t minimumPixelOffset = 14ULL + dibSize + (compression == 3 && dibSize == 40 ? 16ULL : 0ULL);
+  const uint64_t minimumPixelOffset = 14ULL + dibSize + externalMaskBytes;
   const uint64_t rowBytes = static_cast<uint64_t>(width) * 4ULL;
   const uint64_t pixelBytes = rowBytes * static_cast<uint64_t>(height);
   if (pixelOffset < minimumPixelOffset || rowBytes > std::numeric_limits<uint32_t>::max() || pixelOffset > fileSize ||
@@ -85,12 +95,18 @@ Bmp32HeaderStatus readBmp32Header(HalFile& file, Bmp32Header& out) {
     return Bmp32HeaderStatus::Invalid;
   }
 
-  out.width = width;
-  out.height = height;
-  out.topDown = rawHeight < 0;
-  out.pixelOffset = pixelOffset;
-  out.rowBytes = static_cast<uint32_t>(rowBytes);
-  return Bmp32HeaderStatus::Valid;
+  if (hasExplicitAlpha) {
+    out.width = width;
+    out.height = height;
+    out.topDown = rawHeight < 0;
+    out.pixelOffset = pixelOffset;
+    out.rowBytes = static_cast<uint32_t>(rowBytes);
+    return Bmp32HeaderStatus::Valid;
+  }
+  // BI_RGB's fourth byte is reserved, not an alpha contract. Likewise,
+  // BI_BITFIELDS with no alpha mask is an ordinary opaque bitmap. Let Bitmap
+  // validate and render either form through the regular white-key path.
+  return Bmp32HeaderStatus::Not32Bit;
 }
 
 bool normalBmp(const char* path) {

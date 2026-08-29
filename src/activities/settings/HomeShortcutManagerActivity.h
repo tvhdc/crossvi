@@ -35,6 +35,6 @@ class HomeShortcutManagerActivity final : public Activity {
   void applyAction(RowAction action);
   void openPicker(int editingIndex);
   void choosePickerItem();
-  void persistOrRestore(const HomeShortcutList& previous);
+  bool persistOrRestore(const HomeShortcutList& previous);
   std::string manageRowLabel(int index) const;
 };

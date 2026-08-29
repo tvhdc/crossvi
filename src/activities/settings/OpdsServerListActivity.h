@@ -22,6 +22,7 @@ class OpdsServerListActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectedIndex = 0;
   bool pickerMode = false;
+  bool showSaveError = false;
 
   int getItemCount() const;
   void handleSelection();

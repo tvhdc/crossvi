@@ -14,4 +14,5 @@ class PngToBmpConverter {
                                          bool crop = true);
   static bool pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight,
                                              bool crop = true);
+  static bool pngFileToBgraBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight);
 };

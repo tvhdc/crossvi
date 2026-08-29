@@ -393,6 +393,19 @@ TEST_F(XtcContractTest, PairedThumbnailsShareOneFirstPageReadForXtcAndXtch) {
   }
 }
 
+TEST_F(XtcContractTest, SuccessfulThumbnailPairDoesNotDeleteAlreadyPublishedStagingFiles) {
+  Storage.setFile(BOOK_PATH, makeBook());
+  Xtc book(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(book.load());
+  const std::string sharedStagingPath = book.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT) + ".tmp";
+  const std::string carouselStagingPath = book.getThumbBmpPath(456) + ".tmp";
+  Storage.resetIoCounters();
+
+  ASSERT_EQ(finishThumbnailPreparation(book), Xtc::ThumbnailPreparationStatus::Ready);
+  EXPECT_EQ(Storage.removeAttemptsFor(sharedStagingPath), 0U);
+  EXPECT_EQ(Storage.removeAttemptsFor(carouselStagingPath), 0U);
+}
+
 TEST_F(XtcContractTest, ThumbnailPairPreparationReadsAtMostOneBoundedChunkPerPlanePerStep) {
   for (const uint8_t bitDepth : {1U, 2U}) {
     SCOPED_TRACE(bitDepth);
@@ -448,6 +461,25 @@ TEST_F(XtcContractTest, CancellingThumbnailPairPreparationRemovesOnlyStagingOutp
   EXPECT_FALSE(Storage.exists((sharedPath + ".tmp").c_str()));
   EXPECT_FALSE(Storage.exists(carouselPath.c_str()));
   EXPECT_FALSE(Storage.exists((carouselPath + ".tmp").c_str()));
+}
+
+TEST_F(XtcContractTest, CancellingThumbnailPairRetriesOneTransientStagingRemovalFailure) {
+  Storage.setFile(BOOK_PATH, makeBook());
+  Xtc book(BOOK_PATH, "/.crosspoint");
+  ASSERT_TRUE(book.load());
+  ASSERT_EQ(book.beginThumbnailPreparation(273, 456), Xtc::ThumbnailPreparationStatus::InProgress);
+
+  const std::string sharedStagingPath = book.getThumbBmpPath(Xtc::SHARED_THUMB_HEIGHT) + ".tmp";
+  size_t steps = 0;
+  while (!Storage.exists(sharedStagingPath.c_str()) && steps < 1000) {
+    ASSERT_EQ(book.stepThumbnailPreparation(1024, 8), Xtc::ThumbnailPreparationStatus::InProgress);
+    ++steps;
+  }
+  ASSERT_TRUE(Storage.exists(sharedStagingPath.c_str()));
+  Storage.failRemoveFor(sharedStagingPath);
+
+  book.cancelThumbnailPreparation();
+  EXPECT_FALSE(Storage.exists(sharedStagingPath.c_str()));
 }
 
 TEST_F(XtcContractTest, ThumbnailPairPreparationRejectsSourceReplacementBeforePublishing) {
@@ -731,6 +763,15 @@ TEST_F(XtcContractTest, ReadFailuresAndSourceMutationFailClosed) {
   xtc::XtcParser changingParser;
   EXPECT_EQ(finishOpen(changingParser), xtc::XtcError::READ_ERROR);
   EXPECT_FALSE(changingParser.isOpen());
+}
+
+TEST_F(XtcContractTest, FinalSourceCloseFailureDoesNotPublishAnOpenParser) {
+  Storage.setFile(BOOK_PATH, makeBook());
+  Storage.failCloseFor(BOOK_PATH);
+
+  xtc::XtcParser parser;
+  EXPECT_EQ(finishOpen(parser), xtc::XtcError::READ_ERROR);
+  EXPECT_FALSE(parser.isOpen());
 }
 
 TEST_F(XtcContractTest, XthPlaneOrderPreservesAllFourConverterLevels) {

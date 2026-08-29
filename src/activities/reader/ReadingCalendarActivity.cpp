@@ -106,7 +106,7 @@ void ReadingCalendarActivity::moveMonth(const int delta) {
 void ReadingCalendarActivity::openSelectedDay() {
   if (!model_.isAvailable()) return;
   startActivityForResult(std::make_unique<ReadingDayDetailActivity>(renderer, mappedInput, model_.selectedCell()),
-                         [this](const ActivityResult&) { requestUpdate(); });
+                         [](const ActivityResult&) {});
 }
 
 void ReadingCalendarActivity::loop() {

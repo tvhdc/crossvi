@@ -3,6 +3,7 @@ add_executable(SleepFrameStoreTest
   SleepImageValidationStub.cpp
   ${REPO_ROOT}/src/activities/boot_sleep/SleepFrameStore.cpp
   ${REPO_ROOT}/src/activities/boot_sleep/SleepImageSelectionStore.cpp
+  ${REPO_ROOT}/lib/Serialization/AtomicFile.cpp
   ${REPO_ROOT}/lib/Serialization/StagedFileTransaction.cpp
 )
 
@@ -13,5 +14,5 @@ target_include_directories(SleepFrameStoreTest BEFORE PRIVATE
   ${REPO_ROOT}/lib/Serialization
 )
 
-target_link_libraries(SleepFrameStoreTest PRIVATE crosspoint_test_common GTest::gtest_main)
+target_link_libraries(SleepFrameStoreTest PRIVATE crosspoint_test_common ArduinoJson GTest::gtest_main)
 gtest_discover_tests(SleepFrameStoreTest)

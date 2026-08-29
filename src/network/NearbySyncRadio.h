@@ -37,16 +37,19 @@ class NearbySyncRadio {
     size_t size = 0;
   };
   bool takeTestPacket(TestPacket& packet);
+  void failNextTestSends(size_t count) { testSendFailures_ = count; }
 #endif
 
  private:
   void* callbackContext_ = nullptr;
   ReceiveCallback callback_ = nullptr;
   bool activated_ = false;
+  bool radioActive_ = false;
   bool initialized_ = false;
   bool callbackRegistered_ = false;
   bool started_ = false;
 #ifdef NEARBY_SYNC_TESTING
   mutable std::vector<TestPacket> testPackets_;
+  mutable size_t testSendFailures_ = 0;
 #endif
 };

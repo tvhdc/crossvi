@@ -87,14 +87,13 @@ bool OpdsSettingsActivity::saveServer() {
     success = OPDS_STORE.updateServer(static_cast<size_t>(serverIndex), editServer);
     if (!success) {
       LOG_ERR("OPS", "Failed to update OPDS server at index %d", serverIndex);
+      if (const auto* persisted = OPDS_STORE.getServer(static_cast<size_t>(serverIndex))) {
+        editServer = *persisted;
+      }
     }
   }
 
   showSaveError = !success;
-  if (showSaveError) {
-    requestUpdate();
-  }
-
   return success;
 }
 
@@ -108,7 +107,6 @@ void OpdsSettingsActivity::handleSelection() {
         const auto& kb = std::get<KeyboardResult>(result.data);
         editServer.name = kb.text;
         saveServer();
-        requestUpdate();
       }
     };
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SERVER_NAME),
@@ -122,7 +120,6 @@ void OpdsSettingsActivity::handleSelection() {
         const auto& kb = std::get<KeyboardResult>(result.data);
         editServer.url = (kb.text == "https://" || kb.text == "http://") ? "" : kb.text;
         saveServer();
-        requestUpdate();
       }
     };
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_SERVER_URL),
@@ -135,7 +132,6 @@ void OpdsSettingsActivity::handleSelection() {
         const auto& kb = std::get<KeyboardResult>(result.data);
         editServer.username = kb.text;
         saveServer();
-        requestUpdate();
       }
     };
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_USERNAME),
@@ -148,7 +144,6 @@ void OpdsSettingsActivity::handleSelection() {
         const auto& kb = std::get<KeyboardResult>(result.data);
         editServer.password = kb.text;
         saveServer();
-        requestUpdate();
       }
     };
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_PASSWORD),
@@ -213,7 +208,9 @@ void OpdsSettingsActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (showSaveError) {
-    GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
+    showSaveError = false;
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
   }
 
   renderer.displayBuffer();

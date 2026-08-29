@@ -17,7 +17,7 @@ class SleepActivity final : public Activity {
   void renderCustomSleepScreen(bool withBookStats = false);
   void renderCoverSleepScreen(bool withBookStats = false);
   void renderReadingCalendarSleepScreen();
-  void renderTransparentSleepScreen(bool baseFrameSaved);
+  void renderTransparentSleepScreen();
   void renderBitmapSleepScreen(const Bitmap& bitmap, bool applyCoverFilter, bool withBookStats = false);
   void renderLastScreenSleepScreen();
   void renderBlankSleepScreen();

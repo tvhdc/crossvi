@@ -12,7 +12,6 @@ class GfxRenderer;
 class LibraryGridView final {
  public:
   static size_t pageSize(uint8_t gridSetting);
-  static int coverHeight(Rect rect, uint8_t gridSetting);
   // Draw only the page content that is independent of the focused book.  The
   // activity can snapshot this bounded region and restore it while focus
   // moves, avoiding another SD/BMP read for every key press.

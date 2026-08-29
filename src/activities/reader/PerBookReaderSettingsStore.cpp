@@ -187,7 +187,6 @@ BackupStatus createLegacyBackup(const std::string& legacyPath, const LegacySetti
     HalFile temp;
     if (!Storage.openFileForWrite("PBRS", tempPath, temp)) return BackupStatus::IO_ERROR;
     bool ok = temp.write(legacy.bytes.data(), legacy.size) == legacy.size;
-    temp.flush();
     if (ok) ok = temp.sync();
     if (!temp.close()) ok = false;
     if (!ok || exactBytes(tempPath, legacy.bytes.data(), legacy.size) != ExactStatus::MATCH) {
@@ -240,7 +239,6 @@ bool writeVerified(const std::string& path, const PerBookReaderSettingsCodec::En
     file.close();
     return false;
   }
-  file.flush();
   if (!file.sync() || !file.close()) return false;
   PerBookReaderSettings verified;
   PerBookReaderSettings canonical = settings;

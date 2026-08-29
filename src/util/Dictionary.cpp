@@ -48,6 +48,13 @@ bool readSampleOffset(HalFile& qidx, uint32_t sampleIndex, uint32_t* out) {
   return qidx.read(out, sizeof(*out)) == static_cast<int>(sizeof(*out));
 }
 
+bool readUsableSampleOffset(HalFile& qidx, const uint32_t sampleIndex, const uint32_t indexFileSize, uint32_t* out) {
+  uint32_t offset = 0;
+  if (!readSampleOffset(qidx, sampleIndex, &offset) || offset >= indexFileSize) return false;
+  *out = offset;
+  return true;
+}
+
 uint32_t readBe32(const uint8_t* p) {
   return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
          (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
@@ -106,7 +113,9 @@ bool Dictionary::openLookupSession(LookupSession& session) {
 
   if (Storage.openFileForRead("DICT", basePath + ".qidx", session.quickIndexFile)) {
     const QidxHeader header = readQidxHeader(session.quickIndexFile, SAMPLE_INTERVAL);
-    if (header.valid && header.idxFileSize == session.indexFileSize) {
+    const uint64_t expectedSize = QIDX_HEADER_BYTES + static_cast<uint64_t>(header.sampleCount) * sizeof(uint32_t);
+    if (header.valid && header.sampleCount > 0 && header.idxFileSize == session.indexFileSize &&
+        session.quickIndexFile.fileSize64() == expectedSize) {
       session.quickIndexSampleCount = header.sampleCount;
     }
   }
@@ -127,6 +136,19 @@ bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outR
   };
   if (outResult) *outResult = IndexResult::Ok;
   if (!isOpen()) return fail(IndexResult::ReadError);
+
+  // needsIndex() also covers the optional synonym sidecar. When the main
+  // sampled index is already current, do not rescan and rewrite the whole
+  // .idx file merely to build .qsyn.
+  {
+    LookupSession session;
+    if (openLookupSession(session) && session.quickIndexSampleCount > 0 && StarDictSynonyms::needsIndex(basePath)) {
+      if (!StarDictSynonyms::buildIndex(basePath, yieldFn, ctx) && StarDictSynonyms::needsIndex(basePath)) {
+        return fail(IndexResult::ReadError);
+      }
+      return true;
+    }
+  }
 
   HalFile idx;
   if (!Storage.openFileForRead("DICT", basePath + ".idx", idx)) return fail(IndexResult::ReadError);
@@ -162,6 +184,7 @@ bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outR
   uint32_t entryCount = 0;
   uint32_t pos = 0;
   uint32_t suffixLeft = 0;  // 0 while scanning a headword, else suffix bytes remaining
+  bool entryInProgress = false;
   uint32_t sinceYield = 0;
   while (ok && pos < idxSize) {
     const int n = idx.read(buf.get(), CHUNK_BYTES);
@@ -172,8 +195,10 @@ bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outR
     }
     for (int i = 0; ok && i < n; i++) {
       if (suffixLeft == 0) {
+        entryInProgress = true;
         if (buf[i] == 0) suffixLeft = 8;
       } else if (--suffixLeft == 0) {
+        entryInProgress = false;
         entryCount++;
         const uint32_t nextEntryStart = pos + i + 1;
         if (entryCount % SAMPLE_INTERVAL == 0 && nextEntryStart < idxSize) {
@@ -190,14 +215,29 @@ bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outR
     }
   }
 
+  if (idx.getError() != 0) {
+    LOG_ERR("DICT", "Index scan reported an I/O error");
+    ok = false;
+  }
+
+  if (ok && entryInProgress) {
+    LOG_ERR("DICT", "Index ended inside an entry");
+    ok = false;
+  }
+
   if (ok) {
     // Backpatch the now-valid header over the placeholder.
     const uint32_t header[5] = {QIDX_MAGIC, QIDX_VERSION, SAMPLE_INTERVAL, sampleCount, idxSize};
     ok = out.seekSet(0) && out.write(header, sizeof(header)) == sizeof(header);
   }
+  if (ok) {
+    const bool synced = out.sync();
+    const bool closed = out.close();
+    ok = synced && closed;
+  }
   if (!ok) {
     LOG_ERR("DICT", "Index build failed, removing %s", qidxPath.c_str());
-    out.close();  // close before remove of the same path
+    if (out) out.close();  // close before remove of the same path
     Storage.remove(qidxPath.c_str());
     return fail(IndexResult::ReadError);
   }
@@ -206,7 +246,9 @@ bool Dictionary::buildIndex(void (*yieldFn)(void*), void* ctx, IndexResult* outR
           static_cast<unsigned long>(sampleCount), millis() - startMs);
   // Synonyms are optional. A malformed .syn receives a disabled sidecar and
   // never prevents normal .idx lookups from working.
-  StarDictSynonyms::buildIndex(basePath, yieldFn, ctx);
+  if (!StarDictSynonyms::buildIndex(basePath, yieldFn, ctx) && StarDictSynonyms::needsIndex(basePath)) {
+    return fail(IndexResult::ReadError);
+  }
   return true;
 }
 
@@ -242,9 +284,9 @@ DictLocation Dictionary::locate(LookupSession& session, const char* target, std:
     while (lo < hi) {
       const uint32_t mid = (lo + hi + 1) / 2;
       uint32_t offset = 0;
-      if (!readSampleOffset(session.quickIndexFile, mid, &offset) || !session.indexFile.seekSet(offset) ||
-          readWordInto(session.indexFile, wordBuf, sizeof(wordBuf)) < 0) {
-        lo = 0;
+      if (!readUsableSampleOffset(session.quickIndexFile, mid, session.indexFileSize, &offset) ||
+          !session.indexFile.seekSet(offset) || readWordInto(session.indexFile, wordBuf, sizeof(wordBuf)) < 0) {
+        session.quickIndexSampleCount = 0;
         break;
       }
       if (StringUtils::asciiCaseCmp(wordBuf, target) <= 0) {
@@ -253,7 +295,11 @@ DictLocation Dictionary::locate(LookupSession& session, const char* target, std:
         hi = mid - 1;
       }
     }
-    readSampleOffset(session.quickIndexFile, lo, &startByte);
+    if (session.quickIndexSampleCount > 0 &&
+        !readUsableSampleOffset(session.quickIndexFile, lo, session.indexFileSize, &startByte)) {
+      session.quickIndexSampleCount = 0;
+      startByte = 0;
+    }
   }
 
   // Linear scan of at most SAMPLE_INTERVAL entries: headword NUL, BE32 offset,
@@ -293,8 +339,13 @@ DictLocation Dictionary::locateOrdinal(LookupSession& session, uint32_t ordinal,
   uint32_t entry = 0;
   if (session.quickIndexSampleCount > 0) {
     const uint32_t sample = ordinal / SAMPLE_INTERVAL;
-    if (sample < session.quickIndexSampleCount && readSampleOffset(session.quickIndexFile, sample, &startByte)) {
-      entry = sample * SAMPLE_INTERVAL;
+    if (sample < session.quickIndexSampleCount) {
+      if (readUsableSampleOffset(session.quickIndexFile, sample, session.indexFileSize, &startByte)) {
+        entry = sample * SAMPLE_INTERVAL;
+      } else {
+        session.quickIndexSampleCount = 0;
+        startByte = 0;
+      }
     }
   }
   if (startByte >= session.indexFileSize || !session.indexFile.seekSet(startByte)) {
@@ -373,7 +424,10 @@ bool Dictionary::readDefinition(const DictLocation& location, std::string& out, 
       if (extractError == DictZip::ExtractError::ReadError) return fail(LookupResult::ReadError);
       return fail(LookupResult::Decompress);
     }
-    tmp.close();  // close before reopening the same path for read
+    if (!tmp.close()) {  // close before reopening the same path for read
+      LOG_ERR("DICT", "Failed to finalize %s", DICT_TMP_FILE);
+      return fail(LookupResult::ReadError);
+    }
     path = DICT_TMP_FILE;
   }
 

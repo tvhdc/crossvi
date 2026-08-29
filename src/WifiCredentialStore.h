@@ -51,7 +51,7 @@ class WifiCredentialStore : public PersistableStore<WifiCredentialStore> {
   bool saveToFile() const;
 
   // Credential management
-  bool addCredential(const std::string& ssid, const std::string& password);
+  bool addCredential(const std::string& ssid, const std::string& password, bool markConnected = false);
   bool updateCredential(size_t index, const std::string& ssid, const std::string& password);
   bool removeCredential(const std::string& ssid);
   std::optional<WifiCredential> findCredential(const std::string& ssid) const;

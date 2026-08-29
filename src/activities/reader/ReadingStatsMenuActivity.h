@@ -22,6 +22,7 @@ class ReadingStatsMenuActivity final : public Activity {
   void openOverview();
   void openCalendar();
   void handleStatsAction(const ActivityResult& result);
+  void storeNotice(Notice notice);
   void setNotice(Notice notice);
 
   ButtonNavigator navigator_;

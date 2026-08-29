@@ -3,6 +3,7 @@
 #include <FontStorageUtils.h>
 #include <HalStorage.h>
 #include <LegacyStateCodec.h>
+#include <LibraryCatalogStore.h>
 #include <StagedFileTransaction.h>
 #include <TiltLifecyclePolicy.h>
 #include <gtest/gtest.h>
@@ -23,6 +24,17 @@ std::vector<uint8_t> bytes(const std::string& value) { return {value.begin(), va
 bool objectValidator(const uint8_t* data, const size_t size, void*) {
   return size >= 2 && data[0] == '{' && data[size - 1] == '}';
 }
+
+struct FakeClockSyncSettings {
+  uint8_t clockHasBeenSynced = 0;
+  bool saveResult = true;
+  size_t saveCalls = 0;
+
+  bool saveToFile() {
+    ++saveCalls;
+    return saveResult;
+  }
+};
 
 AtomicFile::SaveStatus save(const std::string& value, const size_t maxSize = 64) {
   return AtomicFile::save(PATH, reinterpret_cast<const uint8_t*>(value.data()), value.size(), maxSize, objectValidator);
@@ -106,6 +118,75 @@ TEST_F(AtomicPersistenceTest, PublishesAndRotatesVerifiedJson) {
   EXPECT_EQ(loaded, "{new}");
   EXPECT_EQ(std::string(Storage.file(PATH).begin(), Storage.file(PATH).end()), "{new}");
   EXPECT_EQ(std::string(Storage.file("/state.json.bak").begin(), Storage.file("/state.json.bak").end()), "{old}");
+}
+
+TEST_F(AtomicPersistenceTest, UnchangedPrimaryDoesNotReadAnUnusableBackup) {
+  ASSERT_EQ(save("{same}"), AtomicFile::SaveStatus::Saved);
+  Storage.makeUnreadable("/state.json.bak");
+  Storage.resetIoCounters();
+
+  EXPECT_EQ(save("{same}"), AtomicFile::SaveStatus::Unchanged);
+  EXPECT_EQ(Storage.openReadAttemptsFor(PATH), 1U);
+  EXPECT_EQ(Storage.openReadAttemptsFor("/state.json.bak"), 0U);
+}
+
+TEST_F(AtomicPersistenceTest, ForcedRotationCheckpointsAnUnchangedPrimaryIntoBackup) {
+  ASSERT_EQ(save("{old}"), AtomicFile::SaveStatus::Saved);
+  ASSERT_EQ(save("{same}"), AtomicFile::SaveStatus::Saved);
+  const std::string same = "{same}";
+
+  EXPECT_EQ(AtomicFile::save(PATH, reinterpret_cast<const uint8_t*>(same.data()), same.size(), 64, objectValidator,
+                             nullptr, true),
+            AtomicFile::SaveStatus::Saved);
+  EXPECT_EQ(std::string(Storage.file(PATH).begin(), Storage.file(PATH).end()), same);
+  EXPECT_EQ(std::string(Storage.file("/state.json.bak").begin(), Storage.file("/state.json.bak").end()), same);
+}
+
+TEST_F(AtomicPersistenceTest, UnchangedPrimaryDiscardsTempFromFailedPublish) {
+  Storage.setFile(PATH, bytes("{old}"));
+  Storage.failRenameTo(PATH);
+  ASSERT_EQ(save("{new}"), AtomicFile::SaveStatus::IoError);
+  ASSERT_TRUE(Storage.exists(PATH));
+  ASSERT_TRUE(Storage.exists("/state.json.tmp"));
+
+  EXPECT_EQ(save("{old}"), AtomicFile::SaveStatus::Unchanged);
+  EXPECT_FALSE(Storage.exists("/state.json.tmp"));
+
+  ASSERT_TRUE(Storage.remove(PATH));
+  std::string loaded;
+  EXPECT_EQ(load(loaded), AtomicFile::LoadStatus::Missing);
+}
+
+TEST_F(AtomicPersistenceTest, IdenticalLibraryPathMarkerDoesNotRewriteMarker) {
+  LibraryCatalogStore::markDirtyPath("/same.epub");
+  Storage.resetIoCounters();
+
+  LibraryCatalogStore::markDirtyPath("/same.epub");
+
+  EXPECT_EQ(Storage.openReadAttemptsFor("/.crosspoint/library.dirty"), 1U);
+  EXPECT_EQ(Storage.openWriteAttemptsFor("/.crosspoint/library.dirty"), 0U);
+}
+
+TEST_F(AtomicPersistenceTest, GenericLibraryDirtyMarkerDoesNotRewriteMarker) {
+  LibraryCatalogStore::markDirtyPath("/one.epub");
+  LibraryCatalogStore::markDirtyPath("/two.epub");
+  ASSERT_EQ(Storage.file("/.crosspoint/library.dirty"), (std::vector<uint8_t>{1}));
+  Storage.resetIoCounters();
+
+  LibraryCatalogStore::markDirtyPath("/three.epub");
+
+  EXPECT_EQ(Storage.openReadAttemptsFor("/.crosspoint/library.dirty"), 1U);
+  EXPECT_EQ(Storage.openWriteAttemptsFor("/.crosspoint/library.dirty"), 0U);
+}
+
+TEST_F(AtomicPersistenceTest, FailedLibraryPathMarkerClosesHandleBeforeGenericFallback) {
+  constexpr char markerPath[] = "/.crosspoint/library.dirty";
+  Storage.shortWriteFor(markerPath);
+
+  LibraryCatalogStore::markDirtyPath("/book.epub");
+
+  EXPECT_EQ(Storage.openHandlesFor(markerPath), 0U);
+  EXPECT_EQ(Storage.file(markerPath), (std::vector<uint8_t>{1}));
 }
 
 TEST_F(AtomicPersistenceTest, RejectsPayloadOverByteLimitBeforeOpeningFile) {
@@ -631,6 +712,19 @@ TEST_F(AtomicPersistenceTest, NtpPolicyDoesNotTrustPersistedFlagWhenCurrentClock
   EXPECT_TRUE(ClockSyncPolicy::shouldSyncFromNetwork(true, false));
   EXPECT_TRUE(ClockSyncPolicy::shouldSyncFromNetwork(false, true));
   EXPECT_FALSE(ClockSyncPolicy::shouldSyncFromNetwork(true, true));
+}
+
+TEST_F(AtomicPersistenceTest, NtpSyncedFlagRollsBackWhenSettingsCannotBePublished) {
+  FakeClockSyncSettings settings;
+  settings.saveResult = false;
+  EXPECT_FALSE(ClockSyncPolicy::markSynced(settings));
+  EXPECT_EQ(settings.clockHasBeenSynced, 0);
+  EXPECT_EQ(settings.saveCalls, 1U);
+
+  settings.saveResult = true;
+  EXPECT_TRUE(ClockSyncPolicy::markSynced(settings));
+  EXPECT_EQ(settings.clockHasBeenSynced, 1);
+  EXPECT_EQ(settings.saveCalls, 2U);
 }
 
 TEST_F(AtomicPersistenceTest, TiltSensorOnlyStaysAwakeForVisibleReader) {

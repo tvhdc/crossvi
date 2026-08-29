@@ -265,6 +265,42 @@ TEST_F(BookCacheUtilsTest, ClearPreservesUnknownFilesAndDirectories) {
   EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/future_format/payload.bin"), bytes(4));
 }
 
+TEST_F(BookCacheUtilsTest, DirectoryIterationFailureCannotClearAPartialListing) {
+  put("progress.bin", 1);
+  put("index.bin", 2);
+  Storage.failDirectoryIterationAfter(CACHE_PATH, 1);
+
+  EXPECT_FALSE(clearBookCacheDirectoryPreservingUserState(CACHE_PATH));
+
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/progress.bin"), bytes(1));
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/index.bin"), bytes(2));
+  EXPECT_FALSE(Storage.exists(STAGING_PATH));
+}
+
+TEST_F(BookCacheUtilsTest, DirectoryEntryCloseFailureCannotStartCacheMutation) {
+  put("progress.bin", 1);
+  put("index.bin", 2);
+  Storage.failClosePath(std::string(CACHE_PATH) + "/index.bin");
+
+  EXPECT_FALSE(clearBookCacheDirectoryPreservingUserState(CACHE_PATH));
+
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/progress.bin"), bytes(1));
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/index.bin"), bytes(2));
+  EXPECT_FALSE(Storage.exists(STAGING_PATH));
+}
+
+TEST_F(BookCacheUtilsTest, CacheDirectoryCloseFailureCannotStartCacheMutation) {
+  put("progress.bin", 1);
+  put("index.bin", 2);
+  Storage.failClosePath(CACHE_PATH);
+
+  EXPECT_FALSE(clearBookCacheDirectoryPreservingUserState(CACHE_PATH));
+
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/progress.bin"), bytes(1));
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/index.bin"), bytes(2));
+  EXPECT_FALSE(Storage.exists(STAGING_PATH));
+}
+
 TEST_F(BookCacheUtilsTest, StageFailureRollsBackWithoutClearingAnything) {
   put("crossvi_reader_settings.bin", 1);
   put("stats_v5.bin", 2);
@@ -393,6 +429,26 @@ TEST_F(BookCacheUtilsTest, ReplacementQuarantinesUserStateWithoutDeletingIt) {
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/progress.bin"), bytes(1));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/crossvi_reader_settings.bin"), bytes(2));
   EXPECT_EQ(Storage.file(DISCARD_PATH + "/source_identity.bin"), bytes(3));
+}
+
+TEST_F(BookCacheUtilsTest, ReplacementRootScanFailureKeepsTheCanonicalBarrier) {
+  put("progress.bin", 1);
+  Storage.failDirectoryIterationAfter("/.crosspoint", 0);
+
+  EXPECT_FALSE(resetBookCacheUserStateAfterReplacement(CACHE_PATH, SOURCE_BOOK_PATH));
+
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/progress.bin"), bytes(1));
+  EXPECT_FALSE(Storage.exists(DISCARD_PATH));
+}
+
+TEST_F(BookCacheUtilsTest, ReplacementRootCloseFailureKeepsTheCanonicalBarrier) {
+  put("progress.bin", 1);
+  Storage.failClosePath("/.crosspoint");
+
+  EXPECT_FALSE(resetBookCacheUserStateAfterReplacement(CACHE_PATH, SOURCE_BOOK_PATH));
+
+  EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/progress.bin"), bytes(1));
+  EXPECT_FALSE(Storage.exists(DISCARD_PATH));
 }
 
 TEST_F(BookCacheUtilsTest, ReplacementArchivePurgesOnlyKnownDerivedCacheEntries) {
@@ -829,6 +885,38 @@ TEST_F(BookCacheUtilsTest, MoveCompletionArchivesUnknownSourceStateInsteadOfDele
   EXPECT_EQ(Storage.file(std::string(MOVED_CACHE_PATH) + "/progress.bin"), bytes(31));
 }
 
+TEST_F(BookCacheUtilsTest, MoveCompletionRejectsIdentityMarkerCloseFailure) {
+  put("progress.bin", 31);
+  ASSERT_TRUE(prepareBookCacheUserStateMove(CACHE_PATH, MOVED_CACHE_PATH, SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+  ASSERT_TRUE(Storage.rename(SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+  ASSERT_TRUE(finalizeBookCacheUserStateMove(CACHE_PATH, MOVED_CACHE_PATH, SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+
+  const std::string markerPath = std::string(MOVED_CACHE_PATH) + "/.crossvi_move_ready";
+  Storage.failClosePath(markerPath);
+  EXPECT_FALSE(completeBookCacheUserStateMove(CACHE_PATH, MOVED_CACHE_PATH, SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+
+  EXPECT_TRUE(Storage.exists(CACHE_PATH));
+  EXPECT_TRUE(Storage.exists(markerPath));
+  EXPECT_EQ(Storage.file(std::string(MOVED_CACHE_PATH) + "/progress.bin"), bytes(31));
+}
+
+TEST_F(BookCacheUtilsTest, MoveCompletionRejectsBookmarkComparisonCloseFailure) {
+  put("progress.bin", 31);
+  const std::string sourceBookmark = BookmarkUtil::getBookmarkPath(SOURCE_BOOK_PATH);
+  const std::string destinationBookmark = BookmarkUtil::getBookmarkPath(DESTINATION_BOOK_PATH);
+  Storage.setFile(sourceBookmark, bytes(32));
+  ASSERT_TRUE(prepareBookCacheUserStateMove(CACHE_PATH, MOVED_CACHE_PATH, SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+  ASSERT_TRUE(Storage.rename(SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+  ASSERT_TRUE(finalizeBookCacheUserStateMove(CACHE_PATH, MOVED_CACHE_PATH, SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+
+  Storage.failClosePath(destinationBookmark);
+  EXPECT_FALSE(completeBookCacheUserStateMove(CACHE_PATH, MOVED_CACHE_PATH, SOURCE_BOOK_PATH, DESTINATION_BOOK_PATH));
+
+  EXPECT_TRUE(Storage.exists(CACHE_PATH));
+  EXPECT_EQ(Storage.file(sourceBookmark), bytes(32));
+  EXPECT_TRUE(Storage.exists(std::string(MOVED_CACHE_PATH) + "/.crossvi_move_ready"));
+}
+
 TEST_F(BookCacheUtilsTest, MoveTransactionPreservesXtcProgress) {
   constexpr char sourceBook[] = "/books/story.xtc";
   constexpr char destinationBook[] = "/read/story.xtc";
@@ -1092,12 +1180,19 @@ TEST_F(BookCacheUtilsTest, ReplacementBookmarkRetriesAfterShortTombstoneWrite) {
 
   EXPECT_FALSE(BookmarkUtil::quarantineCanonicalForReplacement(SOURCE_BOOK_PATH, CACHE_PATH));
   EXPECT_FALSE(BookmarkUtil::isEmptyBookmarkFile(pending));
+  EXPECT_EQ(Storage.syncCalls(), 0u);
   EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/.crossvi_replaced_bookmark.json"), original);
 
   ASSERT_TRUE(BookmarkUtil::quarantineCanonicalForReplacement(SOURCE_BOOK_PATH, CACHE_PATH));
   EXPECT_TRUE(BookmarkUtil::isEmptyBookmarkFile(canonical));
   EXPECT_FALSE(Storage.exists(pending.c_str()));
   EXPECT_EQ(Storage.file(std::string(CACHE_PATH) + "/.crossvi_replaced_bookmark.json"), original);
+}
+
+TEST_F(BookCacheUtilsTest, EmptyCanonicalBookmarkPerformsOneExplicitDurableSync) {
+  ASSERT_TRUE(BookmarkUtil::writeEmptyCanonicalBookmark(SOURCE_BOOK_PATH));
+
+  EXPECT_EQ(Storage.syncCalls(), 1u);
 }
 
 TEST_F(BookCacheUtilsTest, ReplacementBookmarkRetriesAfterTombstoneSyncFailure) {

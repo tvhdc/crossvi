@@ -53,6 +53,7 @@ void ActivityManager::renderTaskLoop() {
     RenderLock lock;
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
+      currentActivity->cancelTransientPopup();
       currentActivity->render(std::move(lock));
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
@@ -72,9 +73,12 @@ void ActivityManager::renderTaskLoop() {
 }
 
 void ActivityManager::loop() {
+  bool currentActivityPaused = false;
+
   if (currentActivity) {
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
     currentActivity->loop();
+    if (currentActivity->dismissTransientPopupIfExpired()) requestUpdate();
   }
 
   while (pendingAction != PendingAction::None) {
@@ -108,6 +112,7 @@ void ActivityManager::loop() {
       } else {
         currentActivity = std::move(stackActivities.back());
         stackActivities.pop_back();
+        currentActivityPaused = true;
         LOG_DBG("ACT", "Popped from activity stack, new size = %zu", stackActivities.size());
         // Handle result if necessary
         if (currentActivity->resultHandler) {
@@ -126,6 +131,7 @@ void ActivityManager::loop() {
           // activities may safely perform their normal resume work.
           lock.unlock();
           currentActivity->onResume();
+          currentActivityPaused = false;
           requestUpdate();
         }
 
@@ -157,7 +163,7 @@ void ActivityManager::loop() {
       } else if (pendingAction == PendingAction::Push) {
         // The current activity stays alive, but is no longer visible while the
         // child is on top of it.
-        currentActivity->onPause();
+        if (!currentActivityPaused) currentActivity->onPause();
         // Move current activity to stack
         stackActivities.push_back(std::move(currentActivity));
         LOG_DBG("ACT", "Pushed to activity stack, new size = %zu", stackActivities.size());
@@ -167,6 +173,7 @@ void ActivityManager::loop() {
 
       lock.unlock();  // onEnter may acquire its own lock
       currentActivity->onEnter();
+      currentActivityPaused = false;
 
       // onEnter may request another pending action, we will handle it in the next loop iteration
       continue;
@@ -359,7 +366,7 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
   // Probe before the current activity's onExit() runs. If the card was
   // removed, persistence calls then fail immediately instead of each waiting
   // for a separate SD timeout before Home can appear.
-  Storage.probeMedia();
+  if (currentActivity) Storage.probeMedia();
   if (initialMenuItem == HomeMenuItem::NONE && currentActivity) {
     const auto& activityName = currentActivity->name;
     if (activityName == "FileBrowser") {

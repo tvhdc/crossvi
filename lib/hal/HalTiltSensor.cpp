@@ -4,6 +4,8 @@
 
 #include <cmath>
 
+#include "TiltLifecyclePolicy.h"
+
 HalTiltSensor halTiltSensor;  // Singleton instance
 
 bool HalTiltSensor::readGyro(float& gx, float& gy, float& gz) const {
@@ -18,7 +20,6 @@ bool HalTiltSensor::readGyro(float& gx, float& gy, float& gz) const {
 void HalTiltSensor::begin() {
   _available = _sdkImu.begin();
   if (_available) {
-    _initMs = millis();
     _lastPollMs = millis();
     // Keep the IMU in standby until tilt page turning is enabled.
     if (!_sdkImu.sleep()) {
@@ -62,17 +63,16 @@ bool HalTiltSensor::deepSleep() {
 void HalTiltSensor::update(const uint8_t mode, const uint8_t orientation, const bool inReader) {
   if (!_available) return;
 
-  // Wake or sleep the IMU based on the setting. This keeps the disabled sensor
-  // from consuming power while preserving CrossPoint's reader-only polling.
-  if ((mode != CrossPointTiltPageTurn::TILT_OFF) && !_isAwake) {
+  const bool shouldBeAwake = TiltLifecyclePolicy::shouldBeAwake(mode, inReader);
+  if (shouldBeAwake && !_isAwake) {
     _isAwake = wake();
     return;
-  } else if ((mode == CrossPointTiltPageTurn::TILT_OFF) && _isAwake) {
+  } else if (!shouldBeAwake && _isAwake) {
     _isAwake = !deepSleep();
     return;
   }
 
-  if ((mode == CrossPointTiltPageTurn::TILT_OFF) || !inReader) return;
+  if (!shouldBeAwake) return;
 
   const unsigned long now = millis();
   if ((now - _wakeMs) < WAKE_STABILIZE_MS) return;

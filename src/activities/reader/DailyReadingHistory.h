@@ -62,7 +62,6 @@ class DailyReadingHistory {
   // when the in-memory history changed.
   bool reconcileExactDay(uint32_t day, uint32_t seconds);
   bool valueForDay(uint32_t day, uint32_t& seconds) const;
-  bool valueForDate(const ReadingStatsDate& date, uint32_t& seconds) const;
   bool hasAnchor() const { return hasAnchor_; }
   uint32_t anchorDay() const { return anchorDay_; }
   uint32_t lifetimeReadingDays() const { return lifetimeReadingDays_; }

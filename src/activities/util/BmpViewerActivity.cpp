@@ -10,6 +10,9 @@
 #include <string_view>
 
 #include "CrossPointSettings.h"
+#include "activities/boot_sleep/SleepFrameStore.h"
+#include "activities/boot_sleep/SleepImageNormalizer.h"
+#include "activities/boot_sleep/SleepImageSelectionStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -230,31 +233,40 @@ void BmpViewerActivity::onExit() {
 void BmpViewerActivity::doSetSleepCover() {
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
 
-  bool success = false;
-  HalFile inFile, outFile;
-  if (Storage.openFileForRead("BMP", filePath, inFile)) {
-    if (Storage.openFileForWrite("BMP", "/sleep.bmp", outFile)) {
-      char buffer[2048];
-      int bytesRead;
-      success = true;
-      while ((bytesRead = inFile.read(buffer, sizeof(buffer))) > 0) {
-        if (outFile.write(buffer, bytesRead) != bytesRead) {
-          success = false;
-          break;
-        }
-      }
-      outFile.close();
+  SleepImageSelectionStore::Catalog catalog;
+  const SleepImageSelectionStore::ImageTransform legacyTransform{
+      SETTINGS.sleepScreenImageZoom, SETTINGS.sleepScreenImageOffsetX, SETTINGS.sleepScreenImageOffsetY};
+  bool success =
+      SleepImageSelectionStore::loadCatalog(catalog, legacyTransform) == SleepImageSelectionStore::CatalogStatus::Ok;
+  success = success && catalog.images.size() < SleepImageSelectionStore::MAX_IMAGES;
+  SleepImageSelectionStore::ImageEntry added;
+  if (success) {
+    SleepImageNormalizer::Result prepared;
+    {
+      GfxRenderer::FrameBufferLoan loan(renderer);
+      prepared = SleepImageNormalizer::prepare(filePath, true, renderer.getDisplayHeight(), renderer.getDisplayWidth());
     }
-    inFile.close();
+    const size_t slash = filePath.find_last_of('/');
+    const std::string name = slash == std::string::npos ? filePath : filePath.substr(slash + 1);
+    success = prepared.status == SleepImageNormalizer::Status::Ready &&
+              SleepImageSelectionStore::addPreparedImage(catalog, prepared.target,
+                                                         SleepImageNormalizer::stagingPath(prepared.target), name,
+                                                         &added) == SleepImageSelectionStore::CatalogStatus::Ok;
   }
 
   if (success) {
-    SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM;
-    SETTINGS.saveToFile();
-    GUI.drawPopup(renderer, tr(STR_DONE));
-  } else {
-    GUI.drawPopup(renderer, tr(STR_FAILED_LOWER));
+    const uint8_t previousMode = SETTINGS.sleepScreen;
+    if (previousMode != CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM) {
+      SETTINGS.sleepScreen = CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
+      if (!SETTINGS.saveToFile()) {
+        SETTINGS.sleepScreen = previousMode;
+        SleepImageSelectionStore::removeImage(catalog, added.id);
+        success = false;
+      }
+    }
+    if (success) SleepFrameStore::discard();
   }
+  GUI.drawPopup(renderer, I18N.get(success ? StrId::STR_DONE : StrId::STR_FAILED_LOWER));
 
   delay(1000);
   onEnter();

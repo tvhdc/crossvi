@@ -508,8 +508,6 @@ TEST(LibraryGridModel, UsesExactBoundedPageSizes) {
   EXPECT_EQ(LibraryGridModel::pageSize(0), 6u);
   EXPECT_EQ(LibraryGridModel::pageSize(1), 6u);
   EXPECT_EQ(LibraryGridModel::pageSize(255), 6u);
-  EXPECT_TRUE(LibraryGridModel::usesPerCoverTitles(0));
-  EXPECT_TRUE(LibraryGridModel::usesPerCoverTitles(1));
   EXPECT_EQ(LibraryGridModel::canonicalSetting(0), 0);
   EXPECT_EQ(LibraryGridModel::canonicalSetting(1), 0);
   EXPECT_EQ(LibraryGridModel::canonicalSetting(2), 0);

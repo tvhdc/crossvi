@@ -59,8 +59,6 @@ std::vector<String> HalStorage::listFiles(const char* path, int maxFiles) {
   HAL_STORAGE_WRAPPED_CALL(listFiles, path, maxFiles);
 }
 
-String HalStorage::readFile(const char* path) { HAL_STORAGE_WRAPPED_CALL(readFile, path); }
-
 bool HalStorage::readFileToStream(const char* path, Print& out, size_t chunkSize) {
   HAL_STORAGE_WRAPPED_CALL(readFileToStream, path, out, chunkSize);
 }
@@ -89,6 +87,7 @@ class HalFile::Impl {
     file.close();
   }
   FsFile file;
+  bool localError = false;
 };
 
 HalFile::HalFile() = default;
@@ -201,7 +200,11 @@ bool HalFile::seekCur(int64_t offset) { HAL_FILE_WRAPPED_CALL(seekCur, offset); 
 bool HalFile::seekSet(size_t offset) { HAL_FILE_WRAPPED_CALL(seekSet, offset); }
 int HalFile::available() const { HAL_FILE_WRAPPED_CALL(available, ); }
 size_t HalFile::position() const { HAL_FILE_WRAPPED_CALL(position, ); }
-uint8_t HalFile::getError() const { HAL_FILE_WRAPPED_CALL(getError, ); }
+uint8_t HalFile::getError() const {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return impl->localError ? 1 : impl->file.getError();
+}
 bool HalFile::getCreateDateTime(uint16_t* date, uint16_t* time) const {
   HAL_FILE_WRAPPED_CALL(getCreateDateTime, date, time);
 }
@@ -234,6 +237,7 @@ HalFile HalFile::openNextFile() {
   if (!fsFile) return {};
   auto next = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(fsFile)));
   if (!next) {
+    impl->localError = true;
     LOG_ERR("HAL", "Out of memory while opening next directory entry");
     return {};
   }

@@ -22,6 +22,7 @@ class FontSelectionActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+  void selectIndex(int index);
   void handleSelection();
   void applyFontSelection(int index, bool preparePreview = false);
   void renderPreviewPane(int top, int height, int fontId, const char* fontName, bool cachedCustomPreview = false);

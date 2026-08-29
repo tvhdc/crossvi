@@ -84,8 +84,6 @@ class RecentBooksStore : public PersistableStore<RecentBooksStore> {
     const_cast<RecentBooksStore*>(this)->ensureLoaded();
     return static_cast<int>(recentBooks.size());
   }
-
-  RecentBook getDataFromBook(std::string path) const;
 };
 
 // Helper macro to access recent books store

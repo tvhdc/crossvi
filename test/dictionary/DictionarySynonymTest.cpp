@@ -89,6 +89,30 @@ TEST_F(DictionarySynonymTest, TruncatedOrExtendedSidecarIsRebuilt) {
   EXPECT_TRUE(StarDictSynonyms::needsIndex(BASE));
 }
 
+TEST_F(DictionarySynonymTest, CorruptSampleOffsetFallsBackToFullSynonymScan) {
+  std::vector<uint8_t> synonyms;
+  for (uint32_t index = 0; index < 300; ++index) {
+    char alias[16];
+    snprintf(alias, sizeof(alias), "alias%03lu", static_cast<unsigned long>(index));
+    appendEntry(synonyms, alias, index);
+  }
+  Storage.setFile(std::string(BASE) + ".syn", std::move(synonyms));
+  ASSERT_TRUE(StarDictSynonyms::buildIndex(BASE));
+
+  const std::string sidecarPath = std::string(BASE) + ".qsyn";
+  auto sidecar = Storage.file(sidecarPath);
+  ASSERT_GE(sidecar.size(), 7U * sizeof(uint32_t));
+  std::fill(sidecar.begin() + 6U * sizeof(uint32_t), sidecar.begin() + 7U * sizeof(uint32_t), 0xFFU);
+  Storage.setFile(sidecarPath, std::move(sidecar));
+
+  // The structurally valid cache is still considered current. Its bad sample
+  // must not make the canonical .syn data permanently unsearchable.
+  EXPECT_FALSE(StarDictSynonyms::needsIndex(BASE));
+  uint32_t ordinal = 0;
+  EXPECT_TRUE(StarDictSynonyms::lookupOrdinal(BASE, "alias299", ordinal));
+  EXPECT_EQ(ordinal, 299U);
+}
+
 TEST_F(DictionarySynonymTest, TruncatedEntryIsDisabledWithoutRepeatedRescan) {
   Storage.setFile(std::string(BASE) + ".syn", {'b', 'a', 'd', 0, 0, 0});
 
@@ -107,6 +131,53 @@ TEST_F(DictionarySynonymTest, AliasLongerThanTheBoundIsRejected) {
 
   EXPECT_FALSE(StarDictSynonyms::buildIndex(BASE));
   EXPECT_FALSE(StarDictSynonyms::needsIndex(BASE));
+}
+
+TEST_F(DictionarySynonymTest, SidecarWriteFailureRemainsRetryable) {
+  std::vector<uint8_t> synonyms;
+  for (uint32_t index = 0; index < 300; ++index) {
+    char alias[16];
+    snprintf(alias, sizeof(alias), "alias%03lu", static_cast<unsigned long>(index));
+    appendEntry(synonyms, alias, index);
+  }
+  Storage.setFile(std::string(BASE) + ".syn", std::move(synonyms));
+
+  // Placeholder, first sample, then the sample at entry 256.
+  Storage.shortWriteOnCall(3);
+  EXPECT_FALSE(StarDictSynonyms::buildIndex(BASE));
+  EXPECT_TRUE(StarDictSynonyms::needsIndex(BASE));
+
+  EXPECT_TRUE(StarDictSynonyms::buildIndex(BASE));
+  EXPECT_FALSE(StarDictSynonyms::needsIndex(BASE));
+  uint32_t ordinal = 0;
+  EXPECT_TRUE(StarDictSynonyms::lookupOrdinal(BASE, "alias299", ordinal));
+  EXPECT_EQ(ordinal, 299U);
+}
+
+TEST_F(DictionarySynonymTest, SourceReadFailureRemainsRetryable) {
+  std::vector<uint8_t> synonyms;
+  appendEntry(synonyms, "alias", 7);
+  const std::string sourcePath = std::string(BASE) + ".syn";
+  Storage.setFile(sourcePath, std::move(synonyms));
+
+  Storage.shortReadFor(sourcePath);
+  EXPECT_FALSE(StarDictSynonyms::buildIndex(BASE));
+  EXPECT_TRUE(StarDictSynonyms::needsIndex(BASE));
+
+  EXPECT_TRUE(StarDictSynonyms::buildIndex(BASE));
+  EXPECT_FALSE(StarDictSynonyms::needsIndex(BASE));
+}
+
+TEST_F(DictionarySynonymTest, FinalHeaderWriteFailureClosesSidecarBeforeCleanup) {
+  std::vector<uint8_t> synonyms;
+  appendEntry(synonyms, "alias", 7);
+  Storage.setFile(std::string(BASE) + ".syn", std::move(synonyms));
+
+  // Placeholder, first sample, then the final header rewrite.
+  Storage.shortWriteOnCall(3);
+  EXPECT_FALSE(StarDictSynonyms::buildIndex(BASE));
+  EXPECT_EQ(Storage.removeWhileOpenAttemptsFor(std::string(BASE) + ".qsyn"), 0U);
+  EXPECT_TRUE(StarDictSynonyms::needsIndex(BASE));
 }
 
 TEST_F(DictionarySynonymTest, HistoryIsNormalizedDeduplicatedAndBounded) {
@@ -148,6 +219,16 @@ TEST_F(DictionarySynonymTest, AtomicWriteFailurePreservesPreviousHistory) {
   EXPECT_EQ(Storage.file("/.crosspoint/dictionary_history.txt"), original);
 }
 
+TEST_F(DictionarySynonymTest, RepeatingTheMostRecentQueryDoesNotTouchStorage) {
+  DICTIONARY_HISTORY.record("same");
+  ASSERT_TRUE(DICTIONARY_HISTORY.flush());
+
+  Storage.resetIoCounters();
+  DICTIONARY_HISTORY.record("same");
+  EXPECT_TRUE(DICTIONARY_HISTORY.flush());
+  EXPECT_EQ(Storage.openReadAttemptsFor("/.crosspoint/dictionary_history.txt"), 0U);
+}
+
 TEST_F(DictionarySynonymTest, FailedClearRestoresHistoryInMemoryAndOnDisk) {
   DICTIONARY_HISTORY.record("old");
   ASSERT_TRUE(DICTIONARY_HISTORY.flush());
@@ -159,4 +240,8 @@ TEST_F(DictionarySynonymTest, FailedClearRestoresHistoryInMemoryAndOnDisk) {
   ASSERT_EQ(DICTIONARY_HISTORY.entries().size(), 1U);
   EXPECT_EQ(DICTIONARY_HISTORY.entries().front(), "old");
   EXPECT_EQ(Storage.file("/.crosspoint/dictionary_history.txt"), original);
+
+  Storage.resetIoCounters();
+  EXPECT_TRUE(DICTIONARY_HISTORY.flush());
+  EXPECT_EQ(Storage.openReadAttemptsFor("/.crosspoint/dictionary_history.txt"), 0U);
 }

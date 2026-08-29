@@ -19,8 +19,6 @@ class HalStorage {
   uint64_t totalBytes() const;
   uint64_t usedBytes();
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
-  // Read the entire file at `path` into a String. Returns empty string on failure.
-  String readFile(const char* path);
   // Low-memory helpers:
   // Stream the file contents to a `Print` (e.g. `Serial`, or any `Print`-derived object).
   // Returns true on success, false on failure.
@@ -75,6 +73,8 @@ class HalFile : public Print {
   HalFile(const HalFile&) = delete;
   HalFile& operator=(const HalFile&) = delete;
 
+  // SdFat's sync() already flushes buffered data. Call sync() directly when
+  // durability and a success result are both required; do not call both.
   void flush();
   bool sync();
   size_t getName(char* name, size_t len);
@@ -88,8 +88,8 @@ class HalFile : public Print {
   int available() const;
   size_t position() const;
   // Zero means the preceding operation reached a normal end condition. A
-  // non-zero SdFat error lets bounded directory scans distinguish EOF from an
-  // SD read/open failure instead of silently returning partial data.
+  // non-zero storage/wrapper error lets bounded directory scans distinguish
+  // EOF from an SD read/open/allocation failure instead of returning partial data.
   uint8_t getError() const;
   bool getCreateDateTime(uint16_t* date, uint16_t* time) const;
   bool getModifyDateTime(uint16_t* date, uint16_t* time) const;

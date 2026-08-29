@@ -98,6 +98,7 @@ void HomeShortcutManagerActivity::applyAction(const RowAction action) {
   }
 
   const HomeShortcutList previous = SETTINGS.homeShortcuts;
+  const int previousSelectedIndex = selectedIndex_;
   switch (action) {
     case RowAction::MoveUp:
       if (SETTINGS.homeShortcuts.move(static_cast<uint8_t>(selectedIndex_), static_cast<uint8_t>(selectedIndex_ - 1))) {
@@ -116,7 +117,7 @@ void HomeShortcutManagerActivity::applyAction(const RowAction action) {
     case RowAction::Edit:
       break;
   }
-  persistOrRestore(previous);
+  if (!persistOrRestore(previous)) selectedIndex_ = previousSelectedIndex;
   requestUpdate();
 }
 
@@ -151,7 +152,10 @@ void HomeShortcutManagerActivity::choosePickerItem() {
     changed = SETTINGS.homeShortcuts.add(pickerItems_[selectedIndex_]);
   }
   if (!changed) return;
-  persistOrRestore(previous);
+  if (!persistOrRestore(previous)) {
+    requestUpdate();
+    return;
+  }
   const int returnIndex = editingIndex_ >= 0 ? editingIndex_ : SETTINGS.homeShortcuts.count - 1;
   mode_ = Mode::Manage;
   editingIndex_ = -1;
@@ -160,8 +164,10 @@ void HomeShortcutManagerActivity::choosePickerItem() {
   requestUpdate();
 }
 
-void HomeShortcutManagerActivity::persistOrRestore(const HomeShortcutList& previous) {
-  if (!SETTINGS.saveToFile()) SETTINGS.homeShortcuts = previous;
+bool HomeShortcutManagerActivity::persistOrRestore(const HomeShortcutList& previous) {
+  if (SETTINGS.saveToFile()) return true;
+  SETTINGS.homeShortcuts = previous;
+  return false;
 }
 
 std::string HomeShortcutManagerActivity::manageRowLabel(const int index) const {

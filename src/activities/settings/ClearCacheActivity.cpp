@@ -126,16 +126,33 @@ void ClearCacheActivity::clearCache() {
 
   // Collect paths first. The preservation helper creates a sibling staging
   // directory, so do not mutate this directory while its iterator is open.
+  bool scanSucceeded = true;
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
     const bool isDirectory = file.isDirectory();
     const size_t nameLength = file.getName(name, sizeof(name));
-    file.close();
+    const bool entryHadError = file.getError() != 0;
+    const bool entryClosed = file.close();
+    if (entryHadError || !entryClosed) {
+      scanSucceeded = false;
+      break;
+    }
+    if (nameLength == 0 || nameLength >= sizeof(name)) {
+      scanSucceeded = false;
+      break;
+    }
 
-    if (isDirectory && nameLength > 0 && nameLength < sizeof(name) && isBookCacheDirectoryName(name)) {
+    if (isDirectory && isBookCacheDirectoryName(name)) {
       cachePaths.emplace_back(std::string("/.crosspoint/") + name);
     }
   }
-  root.close();
+  const bool iterationSucceeded = root.getError() == 0;
+  const bool rootClosed = root.close();
+  if (!scanSucceeded || !iterationSucceeded || !rootClosed) {
+    LOG_ERR("CLEAR_CACHE", "Failed to scan cache directory safely");
+    state = FAILED;
+    requestUpdate();
+    return;
+  }
 
   for (const std::string& fullPath : cachePaths) {
     LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());

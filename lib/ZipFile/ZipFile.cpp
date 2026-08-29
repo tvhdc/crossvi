@@ -88,32 +88,36 @@ class ZipStreamReadJob::Impl {
     }
     if (!archive.seek64(fileOffset)) return ZipStreamReadJob::BeginStatus::Error;
 
-    outputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
-    if (!outputBuffer) {
-      LOG_ERR("ZIP", "Failed to allocate cooperative output buffer (%zu bytes)", chunkSize);
-      return ZipStreamReadJob::BeginStatus::Error;
-    }
-
     expectedSize = uncompressedSize;
     if (method == ZIP_METHOD_STORED) {
+      outputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
+      if (!outputBuffer) {
+        LOG_ERR("ZIP", "Failed to allocate cooperative output buffer (%zu bytes)", chunkSize);
+        return ZipStreamReadJob::BeginStatus::OutOfMemory;
+      }
       stored = true;
       return ZipStreamReadJob::BeginStatus::Started;
     }
 
+    if (!inflate.init(true)) {
+      LOG_ERR("ZIP", "Failed to init cooperative inflate stream");
+      return ZipStreamReadJob::BeginStatus::OutOfMemory;
+    }
     inputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
     if (!inputBuffer) {
       LOG_ERR("ZIP", "Failed to allocate cooperative input buffer (%zu bytes)", chunkSize);
-      return ZipStreamReadJob::BeginStatus::Error;
+      return ZipStreamReadJob::BeginStatus::OutOfMemory;
+    }
+    outputBuffer.reset(new (std::nothrow) uint8_t[chunkSize]);
+    if (!outputBuffer) {
+      LOG_ERR("ZIP", "Failed to allocate cooperative output buffer (%zu bytes)", chunkSize);
+      return ZipStreamReadJob::BeginStatus::OutOfMemory;
     }
 
     ctx.file = &archive;
     ctx.fileRemaining = compressedSize;
     ctx.readBuf = inputBuffer.get();
     ctx.readBufSize = chunkSize;
-    if (!inflate.init(true)) {
-      LOG_ERR("ZIP", "Failed to init cooperative inflate stream");
-      return ZipStreamReadJob::BeginStatus::Error;
-    }
     inflate.setFill(zipFillCallback, &ctx);
     return ZipStreamReadJob::BeginStatus::Started;
   }
@@ -199,14 +203,21 @@ ZipSourceIdentityJob::StepStatus ZipSourceIdentityJob::step(const size_t maxByte
     return StepStatus::Error;
   }
 
+  FileStamp completedStamp{};
+  if (fileStamp) {
+    completedStamp.valid = impl->zip.file.getModifyDateTime(&completedStamp.modifyDate, &completedStamp.modifyTime);
+  }
+  if (!impl->zip.close()) {
+    cancel();
+    return StepStatus::Error;
+  }
+
   identity.fileSize = impl->expectedFileSize;
   identity.centralDirOffset = impl->zip.zipDetails.centralDirOffset;
   identity.centralDirSize = impl->zip.zipDetails.centralDirSize;
   identity.totalEntries = impl->zip.zipDetails.totalEntries;
   identity.centralDirHash = impl->hash;
-  if (fileStamp) {
-    fileStamp->valid = impl->zip.file.getModifyDateTime(&fileStamp->modifyDate, &fileStamp->modifyTime);
-  }
+  if (fileStamp) *fileStamp = completedStamp;
   cancel();
   return StepStatus::Done;
 }
@@ -225,7 +236,7 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::begin(const std::string& zipPath
   }
 
   auto next = std::unique_ptr<Impl>(new (std::nothrow) Impl(out, chunkSize));
-  if (!next) return BeginStatus::Error;
+  if (!next) return BeginStatus::OutOfMemory;
 
   uint64_t fileOffset = 0;
   uint32_t compressedSize = 0;
@@ -251,11 +262,12 @@ ZipStreamReadJob::BeginStatus ZipStreamReadJob::beginCooperativeLookup(const std
   }
 
   auto next = std::unique_ptr<Impl>(new (std::nothrow) Impl(out, chunkSize));
-  if (!next) return BeginStatus::Error;
+  if (!next) return BeginStatus::OutOfMemory;
   next->lookupPath = zipPath;
   next->lookupEntry = entry;
   next->lookupZip = std::unique_ptr<ZipFile>(new (std::nothrow) ZipFile(next->lookupPath));
-  if (!next->lookupZip || !next->lookupZip->open() || !next->lookupZip->loadZipDetails()) {
+  if (!next->lookupZip) return BeginStatus::OutOfMemory;
+  if (!next->lookupZip->open() || !next->lookupZip->loadZipDetails()) {
     return BeginStatus::Error;
   }
   const uint64_t centralDirEnd =
@@ -411,68 +423,7 @@ ZipStreamReadJob::StepStatus ZipStreamReadJob::step() {
 
 void ZipStreamReadJob::cancel() { impl.reset(); }
 
-bool ZipFile::loadAllFileStatSlims() {
-  const ScopedOpenClose zip{*this};
-  if (!zip) return false;
-
-  if (!loadZipDetails()) return false;
-
-  file.seek(zipDetails.centralDirOffset);
-
-  uint32_t sig;
-  char itemName[256];
-  fileStatSlimCache.clear();
-  fileStatSlimCache.reserve(zipDetails.totalEntries);
-
-  while (file.available()) {
-    file.read(&sig, 4);
-    if (sig != 0x02014b50) break;  // End of list
-
-    FileStatSlim fileStat = {};
-
-    file.seekCur(4);
-    file.read(&fileStat.flags, 2);
-    file.read(&fileStat.method, 2);
-    file.seekCur(8);
-    file.read(&fileStat.compressedSize, 4);
-    file.read(&fileStat.uncompressedSize, 4);
-    uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
-    file.seekCur(8);
-    file.read(&fileStat.localHeaderOffset, 4);
-
-    if (nameLen < sizeof(itemName)) {
-      file.read(itemName, nameLen);
-      itemName[nameLen] = '\0';
-      fileStatSlimCache.emplace(itemName, fileStat);
-    } else {
-      // Skip over oversized entry names to avoid writing past fixed buffer.
-      file.seekCur(nameLen);
-    }
-
-    // Skip the rest of this entry (extra field + comment)
-    file.seekCur(m + k);
-  }
-
-  // Set cursor to start of central directory for sequential access
-  lastCentralDirPos = zipDetails.centralDirOffset;
-  lastCentralDirPosValid = true;
-
-  return true;
-}
-
 bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
-  if (!fileStatSlimCache.empty()) {
-    const auto it = fileStatSlimCache.find(filename);
-    if (it != fileStatSlimCache.end()) {
-      *fileStat = it->second;
-      return true;
-    }
-    return false;
-  }
-
   const ScopedOpenClose zip{*this};
   if (!zip) return false;
 
@@ -654,13 +605,14 @@ bool ZipFile::open() {
 }
 
 bool ZipFile::close() {
+  bool closed = true;
   if (file) {
     // Explicit close() required: member variable persists beyond function scope
-    file.close();
+    closed = file.close();
   }
   lastCentralDirPos = 0;
   lastCentralDirPosValid = false;
-  return true;
+  return closed;
 }
 
 bool ZipFile::getInflatedFileSize(const char* filename, size_t* size) {
@@ -1063,6 +1015,12 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
   }
 
   if (fileStat.method == ZIP_METHOD_DEFLATED) {
+    InflateStream inflate;
+    if (!inflate.init(true)) {
+      LOG_ERR("ZIP", "Failed to init inflate stream");
+      return false;
+    }
+
     auto* fileReadBuffer = static_cast<uint8_t*>(malloc(chunkSize));
     if (!fileReadBuffer) {
       LOG_ERR("ZIP", "Failed to allocate memory for zip file read buffer");
@@ -1082,13 +1040,6 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
     ctx.readBuf = fileReadBuffer;
     ctx.readBufSize = chunkSize;
 
-    InflateStream inflate;
-    if (!inflate.init(true)) {
-      LOG_ERR("ZIP", "Failed to init inflate stream");
-      free(outputBuffer);
-      free(fileReadBuffer);
-      return false;
-    }
     inflate.setFill(zipFillCallback, &ctx);
 
     bool success = false;

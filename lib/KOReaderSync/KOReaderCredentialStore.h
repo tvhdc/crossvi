@@ -3,8 +3,10 @@
 #include <LazyStoreState.h>
 #include <PersistableStore.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Document matching method for KOReader sync
 enum class DocumentMatchMethod : uint8_t {
@@ -29,11 +31,14 @@ class KOReaderCredentialStore : public PersistableStore<KOReaderCredentialStore>
  private:
   std::string username;
   std::string password;
-  std::string serverUrl;                                            // Custom sync server URL (empty = default)
+  std::string serverUrl;  // Custom sync server URL (empty = default)
+  std::vector<std::string> customServers;
   DocumentMatchMethod matchMethod = DocumentMatchMethod::FILENAME;  // Default to filename for compatibility
   bool sendMetadata = false;                                        // Send document metadata with progress sync
   KOReaderSyncBehavior syncBehavior = KOReaderSyncBehavior::ASK_EVERY_TIME;
   LazyStoreState loadState;
+
+  void rememberSelectedCustomServer();
 
   // Private constructor for singleton
   KOReaderCredentialStore() = default;
@@ -42,6 +47,14 @@ class KOReaderCredentialStore : public PersistableStore<KOReaderCredentialStore>
   friend class PersistableStore<KOReaderCredentialStore>;
 
  public:
+  static constexpr size_t MAX_USERNAME_BYTES = 64;
+  static constexpr size_t MAX_PASSWORD_BYTES = 64;
+  static constexpr size_t MAX_SERVER_URL_BYTES = 128;
+  static constexpr size_t MAX_CUSTOM_SERVERS = 6;
+
+  static constexpr const char* crossPointServerUrl() { return "https://sync.crosspointreader.com"; }
+  static constexpr const char* koSyncServerUrl() { return "https://kosync.eu"; }
+
   static const char* getFilePath() { return "/.crosspoint/koreader.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);
@@ -79,6 +92,14 @@ class KOReaderCredentialStore : public PersistableStore<KOReaderCredentialStore>
 
   // Get base URL for API calls (with http:// normalization if no protocol, falls back to default)
   std::string getBaseUrl() const;
+
+  // Server presets are immutable; only entries in this bounded list can be edited or deleted.
+  const std::vector<std::string>& getCustomServers() const;
+  bool selectServerUrl(const std::string& url);
+  bool addCustomServer(const std::string& url);
+  bool updateCustomServer(size_t index, const std::string& url);
+  bool removeCustomServer(size_t index);
+  static bool isBuiltInServerUrl(const std::string& url);
 
   // Whether the configured endpoint supports CrossPoint-only protocol fields.
   bool usesCrossPointSyncServer() const;

@@ -175,7 +175,6 @@ void EpubInBookSearchActivity::loop() {
     return;
   }
   if (page_ < static_cast<int>(section_->pageCount)) {
-    const size_t priorResults = results_.size();
     if (!scanCurrentPage()) {
       searching_ = false;
       failed_ = true;
@@ -184,11 +183,7 @@ void EpubInBookSearchActivity::loop() {
     } else {
       advancePage();
     }
-    ++pagesSinceUpdate_;
-    if (!searching_ || results_.size() != priorResults || pagesSinceUpdate_ >= 8) {
-      pagesSinceUpdate_ = 0;
-      requestUpdate();
-    }
+    if (!searching_) requestUpdate();
   } else if (!section_->isBuilding()) {
     advancePage();
   }

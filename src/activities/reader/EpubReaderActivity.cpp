@@ -444,7 +444,14 @@ void EpubReaderActivity::onExit() {
   Activity::onExit();
   readerWaveform.leaveReader();
 
-  if (!flushPendingProgressSave()) {
+  // A footnote is a temporary detour. Persist its return origin directly
+  // instead of first writing the footnote page and immediately overwriting it.
+  if (footnoteDepth > 0 && epub) {
+    const SavedPosition& origin = savedPositions[0];
+    if (!saveProgress(origin.spineIndex, origin.pageNumber, 0)) {
+      LOG_ERR("ERS", "Could not persist the pre-footnote position before reader exit");
+    }
+  } else if (!flushPendingProgressSave()) {
     LOG_ERR("ERS", "Could not persist the last visible page before reader exit");
   }
   pendingPageTurnDelta = 0;
@@ -468,24 +475,17 @@ void EpubReaderActivity::onExit() {
   APP_STATE.readerActivityLoadCount = 0;
   if (!APP_STATE.saveToFile()) LOG_ERR("ERS", "Could not persist reader exit state");
 
-  // Leaving mid-footnote loses the in-RAM return stack on deep sleep; persist the
-  // pre-footnote position so the book reopens at the link origin, not the footnote.
-  if (footnoteDepth > 0 && epub) {
-    const SavedPosition& origin = savedPositions[0];
-    saveProgress(origin.spineIndex, origin.pageNumber, 0);
-  }
-
   section.reset();
-  if (pendingReadFolderMove && epub) {
-    const std::string srcPath = epub->getPath();
-    const std::string dstPath = buildReadFolderDestination(srcPath);
-    epub.reset();  // release the Epub (and any open handles) before renaming on the SD card
-    clippingStore.unload();
-    moveFinishedBookToReadFolder(srcPath, dstPath);
-  } else {
-    epub.reset();
+  const bool moveToReadFolder = pendingReadFolderMove && epub;
+  std::string srcPath;
+  std::string dstPath;
+  if (moveToReadFolder) {
+    srcPath = epub->getPath();
+    dstPath = buildReadFolderDestination(srcPath);
   }
+  epub.reset();  // release the Epub (and any open handles) before renaming on the SD card
   clippingStore.unload();
+  if (moveToReadFolder) moveFinishedBookToReadFolder(srcPath, dstPath);
 
   // releaseLoadedFont() already clears SD-derived glyphs. This final cleanup
   // also drops any built-in reader glyphs before returning to the main UI.
@@ -1016,6 +1016,8 @@ void EpubReaderActivity::openReaderMenu() {
   // Menu navigation or a settings change supersedes any invisible rapid-turn
   // input accumulated while pagination was catching up.
   pendingPageTurnDelta = 0;
+  consumeReadingViewSignal();
+  stopReadingPage(false, static_cast<uint32_t>(millis()));
   ensureBookmarksLoaded();
   const int currentPage = section ? section->currentPage + 1 : 0;
   const int totalPages = section ? section->estimatedTotalPages() : 0;
@@ -1037,7 +1039,6 @@ void EpubReaderActivity::openReaderMenu() {
         const auto* menu = std::get_if<MenuResult>(&result.data);
         if (!menu) {
           LOG_ERR("ERS", "Reader menu returned an unexpected result type");
-          requestUpdate();
           return;
         }
         // Always apply orientation change even if the menu was cancelled
@@ -1071,7 +1072,7 @@ void EpubReaderActivity::openDictionaryWordSelect() {
 
   startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
                                                                         orientedMarginLeft, orientedMarginTop),
-                         [this](const ActivityResult&) { requestUpdate(); });
+                         [](const ActivityResult&) {});
 }
 
 void EpubReaderActivity::loop() {
@@ -1086,6 +1087,10 @@ void EpubReaderActivity::loop() {
     finish();
     return;
   }
+  if (ReaderUtils::consumeInitialRelease(suppressSearchBackRelease,
+                                         mappedInput.wasReleased(MappedInputManager::Button::Back),
+                                         mappedInput.isPressed(MappedInputManager::Button::Back)))
+    return;
   const bool inputEdge = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
   const bool readerInputHeld = mappedInput.isPressed(MappedInputManager::Button::Back) ||
                                mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
@@ -1100,7 +1105,6 @@ void EpubReaderActivity::loop() {
                            [this](const ActivityResult& result) {
                              if (result.isCancelled) {
                                pendingSafeModeFailureNotice.store(true, std::memory_order_release);
-                               requestUpdate();
                                return;
                              }
 
@@ -1108,7 +1112,6 @@ void EpubReaderActivity::loop() {
                              applyEffectiveBookReaderSettings(globalReaderSettings, bookReaderSettings);
                              pendingSafeModePersistence.store(true, std::memory_order_release);
                              invalidateReaderLayout();
-                             requestUpdate();
                            });
     return;
   }
@@ -1471,7 +1474,6 @@ void EpubReaderActivity::loop() {
                 const auto& footnoteResult = std::get<FootnoteResult>(result.data);
                 navigateToHref(footnoteResult.href, true);
               }
-              requestUpdate();
             });
       }
     }
@@ -1589,10 +1591,7 @@ bool EpubReaderActivity::handleReaderShortcut(const uint8_t function) {
       requestUpdate();
       return true;
     case CrossPointSettings::LP_MENU_KOSYNC:
-      if (!launchKOReaderSync()) {
-        pendingKOReaderCredentialsNotice = true;
-        requestUpdate();
-      }
+      launchKOReaderSync();
       return true;
     case CrossPointSettings::LP_MENU_DICTIONARY:
       openDictionaryWordSelect();
@@ -1727,7 +1726,6 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                  const auto& footnoteResult = std::get<FootnoteResult>(result.data);
                                  navigateToHref(footnoteResult.href, true);
                                }
-                               requestUpdate();
                              });
       break;
     }
@@ -1755,15 +1753,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_IN_BOOK), "",
                                                                      BOOK_SEARCH_QUERY_BYTES, InputType::Text, true),
                              [this](const ActivityResult& result) {
-                               if (result.isCancelled || !epub || !section) {
-                                 requestUpdate();
+                               if (result.isCancelled) {
+                                 suppressSearchBackRelease = true;
                                  return;
                                }
+                               if (!epub || !section) return;
                                const std::string query = std::get<KeyboardResult>(result.data).text;
-                               if (query.empty()) {
-                                 requestUpdate();
-                                 return;
-                               }
+                               if (query.empty()) return;
                                EpubInBookSearchActivity::Layout layout;
                                layout.fontId = SETTINGS.getReaderFontId();
                                layout.lineCompression = SETTINGS.getReaderLineCompression();
@@ -1796,7 +1792,6 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                          section.reset();
                                        }
                                      }
-                                     requestUpdate();
                                    });
                              });
       break;
@@ -1979,7 +1974,11 @@ void EpubReaderActivity::applyBookmarkJump(const ProgressChangeResult& sync) {
 }
 
 bool EpubReaderActivity::launchKOReaderSync() {
-  if (!KOREADER_STORE.hasCredentials()) return false;  // no-op: nothing to launch
+  if (!KOREADER_STORE.hasCredentials()) {
+    pendingKOReaderCredentialsNotice = true;
+    requestUpdate();
+    return false;
+  }
   if (pendingReadFolderMove) {
     pendingFinishedMoveSyncError = true;
     requestUpdate();
@@ -2171,7 +2170,6 @@ void EpubReaderActivity::openBookReaderSettings() {
             bookReaderSettings = previous;
             applyEffectiveSettings(previous);
             pendingBookStylesApplyError = true;
-            requestUpdate();
             return;
           }
         }
@@ -2197,7 +2195,6 @@ void EpubReaderActivity::openBookReaderSettings() {
           pendingBookSettingsSaveError = true;
         }
         invalidateReaderLayout();
-        requestUpdate();
       });
 }
 
@@ -2213,15 +2210,11 @@ void EpubReaderActivity::openReadingStats() {
   const bool hasFreshTimeEstimate = refreshEstimatedTimeLeft();
   const bool previewCurrentSession = !readingSessionCommitted;
   BookReadingStats displayBookStats = bookReadingStats;
-  GlobalReadingStats displayDeviceStats = globalReadingStats;
   if (previewCurrentSession) {
-    previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr,
-                               globalReadingStatsWritable ? &displayDeviceStats : nullptr, sessionReadingSeconds,
+    previewReadingStatsSession(bookReadingStatsWritable ? &displayBookStats : nullptr, nullptr, sessionReadingSeconds,
                                pendingBookReadingSpans, pendingGlobalReadingSpans,
                                hasSessionStartLocalDateTime ? &sessionStartLocalDateTime : nullptr);
   }
-
-  const GlobalReadingStatsAggregation allSyncedStats = GlobalReadingStats::loadAggregatedWithReport(displayDeviceStats);
 
   ReadingStatsMetric progress = ReadingStatsMetric::unavailable();
   if (bookReadingStatsTrusted && bookReadingStats.isCompleted) {
@@ -2236,9 +2229,9 @@ void EpubReaderActivity::openReadingStats() {
 
   ReadingStatsDateTime now;
   const ReadingStatsDateTime* currentDateTime = getCurrentLocalReadingStatsDateTime(now) ? &now : nullptr;
-  ReadingStatsPresentation presentation = buildReadingStatsPresentation(
-      displayBookStats, bookReadingStatsTrusted, displayDeviceStats, globalReadingStatsTrusted, allSyncedStats,
-      currentDateTime, progress, hasFreshTimeEstimate);
+  ReadingStatsPresentation presentation =
+      buildReadingStatsPresentation(displayBookStats, bookReadingStatsTrusted, GlobalReadingStats{}, false,
+                                    GlobalReadingStatsAggregation{}, currentDateTime, progress, hasFreshTimeEstimate);
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, epub->getTitle(), std::move(presentation),
                                              ReadingStatsActivity::Page::Book, bookReadingStatsWritable, false,
@@ -2259,7 +2252,6 @@ void EpubReaderActivity::openReadingStats() {
               bookReadingStatsTrusted = BookReadingStats::isTrustedLoadStatus(status);
               bookReadingStatsWritable = bookReadingStatsTrusted && BookReadingStats::canPublish(cachePath);
               bookReadingStatsDirty = false;
-              requestUpdate();
             });
       });
 }
@@ -2333,7 +2325,6 @@ void EpubReaderActivity::openClippingSelection() {
     const auto* selection = std::get_if<ClippingSelectionResult>(&result.data);
     if (!selection || !epub || !clippingStore.isLoaded()) {
       pendingClippingNotice = ClippingNotice::Unavailable;
-      requestUpdate();
       return;
     }
 
@@ -2372,7 +2363,6 @@ void EpubReaderActivity::openClippingSelection() {
         pendingClippingNotice = ClippingNotice::SaveFailed;
         break;
     }
-    requestUpdate();
   });
 }
 
@@ -2410,7 +2400,6 @@ void EpubReaderActivity::openClippings() {
                            if (!jump || !validateClippingJump(*jump)) {
                              RenderLock lock(*this);
                              pendingClippingNotice = ClippingNotice::JumpUnavailable;
-                             requestUpdate();
                              return;
                            }
 
@@ -2418,7 +2407,6 @@ void EpubReaderActivity::openClippings() {
                              RenderLock lock(*this);
                              armClippingJump(*jump);
                            }
-                           requestUpdate();
                          });
 }
 
@@ -2427,27 +2415,21 @@ void EpubReaderActivity::openSavedItems() {
   startActivityForResult(std::make_unique<BookSavedItemsActivity>(renderer, mappedInput, epub, &clippingStore),
                          [this](const ActivityResult& result) {
                            loadCachedBookmarks();
-                           if (result.isCancelled) {
-                             requestUpdate();
-                             return;
-                           }
+                           if (result.isCancelled) return;
                            if (const auto* progress = std::get_if<ProgressChangeResult>(&result.data)) {
                              applyBookmarkJump(*progress);
-                             requestUpdate();
                              return;
                            }
                            const auto* jump = std::get_if<ClippingJumpResult>(&result.data);
                            if (!jump || !validateClippingJump(*jump)) {
                              RenderLock lock(*this);
                              pendingClippingNotice = ClippingNotice::JumpUnavailable;
-                             requestUpdate();
                              return;
                            }
                            {
                              RenderLock lock(*this);
                              armClippingJump(*jump);
                            }
-                           requestUpdate();
                          });
 }
 
@@ -2623,20 +2605,17 @@ void EpubReaderActivity::launchPendingClippingReanchor() {
           currentClippingLayoutFingerprint(), SETTINGS.getReaderFontId(), marginLeft, marginTop),
       [this](const ActivityResult& result) {
         const auto* page = std::get_if<PageResult>(&result.data);
-        bool reanchorApplied = false;
         const bool reanchorFailed = !result.isCancelled;
         {
           RenderLock lock(*this);
           if (page && pendingClippingJump && section && page->page < section->pageCount) {
             section->currentPage = static_cast<int>(page->page);
             pendingClippingJump.reset();
-            reanchorApplied = true;
           } else {
             abortPendingClippingJump(false);
             if (reanchorFailed) pendingClippingNotice = ClippingNotice::ReanchorFailed;
           }
         }
-        if (reanchorApplied || reanchorFailed) requestUpdate();
       });
 }
 
@@ -3083,37 +3062,47 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       pendingClippingHighlightsTruncatedNotice = true;
     }
 
-    bool showedHighlightLimit = false;
+    bool popupShown = false;
     if (pendingFinishedMoveSyncError) {
       pendingFinishedMoveSyncError = false;
-      GUI.drawPopup(renderer, tr(STR_SYNC_AFTER_FINISHED_MOVE));
+      drawTransientPopup(StrId::STR_SYNC_AFTER_FINISHED_MOVE);
+      popupShown = true;
     } else if (pendingSyncSaveError) {
       pendingSyncSaveError = false;
-      GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
+      drawTransientPopup(StrId::STR_SAVE_PROGRESS_FAILED);
+      popupShown = true;
     } else if (pendingKOReaderCredentialsNotice) {
       pendingKOReaderCredentialsNotice = false;
-      GUI.drawPopup(renderer, tr(STR_SET_CREDENTIALS_FIRST));
+      drawTransientPopup(StrId::STR_SET_CREDENTIALS_FIRST);
+      popupShown = true;
     } else if (pendingBookSettingsSaveError) {
       pendingBookSettingsSaveError = false;
-      GUI.drawPopup(renderer, tr(STR_SAVE_BOOK_SETTINGS_FAILED));
+      drawTransientPopup(StrId::STR_SAVE_BOOK_SETTINGS_FAILED);
+      popupShown = true;
     } else if (pendingBookStylesApplyError) {
       pendingBookStylesApplyError = false;
-      GUI.drawPopup(renderer, tr(STR_APPLY_BOOK_STYLES_FAILED));
+      drawTransientPopup(StrId::STR_APPLY_BOOK_STYLES_FAILED);
+      popupShown = true;
     } else if (pendingExternalCssWarning) {
       if (externalCssWarningTime == 0) externalCssWarningTime = millis();
       GUI.drawPopup(renderer, tr(STR_PUBLISHER_STYLES_UNAVAILABLE));
+      popupShown = true;
     } else if (pendingCacheClearError) {
       pendingCacheClearError = false;
-      GUI.drawPopup(renderer, tr(STR_CLEAR_CACHE_FAILED));
+      drawTransientPopup(StrId::STR_CLEAR_CACHE_FAILED);
+      popupShown = true;
     } else if (pendingSafeModeEnabledNotice) {
       pendingSafeModeEnabledNotice = false;
-      GUI.drawPopup(renderer, tr(STR_EPUB_SAFE_MODE_ENABLED));
+      drawTransientPopup(StrId::STR_EPUB_SAFE_MODE_ENABLED);
+      popupShown = true;
     } else if (pendingStatsCompletionError) {
       pendingStatsCompletionError = false;
-      GUI.drawPopup(renderer, tr(STR_COMPLETE_BOOK_STATS_FAILED));
+      drawTransientPopup(StrId::STR_COMPLETE_BOOK_STATS_FAILED);
+      popupShown = true;
     } else if (pendingBookmarkStorageError) {
       pendingBookmarkStorageError = false;
-      GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
+      drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+      popupShown = true;
     } else if (pendingClippingNotice != ClippingNotice::None) {
       const ClippingNotice notice = pendingClippingNotice;
       pendingClippingNotice = ClippingNotice::None;
@@ -3123,35 +3112,42 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           clippingSavedMessageTime = millis();
           break;
         case ClippingNotice::LimitReached:
-          GUI.drawPopup(renderer, tr(STR_CLIPPING_LIMIT_REACHED));
+          drawTransientPopup(StrId::STR_CLIPPING_LIMIT_REACHED);
+          popupShown = true;
           break;
         case ClippingNotice::SaveFailed:
-          GUI.drawPopup(renderer, tr(STR_CLIPPING_SAVE_FAILED));
+          drawTransientPopup(StrId::STR_CLIPPING_SAVE_FAILED);
+          popupShown = true;
           break;
         case ClippingNotice::NewerFormat:
-          GUI.drawPopup(renderer, tr(STR_CLIPPING_NEWER_FORMAT));
+          drawTransientPopup(StrId::STR_CLIPPING_NEWER_FORMAT);
+          popupShown = true;
           break;
         case ClippingNotice::JumpUnavailable:
-          GUI.drawPopup(renderer, tr(STR_CLIPPING_JUMP_UNAVAILABLE));
+          drawTransientPopup(StrId::STR_CLIPPING_JUMP_UNAVAILABLE);
+          popupShown = true;
           break;
         case ClippingNotice::ReanchorFailed:
-          GUI.drawPopup(renderer, tr(STR_REANCHOR_UNIQUE_FAIL));
+          drawTransientPopup(StrId::STR_REANCHOR_UNIQUE_FAIL);
+          popupShown = true;
           break;
         case ClippingNotice::Unavailable:
-          GUI.drawPopup(renderer, tr(STR_CLIPPING_UNAVAILABLE));
+          drawTransientPopup(StrId::STR_CLIPPING_UNAVAILABLE);
+          popupShown = true;
           break;
         case ClippingNotice::None:
           break;
       }
     } else if (pendingClippingHighlightsTruncatedNotice) {
       pendingClippingHighlightsTruncatedNotice = false;
-      showedHighlightLimit = true;
-      GUI.drawPopup(renderer, tr(STR_CLIPPING_HIGHLIGHTS_TRUNCATED));
+      drawTransientPopup(StrId::STR_CLIPPING_HIGHLIGHTS_TRUNCATED);
+      popupShown = true;
     }
 
-    // A higher-priority popup must delay, not discard, the memory-limit
-    // warning. Render once more so every queued user-visible notice is shown.
-    if (pendingClippingHighlightsTruncatedNotice && !showedHighlightLimit) requestUpdate();
+    // A higher-priority popup delays, rather than discards, the memory-limit
+    // warning. Its transient-popup timer schedules the next render after the
+    // message has remained visible for the full interval.
+    return popupShown;
   };
 
   // A section build failure (e.g. an invalid/corrupt EPUB that fails XML parsing) leaves the
@@ -3216,8 +3212,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     endOfBookOptions.render(
         renderer, mappedInput,
         EndOfBookSummary{epub->getTitle(), epub->getAuthor(), displayBookStats, bookReadingStatsTrusted});
-    showPendingSyncSaveError();
-    renderer.displayBuffer();
+    if (!showPendingSyncSaveError()) renderer.displayBuffer();
     if (pendingScreenshot.exchange(false, std::memory_order_acq_rel)) {
       ScreenshotUtil::takeScreenshot(renderer);
     }
@@ -3503,9 +3498,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     LOG_DBG("ERS", "No pages to render");
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_CHAPTER), true, EpdFontFamily::BOLD);
     renderStatusBar();
-    renderer.displayBuffer();
     automaticPageTurnActive = false;
-    showPendingSyncSaveError();
+    if (!showPendingSyncSaveError()) renderer.displayBuffer();
     return;
   }
 
@@ -3514,9 +3508,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     LOG_DBG("ERS", "Page out of bounds: %d (max %d)", section->currentPage, section->pageCount);
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_OUT_OF_BOUNDS), true, EpdFontFamily::BOLD);
     renderStatusBar();
-    renderer.displayBuffer();
     automaticPageTurnActive = false;
-    showPendingSyncSaveError();
+    if (!showPendingSyncSaveError()) renderer.displayBuffer();
     return;
   }
 
@@ -3576,8 +3569,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         pageLoadRetryCount = 0;  // Reset so a later user-initiated navigation can try afresh
         renderer.clearScreen();
         renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
-        renderer.displayBuffer();
-        showPendingSyncSaveError();
+        if (!showPendingSyncSaveError()) renderer.displayBuffer();
         return;
       }
       requestUpdate();  // Try again after clearing cache
@@ -3664,21 +3656,23 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // already-queued page renders.
   stageProgressSave(currentSpineIndex, section->currentPage, section->estimatedTotalPages());
 
-  showPendingSyncSaveError();
+  const bool priorityPopupShown = showPendingSyncSaveError();
 
   if (pendingScreenshot.exchange(false, std::memory_order_acq_rel)) {
     ScreenshotUtil::takeScreenshot(renderer);
   }
 
-  if (showBookmarkMessage) {
+  // drawPopup() refreshes the panel immediately. A higher-priority error
+  // replaces ordinary notices so their shorter timers cannot dismiss it early.
+  if (priorityPopupShown) {
+    showBookmarkMessage = false;
+    showDictionaryMessage = false;
+    showClippingSavedMessage = false;
+  } else if (showBookmarkMessage) {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
-  }
-
-  if (showDictionaryMessage) {
+  } else if (showDictionaryMessage) {
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
-  }
-
-  if (showClippingSavedMessage) {
+  } else if (showClippingSavedMessage) {
     GUI.drawPopup(renderer, tr(STR_CLIPPING_SAVED));
   }
 }
@@ -3831,8 +3825,8 @@ std::optional<bool> EpubReaderActivity::renderContents(std::unique_ptr<Page> pag
   // cleanup until the grayscale page is complete; other panels retain their
   // balanced clean-base refresh.
   const bool x3ImageCleanupPending =
-      (manualRefreshPending || pagesUntilFullRefresh <= 1) && display.supportsX3GhostCleanup();
-  const bool cleanImageBasePending = (manualRefreshPending || pagesUntilFullRefresh <= 1) && !x3ImageCleanupPending;
+      !manualRefreshPending && pagesUntilFullRefresh <= 1 && display.supportsX3GhostCleanup();
+  const bool cleanImageBasePending = manualRefreshPending || (pagesUntilFullRefresh <= 1 && !x3ImageCleanupPending);
   const bool darkReaderPage = SETTINGS.readerDarkMode != 0;
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !darkReaderPage;
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;

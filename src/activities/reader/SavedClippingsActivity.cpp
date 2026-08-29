@@ -102,7 +102,6 @@ void SavedClippingsActivity::onResume() {
   RenderLock lock(*this);
   openedStore_.unload();
   reloadCatalog(false);
-  requestUpdate();
 }
 
 void SavedClippingsActivity::reloadCatalog(const bool clearNotice) {
@@ -202,7 +201,6 @@ void SavedClippingsActivity::handleSavedBookResult(const ActivityResult& result)
     jump.hasBookmarkFingerprint = page->hasBookmarkFingerprint;
   } else {
     notice_ = tr(STR_CLIPPING_JUMP_UNAVAILABLE);
-    requestUpdate();
     return;
   }
   activityManager.captureSavedClippingsReturnContext(static_cast<size_t>(std::max(selectedIndex_, 0)), jump.bookPath);

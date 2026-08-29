@@ -115,10 +115,7 @@ void EpubReaderMenuActivity::loop() {
     const auto selectedAction = menuItems[selectedIndex].action;
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
       optionPopup.show(StrId::STR_ORIENTATION, orientationLabels.data(), static_cast<int>(orientationLabels.size()),
-                       pendingOrientation, [this](int idx) {
-                         pendingOrientation = idx;
-                         requestUpdate();
-                       });
+                       pendingOrientation, [this](int idx) { pendingOrientation = idx; });
       requestUpdate();
       return;
     }
@@ -136,7 +133,6 @@ void EpubReaderMenuActivity::loop() {
                                  selectedAutoPageTurnActive = selectedAutoPageTurnSeconds != 0;
                                  autoPageTurnChanged = true;
                                }
-                               requestUpdate();
                              });
       return;
     }

@@ -1,7 +1,6 @@
 #include "ReadingAchievementsActivity.h"
 
 #include <GfxRenderer.h>
-#include <HalStorage.h>
 #include <I18n.h>
 
 #include <algorithm>
@@ -55,10 +54,6 @@ std::string rowProgress(const ReadingAchievementDefinition& definition, const Re
 void ReadingAchievementsActivity::onEnter() {
   Activity::onEnter();
   suppressInitialConfirmRelease_ = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-  if (!Storage.probeMedia()) {
-    requestUpdate();
-    return;
-  }
 
   GlobalReadingStats::LoadStatus statsStatus = GlobalReadingStats::LoadStatus::Invalid;
   const GlobalReadingStats stats = GlobalReadingStats::load(&statsStatus);
@@ -69,22 +64,15 @@ void ReadingAchievementsActivity::onEnter() {
                               historyStatus == DailyReadingHistory::LoadStatus::RecoveredBackup ||
                               historyStatus == DailyReadingHistory::LoadStatus::RecoveredTemp;
   if (!GlobalReadingStats::isTrustedLoadStatus(statsStatus) || !historyTrusted ||
-      !ReadingAchievements::reconcile(stats, history)) {
-    requestUpdate();
-    return;
-  }
-  const auto achievementStatus = ReadingAchievements::load(state_);
-  if (achievementStatus == ReadingAchievements::LoadStatus::NewerVersion ||
-      achievementStatus == ReadingAchievements::LoadStatus::IoError ||
-      achievementStatus == ReadingAchievements::LoadStatus::Invalid) {
+      !ReadingAchievements::reconcile(stats, history, nullptr, &state_)) {
     requestUpdate();
     return;
   }
   snapshot_ = ReadingAchievements::snapshot(stats, history);
-  ReadingAchievementNotification notification;
-  if (ReadingAchievements::peekPendingNotification(notification)) {
-    unlockNoticeCount_ = notification.count;
-    unlockNoticeHistorical_ = notification.historical;
+  const uint8_t pendingNotificationCount = state_.pendingNotificationCount();
+  if (pendingNotificationCount != 0) {
+    unlockNoticeCount_ = pendingNotificationCount;
+    unlockNoticeHistorical_ = state_.pendingHistoricalNotification;
     pendingNoticeAcknowledgement_ = true;
   }
   available_ = true;

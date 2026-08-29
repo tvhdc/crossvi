@@ -799,8 +799,6 @@ void loop() {
   }
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, readerVisible);
 
-  renderer.setFadingFix(SETTINGS.fadingFix);
-
   const bool doublePowerEnabled =
       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE &&
       (SETTINGS.doublePowerAction != CrossPointSettings::DOUBLE_POWER_ACTION::DOUBLE_POWER_DISABLED ||
@@ -819,10 +817,12 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
+  bool normalPowerRequested = false;
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
       activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
+    normalPowerRequested = true;
   }
 
   static bool screenshotButtonsReleased = true;
@@ -916,6 +916,10 @@ void loop() {
       RenderLock lock;
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
+    // FORCE_REFRESH owns this Power release. Do not let the same edge reach
+    // the active Activity (for example, the footnote picker treats Power as
+    // Select when it was opened from the reader menu).
+    return;
   }
 
   // Refresh the battery icon when USB is plugged or unplugged.
@@ -948,8 +952,8 @@ void loop() {
   // Otherwise, use longer delay to save power
   const unsigned long responsiveLoopDelay = readerVisible && gpio.isDebouncePending() ? READER_DEBOUNCE_REPOLL_MS : 10;
   if (activityManager.skipLoopDelay()) {
-    powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
-    yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
+    if (!normalPowerRequested) powerManager.setPowerSaving(false);
+    yield();  // Give FreeRTOS a chance to run tasks, but return immediately
   } else {
     if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
       // If we've been inactive for a while, increase the delay to save power

@@ -18,6 +18,7 @@
 #include "activities/settings/LanguageSelectActivity.h"
 #include "activities/settings/OpdsServerListActivity.h"
 #include "activities/settings/SettingsSubmenuActivity.h"
+#include "activities/settings/SleepImageManagerActivity.h"
 #include "activities/settings/StatusBarSettingsActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "activities/settings/TimeSettingsActivity.h"
@@ -82,10 +83,7 @@ const SettingInfo* HomeShortcutsActivity::findSetting(const char* key) const {
 void HomeShortcutsActivity::activateSelected() {
   if (selectedIndex_ == static_cast<int>(items_.size())) {
     startActivityForResult(std::make_unique<HomeShortcutManagerActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) {
-                             rebuildItems();
-                             requestUpdate();
-                           });
+                           [this](const ActivityResult&) { rebuildItems(); });
     return;
   }
   if (selectedIndex_ < 0 || selectedIndex_ > static_cast<int>(items_.size())) return;
@@ -101,26 +99,67 @@ void HomeShortcutsActivity::activateSelected() {
 void HomeShortcutsActivity::activateSetting(const HomeShortcutDescriptor& descriptor) {
   const SettingInfo* setting = findSetting(descriptor.settingKey);
   if (!setting) return;
+  // Keep sleep/wake controls out of this generic save-failure policy.
+  const bool rollbackOnSaveFailure = descriptor.id != HomeShortcutId::QuickResume &&
+                                     descriptor.id != HomeShortcutId::SleepScreen &&
+                                     descriptor.id != HomeShortcutId::SleepTimeout;
 
   if (setting->type == SettingType::TOGGLE && setting->valuePtr) {
-    SETTINGS.*(setting->valuePtr) = !(SETTINGS.*(setting->valuePtr));
-    SETTINGS.saveToFile();
+    const uint8_t previous = SETTINGS.*(setting->valuePtr);
+    SETTINGS.*(setting->valuePtr) = !previous;
+    if (!SETTINGS.saveToFile() && rollbackOnSaveFailure) {
+      SETTINGS.*(setting->valuePtr) = previous;
+      showSaveError_ = true;
+    }
     requestUpdate();
     return;
   }
 
   if (setting->type == SettingType::ENUM) {
-    uint8_t current = setting->valueGetter ? setting->valueGetter()
-                      : setting->valuePtr  ? SETTINGS.*(setting->valuePtr)
-                                           : 0;
-    auto onSelect = [this, valuePtr = setting->valuePtr, setter = setting->valueSetter](const int index) {
+    const uint8_t previous = setting->valueGetter ? setting->valueGetter()
+                             : setting->valuePtr  ? SETTINGS.*(setting->valuePtr)
+                                                  : 0;
+    uint8_t current = previous;
+    const bool sleepScreenShortcut = descriptor.id == HomeShortcutId::SleepScreen;
+    const uint8_t previousSleepMode = SETTINGS.sleepScreen;
+    if (descriptor.id == HomeShortcutId::ParagraphAlignment && !SETTINGS.embeddedStyle &&
+        current == CrossPointSettings::BOOK_STYLE) {
+      // Match TextSettingsActivity's effective value without destroying the
+      // saved Book style choice if the user confirms the visible selection.
+      current = CrossPointSettings::JUSTIFIED;
+    }
+    auto onSelect = [this, current, previous, previousSleepMode, rollbackOnSaveFailure, sleepScreenShortcut,
+                     valuePtr = setting->valuePtr, setter = setting->valueSetter](const int index) {
+      if (sleepScreenShortcut && index == CrossPointSettings::SLEEP_SCREEN_CUSTOM) {
+        if (setter) {
+          setter(static_cast<uint8_t>(index));
+        } else if (valuePtr) {
+          SETTINGS.*valuePtr = static_cast<uint8_t>(index);
+        }
+        if (SETTINGS.sleepScreen != previousSleepMode && !SETTINGS.saveToFile()) {
+          SETTINGS.sleepScreen = previousSleepMode;
+          showSaveError_ = true;
+          return;
+        }
+        startActivityForResult(
+            std::make_unique<SleepImageManagerActivity>(renderer, mappedInput, SleepImageManagerActivity::Mode::Manage),
+            [](const ActivityResult&) {});
+        return;
+      }
+      if (index == current) return;
       if (setter) {
         setter(static_cast<uint8_t>(index));
       } else if (valuePtr) {
         SETTINGS.*valuePtr = static_cast<uint8_t>(index);
       }
-      SETTINGS.saveToFile();
-      requestUpdate();
+      if (!SETTINGS.saveToFile() && rollbackOnSaveFailure) {
+        if (setter) {
+          setter(previous);
+        } else if (valuePtr) {
+          SETTINGS.*valuePtr = previous;
+        }
+        showSaveError_ = true;
+      }
     };
     if (!setting->enumStringValues.empty()) {
       optionPopup_.show(setting->nameId, setting->enumStringValues, current, std::move(onSelect));
@@ -131,7 +170,6 @@ void HomeShortcutsActivity::activateSetting(const HomeShortcutDescriptor& descri
         // Match TextSettingsActivity: "Book style" has no source style to
         // follow while embedded styles are disabled.
         --optionCount;
-        if (current == CrossPointSettings::BOOK_STYLE) current = CrossPointSettings::JUSTIFIED;
       }
       optionPopup_.show(setting->nameId, setting->enumValues.data(), optionCount, current, std::move(onSelect));
     }
@@ -149,17 +187,25 @@ void HomeShortcutsActivity::activateSetting(const HomeShortcutDescriptor& descri
           setting->valueRange.max, setting->valueRange.step, sleepTimeout ? 5 : setting->valueRange.step,
           sleepTimeout ? StrId::STR_SLEEP_TIMER_VALUE_FORMAT : StrId::STR_NONE_OPT, false, true,
           sleepTimeout ? StrId::STR_SLEEP_NEVER : StrId::STR_NONE_OPT),
-      [this, is16Bit, valuePtr = setting->valuePtr, value16Ptr = setting->value16Ptr](const ActivityResult& result) {
+      [this, initial, is16Bit, rollbackOnSaveFailure, valuePtr = setting->valuePtr,
+       value16Ptr = setting->value16Ptr](const ActivityResult& result) {
         if (!result.isCancelled) {
           const uint32_t value = std::get<IntervalResult>(result.data).value;
+          if (value == initial) return;
           if (is16Bit) {
             SETTINGS.*value16Ptr = static_cast<uint16_t>(value);
           } else {
             SETTINGS.*valuePtr = static_cast<uint8_t>(value);
           }
-          SETTINGS.saveToFile();
+          if (!SETTINGS.saveToFile() && rollbackOnSaveFailure) {
+            if (is16Bit) {
+              SETTINGS.*value16Ptr = static_cast<uint16_t>(initial);
+            } else {
+              SETTINGS.*valuePtr = static_cast<uint8_t>(initial);
+            }
+            showSaveError_ = true;
+          }
         }
-        requestUpdate();
       });
 }
 
@@ -200,10 +246,11 @@ void HomeShortcutsActivity::openScreen(const HomeShortcutTarget target) {
     case HomeShortcutTarget::Setting:
       return;
   }
-  startActivityForResult(std::move(activity), [this](const ActivityResult&) {
-    SETTINGS.saveToFile();
+  const bool retrySettingsSave = target == HomeShortcutTarget::Appearance || target == HomeShortcutTarget::StatusBar ||
+                                 target == HomeShortcutTarget::Time;
+  startActivityForResult(std::move(activity), [this, retrySettingsSave](const ActivityResult&) {
+    if (retrySettingsSave) SETTINGS.saveToFile();
     rebuildItems();
-    requestUpdate();
   });
 }
 
@@ -220,9 +267,13 @@ std::string HomeShortcutsActivity::valueLabel(const HomeShortcutId id) const {
     return I18N.get((SETTINGS.*(setting->valuePtr)) ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF);
   }
   if (setting->type == SettingType::ENUM) {
-    const uint8_t value = setting->valueGetter ? setting->valueGetter()
-                          : setting->valuePtr  ? SETTINGS.*(setting->valuePtr)
-                                               : 0;
+    uint8_t value = setting->valueGetter ? setting->valueGetter()
+                    : setting->valuePtr  ? SETTINGS.*(setting->valuePtr)
+                                         : 0;
+    if (id == HomeShortcutId::ParagraphAlignment && !SETTINGS.embeddedStyle &&
+        value == CrossPointSettings::BOOK_STYLE) {
+      value = CrossPointSettings::JUSTIFIED;
+    }
     if (!setting->enumStringValues.empty() && value < setting->enumStringValues.size()) {
       return setting->enumStringValues[value];
     }
@@ -275,5 +326,11 @@ void HomeShortcutsActivity::render(RenderLock&&) {
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  if (showSaveError_) {
+    showSaveError_ = false;
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
+  }
   renderer.displayBuffer();
 }

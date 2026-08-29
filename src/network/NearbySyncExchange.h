@@ -55,6 +55,7 @@ class NearbySyncExchange {
 
 #ifdef NEARBY_SYNC_TESTING
   bool takeTestPacket(NearbySyncRadio::TestPacket& packet) { return radio_.takeTestPacket(packet); }
+  void failNextTestSends(const size_t count) { radio_.failNextTestSends(count); }
   void injectPacketForTest(const NearbySync::MacAddress& sourceMac, const uint8_t* data, size_t size, uint32_t nowMs) {
     handlePacket(sourceMac, data, size, nowMs);
   }

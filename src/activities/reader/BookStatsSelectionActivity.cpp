@@ -101,17 +101,10 @@ bool loadBookStatsPresentation(const RecentBook& recent, ReadingStatsPresentatio
   BookReadingStats bookStats;
   bool plainText = false;
   if (!loadTrustedBookReadingStats(recent, bookStats, &plainText)) return false;
-  GlobalReadingStats::LoadStatus globalStatus = GlobalReadingStats::LoadStatus::Missing;
-  const GlobalReadingStats globalStats = GlobalReadingStats::load(&globalStatus);
-  if (!GlobalReadingStats::isTrustedLoadStatus(globalStatus)) {
-    return false;
-  }
-  const GlobalReadingStatsAggregation aggregate = GlobalReadingStats::hasSyncedStats()
-                                                      ? GlobalReadingStats::loadAggregatedWithReport(globalStats)
-                                                      : GlobalReadingStatsAggregation{};
   ReadingStatsDateTime now;
   const ReadingStatsDateTime* current = getCurrentLocalReadingStatsDateTime(now) ? &now : nullptr;
-  presentation = buildReadingStatsPresentation(bookStats, true, globalStats, true, aggregate, current,
+  presentation = buildReadingStatsPresentation(bookStats, true, GlobalReadingStats{}, false,
+                                               GlobalReadingStatsAggregation{}, current,
                                                ReadingStatsMetric::unavailable(), false);
   if (plainText) markReadingStatsPageMetricsNotApplicable(presentation);
   return true;
@@ -211,7 +204,7 @@ void BookStatsSelectionActivity::openSelectedBook() {
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, displayTitle(record), std::move(presentation),
                                              ReadingStatsActivity::Page::Book, false, false, record.path),
-      [this](const ActivityResult&) { requestUpdate(); });
+      [](const ActivityResult&) {});
 }
 
 void BookStatsSelectionActivity::moveSelection(const int delta) {

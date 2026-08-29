@@ -14,6 +14,8 @@
 namespace {
 constexpr char SOURCE_PATH[] = "/.crosspoint/reading_stats.json";
 constexpr char BACKUP_SOURCE_PATH[] = "/.crosspoint/reading_stats.json.bak";
+constexpr char IMPORT_MARKER_PATH[] = "/.crosspoint/vcodex_stats_import_v1.bin";
+constexpr char IMPORT_MARKER_BACKUP_PATH[] = "/.crosspoint/vcodex_stats_import_v1.bin.bak";
 constexpr char BOOK_PATH[] = "/Books/Test.epub";
 
 std::string bookCachePath() {
@@ -73,6 +75,27 @@ TEST(VCodexStatsImporter, DetectsValidSourceOnlyWhenCrossViIsEmpty) {
   EXPECT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::CrossViNotEmpty);
 }
 
+TEST(VCodexStatsImporter, DoesNotOfferImportWhenStatsDirectoryScanIsUnreliable) {
+  constexpr char CACHE_PATH[] = "/.crosspoint/epub_123";
+
+  seedSource();
+  ASSERT_TRUE(Storage.mkdir(CACHE_PATH));
+  // The first name read is the global-stats version guard. Fail only the
+  // later import preflight scan to prove it checks its own traversal result.
+  Storage.failGetNameForOnCall(CACHE_PATH, 2);
+  VCodexStatsImportSummary summary;
+  EXPECT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::CrossViNotEmpty);
+}
+
+TEST(VCodexStatsImporter, DoesNotOfferImportWhenStatsDirectoryCannotBeReopened) {
+  seedSource();
+  // The first open is the global-stats version guard. Fail only the importer's
+  // own preflight scan; uncertainty must not be interpreted as empty stats.
+  Storage.failOpenForOnCall("/.crosspoint", 2);
+  VCodexStatsImportSummary summary;
+  EXPECT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::CrossViNotEmpty);
+}
+
 TEST(VCodexStatsImporter, DeclineIsRecordedOnceAndLeavesSourceUntouched) {
   seedSource();
   const std::vector<uint8_t> original = Storage.file(SOURCE_PATH);
@@ -80,6 +103,38 @@ TEST(VCodexStatsImporter, DeclineIsRecordedOnceAndLeavesSourceUntouched) {
   VCodexStatsImportSummary summary;
   EXPECT_EQ(VCodexStatsImporter::probe(summary), VCodexStatsImporter::ProbeResult::AlreadyAsked);
   EXPECT_EQ(Storage.file(SOURCE_PATH), original);
+}
+
+TEST(VCodexStatsImporter, FailedMarkerReplacementPreservesAValidBackupWhenPrimaryIsInvalid) {
+  seedSource();
+  ASSERT_EQ(VCodexStatsImporter::decline(), VCodexStatsImporter::ImportResult::Declined);
+  const std::vector<uint8_t> validMarker = Storage.file(IMPORT_MARKER_PATH);
+  Storage.setFile(IMPORT_MARKER_BACKUP_PATH, validMarker);
+  Storage.setFile(IMPORT_MARKER_PATH, {0x00});
+
+  Storage.resetFaultInjection();
+  Storage.failRenameOnce();
+  EXPECT_EQ(VCodexStatsImporter::decline(), VCodexStatsImporter::ImportResult::Failed);
+  EXPECT_TRUE(Storage.exists(IMPORT_MARKER_BACKUP_PATH));
+  if (Storage.exists(IMPORT_MARKER_BACKUP_PATH)) {
+    EXPECT_EQ(Storage.file(IMPORT_MARKER_BACKUP_PATH), validMarker);
+  }
+}
+
+TEST(VCodexStatsImporter, MarkerSaveDoesNotOverwriteUnreadablePrimaryOrBackupArtifacts) {
+  for (const bool unreadableBackup : {false, true}) {
+    SCOPED_TRACE(unreadableBackup ? "backup" : "primary");
+    seedSource();
+    ASSERT_EQ(VCodexStatsImporter::decline(), VCodexStatsImporter::ImportResult::Declined);
+    const std::vector<uint8_t> validMarker = Storage.file(IMPORT_MARKER_PATH);
+    const char* protectedPath = unreadableBackup ? IMPORT_MARKER_BACKUP_PATH : IMPORT_MARKER_PATH;
+    if (unreadableBackup) Storage.setFile(IMPORT_MARKER_BACKUP_PATH, validMarker);
+    Storage.makeUnreadable(protectedPath);
+
+    EXPECT_EQ(VCodexStatsImporter::decline(), VCodexStatsImporter::ImportResult::Failed);
+    EXPECT_TRUE(Storage.exists(protectedPath));
+    EXPECT_EQ(Storage.file(protectedPath), validMarker);
+  }
 }
 
 TEST(VCodexStatsImporter, RejectsMalformedSourceWithoutWritingMarker) {
@@ -133,7 +188,9 @@ TEST(VCodexStatsImporter, MissingSourceFieldsStayUnavailableInsteadOfBecomingZer
 TEST(VCodexStatsImporter, ImportsOnceAndKeepsUnavailablePageMetricsExplicit) {
   seedSource();
   const std::vector<uint8_t> original = Storage.file(SOURCE_PATH);
+  Storage.resetFaultInjection();
   EXPECT_EQ(VCodexStatsImporter::import(7 * 60), VCodexStatsImporter::ImportResult::Imported);
+  EXPECT_EQ(Storage.openReadCallCount(SOURCE_PATH), 2U);
 
   GlobalReadingStats::LoadStatus status = GlobalReadingStats::LoadStatus::Invalid;
   const GlobalReadingStats global = GlobalReadingStats::load(&status);

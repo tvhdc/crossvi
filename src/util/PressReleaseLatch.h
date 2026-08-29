@@ -18,6 +18,18 @@ class PressReleaseLatch {
   void reset() { armed_ = false; }
 };
 
+class InputIdleGate {
+  bool armed_ = false;
+
+ public:
+  bool update(const bool anyInputPressed, const bool anyInputEdge) {
+    if (!armed_ && !anyInputPressed && !anyInputEdge) armed_ = true;
+    return armed_;
+  }
+
+  void reset() { armed_ = false; }
+};
+
 class ReleaseDebounceGuard {
   uint32_t lastAcceptedAt_ = 0;
   bool accepted_ = false;

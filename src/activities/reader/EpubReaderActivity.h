@@ -68,6 +68,7 @@ class EpubReaderActivity final : public Activity {
   bool showDictionaryMessage = false;
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
+  bool suppressSearchBackRelease = false;
   ReaderUtils::HoldGestureState confirmHold;
   ReaderUtils::PageTurnGestureState pageTurnGesture;
   bool currentPageBookmarked = false;
@@ -440,7 +441,7 @@ class EpubReaderActivity final : public Activity {
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);
-      pagesUntilFullRefresh = 1;
+      pagesUntilFullRefresh = -1;
       forcedRefreshPending = true;
     }
     requestUpdate();

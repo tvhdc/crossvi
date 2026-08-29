@@ -60,7 +60,6 @@ void SdFirmwareUpdateActivity::onPickerResult(const ActivityResult& result) {
   if (!validateFirmware()) {
     RenderLock lock(*this);
     state = State::FAILED;
-    requestUpdate();
     return;
   }
 
@@ -175,7 +174,6 @@ void SdFirmwareUpdateActivity::performUpdate() {
         result == firmware_flash::Result::BAD_CHIP ? tr(STR_FIRMWARE_WRONG_DEVICE) : tr(STR_FIRMWARE_WRITE_FAILED);
     RenderLock lock(*this);
     state = State::FAILED;
-    requestUpdate();
     return;
   }
 
@@ -192,7 +190,7 @@ void SdFirmwareUpdateActivity::performUpdate() {
 void SdFirmwareUpdateActivity::loop() {
   if (state == State::FAILED) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (recoveryMode) {
         // Go back to picker so user can try a different .bin
         state = State::PICKING;
@@ -205,6 +203,17 @@ void SdFirmwareUpdateActivity::loop() {
 }
 
 void SdFirmwareUpdateActivity::render(RenderLock&&) {
+  unsigned int updatePercent = 0;
+  if (state == State::UPDATING) {
+    // Progress callbacks arrive per flash chunk. Skip unchanged percentages
+    // before touching the framebuffer; the skipped frame is never displayed.
+    updatePercent = firmwareSize > 0 ? static_cast<unsigned int>((writtenBytes * 100) / firmwareSize) : 0;
+    if (updatePercent == lastRenderedPercent) {
+      return;
+    }
+    lastRenderedPercent = updatePercent;
+  }
+
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -220,20 +229,13 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
   if (state == State::VALIDATING) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_VALIDATING_FIRMWARE));
   } else if (state == State::UPDATING) {
-    // Throttle redraws to once per percent.
-    const unsigned int pct = firmwareSize > 0 ? static_cast<unsigned int>((writtenBytes * 100) / firmwareSize) : 0;
-    if (pct == lastRenderedPercent) {
-      return;
-    }
-    lastRenderedPercent = pct;
-
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING), true, EpdFontFamily::BOLD);
 
     int y = top + lineHeight + metrics.verticalSpacing;
     GUI.drawProgressBar(
         renderer,
         Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        static_cast<int>(pct), 100);
+        static_cast<int>(updatePercent), 100);
     y += metrics.progressBarHeight + metrics.verticalSpacing;
     // Percent label is drawn by BaseTheme::drawProgressBar; this slot is left intentionally empty
     // so the do-not-power-off line below stays at the same Y as before.

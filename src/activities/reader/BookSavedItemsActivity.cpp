@@ -214,7 +214,6 @@ void BookSavedItemsActivity::openSelected() {
           } else {
             loadHighlightPreviews();
             rebuildProjection();
-            requestUpdate();
           }
         });
     return;

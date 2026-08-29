@@ -78,7 +78,10 @@ void ClockOffsetActivity::clampForSign() {
   }
 }
 
-void ClockOffsetActivity::adjustActiveField(int delta) {
+bool ClockOffsetActivity::adjustActiveField(int delta) {
+  const uint8_t previousSign = sign;
+  const uint8_t previousHours = hours;
+  const uint8_t previousMinutesQuarter = minutesQuarter;
   switch (activeField) {
     case FIELD_SIGN: {
       sign = static_cast<uint8_t>((sign + 1) % 2);
@@ -106,6 +109,7 @@ void ClockOffsetActivity::adjustActiveField(int delta) {
     default:
       break;
   }
+  return sign != previousSign || hours != previousHours || minutesQuarter != previousMinutesQuarter;
 }
 
 void ClockOffsetActivity::loop() {
@@ -121,20 +125,16 @@ void ClockOffsetActivity::loop() {
   }
 
   buttonNavigator.onNextRelease([this] {
-    adjustActiveField(+1);
-    requestUpdate();
+    if (adjustActiveField(+1)) requestUpdate();
   });
   buttonNavigator.onPreviousRelease([this] {
-    adjustActiveField(-1);
-    requestUpdate();
+    if (adjustActiveField(-1)) requestUpdate();
   });
   buttonNavigator.onNextContinuous([this] {
-    adjustActiveField(+1);
-    requestUpdate();
+    if (adjustActiveField(+1)) requestUpdate();
   });
   buttonNavigator.onPreviousContinuous([this] {
-    adjustActiveField(-1);
-    requestUpdate();
+    if (adjustActiveField(-1)) requestUpdate();
   });
 }
 

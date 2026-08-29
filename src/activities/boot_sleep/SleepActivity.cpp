@@ -528,10 +528,18 @@ void drawMoonOnCurrentFrame(const GfxRenderer& renderer) {
   renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
 }
 
-SleepImagePlacement placeSleepImage(const GfxRenderer& renderer, const int sourceWidth, const int sourceHeight) {
+SleepImagePlacement placeSleepImage(const GfxRenderer& renderer, const int sourceWidth, const int sourceHeight,
+                                    const bool applyUserTransform = true) {
   return calculateSleepImagePlacement(renderer.getScreenWidth(), renderer.getScreenHeight(), sourceWidth, sourceHeight,
-                                      SETTINGS.sleepScreenImageZoom, SETTINGS.sleepScreenImageOffsetX,
-                                      SETTINGS.sleepScreenImageOffsetY);
+                                      applyUserTransform ? SETTINGS.sleepScreenImageZoom : SLEEP_IMAGE_DEFAULT_ZOOM,
+                                      applyUserTransform ? SETTINGS.sleepScreenImageOffsetX : 0,
+                                      applyUserTransform ? SETTINGS.sleepScreenImageOffsetY : 0);
+}
+
+SleepImagePlacement placeSleepImage(const GfxRenderer& renderer, const int sourceWidth, const int sourceHeight,
+                                    const SleepImageSelectionStore::ImageTransform& transform) {
+  return calculateSleepImagePlacement(renderer.getScreenWidth(), renderer.getScreenHeight(), sourceWidth, sourceHeight,
+                                      transform.zoom, transform.offsetX, transform.offsetY);
 }
 
 bool alphaCoveragePasses(const uint8_t alpha, const int x, const int y) {
@@ -543,8 +551,9 @@ bool alphaCoveragePasses(const uint8_t alpha, const int x, const int y) {
 using Bmp32OverlayHeader = SleepImageValidation::Bmp32Header;
 using Bmp32HeaderStatus = SleepImageValidation::Bmp32HeaderStatus;
 
-bool renderBmp32Overlay(HalFile& file, const Bmp32OverlayHeader& header, GfxRenderer& renderer) {
-  const SleepImagePlacement placement = placeSleepImage(renderer, header.width, header.height);
+bool renderBmp32Overlay(HalFile& file, const Bmp32OverlayHeader& header, GfxRenderer& renderer,
+                        const SleepImageSelectionStore::ImageTransform& transform) {
+  const SleepImagePlacement placement = placeSleepImage(renderer, header.width, header.height, transform);
   if (placement.width <= 0 || placement.height <= 0) return false;
   auto row = makeUniqueNoThrow<uint8_t[]>(header.rowBytes);
   if (!row) return false;
@@ -576,19 +585,11 @@ bool renderBmp32Overlay(HalFile& file, const Bmp32OverlayHeader& header, GfxRend
   return true;
 }
 
-bool validatePngOverlay(const std::string& path) { return SleepImageValidation::overlayPng(path); }
-
 bool validateBmpOverlay(const std::string& path) { return SleepImageValidation::overlayBmp(path); }
 
 bool isOverlayImageName(const std::string& filename) {
   return !filename.empty() && filename[0] != '.' && filename.size() <= 256 &&
          (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename));
-}
-
-bool validateOverlayImage(const std::string& path) {
-  if (FsHelpers::hasPngExtension(path)) return validatePngOverlay(path);
-  if (FsHelpers::hasBmpExtension(path)) return validateBmpOverlay(path);
-  return false;
 }
 
 struct OverlayCandidate {
@@ -643,26 +644,24 @@ OverlayCandidate directoryImageCandidate(const char* directoryPath, Validator&& 
   return selected;
 }
 
-OverlayCandidate rootOverlayCandidate(const char* path) {
-  if (validateOverlayImage(path)) return OverlayCandidate{path, 0, true};
-  return {};
+size_t selectCatalogCandidate(const std::vector<SleepImageSelectionStore::ImageEntry>& candidates) {
+  size_t selected = candidates.size();
+  size_t eligible = 0;
+  for (size_t index = 0; index < candidates.size(); ++index) {
+    const auto& candidate = candidates[index];
+    if (APP_STATE.isRecentSleep(candidate.id, APP_STATE.recentSleepFill)) continue;
+    ++eligible;
+    if (random(static_cast<long>(eligible)) == 0) selected = index;
+  }
+  if (selected < candidates.size()) return selected;
+  return candidates.empty() ? 0 : static_cast<size_t>(random(static_cast<long>(candidates.size())));
 }
 
-OverlayCandidate directoryOverlayCandidate(const char* directoryPath) {
-  return directoryImageCandidate(directoryPath, [](const std::string& path) { return validateOverlayImage(path); });
-}
-
-OverlayCandidate findTransparentSleepOverlay() {
-  if (OverlayCandidate candidate = rootOverlayCandidate("/sleep-overlay.bmp"); candidate.valid) return candidate;
-  if (OverlayCandidate candidate = rootOverlayCandidate("/sleep-overlay.png"); candidate.valid) return candidate;
-  if (OverlayCandidate candidate = directoryOverlayCandidate("/.sleep-overlay"); candidate.valid) return candidate;
-  return directoryOverlayCandidate("/sleep-overlay");
-}
-
-bool renderPngOverlay(const std::string& path, GfxRenderer& renderer) {
+bool renderPngOverlay(const std::string& path, GfxRenderer& renderer,
+                      const SleepImageSelectionStore::ImageTransform& transform) {
   ImageDimensions dimensions{};
   if (!PngToFramebufferConverter::getSupportedDimensionsStatic(path, dimensions)) return false;
-  const SleepImagePlacement placement = placeSleepImage(renderer, dimensions.width, dimensions.height);
+  const SleepImagePlacement placement = placeSleepImage(renderer, dimensions.width, dimensions.height, transform);
   if (placement.width <= 0 || placement.height <= 0) return false;
 
   RenderConfig config{};
@@ -678,8 +677,9 @@ bool renderPngOverlay(const std::string& path, GfxRenderer& renderer) {
   return converter.decodeToFramebuffer(path, renderer, config);
 }
 
-bool renderBitmapWhiteKeyOverlay(Bitmap& bitmap, GfxRenderer& renderer) {
-  const SleepImagePlacement placement = placeSleepImage(renderer, bitmap.getWidth(), bitmap.getHeight());
+bool renderBitmapWhiteKeyOverlay(Bitmap& bitmap, GfxRenderer& renderer,
+                                 const SleepImageSelectionStore::ImageTransform& transform) {
+  const SleepImagePlacement placement = placeSleepImage(renderer, bitmap.getWidth(), bitmap.getHeight(), transform);
   if (placement.width <= 0 || placement.height <= 0) return false;
 
   const int outputRowSize = (bitmap.getWidth() + 3) / 4;
@@ -716,14 +716,15 @@ bool renderBitmapWhiteKeyOverlay(Bitmap& bitmap, GfxRenderer& renderer) {
   return true;
 }
 
-bool renderBmpOverlay(const std::string& path, GfxRenderer& renderer) {
+bool renderBmpOverlay(const std::string& path, GfxRenderer& renderer,
+                      const SleepImageSelectionStore::ImageTransform& transform) {
   HalFile file;
   if (!Storage.openFileForRead("SLP", path, file)) return false;
 
   Bmp32OverlayHeader alphaHeader;
   const Bmp32HeaderStatus alphaStatus = SleepImageValidation::readBmp32Header(file, alphaHeader);
   if (alphaStatus == Bmp32HeaderStatus::Valid) {
-    const bool rendered = renderBmp32Overlay(file, alphaHeader, renderer);
+    const bool rendered = renderBmp32Overlay(file, alphaHeader, renderer, transform);
     file.close();
     return rendered;
   }
@@ -732,14 +733,15 @@ bool renderBmpOverlay(const std::string& path, GfxRenderer& renderer) {
   if (!file.seek(0)) return file.close() && false;
   Bitmap bitmap(file, true);
   if (bitmap.parseHeaders() != BmpReaderError::Ok) return file.close() && false;
-  const bool rendered = renderBitmapWhiteKeyOverlay(bitmap, renderer);
+  const bool rendered = renderBitmapWhiteKeyOverlay(bitmap, renderer, transform);
   file.close();
   return rendered;
 }
 
-bool renderOverlayImage(const std::string& path, GfxRenderer& renderer) {
-  if (FsHelpers::hasPngExtension(path)) return renderPngOverlay(path, renderer);
-  if (FsHelpers::hasBmpExtension(path)) return renderBmpOverlay(path, renderer);
+bool renderOverlayImage(const std::string& path, GfxRenderer& renderer,
+                        const SleepImageSelectionStore::ImageTransform& transform) {
+  if (FsHelpers::hasPngExtension(path)) return renderPngOverlay(path, renderer, transform);
+  if (FsHelpers::hasBmpExtension(path)) return renderBmpOverlay(path, renderer, transform);
   return false;
 }
 }  // namespace
@@ -758,18 +760,17 @@ void SleepActivity::onEnter() {
     return renderLastScreenSleepScreen();
   }
 
-  const bool customImageRequired =
-      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+  // CUSTOM is the persisted legacy alias for the catalog-backed overlay mode.
+  // CUSTOM_STATS intentionally keeps the old opaque image + stats renderer.
+  const bool renderTransparent = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+                                 SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
+  const bool legacyCustomImageRequired =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM_STATS ||
-      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM ||
       (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && !APP_STATE.lastSleepFromReader);
-  if (!SleepImageSelectionStore::recover() && customImageRequired) {
+  if (!renderTransparent && legacyCustomImageRequired && !SleepImageSelectionStore::recover()) {
     LOG_ERR("SLP", "Sleep image selection recovery failed; using default screen");
     return renderDefaultSleepScreen();
   }
-
-  const bool renderTransparent = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT_CUSTOM;
-  const bool transparentBaseSaved = renderTransparent && SleepFrameStore::save(renderer);
   const char* popupMessage = tr(STR_ENTERING_SLEEP);
 
   // Show popup with reader orientation only when going to sleep from reader
@@ -781,13 +782,11 @@ void SleepActivity::onEnter() {
     showEnteringSleepPopup(renderer, popupMessage, renderTransparent);
   }
 
-  if (renderTransparent) return renderTransparentSleepScreen(transparentBaseSaved);
+  if (renderTransparent) return renderTransparentSleepScreen();
 
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
       return renderBlankSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM):
-      return renderCustomSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
       return renderCoverSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_STATS):
@@ -1022,44 +1021,65 @@ void SleepActivity::renderDefaultSleepScreen() {
   displayStrongSleepFrame();
 }
 
-void SleepActivity::renderTransparentSleepScreen(const bool baseFrameSaved) {
-  if (!baseFrameSaved) {
-    LOG_ERR("SLP", "Transparent sleep skipped: base frame could not be saved");
+void SleepActivity::renderTransparentSleepScreen() {
+  SleepImageSelectionStore::Catalog catalog;
+  const SleepImageSelectionStore::ImageTransform legacyTransform{
+      SETTINGS.sleepScreenImageZoom, SETTINGS.sleepScreenImageOffsetX, SETTINGS.sleepScreenImageOffsetY};
+  const SleepImageSelectionStore::CatalogStatus catalogStatus =
+      SleepImageSelectionStore::loadCatalog(catalog, legacyTransform);
+  if (catalogStatus != SleepImageSelectionStore::CatalogStatus::Ok || catalog.images.empty()) {
+    LOG_ERR("SLP", "Sleep image catalog unavailable: status=%u count=%u", static_cast<unsigned>(catalogStatus),
+            static_cast<unsigned>(catalog.images.size()));
     drawMoonOnCurrentFrame(renderer);
     displayStrongSleepFrame();
     return;
   }
 
-  const OverlayCandidate overlay = findTransparentSleepOverlay();
-  if (!overlay.valid) {
-    LOG_DBG("SLP", "Transparent sleep overlay missing; using current frame");
+  if (!SleepFrameStore::save(renderer)) {
+    LOG_ERR("SLP", "Sleep overlay skipped: base frame could not be saved");
     drawMoonOnCurrentFrame(renderer);
     displayStrongSleepFrame();
     return;
   }
 
-  LOG_DBG("SLP", "Rendering transparent sleep overlay: %s", overlay.path.c_str());
-  if (renderOverlayImage(overlay.path, renderer)) {
-    displayStrongSleepFrame();
-    return;
+  bool restoreBase = false;
+  while (!catalog.images.empty()) {
+    const size_t selected = selectCatalogCandidate(catalog.images);
+    SleepImageSelectionStore::ImageEntry candidate = std::move(catalog.images[selected]);
+    catalog.images.erase(catalog.images.begin() + selected);
+
+    if (restoreBase && !SleepFrameStore::load(display, false)) {
+      wakeFrameReplayable_ = false;
+      return renderDefaultSleepScreen();
+    }
+
+    LOG_DBG("SLP", "Rendering sleep overlay id=%u path=%s", static_cast<unsigned>(candidate.id),
+            candidate.path.c_str());
+    if (renderOverlayImage(candidate.path, renderer, candidate.transform)) {
+      APP_STATE.pushRecentSleep(candidate.id);
+      displayStrongSleepFrame();
+      return;
+    }
+
+    LOG_ERR("SLP", "Sleep overlay failed id=%u path=%s", static_cast<unsigned>(candidate.id), candidate.path.c_str());
+    restoreBase = true;
   }
 
-  LOG_ERR("SLP", "Transparent sleep overlay failed: %s", overlay.path.c_str());
-  if (SleepFrameStore::load(display, false)) {
-    drawMoonOnCurrentFrame(renderer);
-    displayStrongSleepFrame();
-    return;
+  if (restoreBase && !SleepFrameStore::load(display, false)) {
+    wakeFrameReplayable_ = false;
+    return renderDefaultSleepScreen();
   }
-
-  wakeFrameReplayable_ = false;
-  renderDefaultSleepScreen();
+  drawMoonOnCurrentFrame(renderer);
+  displayStrongSleepFrame();
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool applyCoverFilter,
                                             const bool withBookStats) {
-  const SleepImagePlacement placement = placeSleepImage(renderer, bitmap.getWidth(), bitmap.getHeight());
+  const SleepImagePlacement placement =
+      placeSleepImage(renderer, bitmap.getWidth(), bitmap.getHeight(), !applyCoverFilter);
   LOG_DBG("SLP", "bitmap %d x %d -> %d x %d at %d,%d zoom=%u", bitmap.getWidth(), bitmap.getHeight(), placement.width,
-          placement.height, placement.x, placement.y, static_cast<unsigned>(SETTINGS.sleepScreenImageZoom));
+          placement.height, placement.x, placement.y,
+          static_cast<unsigned>(applyCoverFilter ? SLEEP_IMAGE_DEFAULT_ZOOM : SETTINGS.sleepScreenImageZoom));
   renderer.clearScreen();
 
   const uint8_t filter =

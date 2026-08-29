@@ -86,8 +86,10 @@ bool BookmarkUtil::writeEmptyBookmarkFile(const std::string& path) {
   HalFile file;
   if (!Storage.openFileForWrite("BKM", path, file)) return false;
   const bool written = file.write(EMPTY_BOOKMARKS, sizeof(EMPTY_BOOKMARKS) - 1) == sizeof(EMPTY_BOOKMARKS) - 1;
-  file.flush();
-  const bool synced = file.sync();
+  bool synced = false;
+  if (written) {
+    synced = file.sync();
+  }
   const bool closed = file.close();
   if (!written || !synced || !closed) return false;
   return isEmptyBookmarkFile(path);

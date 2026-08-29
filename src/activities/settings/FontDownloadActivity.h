@@ -62,6 +62,15 @@ class FontDownloadActivity : public Activity {
     ERROR,
   };
 
+  enum class RetryOperation {
+    NONE,
+    MANIFEST,
+    SINGLE_FAMILY,
+    DOWNLOAD_ALL,
+    UPDATE_ALL,
+    DELETE_FAMILY,
+  };
+
   struct ManifestFile {
     std::string name;
     std::string sha256;
@@ -99,8 +108,10 @@ class FontDownloadActivity : public Activity {
   std::string downloadingFamilyName_;
   std::string errorMessage_;
   bool cancelRequested_ = false;
+  RetryOperation retryOperation_ = RetryOperation::NONE;
 
   void onWifiSelectionComplete(bool success);
+  void loadManifest();
   bool fetchAndParseManifest();
   bool parseCachedManifest();
   bool attachReleaseDigests();
@@ -108,6 +119,7 @@ class FontDownloadActivity : public Activity {
   void downloadFamily(ManifestFamily& family);
   void downloadAll();
   void updateAll();
+  void deleteSelectedFamily();
   bool validateFamilyDirectory(const char* directory, const ManifestFamily& family);
   static bool validateFamilyDirectoryCallback(const char* directory, void* context);
   bool recoverFamilyTransactions(const ManifestFamily& family);

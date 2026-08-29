@@ -234,8 +234,7 @@ bool DictionaryWordSelectActivity::resizeSelection(const int delta) {
 
 void DictionaryWordSelectActivity::performLookup() {
   popup = Popup::Busy;
-  if (!dictOpenAttempted) {
-    dictOpenAttempted = true;
+  if (!dictOpenOk) {
     dictOpenOk = dict.open(SETTINGS.dictionaryName);
     dictNeedsIndex = dictOpenOk && dict.needsIndex();
   }
@@ -279,7 +278,7 @@ void DictionaryWordSelectActivity::performLookup() {
     }
     DICTIONARY_HISTORY.record(successfulQuery);
     popup = Popup::None;
-    startActivityForResult(std::move(definitionActivity), [this](const ActivityResult&) { requestUpdate(); });
+    startActivityForResult(std::move(definitionActivity), [](const ActivityResult&) {});
     return;
   }
   if (!ok) {

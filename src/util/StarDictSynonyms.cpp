@@ -70,7 +70,10 @@ bool readEntry(HalFile& file, char* alias, size_t aliasCapacity, uint32_t& ordin
 
 bool publishHeader(HalFile& output, uint32_t sampleCount, uint32_t sourceSize) {
   const uint32_t header[5] = {QSYN_MAGIC, QSYN_VERSION, SAMPLE_INTERVAL, sampleCount, sourceSize};
-  return output.seekSet(0) && output.write(header, sizeof(header)) == sizeof(header) && output.sync() && output.close();
+  const bool written = output.seekSet(0) && output.write(header, sizeof(header)) == sizeof(header);
+  const bool synced = written && output.sync();
+  const bool closed = output.close();
+  return written && synced && closed;
 }
 }  // namespace
 
@@ -102,7 +105,11 @@ bool buildIndex(const std::string& basePath, void (*yieldFn)(void*), void* ctx) 
   HalFile output;
   if (!Storage.openFileForWrite("SYN", sidecarPath, output)) return false;
   const uint32_t placeholder[5] = {};
-  if (output.write(placeholder, sizeof(placeholder)) != sizeof(placeholder)) return false;
+  if (output.write(placeholder, sizeof(placeholder)) != sizeof(placeholder)) {
+    output.close();
+    Storage.remove(sidecarPath.c_str());
+    return false;
+  }
 
   uint32_t sampleCount = 0;
   uint32_t entryCount = 0;
@@ -111,16 +118,19 @@ bool buildIndex(const std::string& basePath, void (*yieldFn)(void*), void* ctx) 
   size_t aliasLength = 0;
   uint8_t suffixLeft = 0;
   bool valid = true;
+  bool ioFailure = false;
 
   if (sourceSize > 0) {
     const uint32_t firstOffset = 0;
     valid = output.write(&firstOffset, sizeof(firstOffset)) == sizeof(firstOffset);
+    ioFailure = !valid;
     sampleCount = valid ? 1 : 0;
   }
 
   while (valid && position < sourceSize) {
     const int count = source.read(buffer.get(), SCAN_BYTES);
     if (count <= 0) {
+      ioFailure = source.getError() != 0;
       valid = false;
       break;
     }
@@ -142,7 +152,11 @@ bool buildIndex(const std::string& basePath, void (*yieldFn)(void*), void* ctx) 
         const uint32_t nextEntry = position + static_cast<uint32_t>(index) + 1;
         if (entryCount % SAMPLE_INTERVAL == 0 && nextEntry < sourceSize) {
           valid = output.write(&nextEntry, sizeof(nextEntry)) == sizeof(nextEntry);
-          if (valid) ++sampleCount;
+          if (valid) {
+            ++sampleCount;
+          } else {
+            ioFailure = true;
+          }
         }
       }
     }
@@ -153,14 +167,20 @@ bool buildIndex(const std::string& basePath, void (*yieldFn)(void*), void* ctx) 
       yieldFn(ctx);
     }
   }
-  valid = valid && aliasLength == 0 && suffixLeft == 0 && position == sourceSize;
+  if (source.getError() != 0) ioFailure = true;
+  valid = valid && !ioFailure && aliasLength == 0 && suffixLeft == 0 && position == sourceSize;
 
   if (!valid) {
+    output.close();
+    Storage.remove(sidecarPath.c_str());
+    if (ioFailure) {
+      LOG_ERR("SYN", "Could not build synonym index due to an I/O failure: %s", sourcePath.c_str());
+      return false;
+    }
+
     LOG_ERR("SYN", "Malformed synonym file: %s", sourcePath.c_str());
     // Keep a valid zero-sample marker. Direct .idx lookups remain available,
     // and the same malformed file is not rescanned on every lookup.
-    output.close();
-    Storage.remove(sidecarPath.c_str());
     HalFile disabled;
     if (!Storage.openFileForWrite("SYN", sidecarPath, disabled) || !publishHeader(disabled, 0, sourceSize)) {
       Storage.remove(sidecarPath.c_str());
@@ -189,13 +209,15 @@ bool lookupOrdinal(const std::string& basePath, const char* target, uint32_t& or
   char alias[MAX_ALIAS_BYTES + 1];
   uint32_t lo = 0;
   uint32_t hi = header.sampleCount - 1;
+  bool sampledScan = true;
   while (lo < hi) {
     const uint32_t middle = (lo + hi + 1) / 2;
     uint32_t offset = 0;
     uint32_t ignoredOrdinal = 0;
     if (!readSample(sidecar, middle, offset) || offset >= sourceSize64 || !source.seekSet(offset) ||
         !readEntry(source, alias, sizeof(alias), ignoredOrdinal)) {
-      return false;
+      sampledScan = false;
+      break;
     }
     if (StringUtils::asciiCaseCmp(alias, target) <= 0) {
       lo = middle;
@@ -205,8 +227,12 @@ bool lookupOrdinal(const std::string& basePath, const char* target, uint32_t& or
   }
 
   uint32_t startOffset = 0;
-  if (!readSample(sidecar, lo, startOffset) || !source.seekSet(startOffset)) return false;
-  for (uint32_t count = 0; count < SAMPLE_INTERVAL && source.position() < sourceSize64; ++count) {
+  if (sampledScan &&
+      (!readSample(sidecar, lo, startOffset) || startOffset >= sourceSize64 || !source.seekSet(startOffset))) {
+    sampledScan = false;
+  }
+  if (!sampledScan && !source.seekSet(0)) return false;
+  for (uint32_t count = 0; source.position() < sourceSize64 && (!sampledScan || count < SAMPLE_INTERVAL); ++count) {
     uint32_t ordinal = 0;
     if (!readEntry(source, alias, sizeof(alias), ordinal)) return false;
     const int comparison = StringUtils::asciiCaseCmp(alias, target);

@@ -66,7 +66,6 @@ bool writeVerified(const std::string& path, const SourceIdentityCodec::Encoded& 
     file.close();
     return false;
   }
-  file.flush();
   const bool synced = file.sync();
   const bool closed = file.close();
   if (!synced || !closed) return false;
@@ -131,6 +130,10 @@ SaveStatus save(const std::string& cachePath, const ZipFile::SourceIdentity& ide
     if (candidates[i].status == CandidateStatus::IoError) return SaveStatus::IoError;
   }
   if (candidates[0].status == CandidateStatus::Valid && candidates[0].identity == identity) {
+    // A failed rename can leave a different, valid temp beside the restored
+    // primary. The caller has now confirmed which identity is canonical, so
+    // do not let the abandoned temp become a future recovery candidate.
+    if (!removeIfPresent(tempPath)) return SaveStatus::IoError;
     return SaveStatus::Unchanged;
   }
 

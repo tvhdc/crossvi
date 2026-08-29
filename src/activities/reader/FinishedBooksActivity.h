@@ -17,6 +17,7 @@ class FinishedBooksActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool skipLoopDelay() override { return !catalogScanComplete_; }
 
  private:
   struct CompletedBook {

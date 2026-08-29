@@ -119,7 +119,7 @@ bool save(const GfxRenderer& renderer) {
   const uint8_t* buffer = renderer.getFrameBuffer();
   const size_t bufferSize = renderer.getBufferSize();
   SleepFrameSpec spec;
-  if (!buffer || !frameSpec(renderer.getScreenWidth(), renderer.getScreenHeight(), spec) ||
+  if (!buffer || !frameSpec(renderer.getDisplayHeight(), renderer.getDisplayWidth(), spec) ||
       bufferSize != spec.payloadSize) {
     Storage.remove(SLEEP_FRAME_TEMP_FILE);
     return false;
@@ -166,7 +166,7 @@ bool ready(const bool deviceIsX3) {
 // cppcheck-suppress constParameterReference; loading writes through the display framebuffer.
 bool load(HalDisplay& display, const bool consume) {
   SleepFrameSpec expected;
-  if (!frameSpec(display.getDisplayWidth(), display.getDisplayHeight(), expected) ||
+  if (!frameSpec(display.getDisplayHeight(), display.getDisplayWidth(), expected) ||
       StagedFileTransaction::recover(SLEEP_FRAME_FILE, SLEEP_FRAME_BACKUP_FILE, validateSleepFrameFile, &expected) ==
           StagedFileTransaction::Status::IoError ||
       !validateSleepFrameFile(SLEEP_FRAME_FILE, &expected)) {

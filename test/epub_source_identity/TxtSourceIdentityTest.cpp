@@ -163,11 +163,16 @@ TEST_F(TxtSourceIdentityTest, ReusesAnOpenHandleForIndexedContentReads) {
   HalFile file;
   ASSERT_TRUE(Storage.openFileForRead("TST", BOOK_PATH, file));
   std::array<uint8_t, 4> middle{};
+  std::array<uint8_t, 2> next{};
   std::array<uint8_t, 2> start{};
+  Storage.resetIoCounters();
   EXPECT_TRUE(txt.readContent(file, middle.data(), 3, middle.size()));
   EXPECT_EQ(std::string(middle.begin(), middle.end()), "3456");
+  EXPECT_TRUE(txt.readContent(file, next.data(), 7, next.size()));
+  EXPECT_EQ(std::string(next.begin(), next.end()), "78");
   EXPECT_TRUE(txt.readContent(file, start.data(), 0, start.size()));
   EXPECT_EQ(std::string(start.begin(), start.end()), "01");
+  EXPECT_EQ(Storage.seekCalls(), 2U);
   EXPECT_TRUE(file.close());
 }
 

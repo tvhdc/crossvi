@@ -3,7 +3,6 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalTiltSensor.h>
-#include <I18n.h>
 
 namespace {
 using Id = HomeShortcutId;

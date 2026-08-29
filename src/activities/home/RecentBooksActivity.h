@@ -72,6 +72,7 @@ class RecentBooksActivity final : public Activity {
   int pendingPageSwitch = 0;
   bool pendingSearch = false;
   bool pendingBack = false;
+  bool suppressSearchBackRelease = false;
   ReaderUtils::HoldGestureState holdUp;
   ReaderUtils::HoldGestureState holdDown;
   ReaderUtils::HoldGestureState holdLeft;

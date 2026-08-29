@@ -26,13 +26,15 @@ class OpdsBookBrowserActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+  enum class RetryOperation { Feed, Download };
+
   ButtonNavigator buttonNavigator;
   BrowserState state = BrowserState::LOADING;
+  RetryOperation retryOperation = RetryOperation::Feed;
   std::vector<OpdsEntry> entries;
   std::vector<std::string> navigationHistory;
   std::string currentPath;
   std::string searchTemplate;
-  bool consumeConfirm = false;
   bool consumeBack = false;  // Added missing member
   int selectorIndex = 0;
   std::string errorMessage;
@@ -46,6 +48,7 @@ class OpdsBookBrowserActivity final : public Activity {
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
   void prepareNetworkRequest(const char* stage);
+  void retryFailedOperation();
   void fetchFeed(const std::string& path);
   void releaseEntries();
   void navigateToEntry(const OpdsEntry& entry);

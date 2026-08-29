@@ -151,6 +151,100 @@ TEST(SettingsApiUtils, ValidatesScreenMarginWebIndicesBeforeApplyingThem) {
   EXPECT_FALSE(SettingsApiUtils::isValidEnumIndex(10, ReaderScreenMargin::COUNT));
 }
 
+TEST(SettingsApiUtils, RejectsInvalidWebSettingScalarsBeforeMutation) {
+  EXPECT_TRUE(SettingsApiUtils::isValidToggle(0));
+  EXPECT_TRUE(SettingsApiUtils::isValidToggle(1));
+  EXPECT_FALSE(SettingsApiUtils::isValidToggle(-1));
+  EXPECT_FALSE(SettingsApiUtils::isValidToggle(2));
+
+  EXPECT_TRUE(SettingsApiUtils::isValidValue(5, 5, 70));
+  EXPECT_TRUE(SettingsApiUtils::isValidValue(70, 5, 70));
+  EXPECT_FALSE(SettingsApiUtils::isValidValue(4, 5, 70));
+  EXPECT_FALSE(SettingsApiUtils::isValidValue(71, 5, 70));
+  EXPECT_FALSE(SettingsApiUtils::isValidValue(-1, 0, 70));
+
+  EXPECT_TRUE(SettingsApiUtils::isValidStringLength(64, 64));
+  EXPECT_FALSE(SettingsApiUtils::isValidStringLength(65, 64));
+}
+
+TEST(SettingsApiUtils, BatchesStoresAndRollsBackOnlyUnpublishedChanges) {
+  int deviceSaves = 0;
+  int koReaderSaves = 0;
+  int deviceRollbacks = 0;
+  int koReaderRollbacks = 0;
+
+  auto result = SettingsApiUtils::persistBatches(
+      true, true,
+      [&] {
+        ++deviceSaves;
+        return true;
+      },
+      [&] {
+        ++koReaderSaves;
+        return true;
+      },
+      [&] { ++deviceRollbacks; }, [&] { ++koReaderRollbacks; });
+  EXPECT_EQ(result, SettingsApiUtils::PersistenceResult::Saved);
+  EXPECT_EQ(deviceSaves, 1);
+  EXPECT_EQ(koReaderSaves, 1);
+  EXPECT_EQ(deviceRollbacks, 0);
+  EXPECT_EQ(koReaderRollbacks, 0);
+
+  deviceSaves = koReaderSaves = deviceRollbacks = koReaderRollbacks = 0;
+  result = SettingsApiUtils::persistBatches(
+      true, true,
+      [&] {
+        ++deviceSaves;
+        return false;
+      },
+      [&] {
+        ++koReaderSaves;
+        return true;
+      },
+      [&] { ++deviceRollbacks; }, [&] { ++koReaderRollbacks; });
+  EXPECT_EQ(result, SettingsApiUtils::PersistenceResult::DeviceFailed);
+  EXPECT_EQ(deviceSaves, 1);
+  EXPECT_EQ(koReaderSaves, 0);
+  EXPECT_EQ(deviceRollbacks, 1);
+  EXPECT_EQ(koReaderRollbacks, 1);
+
+  deviceSaves = koReaderSaves = deviceRollbacks = koReaderRollbacks = 0;
+  result = SettingsApiUtils::persistBatches(
+      true, true,
+      [&] {
+        ++deviceSaves;
+        return true;
+      },
+      [&] {
+        ++koReaderSaves;
+        return false;
+      },
+      [&] { ++deviceRollbacks; }, [&] { ++koReaderRollbacks; });
+  EXPECT_EQ(result, SettingsApiUtils::PersistenceResult::KoReaderFailed);
+  EXPECT_EQ(deviceSaves, 1);
+  EXPECT_EQ(koReaderSaves, 1);
+  EXPECT_EQ(deviceRollbacks, 0);
+  EXPECT_EQ(koReaderRollbacks, 1);
+
+  deviceSaves = koReaderSaves = deviceRollbacks = koReaderRollbacks = 0;
+  result = SettingsApiUtils::persistBatches(
+      false, false,
+      [&] {
+        ++deviceSaves;
+        return true;
+      },
+      [&] {
+        ++koReaderSaves;
+        return true;
+      },
+      [&] { ++deviceRollbacks; }, [&] { ++koReaderRollbacks; });
+  EXPECT_EQ(result, SettingsApiUtils::PersistenceResult::Saved);
+  EXPECT_EQ(deviceSaves, 0);
+  EXPECT_EQ(koReaderSaves, 0);
+  EXPECT_EQ(deviceRollbacks, 0);
+  EXPECT_EQ(koReaderRollbacks, 0);
+}
+
 TEST(PerBookReaderSettingsCodec, RejectsTruncationAndTrailingBytes) {
   Encoded encoded;
   ASSERT_TRUE(encode(populatedSettings(), encoded));

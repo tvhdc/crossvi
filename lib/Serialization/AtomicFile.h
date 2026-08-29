@@ -13,12 +13,14 @@ enum class SaveStatus : uint8_t { Saved, Unchanged, Oversize, InvalidExistingSta
 
 LoadStatus load(const char* path, std::string& data, size_t maxSize, Validator validator, void* context = nullptr);
 
+// rotateIfUnchanged checkpoints the current value into both primary and backup.
 SaveStatus save(const char* path, const uint8_t* data, size_t size, size_t maxSize, Validator validator,
-                void* context = nullptr);
+                void* context = nullptr, bool rotateIfUnchanged = false);
 
 inline SaveStatus save(const char* path, const std::string& data, size_t maxSize, Validator validator,
-                       void* context = nullptr) {
-  return save(path, reinterpret_cast<const uint8_t*>(data.data()), data.size(), maxSize, validator, context);
+                       void* context = nullptr, const bool rotateIfUnchanged = false) {
+  return save(path, reinterpret_cast<const uint8_t*>(data.data()), data.size(), maxSize, validator, context,
+              rotateIfUnchanged);
 }
 
 }  // namespace AtomicFile

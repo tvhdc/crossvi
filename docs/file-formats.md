@@ -450,6 +450,39 @@ if (parsedSize != fileSize) {
 }
 ```
 
+## Custom sleep image catalog (`/.crosspoint/sleep_images.json`)
+
+Version 1 is a bounded JSON manifest for the images selected by the **Custom**
+sleep-screen mode. It contains `version`, the next stable 16-bit image ID, and
+an ordered `images` array. Each of at most 16 entries stores:
+
+- stable `id`;
+- absolute SD-card `path`;
+- display `name`;
+- `zoom` (50–200);
+- signed `x` and `y` offsets.
+
+The active sleep-screen mode is deliberately not part of this file. Switching
+to Default, Cover, or another mode therefore leaves the Custom list and every
+per-image transform unchanged. The manifest is published and recovered with
+the standard atomic `.tmp`/`.bak` transaction. A malformed, oversized, or
+unreadable manifest fails closed instead of being replaced with an empty list.
+
+Images added through the device UI are normalized first and published as
+`/.sleep-overlay/crossvi-<id>.png` or `.bmp`. The manifest is committed only
+after that managed image verifies successfully. Removal commits the manifest
+before deleting a managed copy, so a failed cleanup can leave only an unused
+orphan rather than a manifest entry pointing at missing data. Entries imported
+from legacy root/folder locations remain external references and their source
+files are never deleted by removing the entry.
+
+When no manifest or recoverable sibling exists, CrossVi imports the effective
+legacy `sleep.bmp`, `.sleep`/`sleep`, and sleep-overlay root/folder sources once,
+copies the previous global zoom/X/Y values into every imported entry, and
+atomically saves the result even when it is empty. Keeping an empty manifest is
+important: it prevents explicitly removed legacy images from reappearing on a
+later restart.
+
 ## Saved sleep frame (`/.crosspoint/sleep_frame.bin`)
 
 This file is a temporary, regenerable wake framebuffer. Version 1 stores a

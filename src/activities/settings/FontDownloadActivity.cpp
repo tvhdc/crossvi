@@ -92,7 +92,6 @@ void FontDownloadActivity::onEnter() {
   // TLS certificate parsing needs a large contiguous allocation. A selected
   // SD reader font is unrelated to this screen and must not remain resident.
   sdFontSystem.releaseLoadedFont(renderer);
-  WiFi.mode(WIFI_STA);
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -118,6 +117,11 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
+  loadManifest();
+}
+
+void FontDownloadActivity::loadManifest() {
+  retryOperation_ = RetryOperation::MANIFEST;
   {
     RenderLock lock(*this);
     state_ = LOADING_MANIFEST;
@@ -127,6 +131,8 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
   if (!fetchAndParseManifest()) {
     {
       RenderLock lock(*this);
+      families_.clear();
+      baseUrl_.clear();
       state_ = ERROR;
     }
     // fetchAndParseManifest() runs synchronously after the loading frame. Make
@@ -138,9 +144,11 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
 
   {
     RenderLock lock(*this);
+    retryOperation_ = RetryOperation::NONE;
     state_ = FAMILY_LIST;
     selectedIndex_ = 0;
   }
+  requestUpdate();
 }
 
 // --- Manifest fetching ---
@@ -358,6 +366,7 @@ bool FontDownloadActivity::attachReleaseDigests() {
 // --- Download ---
 
 void FontDownloadActivity::downloadAll() {
+  retryOperation_ = RetryOperation::DOWNLOAD_ALL;
   cancelRequested_ = false;
   for (size_t i = 0; i < families_.size(); i++) {
     if (families_[i].installed) continue;
@@ -372,6 +381,7 @@ void FontDownloadActivity::downloadAll() {
 }
 
 void FontDownloadActivity::updateAll() {
+  retryOperation_ = RetryOperation::UPDATE_ALL;
   cancelRequested_ = false;
   for (size_t i = 0; i < families_.size(); i++) {
     if (!families_[i].hasUpdate) continue;
@@ -486,6 +496,7 @@ bool FontDownloadActivity::recoverFamilyTransactions(const ManifestFamily& famil
 }
 
 void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
+  const size_t familyStartFileIndex = currentFileIndex_;
   {
     RenderLock lock(*this);
     state_ = DOWNLOADING;
@@ -550,15 +561,20 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
   const auto restoreFamilyList = [this]() {
     if (parseCachedManifest()) return true;
     RenderLock lock(*this);
+    families_.clear();
+    baseUrl_.clear();
+    retryOperation_ = RetryOperation::MANIFEST;
     state_ = ERROR;
     errorMessage_ = "Failed to reload font list";
     return false;
   };
-  const auto failDownload = [this, &activeFamily, stagingDirectory, &restoreFamilyList](const std::string& message) {
+  const auto failDownload = [this, &activeFamily, familyStartFileIndex, stagingDirectory,
+                             &restoreFamilyList](const std::string& message) {
     FontStorageUtils::discardStagingFamily(stagingDirectory);
     std::vector<ManifestFile>().swap(activeFamily.files);
     if (!restoreFamilyList()) return;
     RenderLock lock(*this);
+    currentFileIndex_ = familyStartFileIndex;
     state_ = ERROR;
     errorMessage_ = message;
   };
@@ -630,6 +646,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
       if (!restoreFamilyList()) return;
       {
         RenderLock lock(*this);
+        retryOperation_ = RetryOperation::NONE;
         state_ = FAMILY_LIST;
       }
       return;
@@ -687,6 +704,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 }
 
 void FontDownloadActivity::promptDeleteSelectedFamily() {
+  retryOperation_ = RetryOperation::NONE;
   const int pendingDeleteFamilyIndex = familyIndexFromList(selectedIndex_);
   if (pendingDeleteFamilyIndex < 0 || pendingDeleteFamilyIndex >= static_cast<int>(families_.size())) {
     return;
@@ -700,24 +718,35 @@ void FontDownloadActivity::promptDeleteSelectedFamily() {
 }
 
 void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& result) {
-  if (result.isCancelled) {
-    requestUpdate();
+  if (result.isCancelled) return;
+
+  deleteSelectedFamily();
+}
+
+void FontDownloadActivity::deleteSelectedFamily() {
+  const int familyIndex = familyIndexFromList(selectedIndex_);
+  if (familyIndex < 0 || familyIndex >= static_cast<int>(families_.size())) {
+    RenderLock lock(*this);
+    retryOperation_ = RetryOperation::NONE;
+    state_ = FAMILY_LIST;
     return;
   }
 
-  auto& family = families_[familyIndexFromList(selectedIndex_)];
+  auto& family = families_[familyIndex];
 
   if (fontInstaller_.deleteFamily(family.name.c_str()) != FontInstaller::Error::OK) {
     RenderLock lock(*this);
+    retryOperation_ = RetryOperation::DELETE_FAMILY;
     state_ = ERROR;
     errorMessage_ = "Failed to delete font";
   } else {
     fontInstaller_.refreshRegistry();
     family.installed = false;
     family.hasUpdate = false;
+    RenderLock lock(*this);
+    retryOperation_ = RetryOperation::NONE;
+    state_ = FAMILY_LIST;
   }
-
-  requestUpdate();
 }
 
 bool FontDownloadActivity::isSelectedFamilyDeletable() const {
@@ -779,6 +808,7 @@ void FontDownloadActivity::loop() {
         } else {
           auto& family = families_[familyIndexFromList(selectedIndex_)];
           if (!family.installed || family.hasUpdate) {
+            retryOperation_ = RetryOperation::SINGLE_FAMILY;
             currentFileIndex_ = 0;
             currentFileTotal_ = family.files.size();
             downloadFamily(family);
@@ -796,6 +826,7 @@ void FontDownloadActivity::loop() {
         mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       {
         RenderLock lock(*this);
+        retryOperation_ = RetryOperation::NONE;
         state_ = FAMILY_LIST;
       }
       requestUpdate();
@@ -804,21 +835,41 @@ void FontDownloadActivity::loop() {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       {
         RenderLock lock(*this);
+        retryOperation_ = RetryOperation::NONE;
         state_ = FAMILY_LIST;
       }
       requestUpdate();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size())) {
-        downloadFamily(families_[downloadingFamilyIndex_]);
-        requestUpdateAndWait();
-        return;
-      } else {
-        {
-          RenderLock lock(*this);
-          state_ = FAMILY_LIST;
+      switch (retryOperation_) {
+        case RetryOperation::MANIFEST:
+          loadManifest();
+          return;
+        case RetryOperation::DOWNLOAD_ALL:
+          downloadAll();
+          break;
+        case RetryOperation::UPDATE_ALL:
+          updateAll();
+          break;
+        case RetryOperation::DELETE_FAMILY:
+          deleteSelectedFamily();
+          break;
+        case RetryOperation::SINGLE_FAMILY:
+          if (downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size())) {
+            downloadFamily(families_[downloadingFamilyIndex_]);
+            break;
+          }
+          [[fallthrough]];
+        case RetryOperation::NONE: {
+          {
+            RenderLock lock(*this);
+            state_ = FAMILY_LIST;
+          }
+          requestUpdate();
+          return;
         }
-        requestUpdate();
       }
+      requestUpdateAndWait();
+      return;
     }
   }
 }

@@ -111,6 +111,14 @@ bool WifiCredentialStore::loadFromFile() {
     std::lock_guard<std::mutex> lock(persistenceMutex);
     resaveAfterLoad = false;
     loaded = PersistableStore<WifiCredentialStore>::loadFromFile();
+    if (!loaded) {
+      // This singleton is reloaded when entering Wi-Fi flows. Never retain
+      // credentials from an earlier card/load after the current store becomes
+      // missing, corrupt, or unreadable.
+      std::lock_guard<std::mutex> credentialLock(credentialMutex);
+      credentials.clear();
+      lastConnectedSsid.clear();
+    }
     shouldResave = loaded && resaveAfterLoad;
     resaveAfterLoad = false;
   }
@@ -134,7 +142,8 @@ bool WifiCredentialStore::persistOrRestore(std::vector<WifiCredential>&& previou
   return false;
 }
 
-bool WifiCredentialStore::addCredential(const std::string& ssid, const std::string& password) {
+bool WifiCredentialStore::addCredential(const std::string& ssid, const std::string& password,
+                                        const bool markConnected) {
   if (ssid.empty() || ssid.size() > MAX_SSID_LENGTH || password.size() > MAX_PASSWORD_LENGTH) return false;
   std::lock_guard<std::mutex> persistenceLock(persistenceMutex);
   std::vector<WifiCredential> previousCredentials;
@@ -146,6 +155,7 @@ bool WifiCredentialStore::addCredential(const std::string& ssid, const std::stri
     const auto cred = find_if(credentials.begin(), credentials.end(),
                               [&ssid](const WifiCredential& credential) { return credential.ssid == ssid; });
     if (cred != credentials.end()) {
+      if (cred->password == password && (!markConnected || lastConnectedSsid == ssid)) return true;
       cred->password = password;
       LOG_DBG("WCS", "Updated credentials for: %s", ssid.c_str());
     } else {
@@ -156,6 +166,7 @@ bool WifiCredentialStore::addCredential(const std::string& ssid, const std::stri
       credentials.push_back({ssid, password});
       LOG_DBG("WCS", "Added credentials for: %s", ssid.c_str());
     }
+    if (markConnected) lastConnectedSsid = ssid;
   }
   return persistOrRestore(std::move(previousCredentials), std::move(previousLastConnectedSsid));
 }
@@ -168,6 +179,7 @@ bool WifiCredentialStore::updateCredential(const size_t index, const std::string
   {
     std::lock_guard<std::mutex> lock(credentialMutex);
     if (index >= credentials.size()) return false;
+    if (credentials[index].ssid == ssid && credentials[index].password == password) return true;
     previousCredentials = credentials;
     previousLastConnectedSsid = lastConnectedSsid;
 

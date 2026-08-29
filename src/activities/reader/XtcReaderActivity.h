@@ -37,6 +37,7 @@ class XtcReaderActivity final : public Activity {
 #endif
   std::optional<uint32_t> initialBookmarkPage;
   uint32_t lastSavedPage = static_cast<uint32_t>(-1);
+  uint32_t progressSaveRetryBlockedPage = std::numeric_limits<uint32_t>::max();
   ProgressFile::WriteSession progressWriteSession;
   std::atomic<uint32_t> lastSuccessfullyRenderedPage{std::numeric_limits<uint32_t>::max()};
   int pagesUntilFullRefresh = 0;
@@ -67,6 +68,7 @@ class XtcReaderActivity final : public Activity {
   bool globalReadingStatsWritable = true;
   bool completionAttemptBlocked = false;
   std::atomic<bool> pendingStatsCompletionError{false};
+  std::atomic<bool> pendingProgressSaveError{false};
   ReadingSessionTracker readingSessionTracker;
   uint32_t sessionReadingSeconds = 0;
   BookReadingStats pendingBookReadingSpans;
@@ -117,6 +119,7 @@ class XtcReaderActivity final : public Activity {
   void renderStatusBarOverlay(const std::shared_ptr<Xtc>& book, uint32_t page, StatusBarOverlayPosition position) const;
   StatusBarInfo getStatusBarInfo(const std::shared_ptr<Xtc>& book, uint32_t page) const;
   bool saveProgress(const std::shared_ptr<Xtc>& book, uint32_t page);
+  void retryBlockedProgressSave();
   void loadProgress();
   void openReadingStats();
   void openSavedItems();
@@ -159,7 +162,7 @@ class XtcReaderActivity final : public Activity {
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);
-      pagesUntilFullRefresh = 1;
+      pagesUntilFullRefresh = -1;
     }
     requestUpdate();
     return true;

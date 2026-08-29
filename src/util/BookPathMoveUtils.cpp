@@ -37,7 +37,7 @@ constexpr size_t MAX_REPLACEMENT_PATH_BYTES = 512;
 enum class CacheBackedBookKind : uint8_t { None, Epub, Xtc, Text };
 
 bool hasCompletionTrackedStats(const CacheBackedBookKind kind) {
-  return kind == CacheBackedBookKind::Epub || kind == CacheBackedBookKind::Text;
+  return kind == CacheBackedBookKind::Epub || kind == CacheBackedBookKind::Xtc || kind == CacheBackedBookKind::Text;
 }
 
 CacheBackedBookKind cacheBackedBookKind(const std::string& path) {
@@ -175,7 +175,6 @@ bool writeReplacementPending(const std::string& path, const std::string& bookPat
     if (file) file.close();
     return false;
   }
-  file.flush();
   const bool synced = file.sync();
   const bool closed = file.close();
   bool verifiedHadBook = false;
@@ -788,7 +787,7 @@ bool removeBookUserStateAfterDelete(const std::string& bookPath, const bool sour
   const CacheBackedBookKind kind = cacheBackedBookKind(bookPath);
   if (kind != CacheBackedBookKind::Epub) {
     const std::string cachePath = bookCachePath(bookPath);
-    if (kind == CacheBackedBookKind::Text &&
+    if (hasCompletionTrackedStats(kind) &&
         !ReadingStatsCompletionTransaction::canRelocateOrDeleteBookCache(cachePath)) {
       return false;
     }
@@ -827,7 +826,7 @@ bool resetBookUserStateAfterReplacement(const std::string& bookPath) {
   const CacheBackedBookKind kind = cacheBackedBookKind(bookPath);
   if (kind != CacheBackedBookKind::Epub) {
     const std::string cachePath = bookCachePath(bookPath);
-    if (kind == CacheBackedBookKind::Text &&
+    if (hasCompletionTrackedStats(kind) &&
         !ReadingStatsCompletionTransaction::canRelocateOrDeleteBookCache(cachePath)) {
       return false;
     }

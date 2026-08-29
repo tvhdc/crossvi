@@ -649,11 +649,19 @@ Section::HtmlExtractionStep Section::stepHtmlExtraction() {
     }
     if (Storage.exists(build_->tmpHtmlPath.c_str())) Storage.remove(build_->tmpHtmlPath.c_str());
     ++build_->htmlStreamAttempts;
-    if (!Storage.openFileForWrite("SCT", build_->tmpHtmlPath, build_->htmlStreamOutput) ||
-        build_->htmlStreamJob.begin(epub->getPath(), build_->sourcePath.c_str(), build_->htmlStreamOutput, CHUNK_BYTES,
-                                    MAX_CHAPTER_UNCOMPRESSED_BYTES, true) != ZipStreamReadJob::BeginStatus::Started) {
+    const bool outputOpened = Storage.openFileForWrite("SCT", build_->tmpHtmlPath, build_->htmlStreamOutput);
+    const ZipStreamReadJob::BeginStatus beginStatus =
+        outputOpened
+            ? build_->htmlStreamJob.begin(epub->getPath(), build_->sourcePath.c_str(), build_->htmlStreamOutput,
+                                          CHUNK_BYTES, MAX_CHAPTER_UNCOMPRESSED_BYTES, true)
+            : ZipStreamReadJob::BeginStatus::Error;
+    if (beginStatus != ZipStreamReadJob::BeginStatus::Started) {
       if (build_->htmlStreamOutput) build_->htmlStreamOutput.close();
       Storage.remove(build_->tmpHtmlPath.c_str());
+      if (beginStatus == ZipStreamReadJob::BeginStatus::OutOfMemory) {
+        lastBuildStatus_ = EpubBuildStatus::OutOfMemory;
+        return HtmlExtractionStep::Error;
+      }
       if (build_->htmlStreamAttempts >= MAX_ATTEMPTS) {
         lastBuildStatus_ = EpubBuildStatus::IoError;
         return HtmlExtractionStep::Error;
@@ -1004,7 +1012,7 @@ void Section::suspendBuild() {
   const bool worthKeeping = builtPageCount_ > 0 && (!partial_ || builtPageCount_ > partialPageCount_);
 
   bool committed = false;
-  if (worthKeeping && build_->parserStarted) {
+  if (worthKeeping && build_->parserStarted && build_->callbackFailure == EpubBuildStatus::Ok) {
     // Capture the parse watermark and commit before tearing the parser down (the anchor
     // map is read from it). The incomplete trailing page is intentionally not flushed:
     // only fully laid-out pages are persisted, and the rebuild re-derives the rest.
@@ -1089,7 +1097,15 @@ std::unique_ptr<Page> Section::loadPageDuringBuild(const int page) {
   if (!pageReadBuffer_) pageReadBuffer_ = makeUniqueNoThrow<uint8_t[]>(PAGE_READ_BUFFER_BYTES);
   BoundedFileReader reader(file, pos, pageEnd, pageReadBuffer_.get(), PAGE_READ_BUFFER_BYTES);
   auto p = Page::deserialize(reader);
-  file.seek(writePos);
+  if (!file.seek(writePos)) {
+    LOG_ERR("SCT", "Failed to restore section build write cursor after reading page %d", page);
+    build_->callbackFailure = EpubBuildStatus::IoError;
+    lastBuildStatus_ = EpubBuildStatus::IoError;
+    // Do not let suspendBuild() publish from the read cursor. It discards only
+    // the active staging file and preserves any previously committed partial.
+    suspendBuild();
+    return nullptr;
+  }
   return p;
 }
 

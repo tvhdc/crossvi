@@ -126,8 +126,6 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["frontButtonConfirm"] = s.frontButtonConfirm;
   doc["frontButtonLeft"] = s.frontButtonLeft;
   doc["frontButtonRight"] = s.frontButtonRight;
-  // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
-  doc["fontFamily"] = s.fontFamily;
   // Screen margin uses a dynamic enum so the UI and web API expose only the
   // supported non-uniform values. Persist the physical margin, not its index.
   doc["screenMargin"] = s.screenMargin;
@@ -414,8 +412,15 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   const char* dictName = doc["dictionaryName"] | "";
-  strncpy(s.dictionaryName, dictName, sizeof(s.dictionaryName) - 1);
-  s.dictionaryName[sizeof(s.dictionaryName) - 1] = '\0';
+  const size_t dictNameLength = std::strlen(dictName);
+  if (dictNameLength < sizeof(s.dictionaryName)) {
+    std::memcpy(s.dictionaryName, dictName, dictNameLength + 1);
+  } else {
+    // Truncating a persisted name can silently select a different dictionary
+    // whose complete folder name happens to equal the truncated prefix.
+    s.dictionaryName[0] = '\0';
+    if (needsResave) *needsResave = true;
+  }
 
   const char* otaVersion = doc["availableOtaVersion"] | "";
   if (std::strlen(otaVersion) < CrossPointSettings::OTA_VERSION_CAPACITY && ota_version::isValid(otaVersion) &&

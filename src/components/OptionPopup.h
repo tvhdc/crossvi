@@ -13,42 +13,47 @@
 
 class OptionPopup {
  public:
-  void show(StrId titleId, const StrId* optionIds, int optionCount, int currentIndex,
-            std::function<void(int)> onSelect) {
+  void show(StrId titleId, const StrId* optionIds, int optionCount, int currentIndex, std::function<void(int)> onSelect,
+            const char* footerStr = nullptr) {
     title = I18N.get(titleId);
     ownedStrings.resize(optionCount);
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = I18N.get(optionIds[i]);
     }
+    footer = footerStr ? footerStr : "";
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     active = true;
   }
 
   void show(const char* titleStr, const char* const* options, int optionCount, int currentIndex,
-            std::function<void(int)> onSelect) {
+            std::function<void(int)> onSelect, const char* footerStr = nullptr) {
     title = titleStr;
     ownedStrings.resize(optionCount);
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = options[i];
     }
+    footer = footerStr ? footerStr : "";
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     active = true;
   }
 
-  void show(StrId titleId, const std::vector<std::string>& options, int currentIndex,
-            std::function<void(int)> onSelect) {
+  void show(StrId titleId, const std::vector<std::string>& options, int currentIndex, std::function<void(int)> onSelect,
+            const char* footerStr = nullptr) {
     title = I18N.get(titleId);
     ownedStrings = options;
+    footer = footerStr ? footerStr : "";
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     active = true;
   }
 
-  void show(StrId titleId, std::vector<std::string>&& options, int currentIndex, std::function<void(int)> onSelect) {
+  void show(StrId titleId, std::vector<std::string>&& options, int currentIndex, std::function<void(int)> onSelect,
+            const char* footerStr = nullptr) {
     title = I18N.get(titleId);
     ownedStrings = std::move(options);
+    footer = footerStr ? footerStr : "";
     selectedIndex = currentIndex;
     onSelectCallback = std::move(onSelect);
     active = true;
@@ -101,7 +106,7 @@ class OptionPopup {
 
   void render(const GfxRenderer& renderer) const {
     if (!active) return;
-    GUI.drawOptionPopup(renderer, title.c_str(), ownedStrings, selectedIndex);
+    GUI.drawOptionPopup(renderer, title.c_str(), ownedStrings, selectedIndex, footer.c_str());
   }
 
   bool isActive() const { return active; }
@@ -110,6 +115,7 @@ class OptionPopup {
   bool active = false;
   std::string title;
   std::vector<std::string> ownedStrings;
+  std::string footer;
   int selectedIndex = 0;
   std::function<void(int)> onSelectCallback;
   ButtonNavigator navigator;

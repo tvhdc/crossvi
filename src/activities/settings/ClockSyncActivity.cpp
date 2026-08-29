@@ -14,6 +14,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ClockSyncPolicy.h"
 #include "util/WifiLifecycle.h"
 
 void ClockSyncActivity::onEnter() {
@@ -26,6 +27,8 @@ void ClockSyncActivity::onEnter() {
     return;
   }
 
+  wifiSelectionAutoSyncExpected =
+      ClockSyncPolicy::shouldSyncFromNetwork(SETTINGS.clockHasBeenSynced, halClock.isSystemTimeValid());
   shouldTearDownWifiOnExit = true;
   launchWifiSelection();
 }
@@ -51,7 +54,26 @@ void ClockSyncActivity::onWifiSelectionComplete(const bool connected) {
     return;
   }
 
+  // WifiSelectionActivity performs the normal once-per-boot-validity NTP sync
+  // immediately after connecting. Reuse that successful result instead of
+  // issuing the same blocking NTP request again from the manual sync screen.
+  if (wifiSelectionAutoSyncExpected && SETTINGS.clockHasBeenSynced && halClock.isSystemTimeValid()) {
+    LOG_INF("CLK", "Reusing clock sync completed while WiFi was connecting");
+    showSyncSuccess();
+    return;
+  }
+
   state = SYNCING;
+  requestUpdate();
+}
+
+void ClockSyncActivity::showSyncSuccess() {
+  // Read the freshly synced time back for the user-facing confirmation.
+  char buf[9];
+  if (halClock.formatTime(buf, sizeof(buf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+    snprintf(syncedTime, sizeof(syncedTime), "%s", buf);
+  }
+  state = SUCCESS;
   requestUpdate();
 }
 
@@ -71,23 +93,17 @@ void ClockSyncActivity::runSync() {
   }
 
   // Mark as synced so the auto-sync hook stops firing on future WiFi connects.
-  SETTINGS.clockHasBeenSynced = 1;
-  SETTINGS.saveToFile();
+  if (!ClockSyncPolicy::markSynced(SETTINGS)) LOG_ERR("CLK", "Failed to persist successful clock sync");
 
-  // Read the freshly synced time back for the user-facing confirmation.
-  char buf[9];
-  if (halClock.formatTime(buf, sizeof(buf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
-    snprintf(syncedTime, sizeof(syncedTime), "%s", buf);
-  }
-  state = SUCCESS;
-  requestUpdate();
+  showSyncSuccess();
 }
 
 void ClockSyncActivity::loop() {
   if (state == SYNCING) {
-    // First-tick: render the "Syncing..." screen, then perform the (blocking) sync.
-    // requestUpdateAndWait below forces the render before we block on WiFi.
-    requestUpdateAndWait();
+    // onEnter(), or ActivityManager after the WiFi picker returns, has already
+    // queued the syncing frame. Wait for that render instead of scheduling an
+    // identical second panel refresh before the blocking NTP request.
+    if (activityManager.hasPendingRender()) return;
     runSync();
     return;
   }

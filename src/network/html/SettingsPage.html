@@ -415,12 +415,16 @@
     ? Promise.resolve(applyWebLanguage(savedWebLanguage, false))
     : fetch('/api/status').then(response => response.ok ? response.json() : null)
     .then(data => {
-      applyWebLanguage(data && data.language === 'VI' ? 'vi' : 'en', false);
+      if (!localStorage.getItem(WEB_LANGUAGE_KEY)) {
+        applyWebLanguage(data && data.language === 'VI' ? 'vi' : 'en', false);
+      }
     })
     .catch(() => {});
 
   let allSettings = [];
   let originalValues = {};
+  let settingsLoadGeneration = 0;
+  let messageTimer = null;
 
   function escapeHtml(unsafe) {
     return unsafe
@@ -433,10 +437,11 @@
 
   function showMessage(text, isError) {
     const msg = document.getElementById('message');
+    clearTimeout(messageTimer);
     msg.textContent = text;
     msg.className = 'message ' + (isError ? 'error' : 'success');
     msg.style.display = 'block';
-    setTimeout(function() { msg.style.display = 'none'; }, 4000);
+    messageTimer = setTimeout(function() { msg.style.display = 'none'; }, 4000);
   }
 
   function renderControl(setting) {
@@ -560,12 +565,15 @@
   }
 
   async function loadSettings() {
+    const generation = ++settingsLoadGeneration;
     try {
       const response = await fetch('/api/settings?lang=' + encodeURIComponent(webLanguage));
       if (!response.ok) {
         throw new Error('Failed to load settings: ' + response.status);
       }
-      allSettings = await response.json();
+      const loadedSettings = await response.json();
+      if (generation !== settingsLoadGeneration) return;
+      allSettings = loadedSettings;
 
       // Store original values
       originalValues = {};
@@ -599,6 +607,7 @@
       document.getElementById('save-container').style.display = '';
       document.getElementById('saveBtn').disabled = true;
     } catch (e) {
+      if (generation !== settingsLoadGeneration) return;
       console.error(e);
       document.getElementById('settings-container').innerHTML =
         '<div class="card"><p style="text-align:center;color:#e74c3c;">' + webText('loadingSettings') + '</p></div>';
@@ -622,6 +631,7 @@
     if (Object.keys(changes).length === 0) {
       showMessage(webText('noChanges'), false);
       btn.textContent = webText('saveSettings');
+      btn.disabled = false;
       return;
     }
 
@@ -646,6 +656,7 @@
     } catch (e) {
       console.error(e);
       showMessage('Error: ' + e.message, true);
+      btn.disabled = false;
     }
 
     btn.textContent = webText('saveSettings');
@@ -656,6 +667,8 @@
   // Password fields are never pre-filled; when left blank during edit, existing
   // passwords remain unchanged server-side.
   let wifiNetworks = [];
+  let wifiLoadGeneration = 0;
+  let wifiMutationBusy = false;
 
   function renderWifiNetwork(net, idx) {
     const isNew = idx === -1;
@@ -700,12 +713,16 @@
   }
 
   async function loadWifiNetworks() {
+    const generation = ++wifiLoadGeneration;
     try {
       const resp = await fetch('/api/wifi');
       if (!resp.ok) throw new Error('Failed to load');
-      wifiNetworks = await resp.json();
+      const loadedNetworks = await resp.json();
+      if (generation !== wifiLoadGeneration) return;
+      wifiNetworks = loadedNetworks;
       renderWifiSection();
     } catch (e) {
+      if (generation !== wifiLoadGeneration) return;
       console.error('Wi-Fi load error:', e);
     }
   }
@@ -720,6 +737,7 @@
   }
 
   async function saveWifiNetwork(idx) {
+    if (wifiMutationBusy) return;
     const id = idx === -1 ? 'new' : idx;
     const ssid = document.getElementById('wifi-ssid-' + id).value.trim();
     if (!ssid) {
@@ -734,6 +752,7 @@
     if (pass) data.password = pass;
     if (idx >= 0) data.index = idx;
 
+    wifiMutationBusy = true;
     try {
       const resp = await fetch('/api/wifi', {
         method: 'POST',
@@ -745,11 +764,15 @@
       await loadWifiNetworks();
     } catch (e) {
       showMessage(webText('errorPrefix') + e.message, true);
+    } finally {
+      wifiMutationBusy = false;
     }
   }
 
   async function deleteWifiNetwork(idx) {
+    if (wifiMutationBusy) return;
     if (!confirm(webText('deleteWifi'))) return;
+    wifiMutationBusy = true;
     try {
       const resp = await fetch('/api/wifi/delete', {
         method: 'POST',
@@ -761,6 +784,8 @@
       await loadWifiNetworks();
     } catch (e) {
       showMessage(webText('errorPrefix') + e.message, true);
+    } finally {
+      wifiMutationBusy = false;
     }
   }
 
@@ -769,6 +794,8 @@
   // /api/opds REST endpoints. Password fields are never pre-filled for security;
   // the "(unchanged)" placeholder indicates an existing password is preserved on save.
   let opdsServers = [];
+  let opdsLoadGeneration = 0;
+  let opdsMutationBusy = false;
 
   function renderOpdsServer(srv, idx) {
     const isNew = idx === -1;
@@ -816,12 +843,16 @@
   }
 
   async function loadOpdsServers() {
+    const generation = ++opdsLoadGeneration;
     try {
       const resp = await fetch('/api/opds');
       if (!resp.ok) throw new Error('Failed to load');
-      opdsServers = await resp.json();
+      const loadedServers = await resp.json();
+      if (generation !== opdsLoadGeneration) return;
+      opdsServers = loadedServers;
       renderOpdsSection();
     } catch (e) {
+      if (generation !== opdsLoadGeneration) return;
       console.error('OPDS load error:', e);
     }
   }
@@ -836,6 +867,7 @@
   }
 
   async function saveOpdsServer(idx) {
+    if (opdsMutationBusy) return;
     const id = idx === -1 ? 'new' : idx;
     const data = {
       name: document.getElementById('opds-name-' + id).value,
@@ -848,6 +880,7 @@
     if (pass) data.password = pass;
     if (idx >= 0) data.index = idx;
 
+    opdsMutationBusy = true;
     try {
       const resp = await fetch('/api/opds', {
         method: 'POST',
@@ -859,11 +892,15 @@
       await loadOpdsServers();
     } catch (e) {
       showMessage(webText('errorPrefix') + e.message, true);
+    } finally {
+      opdsMutationBusy = false;
     }
   }
 
   async function deleteOpdsServer(idx) {
+    if (opdsMutationBusy) return;
     if (!confirm(webText('deleteOpds'))) return;
+    opdsMutationBusy = true;
     try {
       const resp = await fetch('/api/opds/delete', {
         method: 'POST',
@@ -875,6 +912,8 @@
       await loadOpdsServers();
     } catch (e) {
       showMessage(webText('errorPrefix') + e.message, true);
+    } finally {
+      opdsMutationBusy = false;
     }
   }
 

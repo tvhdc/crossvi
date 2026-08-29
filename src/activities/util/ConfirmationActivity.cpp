@@ -20,6 +20,7 @@ ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputMan
 
 void ConfirmationActivity::onEnter() {
   Activity::onEnter();
+  inputGate.reset();
 
   lineHeight = renderer.getLineHeight(fontId);
   const int maxWidth = renderer.getScreenWidth() - (margin * 2);
@@ -38,7 +39,7 @@ void ConfirmationActivity::onEnter() {
 
   startY = (renderer.getScreenHeight() - totalHeight) / 2;
 
-  requestUpdate(true);
+  requestUpdate();
 }
 
 void ConfirmationActivity::render(RenderLock&& lock) {
@@ -68,6 +69,14 @@ void ConfirmationActivity::render(RenderLock&& lock) {
 }
 
 void ConfirmationActivity::loop() {
+  const bool anyFrontPressed = mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                               mappedInput.isPressed(MappedInputManager::Button::Right);
+  // A dialog can be pushed while the button that opened it is still held.
+  // Wait for one idle sample so its release cannot choose an answer here.
+  if (!inputGate.update(anyFrontPressed, mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased())) return;
+
   if (positiveFeedback != StrId::_COUNT && mappedInput.wasPressed(MappedInputManager::Button::Right)) {
     queueBlockingFeedback(positiveFeedback);
   }

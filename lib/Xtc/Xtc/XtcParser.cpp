@@ -160,7 +160,10 @@ XtcParser::OpenStepResult XtcParser::stepOpen(const size_t maxRecords, const siz
 }
 
 XtcParser::OpenStepResult XtcParser::completeOpen() {
-  closeFile();
+  if (m_file.isOpen() && !m_file.close()) {
+    failOpen(XtcError::READ_ERROR);
+    return OpenStepResult::Error;
+  }
   m_isOpen = true;
   m_openPhase = OpenPhase::Idle;
   m_lastError = XtcError::OK;

@@ -268,7 +268,8 @@ void EpubReaderBookmarksActivity::render(RenderLock&&) {
 
   if (storageError) {
     storageError = false;
-    GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
   }
 
   renderer.displayBuffer();

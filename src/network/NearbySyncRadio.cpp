@@ -11,6 +11,7 @@ bool NearbySyncRadio::start(void* context, const ReceiveCallback callback) {
 #ifdef NEARBY_SYNC_TESTING
   if (!callback) return false;
   activated_ = true;
+  radioActive_ = true;
   started_ = true;
   callbackContext_ = context;
   callback_ = callback;
@@ -23,11 +24,13 @@ bool NearbySyncRadio::start(void* context, const ReceiveCallback callback) {
 }
 
 void NearbySyncRadio::stop() {
+  if (!radioActive_ && !initialized_ && !callbackRegistered_ && !started_ && !callbackContext_ && !callback_) return;
   callbackContext_ = nullptr;
   callback_ = nullptr;
   initialized_ = false;
   callbackRegistered_ = false;
   started_ = false;
+  radioActive_ = false;
 #ifdef NEARBY_SYNC_TESTING
   testPackets_.clear();
 #endif
@@ -44,6 +47,10 @@ bool NearbySyncRadio::addPeer(const NearbySync::MacAddress&) {
 bool NearbySyncRadio::send(const NearbySync::MacAddress& peerMac, const uint8_t* data, const size_t size) const {
 #ifdef NEARBY_SYNC_TESTING
   if (!started_ || !data || size == 0 || size > NearbySync::MAX_PACKET_BYTES) return false;
+  if (testSendFailures_ > 0) {
+    --testSendFailures_;
+    return false;
+  }
   TestPacket packet;
   packet.destination = peerMac;
   packet.size = size;
@@ -123,6 +130,7 @@ bool NearbySyncRadio::start(void* context, const ReceiveCallback callback) {
   if (!callbackGuard) return false;
 
   activated_ = true;
+  radioActive_ = true;
   callbackContext_ = context;
   callback_ = callback;
   WiFi.mode(WIFI_STA);
@@ -162,6 +170,7 @@ bool NearbySyncRadio::start(void* context, const ReceiveCallback callback) {
 }
 
 void NearbySyncRadio::stop() {
+  if (!radioActive_ && !initialized_ && !callbackRegistered_ && !started_ && !callbackContext_ && !callback_) return;
   // Serialize with the complete callback dispatch, not just its initial pointer
   // read. Once this guard is acquired, no Wi-Fi task can still call into the
   // exchange's queue, and future callbacks see activeRadio == nullptr.
@@ -180,9 +189,10 @@ void NearbySyncRadio::stop() {
   started_ = false;
   callbackContext_ = nullptr;
   callback_ = nullptr;
-  if (activated_) {
+  if (radioActive_) {
     WiFi.disconnect(false);
     WiFi.mode(WIFI_OFF);
+    radioActive_ = false;
   }
 }
 

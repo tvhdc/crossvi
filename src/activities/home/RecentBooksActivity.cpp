@@ -57,16 +57,14 @@ std::string bookCachePath(const std::string& path) {
 
 bool loadCompletionState(const LibraryBookRecord& record, std::string& cachePath, BookReadingStats& bookStats,
                          GlobalReadingStats& globalStats) {
-  ReadingStatsPresentation ignored;
-  if (!loadBookStatsPresentation({record.path, record.title, record.author, record.coverBmpPath}, ignored))
-    return false;
   cachePath = bookCachePath(record.path);
   if (cachePath.empty()) return false;
-  BookReadingStats::LoadStatus bookStatus = BookReadingStats::LoadStatus::Invalid;
+  if (!loadTrustedBookReadingStats({record.path, record.title, record.author, record.coverBmpPath}, bookStats)) {
+    return false;
+  }
   GlobalReadingStats::LoadStatus globalStatus = GlobalReadingStats::LoadStatus::Invalid;
-  bookStats = BookReadingStats::load(cachePath, &bookStatus);
   globalStats = GlobalReadingStats::load(&globalStatus);
-  return BookReadingStats::isTrustedLoadStatus(bookStatus) && GlobalReadingStats::isTrustedLoadStatus(globalStatus);
+  return GlobalReadingStats::isTrustedLoadStatus(globalStatus);
 }
 
 bool setBookCompletion(const LibraryBookRecord& record, const bool completed) {
@@ -434,6 +432,9 @@ void RecentBooksActivity::loadRenderPage(const size_t pageStart, const size_t co
                                                     pageStart, std::span<size_t>(sourceIndices).first(count));
       if (loaded) {
         loaded = LIBRARY_CATALOG.loadRecords(std::span<const size_t>(sourceIndices).first(count), renderPage);
+        if (loaded) {
+          for (auto& book : renderPage) book.pinned = RECENT_BOOKS.isPinned(book.path);
+        }
       }
     }
   } else {
@@ -442,7 +443,6 @@ void RecentBooksActivity::loadRenderPage(const size_t pageStart, const size_t co
       if (!loadVisibleBook(pageStart + i, renderPage[i])) renderPage[i] = {};
     }
   }
-  for (auto& book : renderPage) book.pinned = RECENT_BOOKS.isPinned(book.path);
   if (!loaded) renderPage.assign(count, {});
   renderPageValid = true;
   renderPageStart = pageStart;
@@ -563,11 +563,10 @@ void RecentBooksActivity::selectTab(const Tab next) {
   // large or freshly rebuilt catalog can take seconds on X3, so paint the new
   // tab immediately and finish catalog setup in the next loop iteration.
   catalogOpenPending = allTab();
-  const bool warmAllBooks = catalogOpenPending && LIBRARY_CATALOG.isReady() && !LIBRARY_CATALOG.isOrderBuilding();
   preserveTabFocus = allTab();
   if (!allTab()) restoreRememberedBook();
   selectorIndex = 0;
-  if (!warmAllBooks) requestUpdate();
+  requestUpdate();
 }
 
 bool RecentBooksActivity::refreshStorageAvailability() {
@@ -590,14 +589,8 @@ void RecentBooksActivity::queueNavigationInput() {
     holdLeft.reset();
     holdRight.reset();
     holdBack.reset();
-    buttonNavigator_.onPrevious([this] {
-      --pendingPopupNavigation;
-      requestUpdate();
-    });
-    buttonNavigator_.onNext([this] {
-      ++pendingPopupNavigation;
-      requestUpdate();
-    });
+    buttonNavigator_.onPrevious([this] { --pendingPopupNavigation; });
+    buttonNavigator_.onNext([this] { ++pendingPopupNavigation; });
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (suppressPopupConfirmRelease) {
         suppressPopupConfirmRelease = false;
@@ -605,12 +598,10 @@ void RecentBooksActivity::queueNavigationInput() {
         confirmLongHandled = false;
       } else {
         pendingPopupConfirmRelease = true;
-        requestUpdate();
       }
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       pendingPopupBackRelease = true;
-      requestUpdate();
     }
     return;
   }
@@ -651,33 +642,28 @@ void RecentBooksActivity::queueNavigationInput() {
 #if defined(ENABLE_SERIAL_LOG)
     traceNavigationQueued("tab", upTabDelta);
 #endif
-    requestUpdate();
   });
   buttonNavigator_.onContinuous({MappedInputManager::Button::Down}, [this, upTabDelta] {
     pendingTabSwitch -= upTabDelta;
 #if defined(ENABLE_SERIAL_LOG)
     traceNavigationQueued("tab", -upTabDelta);
 #endif
-    requestUpdate();
   });
   buttonNavigator_.onContinuous({MappedInputManager::Button::Right}, [this] {
     ++pendingPageSwitch;
 #if defined(ENABLE_SERIAL_LOG)
     traceNavigationQueued("page", 1);
 #endif
-    requestUpdate();
   });
   buttonNavigator_.onContinuous({MappedInputManager::Button::Left}, [this] {
     --pendingPageSwitch;
 #if defined(ENABLE_SERIAL_LOG)
     traceNavigationQueued("page", -1);
 #endif
-    requestUpdate();
   });
   if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
       holdBack.onHold(mappedInput.getHeldTime(MappedInputManager::Button::Back), LONG_PRESS_MS)) {
     pendingSearch = true;
-    requestUpdate();
   }
 
   const auto queueShortNavigation = [this](const int delta) {
@@ -721,7 +707,6 @@ void RecentBooksActivity::queueNavigationInput() {
   // unavailable and the user has to press again.
   if (confirmBookPressCaptured && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     pendingBookConfirmRelease = true;
-    requestUpdate();
     return;
   }
 
@@ -733,7 +718,6 @@ void RecentBooksActivity::queueNavigationInput() {
     pendingTabConfirm = true;
     confirmTabHandled = true;
     confirmPressSeen = true;
-    requestUpdate();
     return;
   }
 
@@ -745,7 +729,6 @@ void RecentBooksActivity::queueNavigationInput() {
     confirmBookPressCaptured = true;
     confirmPressSeen = true;
     confirmLongHandled = false;
-    requestUpdate();
     return;
   }
 
@@ -1371,8 +1354,12 @@ void RecentBooksActivity::launchSearch() {
       std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_BOOKS), searchQuery[ti],
                                               BOOK_SEARCH_QUERY_BYTES, InputType::Text, true),
       [this](const ActivityResult& result) {
-        if (!result.isCancelled) applySearch(std::get<KeyboardResult>(result.data).text);
-        requestUpdate();
+        if (result.isCancelled) {
+          suppressSearchBackRelease = true;
+          holdBack.reset();
+          return;
+        }
+        applySearch(std::get<KeyboardResult>(result.data).text);
       });
 }
 
@@ -1692,6 +1679,10 @@ bool RecentBooksActivity::skipLoopDelay() {
 }
 
 void RecentBooksActivity::loop() {
+  if (ReaderUtils::consumeInitialRelease(suppressSearchBackRelease,
+                                         mappedInput.wasReleased(MappedInputManager::Button::Back),
+                                         mappedInput.isPressed(MappedInputManager::Button::Back)))
+    return;
   // Capture navigation before waiting for e-ink rendering. A blocking lock here
   // would stop gpio.update(), so quick presses made during refresh would be
   // lost instead of being applied after the refresh completes.
@@ -1809,6 +1800,11 @@ void RecentBooksActivity::loop() {
     return;
   }
 
+  // Let the requested All-tab loading frame reach the panel before opening
+  // the SD catalog. A successful try-lock can otherwise race and win before
+  // the render task, leaving the user with no acknowledgement during I/O.
+  if (catalogOpenPending && allTab() && activityManager.hasPendingRender()) return;
+
   if (catalogOpenPending && allTab() && !LIBRARY_CATALOG.isBuilding() && !LIBRARY_CATALOG.isOrderBuilding()) {
     catalogOpenPending = false;
 #if defined(ENABLE_SERIAL_LOG)
@@ -1878,7 +1874,7 @@ void RecentBooksActivity::loop() {
     if (!LIBRARY_CATALOG.isOrderBuilding()) {
       if (searchActive[allIndex]) {
         restoreReturnAfterSearch = true;
-      } else {
+      } else if (!preserveTabFocus) {
         restoreRememberedBook(true);
       }
       invalidateRenderPage();
@@ -2020,7 +2016,7 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
         I18N.get(completionStats.isCompleted ? StrId::STR_MARK_BOOK_UNREAD : StrId::STR_MARK_BOOK_FINISHED));
   }
   actions.push_back(BookAction::Pin);
-  options.push_back(RECENT_BOOKS.isPinned(selected.path) ? tr(STR_UNPIN_BOOK) : tr(STR_PIN_BOOK));
+  options.push_back(selected.pinned ? tr(STR_UNPIN_BOOK) : tr(STR_PIN_BOOK));
   if (!allTab() && inRecent) {
     actions.push_back(BookAction::RemoveRecent);
     options.push_back(tr(STR_REMOVE_FROM_RECENTS));
@@ -2042,21 +2038,20 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
                                            presentation)) {
               popupMessage = StrId::STR_STATS_UNAVAILABLE;
               popupTime = millis();
-              requestUpdate();
               return;
             }
             const std::string title = selected.title.empty() ? selected.path : selected.title;
             startActivityForResult(
                 std::make_unique<ReadingStatsActivity>(renderer, mappedInput, title, std::move(presentation),
                                                        ReadingStatsActivity::Page::Book, false, false, selected.path),
-                [this](const ActivityResult&) { requestUpdate(); });
+                [](const ActivityResult&) {});
             return;
           }
           case BookAction::Saved:
             startActivityForResult(
                 std::make_unique<BookSavedItemsActivity>(renderer, mappedInput, selected.path, selected.title,
                                                          selected.author, savedItemsKind(selected.path)),
-                [this](const ActivityResult&) { requestUpdate(); });
+                [](const ActivityResult&) {});
             return;
           case BookAction::ClearCache: {
             const std::string cachePath = bookCachePath(selected.path);
@@ -2064,7 +2059,6 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
                                ? StrId::STR_BOOK_CACHE_CLEARED
                                : StrId::STR_CLEAR_CACHE_FAILED;
             popupTime = millis();
-            requestUpdate();
             return;
           }
           case BookAction::Completion:
@@ -2073,7 +2067,6 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
                     ? (completionStats.isCompleted ? StrId::STR_BOOK_MARKED_UNREAD : StrId::STR_BOOK_MARKED_FINISHED)
                     : StrId::STR_ERROR_GENERAL_FAILURE;
             popupTime = millis();
-            requestUpdate();
             return;
           case BookAction::Pin: {
             rememberedBookIndex[tabIndex()] = visibleIndex;
@@ -2084,10 +2077,6 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
                            : result == RecentBooksStore::PinResult::LimitReached ? StrId::STR_PIN_LIMIT_REACHED
                                                                                  : StrId::STR_ERROR_GENERAL_FAILURE;
             popupTime = millis();
-            if (!allTab()) {
-              rememberedBookIndex[tabIndex()] = visibleIndex;
-              rememberedBookPath[tabIndex()] = selected.path;
-            }
             const bool rebuildSearch = !allTab() && searchActive[tabIndex()];
             const std::string activeQuery = rebuildSearch ? searchQuery[tabIndex()] : std::string{};
             loadRecentBooks();
@@ -2102,7 +2091,6 @@ void RecentBooksActivity::showBookActions(const size_t visibleIndex) {
             }
             rememberedBookPath[tabIndex()] = selected.path;
             restoreRememberedBook(true);
-            requestUpdate();
             return;
           }
           case BookAction::RemoveRecent:
@@ -2140,7 +2128,6 @@ void RecentBooksActivity::promptDeleteBook(const size_t visibleIndex, const std:
                            if (!canDeleteOrRelocateBookFile(path) || !Storage.remove(path.c_str())) {
                              popupMessage = StrId::STR_ERROR_GENERAL_FAILURE;
                              popupTime = millis();
-                             requestUpdate();
                              return;
                            }
                            removeBookUserStateAfterDelete(path, true);
@@ -2159,7 +2146,6 @@ void RecentBooksActivity::promptDeleteBook(const size_t visibleIndex, const std:
                            } else {
                              restoreRememberedBook(true);
                            }
-                           requestUpdate(true);
                          });
 }
 
@@ -2176,7 +2162,6 @@ void RecentBooksActivity::promptRemoveBook(const std::string& path, const std::s
           rememberedBookPath[tabIndex()].clear();
           rememberedBookIndex[tabIndex()] = LibraryGridModel::clampIndex(removedIndex, visibleBookCount());
           restoreRememberedBook();
-          requestUpdate(true);
         }
       });
 }
@@ -2227,7 +2212,12 @@ void RecentBooksActivity::render(RenderLock&&) {
   const bool showPinHint =
       !showCatalogLoading && viewMode() == CrossPointSettings::LIBRARY_LIST && visibleBookCount() > 0;
   if (showCatalogLoading) {
-    const char* loadingText = LIBRARY_CATALOG.isOrderBuilding() ? tr(STR_LIBRARY_SORTING) : tr(STR_LIBRARY_INDEXING);
+    const char* loadingText = tr(STR_LIBRARY_INDEXING);
+    if (catalogOpenPending) {
+      loadingText = tr(STR_LOADING_POPUP);
+    } else if (LIBRARY_CATALOG.isOrderBuilding()) {
+      loadingText = tr(STR_LIBRARY_SORTING);
+    }
     const std::string loadingLabel = renderer.truncatedText(UI_12_FONT_ID, loadingText, std::max(1, pageWidth - 48));
     const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, loadingLabel.c_str());
     const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);

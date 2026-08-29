@@ -29,7 +29,7 @@ Welcome to the **CrossVi** firmware. This guide outlines the hardware controls, 
       - [3.6.6 Web Settings (Wi-Fi + OPDS)](#366-web-settings-wi-fi--opds)
       - [3.6.7 KOReader Sync Quick Setup](#367-koreader-sync-quick-setup)
         - [Option A: CrossPoint Sync Server (`sync.crosspointreader.com`, default)](#option-a-crosspoint-sync-server-synccrosspointreadercom-default)
-        - [Option B: Legacy Public KOReader Server (`sync.koreader.rocks`)](#option-b-legacy-public-koreader-server-synckoreaderrocks)
+        - [Option B: kosync.eu (`kosync.eu`)](#option-b-kosynceu-kosynceu)
         - [Option C: Self-Hosted Server (Docker Compose)](#option-c-self-hosted-server-docker-compose)
         - [Syncing While Reading](#syncing-while-reading)
     - [3.7 Sleep Screen](#37-sleep-screen)
@@ -192,19 +192,14 @@ The Settings screen allows you to configure the device's behavior. There are a f
 #### 3.6.1 Display
 
 - **Sleep Screen**: Which sleep screen to display when the device sleeps:
-  
-  - "Dark" (default) - The default dark CrossVi logo sleep screen
-  - "Light" - The same default sleep screen, on a white background
-  - "Custom" - Custom images from the SD card; see [Sleep Screen](#37-sleep-screen) below for more information
+
+  - "Default" - The bundled CrossVi sleep screen
+  - "Custom" - One or more BMP/PNG images selected from the SD card; opaque and transparent images use the same flow
   - "Cover" - The book cover image (Note: this is experimental and may not work as expected)
   - "None" - A blank screen
-  - "Cover + Custom" - The book cover image while actively reading, falls back to "Custom" behavior otherwise
-  - "Transparent sleep screen" - Keep the current screen and draw a transparent PNG/BMP overlay on top; see [Sleep Screen](#37-sleep-screen) below for file names
-  - "Quick resume" - The text of the last page read will be displayed on the sleep screen and a moon icon is shown on the edge of the screen. Waking up the device will return to the same page of the opened book. This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book.
+  - "Reading stats", "Cover + book stats", and "Custom image + book stats" - Summary variants for readers who want statistics on the sleep screen
 
-- **Sleep image size**: Scale a cover, custom image, or transparent overlay from 50% to 200%. Front buttons change by 1%; side buttons change by 5%.
-- **Move sleep image**: Preview the device and move the dashed image frame horizontally or vertically. Hold a direction to move faster.
-- Hold **Done** in either editor to restore the default 100% size and centered position.
+- **Customize sleep screen position**: Available only for **Custom**. Select an image first, then adjust its size or position. Each image keeps its own 50–200% size and X/Y offset. Hold **Done** in either editor to restore that image to 100% and centered.
 
 - **Sleep Screen Cover Filter**: What filter will be applied to the book cover when "Cover" sleep screen is selected:
   
@@ -232,11 +227,6 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **Refresh Frequency**: Set how often the screen does a full refresh while reading to reduce ghosting; options are every 1, 5, 10, 15, or 30 pages.
 
 - **Device Name**: Set the short name shown at the top-left of the CrossVi Home screen. Long names are truncated to leave room for the battery; leave it empty to show the detected `Xteink X3` or `Xteink X4` model name. The device keyboard uses its existing basic Latin layout; use Web Settings when you want to enter Vietnamese diacritics or other Unicode characters.
-
-- **Sunlight Fading Fix**: Configure whether to enable a software-fix for the issue where white X4 models may fade when used in direct sunlight:
-  
-  - "OFF" (default) - Disable the fix
-  - "ON" - Enable the fix
 
 > [!NOTE]
 > A battery charging indicator is shown on the battery icon whenever the device is actively charging.
@@ -389,40 +379,29 @@ When **Sync Server URL** is left empty, CrossVi uses the free upstream CrossPoin
 
    - Set **Username** and **Password** (enter the plain password; CrossVi computes MD5 internally, and use the same values on all devices).
 
-   - Leave **Sync Server URL** empty (or set it to `https://sync.crosspointreader.com`).
+   - Open **Sync Server URL** and select `https://sync.crosspointreader.com`.
 
    - On the first device, run **Sign Up** once to create the account directly from the device. On every other device, just run **Authenticate**.
 
-Accounts are per server. Existing `sync.koreader.rocks` credentials do not exist on the CrossPoint server; either sign up again with the same username/password or use Option B to keep using the legacy server.
+Accounts are per server. Changing the selected server does not erase the username or password, but the same account may
+not exist on another service.
 
-##### Option B: Legacy Public KOReader Server (`sync.koreader.rocks`)
+##### Option B: kosync.eu (`kosync.eu`)
 
-Use this if you already sync KOReader devices against the official public server.
+Use this if your other KOReader device is configured for `https://kosync.eu`.
 
 1. On each CrossVi device:
 
    - Go to **Settings -> System -> KOReader Sync**.
 
-   - Set **Sync Server URL** to `https://sync.koreader.rocks` (required; an empty URL now points at the CrossPoint server instead).
+   - Open **Sync Server URL** and select `https://kosync.eu`.
 
    - Set **Username** and **Password** to your existing KOReader Sync credentials.
 
    - Run **Authenticate**.
 
-2. If you do not have an account yet, run **Sign Up** on the device, or register once with curl:
-
-```bash
-USERNAME="user"
-PASSWORD="pass"
-PASSWORD_MD5="$(printf '%s' "$PASSWORD" | openssl md5 | awk '{print $2}')"
-
-curl -i "https://sync.koreader.rocks/users/create" \
-  -H "Accept: application/vnd.koreader.v1+json" \
-  -H "Content-Type: application/json" \
-  --data "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD_MD5\"}"
-```
-
-When this returns `HTTP 402` with `{"code":2002,"message":"Username is already registered."}`, pick a different username or use that existing account.
+Existing installations that used the former implicit `sync.koreader.rocks` endpoint keep it as a custom server after
+updating, so their active server and credentials do not silently change.
 
 ##### Option C: Self-Hosted Server (Docker Compose)
 
@@ -491,11 +470,14 @@ If this returns `HTTP 402` with `{"code":2002,"message":"Username is already reg
    
    - Set **Username** and **Password** (enter the plain password; CrossVi computes MD5 internally, and use the same values on all devices).
    
-   - Set **Sync Server URL** to `http://<server-ip>:17200`.
+   - Open **Sync Server URL**, choose **Add Server**, and enter `http://<server-ip>:17200`.
    
    - Run **Authenticate**.
 
 If you use the HTTPS listener, use `https://<server-ip>:7200` (`curl -k` only for self-signed certificate testing).
+
+The server list always keeps the two built-in services. Selecting a custom entry opens actions to use, edit, or delete
+it; deleting a custom server requires confirmation.
 
 ##### Syncing While Reading
 
@@ -510,21 +492,23 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 
 | Mode               | Behavior                                                                                                                     |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Dark** (default) | The CrossVi logo on a dark background.                                                                                       |
-| **Light**          | The CrossVi logo on a white background.                                                                                      |
-| **Custom**         | A custom image from the SD card (see below). Falls back to **Dark** if no custom image is found.                             |
+| **Default**        | The bundled CrossVi sleep screen.                                                                                            |
+| **Custom**         | A selected opaque or transparent BMP/PNG is drawn over the current screen. If no selected image can be used, the current screen remains visible with a moon icon. |
 | **Cover**          | The cover of the currently open book. Falls back to **Dark** if no book is open.                                             |
-| **Cover + Custom** | The cover of the currently open book, shown only while actively reading. Falls back to **Custom** behavior when not reading. |
-| **Transparent**    | The current screen with a transparent PNG/BMP overlay. Falls back to the current screen with a moon icon if no valid overlay is found. |
+| **Reading stats**  | A reading-calendar summary.                                                                                                  |
+| **Cover + stats**  | The current book cover with its reading summary.                                                                             |
+| **Custom + stats** | The legacy full-screen custom image with its reading summary.                                                               |
 | **None**           | A blank screen.                                                                                                              |
 
 #### Cover settings
 
-Cover, custom and transparent sleep images start centered and fitted to the screen:
+Custom images start centered and fitted to the screen. Open **Customize sleep screen position**, choose the image to edit, then choose:
 
 - **Sleep image size**: choose 50–200%; front buttons change by 1% and side buttons by 5%.
 - **Move sleep image**: use Left/Right and Up/Down to move the dashed image frame. Holding a direction moves it faster.
-- Hold **Done** in either editor to restore the default 100% size and centered position.
+- Hold **Done** in either editor to restore only the selected image to the default 100% size and centered position.
+
+Changing to another sleep-screen mode does not delete the Custom list or any per-image position. Those settings return unchanged when **Custom** is selected again.
 
 When using **Cover** or **Cover + Custom**, the cover filter setting also applies:
 
@@ -532,19 +516,11 @@ When using **Cover** or **Cover + Custom**, the cover filter setting also applie
 
 #### Custom images
 
-To use custom sleep images, set the sleep screen mode to **Custom** or **Cover + Custom**, then place images on the SD card:
+Choose **Custom** to open its image manager. It always shows the selected images, or **Not selected** when the list is empty. Use **Add image** to choose a BMP or PNG from the SD card; select an existing row to remove that image. Up to 16 images can be selected. CrossVi verifies and prepares a bounded, screen-sized managed copy while leaving the original file unchanged. Files larger than 16 MB are rejected before conversion.
 
-- **Multiple Images (recommended):** Create a `.sleep` directory in the root of the SD card and place any number of `.bmp` images inside. One will be randomly selected each time the device sleeps. (A directory named `sleep` is also accepted as a fallback.)
-- **Single Image:** Place a file named `sleep.bmp` in the root directory. This is used as a fallback if no valid images are found in the `.sleep`/`sleep` directory.
+The list supports multiple images and chooses one for each sleep. PNG alpha and 32-bit BMP alpha are preserved. Opaque images use the same renderer and simply cover the content underneath; regular BMP treats white as transparent. Size and position are stored separately for every image.
 
-To use **Transparent**, place overlay images on the SD card. CrossVi checks these locations in order:
-
-- `/sleep-overlay.bmp`
-- `/sleep-overlay.png`
-- a random `.bmp` or `.png` image from `/.sleep-overlay`
-- a random `.bmp` or `.png` image from `/sleep-overlay`
-
-Transparent sleep overlays use the same size and position controls. PNG alpha and 32-bit BMP alpha are supported; regular BMP files treat white as transparent.
+On first use, CrossVi imports valid images from the legacy `/sleep.bmp`, `/.sleep`, `/sleep`, `/sleep-overlay.bmp`, `/sleep-overlay.png`, `/.sleep-overlay`, and `/sleep-overlay` locations into the managed list without moving or deleting those source files. Removing a legacy entry removes only its list entry. An image copy created by **Add image** is deleted only when that entry is explicitly removed.
 
 > [!TIP]
 > For best results:

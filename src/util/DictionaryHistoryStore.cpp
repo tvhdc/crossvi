@@ -90,6 +90,7 @@ void DictionaryHistoryStore::record(const std::string& query) {
   if (!writable_) return;
   const std::string cleaned = DictionaryQuery::clean(query);
   if (cleaned.empty() || cleaned.size() > MAX_QUERY_BYTES) return;
+  if (!entries_.empty() && entries_.front() == cleaned) return;
   entries_.erase(std::remove(entries_.begin(), entries_.end(), cleaned), entries_.end());
   entries_.insert(entries_.begin(), cleaned);
   if (entries_.size() > MAX_ENTRIES) entries_.resize(MAX_ENTRIES);
@@ -115,9 +116,11 @@ bool DictionaryHistoryStore::clear() {
   load();
   if (!writable_) return false;
   auto previous = std::move(entries_);
+  const bool previousDirty = dirty_;
   entries_.clear();
   dirty_ = true;
   if (flush()) return true;
   entries_ = std::move(previous);
+  dirty_ = previousDirty;
   return false;
 }

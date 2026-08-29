@@ -3,6 +3,7 @@
 #include <Logging.h>
 #include <Memory.h>
 
+#include <cctype>
 #include <memory>
 #include <string>
 
@@ -12,17 +13,22 @@
 std::unique_ptr<JpegToFramebufferConverter> ImageDecoderFactory::jpegDecoder = nullptr;
 std::unique_ptr<PngToFramebufferConverter> ImageDecoderFactory::pngDecoder = nullptr;
 
-ImageToFramebufferDecoder* ImageDecoderFactory::getDecoder(const std::string& imagePath) {
-  std::string ext = imagePath;
-  size_t dotPos = ext.rfind('.');
+namespace {
+std::string normalizedExtension(const std::string& imagePath) {
+  const size_t dotPos = imagePath.rfind('.');
   if (dotPos != std::string::npos) {
-    ext = ext.substr(dotPos);
+    std::string ext = imagePath.substr(dotPos);
     for (auto& c : ext) {
-      c = tolower(c);
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-  } else {
-    ext = "";
+    return ext;
   }
+  return {};
+}
+}  // namespace
+
+ImageToFramebufferDecoder* ImageDecoderFactory::getDecoder(const std::string& imagePath) {
+  const std::string ext = normalizedExtension(imagePath);
 
   if (JpegToFramebufferConverter::supportsFormat(ext)) {
     if (!jpegDecoder) {
@@ -42,4 +48,7 @@ ImageToFramebufferDecoder* ImageDecoderFactory::getDecoder(const std::string& im
   return nullptr;
 }
 
-bool ImageDecoderFactory::isFormatSupported(const std::string& imagePath) { return getDecoder(imagePath) != nullptr; }
+bool ImageDecoderFactory::isFormatSupported(const std::string& imagePath) {
+  const std::string ext = normalizedExtension(imagePath);
+  return JpegToFramebufferConverter::supportsFormat(ext) || PngToFramebufferConverter::supportsFormat(ext);
+}

@@ -119,6 +119,21 @@ bool isProtected(const PathStatus status) {
   return status == PathStatus::NewerVersion || status == PathStatus::IoError;
 }
 
+bool dayFromArtifactFileName(char* name, const size_t length, uint32_t& day, bool& sibling) {
+  sibling = false;
+  if (!name || length == 0) return false;
+  size_t canonicalLength = length;
+  if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".bak") == 0) {
+    canonicalLength -= 4;
+    sibling = true;
+  } else if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".tmp") == 0) {
+    canonicalLength -= 4;
+    sibling = true;
+  }
+  name[canonicalLength] = '\0';
+  return DailyBookReadingHistory::dayFromFileName(name, day);
+}
+
 PathStatus readRekeyPath(const char* path, RekeyIdentity* identity = nullptr) {
   HalFile file;
   if (!Storage.openFileForRead(LOG_TAG, path, file)) {
@@ -207,7 +222,21 @@ DailyBookReadingHistory::LoadStatus publicStatus(const PathStatus status) {
   }
 }
 
-bool saveDay(const uint32_t day, const DailyBookReadingDay& data, const PathStatus primaryStatus) {
+PathStatus unobservedSiblingStatus(const uint32_t day, const DailyBookReadingHistory::LoadStatus loadStatus) {
+  if (loadStatus != DailyBookReadingHistory::LoadStatus::Ok &&
+      loadStatus != DailyBookReadingHistory::LoadStatus::RecoveredBackup) {
+    return PathStatus::Missing;
+  }
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  if (loadStatus == DailyBookReadingHistory::LoadStatus::Ok) {
+    const PathStatus backupStatus = readPath((path + ".bak").c_str(), day);
+    if (isProtected(backupStatus)) return backupStatus;
+  }
+  const PathStatus tempStatus = readPath((path + ".tmp").c_str(), day);
+  return isProtected(tempStatus) ? tempStatus : PathStatus::Missing;
+}
+
+bool saveDay(const uint32_t day, const DailyBookReadingDay& data, const bool rotateExisting) {
   size_t size = HEADER_SIZE + sizeof(uint32_t);
   for (size_t index = 0; index < data.count; ++index) {
     size += RECORD_FIXED_SIZE + data.records[index].path.size() + data.records[index].title.size();
@@ -241,8 +270,7 @@ bool saveDay(const uint32_t day, const DailyBookReadingDay& data, const PathStat
   }
   const std::string path = DailyBookReadingHistory::pathForDay(day);
   const std::string backup = path + ".bak";
-  return ReadingStatsStorage::writeAtomic(path.c_str(), backup.c_str(), primaryStatus == PathStatus::Valid,
-                                          encoded.get(), size);
+  return ReadingStatsStorage::writeAtomic(path.c_str(), backup.c_str(), rotateExisting, encoded.get(), size);
 }
 
 bool rekeyDay(const uint32_t day, const RekeyIdentity& identity) {
@@ -254,6 +282,7 @@ bool rekeyDay(const uint32_t day, const RekeyIdentity& identity) {
       status == DailyBookReadingHistory::LoadStatus::Invalid) {
     return false;
   }
+  if (isProtected(unobservedSiblingStatus(day, status))) return false;
   auto oldRecord =
       std::find_if(data.records.begin(), data.records.begin() + data.count,
                    [&identity](const DailyBookReadingRecord& record) { return record.path == identity.oldPath; });
@@ -273,9 +302,7 @@ bool rekeyDay(const uint32_t day, const RekeyIdentity& identity) {
   } else {
     oldRecord->path = identity.newPath;
   }
-  const std::string path = DailyBookReadingHistory::pathForDay(day);
-  const PathStatus primaryStatus = readPath(path.c_str(), day);
-  return !isProtected(primaryStatus) && saveDay(day, data, primaryStatus);
+  return saveDay(day, data, status == DailyBookReadingHistory::LoadStatus::Ok);
 }
 }  // namespace
 
@@ -334,7 +361,10 @@ DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const uint
   DailyBookReadingDay data;
   const LoadStatus status = load(day, data);
   if (status == LoadStatus::NewerVersion) return RecordStatus::Protected;
-  if (status == LoadStatus::IoError) return RecordStatus::IoError;
+  if (status == LoadStatus::IoError || status == LoadStatus::Invalid) return RecordStatus::IoError;
+  const PathStatus siblingStatus = unobservedSiblingStatus(day, status);
+  if (siblingStatus == PathStatus::NewerVersion) return RecordStatus::Protected;
+  if (siblingStatus == PathStatus::IoError) return RecordStatus::IoError;
   auto found = std::find_if(data.records.begin(), data.records.begin() + data.count,
                             [&path](const DailyBookReadingRecord& record) { return record.path == path; });
   if (found != data.records.begin() + data.count) {
@@ -344,11 +374,7 @@ DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const uint
     if (data.count >= DailyBookReadingDay::MAX_BOOKS) return RecordStatus::CapacityExceeded;
     data.records[data.count++] = {path, storedTitle, std::min<uint32_t>(seconds, 24U * 3600U)};
   }
-  const std::string primaryPath = pathForDay(day);
-  const PathStatus primaryStatus = readPath(primaryPath.c_str(), day);
-  if (primaryStatus == PathStatus::NewerVersion) return RecordStatus::Protected;
-  if (primaryStatus == PathStatus::IoError) return RecordStatus::IoError;
-  return saveDay(day, data, primaryStatus) ? RecordStatus::Ok : RecordStatus::IoError;
+  return saveDay(day, data, status == LoadStatus::Ok) ? RecordStatus::Ok : RecordStatus::IoError;
 }
 
 DailyBookReadingHistory::RecordStatus DailyBookReadingHistory::record(const std::string& path, const std::string& title,
@@ -409,7 +435,10 @@ bool DailyBookReadingHistory::finishPreparedRekey() {
         directory.close();
         return false;
       }
-      if (dayFromFileName(name, day) && !rekeyDay(day, identity)) {
+      bool sibling = false;
+      if (!dayFromArtifactFileName(name, length, day, sibling)) continue;
+      if (sibling && Storage.exists(pathForDay(day).c_str())) continue;
+      if (!rekeyDay(day, identity)) {
         directory.close();
         return false;
       }
@@ -469,18 +498,10 @@ bool DailyBookReadingHistory::canReset() {
       return false;
     }
     if (isDirectory) continue;
-    size_t canonicalLength = length;
-    if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".bak") == 0) {
-      canonicalLength -= 4;
-      name[canonicalLength] = '\0';
-    } else if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".tmp") == 0) {
-      canonicalLength -= 4;
-      name[canonicalLength] = '\0';
-    }
-    if (!dayFromFileName(name, day)) continue;
-    DailyBookReadingDay data;
-    const LoadStatus status = load(day, data);
-    if (status == LoadStatus::NewerVersion || status == LoadStatus::IoError) {
+    const std::string artifactPath = std::string(DIRECTORY) + "/" + std::string(name, length);
+    bool sibling = false;
+    if (!dayFromArtifactFileName(name, length, day, sibling)) continue;
+    if (isProtected(readPath(artifactPath.c_str(), day))) {
       directory.close();
       return false;
     }

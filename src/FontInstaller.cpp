@@ -65,29 +65,33 @@ bool FontInstaller::validateCpfontFile(const char* path) {
 bool FontInstaller::validateFamilyDirectory(const char* directory) {
   HalFile dir = Storage.open(directory);
   if (!dir || !dir.isDirectory()) return false;
+  const auto fail = [&dir] {
+    if (dir) dir.close();
+    return false;
+  };
   bool foundFont = false;
   char name[FontStorageUtils::MAX_CPFONT_FILENAME_BYTES + 1];
   while (true) {
     HalFile entry = dir.openNextFile();
     if (!entry) break;
     if (entry.isDirectory()) {
-      entry.close();
+      if (!entry.close()) return fail();
       continue;
     }
-    entry.getName(name, sizeof(name));
-    entry.close();
-    const size_t length = strlen(name);
+    const size_t length = entry.getName(name, sizeof(name));
+    const bool entryClosed = entry.close();
+    if (!entryClosed || length == 0 || length >= sizeof(name) || name[length] != '\0') return fail();
     if (length < 7 || strcmp(name + length - 7, ".cpfont") != 0) continue;
     char path[FontStorageUtils::FONT_PATH_CAPACITY];
     if (!isValidCpfontFilename(name) || !FontStorageUtils::buildFilePath(directory, name, path, sizeof(path)) ||
         !validateCpfontFile(path)) {
-      dir.close();
-      return false;
+      return fail();
     }
     foundFont = true;
   }
-  dir.close();
-  return foundFont;
+  const bool iterationSucceeded = dir.getError() == 0;
+  const bool directoryClosed = dir.close();
+  return foundFont && iterationSucceeded && directoryClosed;
 }
 
 bool FontInstaller::recoverInterruptedFamilyDownload(const char* familyName) {
@@ -139,34 +143,43 @@ FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
   if (!isValidFamilyName(familyName)) {
     return Error::INVALID_FAMILY_NAME;
   }
+  char requestedFamily[CrossPointSettings::SD_FONT_FAMILY_NAME_CAPACITY];
+  if (!FontStorageUtils::copyPersistedFamilyName(familyName, requestedFamily, sizeof(requestedFamily))) {
+    return Error::INVALID_FAMILY_NAME;
+  }
+  const bool wasActive = strcmp(SETTINGS.sdFontFamilyName, requestedFamily) == 0;
 
   // A family may exist in either root (or, edge case, both). Remove from both.
   const char* roots[] = {SdCardFontRegistry::FONTS_DIR_HIDDEN, SdCardFontRegistry::FONTS_DIR_VISIBLE};
-  bool removedAny = false;
   bool sawAny = false;
   for (const char* root : roots) {
     char dirPath[FontStorageUtils::FONT_PATH_CAPACITY];
-    if (!buildFamilyPathAtRoot(root, familyName, dirPath, sizeof(dirPath))) return Error::INVALID_FAMILY_NAME;
+    if (!buildFamilyPathAtRoot(root, requestedFamily, dirPath, sizeof(dirPath))) return Error::INVALID_FAMILY_NAME;
     if (!Storage.exists(dirPath)) continue;
     sawAny = true;
     if (!Storage.removeDir(dirPath)) {
       LOG_ERR("FONT", "Failed to remove family dir: %s", dirPath);
       return Error::SD_WRITE_ERROR;
     }
-    removedAny = true;
   }
 
-  if (!sawAny) {
-    LOG_DBG("FONT", "Family not found in any fonts root: %s", familyName);
+  if (!sawAny && !wasActive) {
+    LOG_DBG("FONT", "Family not found in any fonts root: %s", requestedFamily);
     return Error::OK;  // Already gone
   }
-  (void)removedAny;
 
-  // If this was the active font, clear the setting
-  if (strcmp(SETTINGS.sdFontFamilyName, familyName) == 0) {
+  // The directory may already be gone after a previous persistence failure.
+  // Still clear the stale active selection so the operation is retryable.
+  if (wasActive) {
     SETTINGS.sdFontFamilyName[0] = '\0';
-    SETTINGS.saveToFile();
-    LOG_DBG("FONT", "Cleared active SD font (deleted family: %s)", familyName);
+    if (!SETTINGS.saveToFile()) {
+      FontStorageUtils::copyPersistedFamilyName(requestedFamily, SETTINGS.sdFontFamilyName,
+                                                sizeof(SETTINGS.sdFontFamilyName));
+      if (sawAny) refreshRegistry();
+      LOG_ERR("FONT", "Failed to persist deletion of active font: %s", requestedFamily);
+      return Error::SD_WRITE_ERROR;
+    }
+    LOG_DBG("FONT", "Cleared active SD font (deleted family: %s)", requestedFamily);
   }
 
   return Error::OK;

@@ -203,6 +203,41 @@ TEST_P(BookFilePublishTest, CommittedReplacementDeletesBackupBeforePendingMarker
   EXPECT_FALSE(Storage.exists(pendingPath));
 }
 
+TEST_P(BookFilePublishTest, PendingStatsBlocksEveryMutationOfItsExactXtcCache) {
+  const std::string extension = GetParam();
+  const std::string bookA = "/books/a" + extension;
+  const std::string bookB = "/books/b" + extension;
+  const std::string movedA = "/read/a" + extension;
+  const std::string stagingA = hiddenBookFileSibling(bookA, ".davtmp");
+  const std::string cacheA = Xtc(bookA, "/.crosspoint").getCachePath();
+  const std::string cacheB = Xtc(bookB, "/.crosspoint").getCachePath();
+  const std::vector<unsigned char> oldBook = xtcMagic(extension == ".xtch");
+  std::vector<unsigned char> newBook = xtcMagic(extension == ".xtch");
+  newBook.push_back('N');
+  const std::vector<unsigned char> progress = {1, 2, 3, 4};
+  Storage.addDirectory("/read");
+  Storage.setFile(bookA, oldBook);
+  Storage.setFile(stagingA, newBook);
+  Storage.addDirectory(cacheA);
+  Storage.setFile(cacheA + "/progress.bin", progress);
+
+  ReadingStatsCompletionTransaction::blockCacheForTest(cacheA);
+  EXPECT_FALSE(canDeleteOrRelocateBookFile(bookA));
+  EXPECT_TRUE(canDeleteOrRelocateBookFile(bookB));
+  EXPECT_FALSE(recoverInterruptedBookFileReplacement(bookA));
+  EXPECT_EQ(publishStagedBookFile(stagingA, bookA), BookFilePublishResult::StateUnavailable);
+  EXPECT_EQ(moveBookFilePreservingUserState(bookA, movedA), BookPathMoveResult::StateUnavailable);
+  EXPECT_FALSE(removeBookUserStateAfterDelete(bookA));
+  EXPECT_FALSE(resetBookUserStateAfterReplacement(bookA));
+
+  EXPECT_EQ(Storage.file(bookA), oldBook);
+  EXPECT_EQ(Storage.file(stagingA), newBook);
+  EXPECT_EQ(Storage.file(cacheA + "/progress.bin"), progress);
+  EXPECT_FALSE(Storage.exists(movedA));
+  EXPECT_NE(cacheA, cacheB);
+  ReadingStatsCompletionTransaction::clearBlockedCacheForTest();
+}
+
 TEST(BookFilePublishEpubRecoveryTest, MarkerlessBackupCollisionIsPreservedAndFailsClosed) {
   Storage.reset();
   Storage.addDirectory("/books");

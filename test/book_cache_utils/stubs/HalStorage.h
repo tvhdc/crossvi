@@ -26,14 +26,17 @@ class HalFile {
   HalFile openNextFile();
   uint64_t fileSize64() const;
   size_t available() const { return open_ && !directory_ ? static_cast<size_t>(fileSize64()) - position_ : 0; }
+  uint8_t getError() const { return error_; }
   int read(void* destination, size_t length);
   size_t write(const void* source, size_t length);
-  void flush() {}
+  // Match SdFat: FsFile::flush() delegates to sync(). This lets tests catch
+  // callers that accidentally perform the same durable flush twice.
+  void flush() { (void)sync(); }
   bool sync();
   bool close() {
     const bool wasOpen = open_;
     open_ = false;
-    return wasOpen;
+    return wasOpen && !failClose_;
   }
   explicit operator bool() const { return open_; }
 
@@ -54,6 +57,9 @@ class HalFile {
   std::string name_;
   std::vector<Entry> entries_;
   size_t nextEntry_ = 0;
+  size_t failIterationAfter_ = static_cast<size_t>(-1);
+  uint8_t error_ = 0;
+  bool failClose_ = false;
 };
 
 class HalStorage {
@@ -84,8 +90,14 @@ class HalStorage {
 
     file.open_ = true;
     file.directory_ = directory != directories_.end();
+    file.storage_ = const_cast<HalStorage*>(this);
+    file.path_ = path;
     file.name_ = baseName(path);
-    if (file.directory_) file.entries_ = immediateChildren(path);
+    file.failClose_ = failClosePath_ == path;
+    if (file.directory_) {
+      file.entries_ = immediateChildren(path);
+      if (failDirectoryIterationPath_ == path) file.failIterationAfter_ = failDirectoryIterationAfter_;
+    }
     return file;
   }
 
@@ -190,6 +202,10 @@ class HalStorage {
     failRmdirOnce_ = false;
     shortWriteOnce_ = false;
     failSyncOnce_ = false;
+    syncCalls_ = 0;
+    failDirectoryIterationPath_.clear();
+    failDirectoryIterationAfter_ = static_cast<size_t>(-1);
+    failClosePath_.clear();
     directories_.insert("/");
   }
 
@@ -228,6 +244,12 @@ class HalStorage {
   void failRmdirOnce() { failRmdirOnce_ = true; }
   void shortWriteOnce() { shortWriteOnce_ = true; }
   void failSyncOnce() { failSyncOnce_ = true; }
+  void failDirectoryIterationAfter(std::string path, const size_t entries) {
+    failDirectoryIterationPath_ = std::move(path);
+    failDirectoryIterationAfter_ = entries;
+  }
+  void failClosePath(std::string path) { failClosePath_ = std::move(path); }
+  size_t syncCalls() const { return syncCalls_; }
 
  private:
   friend class HalFile;
@@ -241,6 +263,10 @@ class HalStorage {
   bool failRmdirOnce_ = false;
   bool shortWriteOnce_ = false;
   bool failSyncOnce_ = false;
+  size_t syncCalls_ = 0;
+  std::string failDirectoryIterationPath_;
+  size_t failDirectoryIterationAfter_ = static_cast<size_t>(-1);
+  std::string failClosePath_;
 
   static std::string withTrailingSlash(const std::string& path) { return path.back() == '/' ? path : path + "/"; }
 
@@ -289,6 +315,7 @@ class HalStorage {
     file.path_ = path;
     file.name_ = baseName(path);
     file.writable_ = writable;
+    file.failClose_ = failClosePath_ == path;
     return file;
   }
 };
@@ -301,11 +328,18 @@ inline size_t HalFile::getName(char* destination, const size_t capacity) const {
 
 inline HalFile HalFile::openNextFile() {
   HalFile result;
+  if (open_ && directory_ && nextEntry_ == failIterationAfter_) {
+    error_ = 1;
+    return result;
+  }
   if (!open_ || !directory_ || nextEntry_ >= entries_.size()) return result;
   const Entry& entry = entries_[nextEntry_++];
   result.open_ = true;
   result.directory_ = entry.directory;
+  result.storage_ = storage_;
+  result.path_ = path_ + (path_ == "/" ? "" : "/") + entry.name;
   result.name_ = entry.name;
+  result.failClose_ = storage_ && storage_->failClosePath_ == result.path_;
   return result;
 }
 
@@ -337,6 +371,7 @@ inline size_t HalFile::write(const void* source, const size_t length) {
 
 inline bool HalFile::sync() {
   if (!open_ || !storage_) return false;
+  ++storage_->syncCalls_;
   if (storage_->failSyncOnce_) {
     storage_->failSyncOnce_ = false;
     return false;

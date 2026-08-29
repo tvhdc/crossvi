@@ -64,7 +64,6 @@ class EpubInBookSearchActivity final : public Activity {
   int spine_ = 0;
   int page_ = 0;
   int selected_ = 0;
-  uint8_t pagesSinceUpdate_ = 0;
   bool wrapped_ = false;
   bool searching_ = false;
   bool failed_ = false;

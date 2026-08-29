@@ -33,12 +33,12 @@ bool InflateStream::init(const bool streaming) {
     // Raw malloc (not makeUniqueNoThrow): the header keeps tinfl_decompressor
     // an incomplete type so consumers never include miniz; both blocks are
     // freed in deinit()/the destructor.
-    state = static_cast<tinfl_decompressor*>(malloc(sizeof(tinfl_decompressor)));
-    if (!state) return false;
     if (streaming) {
       window = static_cast<uint8_t*>(malloc(WINDOW_SIZE));
-      if (!window) return false;  // state kept; deinit()/next init reclaims it
+      if (!window) return false;
     }
+    state = static_cast<tinfl_decompressor*>(malloc(sizeof(tinfl_decompressor)));
+    if (!state) return false;  // window kept; deinit()/next init reclaims it
   }
 
   tinfl_init(state);

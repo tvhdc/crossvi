@@ -129,6 +129,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   esp_ota_handle_t otaHandle = 0;
   bool otaStarted = false;
 
+  wifi_ps_type_t previousWifiPowerSave = WIFI_PS_MIN_MODEM;
+  const bool restoreWifiPowerSave = esp_wifi_get_ps(&previousWifiPowerSave) == ESP_OK;
+
   /* For better timing and connectivity, we disable power saving for WiFi */
   esp_wifi_set_ps(WIFI_PS_NONE);
 
@@ -197,8 +200,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return writeChunk(data, len);
   });
 
-  /* Return back to default power saving for WiFi in case of failing */
-  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  /* Restore the mode inherited from the caller, including WIFI_PS_NONE. */
+  esp_wifi_set_ps(restoreWifiPowerSave ? previousWifiPowerSave : WIFI_PS_MIN_MODEM);
 
   if (wrongDevice) {
     if (otaStarted) esp_ota_abort(otaHandle);

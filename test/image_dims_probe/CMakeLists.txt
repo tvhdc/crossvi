@@ -1,5 +1,6 @@
 add_executable(ImageDimsProbeTest
   ImageDimsProbeTest.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/converters/ImageDecoderFactory.cpp
   ${REPO_ROOT}/lib/Epub/Epub/converters/ImageDimsProbe.cpp
   ${REPO_ROOT}/lib/Epub/Epub/converters/ImageToFramebufferDecoder.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
@@ -13,6 +14,7 @@ target_include_directories(ImageDimsProbeTest PRIVATE
   ${REPO_ROOT}/lib/Epub/Epub/converters
   ${REPO_ROOT}/lib/Epub/Epub/blocks
   ${REPO_ROOT}/lib/GfxRenderer
+  ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/PngToBmpConverter
 )
 

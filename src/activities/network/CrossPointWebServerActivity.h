@@ -55,6 +55,7 @@ class CrossPointWebServerActivity final : public Activity {
   std::string lastReceivedPath;
   unsigned long lastReceivedAt = 0;
   bool restartToReader = false;
+  bool showOpenError = false;
 
   void renderServerRunning() const;
   void renderWifiIndicator(int subHeaderTop) const;

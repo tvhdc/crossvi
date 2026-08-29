@@ -22,7 +22,6 @@ constexpr const char* HOSTNAME = "crosspoint";
 void CalibreConnectActivity::onEnter() {
   Activity::onEnter();
 
-  requestUpdate();
   state = CalibreConnectState::WIFI_SELECTION;
   connectedIP.clear();
   connectedSSID.clear();
@@ -74,7 +73,7 @@ void CalibreConnectActivity::onWifiSelectionComplete(const bool connected) {
 
 void CalibreConnectActivity::startWebServer() {
   state = CalibreConnectState::SERVER_STARTING;
-  requestUpdate();
+  requestUpdateAndWait();
 
   MDNS.end();
   if (MDNS.begin(HOSTNAME)) {
@@ -105,12 +104,7 @@ void CalibreConnectActivity::startWebServer() {
   }
 }
 
-void CalibreConnectActivity::stopWebServer() {
-  if (webServer) {
-    webServer->stop();
-    webServer.reset();
-  }
-}
+void CalibreConnectActivity::stopWebServer() { webServer.reset(); }
 
 void CalibreConnectActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {

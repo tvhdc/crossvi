@@ -129,8 +129,8 @@ bool CrossPointSettings::loadFromFile() {
     // Fall back to binary migration
     if (Storage.exists(SETTINGS_FILE_BIN)) {
       if (loadFromBinaryFile()) {
-        migrateLanguageBinaryFile();
-        if (saveToFile()) {
+        const bool languageMigrationPublished = migrateLanguageBinaryFile();
+        if (languageMigrationPublished || saveToFile()) {
           if (Storage.rename(SETTINGS_FILE_BIN, SETTINGS_FILE_BAK)) {
             LOG_DBG("CPS", "Migrated settings.bin to settings.json");
           } else {
@@ -163,14 +163,14 @@ bool CrossPointSettings::loadFromFile() {
     result = JsonSettingsIO::loadSettings(*this, json.c_str(), &resave);
   }
   persistenceWritable = result;
-  if (result && resave) {
+  const bool languageMigrationPublished = migrateLanguageBinaryFile();
+  if (result && resave && !languageMigrationPublished) {
     if (saveToFile()) {
       LOG_DBG("CPS", "Resaved settings to update format");
     } else {
       LOG_ERR("CPS", "Failed to resave settings after format update");
     }
   }
-  migrateLanguageBinaryFile();
   return result;
 }
 
@@ -186,11 +186,18 @@ bool CrossPointSettings::migrateLanguageBinaryFile() {
   const uint8_t previousLanguage = language;
   if (backupExists) {
     HalFile backup;
-    std::array<uint8_t, 2> legacy{};
-    if (Storage.openFileForRead("CPS", LANG_FILE_BAK, backup) && backup.fileSize64() == legacy.size() &&
-        backup.read(legacy.data(), legacy.size()) == static_cast<int>(legacy.size()) && legacy[0] == 1 &&
-        legacy[1] < V1_LANGUAGE_COUNT && language == static_cast<uint8_t>(V1_LANGUAGES[legacy[1]])) {
-      language = static_cast<uint8_t>(Language::EN);
+    if (Storage.openFileForRead("CPS", LANG_FILE_BAK, backup)) {
+      std::array<uint8_t, 2> legacy{};
+      const bool matchesAutoMigratedValue =
+          backup.fileSize64() == legacy.size() &&
+          backup.read(legacy.data(), legacy.size()) == static_cast<int>(legacy.size()) && legacy[0] == 1 &&
+          legacy[1] < V1_LANGUAGE_COUNT && language == static_cast<uint8_t>(V1_LANGUAGES[legacy[1]]);
+      if (!backup.close()) {
+        language = previousLanguage;
+        LOG_ERR("CPS", "Could not close legacy language backup before migration");
+        return false;
+      }
+      if (matchesAutoMigratedValue) language = static_cast<uint8_t>(Language::EN);
     }
   }
 
@@ -304,19 +311,6 @@ bool CrossPointSettings::loadFromBinaryFile() {
 }
 
 float CrossPointSettings::getReaderLineCompression() const {
-  // SD card fonts use same compression as Bookerly (the most neutral values)
-  if (sdFontFamilyName[0] != '\0') {
-    switch (lineSpacing) {
-      case TIGHT:
-        return 0.95f;
-      case NORMAL:
-      default:
-        return 1.0f;
-      case WIDE:
-        return 1.1f;
-    }
-  }
-
   switch (lineSpacing) {
     case TIGHT:
       return 0.95f;

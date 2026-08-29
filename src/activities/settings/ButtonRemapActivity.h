@@ -27,6 +27,7 @@ class ButtonRemapActivity final : public Activity {
 
   // Commit temporary mapping to settings.
   void applyTempMapping();
+  bool mappingChanged() const;
   // Returns false if a hardware button is already assigned to a different role.
   bool validateUnassigned(uint8_t pressedButton);
   // Labels for UI display.

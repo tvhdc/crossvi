@@ -72,6 +72,18 @@ TEST(LegacySettingsMigrationIntegration, ValidBinaryPublishesJsonBeforeArchiving
   EXPECT_TRUE(Storage.exists(SETTINGS_BIN_BAK));
 }
 
+TEST(LegacySettingsMigrationIntegration, BinaryAndLanguageMigrationPublishesJsonOnce) {
+  resetFakes();
+  Storage.setFile(SETTINGS_BIN, makeLegacy(1));
+  Storage.setFile(LANGUAGE_BIN, {1, 6});
+
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+  EXPECT_EQ(LegacySettingsTestSupport::jsonSaveCalls(), 1);
+  EXPECT_TRUE(Storage.exists(SETTINGS_JSON));
+  EXPECT_TRUE(Storage.exists(SETTINGS_BIN_BAK));
+  EXPECT_FALSE(Storage.exists(LANGUAGE_BIN));
+}
+
 TEST(LegacySettingsMigrationIntegration, RemovedBinaryNotoSansFallsBackToNotoSerif) {
   resetFakes();
   std::vector<uint8_t> bytes = makeLegacy(LegacySettingsV2::FontFamily + 1);
@@ -235,6 +247,17 @@ TEST(SettingsJsonIntegration, RemovedLanguageFallsBackToEnglishAndIsCanonicalize
   EXPECT_TRUE(needsResave);
 }
 
+TEST(SettingsJsonIntegration, OversizeDictionaryNameIsClearedInsteadOfTruncated) {
+  bool needsResave = false;
+  const std::string name(32, 'd');
+  const std::string json = "{\"dictionaryName\":\"" + name + "\"}";
+
+  ASSERT_TRUE(JsonSettingsIO::loadSettings(SETTINGS, json.c_str(), &needsResave));
+
+  EXPECT_STREQ(SETTINGS.dictionaryName, "");
+  EXPECT_TRUE(needsResave);
+}
+
 TEST(SettingsJsonIntegration, RemovedLanguageAndLegacyIndexUpgradeSafelyToEnglish) {
   resetFakes();
   const std::string json = R"({"language":"RO"})";
@@ -244,6 +267,7 @@ TEST(SettingsJsonIntegration, RemovedLanguageAndLegacyIndexUpgradeSafelyToEnglis
   ASSERT_TRUE(SETTINGS.loadFromFile());
 
   EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::EN));
+  EXPECT_EQ(LegacySettingsTestSupport::jsonSaveCalls(), 1);
   EXPECT_NE(LegacySettingsTestSupport::lastSavedJson().find("\"language\":\"EN\""), std::string::npos);
   EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
 }
@@ -364,6 +388,33 @@ TEST(SettingsJsonIntegration, RepairsLanguagePreviouslyAutoMigratedFromAmbiguous
   EXPECT_FALSE(Storage.exists(LANGUAGE_BIN_BAK));
 }
 
+TEST(SettingsJsonIntegration, ClosesLegacyLanguageBackupBeforeRemovingIt) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::RU);
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+  Storage.setFile(LANGUAGE_BIN_BAK, {1, 6});
+
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  ASSERT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(Storage.removeWhileOpenAttemptsFor(LANGUAGE_BIN_BAK), 0U);
+}
+
+TEST(SettingsJsonIntegration, LanguageBackupCloseFailureLeavesMigrationRecoverable) {
+  resetFakes();
+  SETTINGS.language = static_cast<uint8_t>(Language::RU);
+  ASSERT_TRUE(JsonSettingsIO::saveSettings(SETTINGS, SETTINGS_JSON));
+  Storage.setFile(LANGUAGE_BIN_BAK, {1, 6});
+  Storage.failCloseFor(LANGUAGE_BIN_BAK);
+
+  SETTINGS.language = static_cast<uint8_t>(Language::EN);
+  EXPECT_TRUE(SETTINGS.loadFromFile());
+
+  EXPECT_EQ(SETTINGS.language, static_cast<uint8_t>(Language::RU));
+  EXPECT_TRUE(Storage.exists(LANGUAGE_BIN_BAK));
+  EXPECT_EQ(Storage.removeWhileOpenAttemptsFor(LANGUAGE_BIN_BAK), 0U);
+}
+
 TEST(SettingsJsonIntegration, PreservesExplicitLanguageThatDiffersFromAmbiguousBackup) {
   resetFakes();
   SETTINGS.language = static_cast<uint8_t>(Language::VI);
@@ -405,8 +456,10 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
             CrossPointSettings::SLEEP_SCREEN_COVER_STATS);
   EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::CUSTOM_STATS),
             CrossPointSettings::SLEEP_SCREEN_CUSTOM_STATS);
+  EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::CUSTOM),
+            CrossPointSettings::SLEEP_SCREEN_CUSTOM);
   EXPECT_EQ(CrossPointSettings::sleepScreenSelection(CrossPointSettings::TRANSPARENT_CUSTOM),
-            CrossPointSettings::SLEEP_SCREEN_TRANSPARENT);
+            CrossPointSettings::SLEEP_SCREEN_CUSTOM);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_DEFAULT), CrossPointSettings::LIGHT);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_BLANK), CrossPointSettings::BLANK);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_READING_CALENDAR),
@@ -415,6 +468,8 @@ TEST(SettingsJsonIntegration, MigratesLegacySleepChoicesToSeparateQuickResumeAnd
             CrossPointSettings::COVER_STATS);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_CUSTOM_STATS),
             CrossPointSettings::CUSTOM_STATS);
+  EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_CUSTOM),
+            CrossPointSettings::TRANSPARENT_CUSTOM);
   EXPECT_EQ(CrossPointSettings::sleepScreenMode(CrossPointSettings::SLEEP_SCREEN_TRANSPARENT),
             CrossPointSettings::TRANSPARENT_CUSTOM);
 

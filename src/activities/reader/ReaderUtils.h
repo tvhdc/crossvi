@@ -238,7 +238,9 @@ inline bool isLongPageTurnRelease(const MappedInputManager& input, const PageTur
 inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh,
                                     X3ReaderWaveformState& waveform) {
   if (pagesUntilFullRefresh <= 1) {
-    if (display.supportsX3GhostCleanup()) {
+    // A negative countdown is an explicit user refresh. Keep its balanced
+    // clean pass distinct from the lighter periodic X3 ghost cleanup.
+    if (pagesUntilFullRefresh >= 0 && display.supportsX3GhostCleanup()) {
       renderer.displayBuffer();
       waveform.requestCleanupAfterPageVisible();
     } else {

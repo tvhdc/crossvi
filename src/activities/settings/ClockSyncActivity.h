@@ -21,8 +21,10 @@ class ClockSyncActivity final : public Activity {
   State state = SYNCING;
   char syncedTime[16] = {0};
   bool shouldTearDownWifiOnExit = false;
+  bool wifiSelectionAutoSyncExpected = false;
 
   void runSync();
+  void showSyncSuccess();
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
 };

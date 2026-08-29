@@ -54,8 +54,6 @@ void SettingsActivity::rebuildSettingsLists() {
   displaySettings.push_back(SettingInfo::Enum(
       StrId::STR_REFRESH_EVERY, &CrossPointSettings::refreshFrequency,
       {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30}));
-  displaySettings.push_back(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix));
-
   readerSettings.push_back(SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.push_back(SettingInfo::Enum(
       StrId::STR_ORIENTATION, &CrossPointSettings::orientation,
@@ -226,8 +224,8 @@ void SettingsActivity::loop() {
       selectedSettingIndex = 0;
       requestUpdate();
     } else {
-      if (Storage.probeMedia()) SETTINGS.saveToFile();
       onGoHome();
+      SETTINGS.saveToFile();
     }
     return;
   }
@@ -242,16 +240,27 @@ void SettingsActivity::toggleCurrentSetting() {
   const auto& setting = (*currentSettings)[selectedSetting];
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
-    const bool currentValue = SETTINGS.*(setting.valuePtr);
+    const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
     SETTINGS.*(setting.valuePtr) = !currentValue;
+    if (!SETTINGS.saveToFile()) {
+      SETTINGS.*(setting.valuePtr) = currentValue;
+      showSaveError = true;
+    }
+    rebuildSettingsLists();
+    selectedSettingIndex = std::min(selectedSettingIndex, settingsCount);
+    return;
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (!setting.enumValues.empty()) {
       const auto valuePtr = setting.valuePtr;
       optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
-                       currentValue, [this, valuePtr](int idx) {
+                       currentValue, [this, currentValue, valuePtr](int idx) {
+                         if (idx == currentValue) return;
                          SETTINGS.*valuePtr = idx;
-                         SETTINGS.saveToFile();
+                         if (!SETTINGS.saveToFile()) {
+                           SETTINGS.*valuePtr = currentValue;
+                           showSaveError = true;
+                         }
                          rebuildSettingsLists();
                        });
       requestUpdate();
@@ -264,9 +273,13 @@ void SettingsActivity::toggleCurrentSetting() {
     const uint8_t cur = setting.valueGetter();
     if (totalValues > 0) {
       const auto valueSetter = setting.valueSetter;
-      auto onSelect = [this, valueSetter](int idx) {
+      auto onSelect = [this, cur, valueSetter](int idx) {
+        if (idx == cur) return;
         valueSetter(idx);
-        SETTINGS.saveToFile();
+        if (!SETTINGS.saveToFile()) {
+          valueSetter(cur);
+          showSaveError = true;
+        }
         rebuildSettingsLists();
       };
       if (!setting.enumStringValues.empty()) {
@@ -288,9 +301,10 @@ void SettingsActivity::toggleCurrentSetting() {
     startActivityForResult(
         std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(setting.nameId), initialValue,
                                                 stringMaxLen > 0 ? stringMaxLen - 1 : 0, InputType::Text),
-        [this, stringOffset, stringMaxLen, stringSetter](const ActivityResult& result) {
+        [this, initialValue, stringOffset, stringMaxLen, stringSetter](const ActivityResult& result) {
           if (result.isCancelled) return;
           const std::string& value = std::get<KeyboardResult>(result.data).text;
+          if (value == initialValue) return;
           if (stringSetter) {
             stringSetter(value);
           } else if (stringMaxLen > 0) {
@@ -298,7 +312,16 @@ void SettingsActivity::toggleCurrentSetting() {
             std::strncpy(destination, value.c_str(), stringMaxLen - 1);
             destination[stringMaxLen - 1] = '\0';
           }
-          SETTINGS.saveToFile();
+          if (!SETTINGS.saveToFile()) {
+            if (stringSetter) {
+              stringSetter(initialValue);
+            } else if (stringMaxLen > 0) {
+              char* destination = reinterpret_cast<char*>(&SETTINGS) + stringOffset;
+              std::strncpy(destination, initialValue.c_str(), stringMaxLen - 1);
+              destination[stringMaxLen - 1] = '\0';
+            }
+            showSaveError = true;
+          }
           rebuildSettingsLists();
         });
     return;
@@ -326,16 +349,16 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<TimeSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::KOReaderSync:
-        startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
+        startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), {});
         break;
       case SettingAction::OPDSBrowser:
-        startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);
+        startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), {});
         break;
       case SettingAction::Network:
-        startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false), resultHandler);
+        startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false), {});
         break;
       case SettingAction::ClearCache:
-        startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), resultHandler);
+        startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), {});
         break;
       case SettingAction::DownloadFonts:
         // The parent Settings activity remains on the stack while the font
@@ -343,16 +366,13 @@ void SettingsActivity::toggleCurrentSetting() {
         // mbedTLS has enough contiguous heap for GitHub's redirect headers.
         releaseSettingsLists();
         startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) {
-                                 SETTINGS.saveToFile();
-                                 rebuildSettingsLists();
-                               });
+                               [this](const ActivityResult&) { rebuildSettingsLists(); });
         break;
       case SettingAction::Language:
-        startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
+        startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), {});
         break;
       case SettingAction::DeviceInfo:
-        startActivityForResult(std::make_unique<DeviceInfoActivity>(renderer, mappedInput), resultHandler);
+        startActivityForResult(std::make_unique<DeviceInfoActivity>(renderer, mappedInput), {});
         break;
       case SettingAction::Appearance:
         openSubmenu(SettingsSubmenuActivity::Page::HomeLibrary, {});
@@ -393,10 +413,6 @@ void SettingsActivity::toggleCurrentSetting() {
   } else {
     return;
   }
-
-  SETTINGS.saveToFile();
-  rebuildSettingsLists();
-  selectedSettingIndex = std::min(selectedSettingIndex, settingsCount);
 }
 
 void SettingsActivity::render(RenderLock&&) {
@@ -486,6 +502,12 @@ void SettingsActivity::render(RenderLock&&) {
   const char* backLabel = selectedSettingIndex == 0 ? tr(STR_HOME) : I18N.get(categoryNames[selectedCategoryIndex]);
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  if (showSaveError) {
+    showSaveError = false;
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
+  }
 
   // Always use standard refresh for settings screen
   renderer.displayBuffer();

@@ -20,7 +20,6 @@ class FontSizeSelectionActivity final : public Activity {
   void previewSelection(int index);
   void buildSizeOptions();
   std::string sizeLabel(int index) const;
-  std::string actualSizeLabel(int index) const;
 
   ButtonNavigator buttonNavigator_;
   ThemeMetrics metrics_ = {};

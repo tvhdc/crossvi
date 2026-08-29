@@ -8,6 +8,7 @@
 #include "KOReaderAuthActivity.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -27,12 +28,14 @@ void KOReaderSettingsActivity::onEnter() {
 }
 
 void KOReaderSettingsActivity::loop() {
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     handleSelection();
     return;
   }
@@ -52,64 +55,65 @@ void KOReaderSettingsActivity::loop() {
 void KOReaderSettingsActivity::handleSelection() {
   if (selectedIndex == 0) {
     // Username
-    startActivityForResult(
-        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_KOREADER_USERNAME),
-                                                KOREADER_STORE.getUsername(), 64, InputType::Identifier),
-        [this](const ActivityResult& result) {
-          if (!result.isCancelled) {
-            const auto& kb = std::get<KeyboardResult>(result.data);
-            KOREADER_STORE.setCredentials(kb.text, KOREADER_STORE.getPassword());
-            KOREADER_STORE.saveToFile();
-          }
-        });
-  } else if (selectedIndex == 1) {
-    // Password
-    startActivityForResult(
-        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_KOREADER_PASSWORD),
-                                                KOREADER_STORE.getPassword(), 64, InputType::Password),
-        [this](const ActivityResult& result) {
-          if (!result.isCancelled) {
-            const auto& kb = std::get<KeyboardResult>(result.data);
-            KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), kb.text);
-            KOREADER_STORE.saveToFile();
-          }
-        });
-  } else if (selectedIndex == 2) {
-    // Show the effective URL, including the default, so it can be inspected
-    // and edited directly instead of presenting only an empty scheme.
-    const std::string prefillUrl = KOREADER_STORE.getBaseUrl();
-    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SYNC_SERVER_URL),
-                                                                   prefillUrl, 128, InputType::Url),
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(
+                               renderer, mappedInput, tr(STR_KOREADER_USERNAME), KOREADER_STORE.getUsername(),
+                               KOReaderCredentialStore::MAX_USERNAME_BYTES, InputType::Identifier),
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
-                               const std::string urlToSave =
-                                   (kb.text == "https://" || kb.text == "http://") ? "" : kb.text;
-                               KOREADER_STORE.setServerUrl(urlToSave);
-                               KOREADER_STORE.saveToFile();
+                               const std::string previousUsername = KOREADER_STORE.getUsername();
+                               if (kb.text == previousUsername) return;
+                               const std::string password = KOREADER_STORE.getPassword();
+                               KOREADER_STORE.setCredentials(kb.text, password);
+                               const bool saved = KOREADER_STORE.saveToFile();
+                               if (!saved) KOREADER_STORE.setCredentials(previousUsername, password);
+                               showSaveError = !saved;
                              }
                            });
+  } else if (selectedIndex == 1) {
+    // Password
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(
+                               renderer, mappedInput, tr(STR_KOREADER_PASSWORD), KOREADER_STORE.getPassword(),
+                               KOReaderCredentialStore::MAX_PASSWORD_BYTES, InputType::Password),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& kb = std::get<KeyboardResult>(result.data);
+                               const std::string username = KOREADER_STORE.getUsername();
+                               const std::string previousPassword = KOREADER_STORE.getPassword();
+                               if (kb.text == previousPassword) return;
+                               KOREADER_STORE.setCredentials(username, kb.text);
+                               const bool saved = KOREADER_STORE.saveToFile();
+                               if (!saved) KOREADER_STORE.setCredentials(username, previousPassword);
+                               showSaveError = !saved;
+                             }
+                           });
+  } else if (selectedIndex == 2) {
+    showServerPicker();
   } else if (selectedIndex == 3) {
     // Document Matching - toggle between Filename and Binary
     const auto current = KOREADER_STORE.getMatchMethod();
     const auto newMethod =
         (current == DocumentMatchMethod::FILENAME) ? DocumentMatchMethod::BINARY : DocumentMatchMethod::FILENAME;
     KOREADER_STORE.setMatchMethod(newMethod);
-    KOREADER_STORE.saveToFile();
-    requestUpdate();
+    const bool saved = KOREADER_STORE.saveToFile();
+    if (!saved) KOREADER_STORE.setMatchMethod(current);
+    reportSaveResult(saved);
   } else if (selectedIndex == 4) {
     // Send Metadata - toggle on/off
-    KOREADER_STORE.setSendMetadata(!KOREADER_STORE.getSendMetadata());
-    KOREADER_STORE.saveToFile();
-    requestUpdate();
+    const bool current = KOREADER_STORE.getSendMetadata();
+    KOREADER_STORE.setSendMetadata(!current);
+    const bool saved = KOREADER_STORE.saveToFile();
+    if (!saved) KOREADER_STORE.setSendMetadata(current);
+    reportSaveResult(saved);
   } else if (selectedIndex == 5) {
     // Sync behavior - toggle between Ask and Smart
     const auto current = KOREADER_STORE.getSyncBehavior();
     const auto newBehavior = (current == KOReaderSyncBehavior::ASK_EVERY_TIME) ? KOReaderSyncBehavior::SMART
                                                                                : KOReaderSyncBehavior::ASK_EVERY_TIME;
     KOREADER_STORE.setSyncBehavior(newBehavior);
-    KOREADER_STORE.saveToFile();
-    requestUpdate();
+    const bool saved = KOREADER_STORE.saveToFile();
+    if (!saved) KOREADER_STORE.setSyncBehavior(current);
+    reportSaveResult(saved);
   } else if (selectedIndex == 6) {
     // Sign Up - create a new account on the sync server with the entered credentials
     if (!KOREADER_STORE.hasCredentials()) {
@@ -128,7 +132,118 @@ void KOReaderSettingsActivity::handleSelection() {
   }
 }
 
+void KOReaderSettingsActivity::reportSaveResult(const bool saved) {
+  showSaveError = !saved;
+  requestUpdate();
+}
+
+void KOReaderSettingsActivity::showServerPicker() {
+  std::vector<std::string> servers = {KOReaderCredentialStore::crossPointServerUrl(),
+                                      KOReaderCredentialStore::koSyncServerUrl()};
+  const auto& customServers = KOREADER_STORE.getCustomServers();
+  servers.insert(servers.end(), customServers.begin(), customServers.end());
+  servers.push_back(tr(STR_ADD_SERVER));
+
+  const std::string current = KOREADER_STORE.getBaseUrl();
+  int currentIndex = 0;
+  for (size_t i = 0; i + 1 < servers.size(); ++i) {
+    std::string normalized = servers[i];
+    if (normalized.find("://") == std::string::npos) normalized.insert(0, "http://");
+    while (!normalized.empty() && normalized.back() == '/') normalized.pop_back();
+    if (normalized == current) {
+      currentIndex = static_cast<int>(i);
+      break;
+    }
+  }
+
+  const size_t customCount = customServers.size();
+  optionPopup.show(StrId::STR_SYNC_SERVER_URL, std::move(servers), currentIndex, [this, customCount](const int index) {
+    if (index == 0) {
+      reportSaveResult(KOREADER_STORE.selectServerUrl(KOReaderCredentialStore::crossPointServerUrl()));
+    } else if (index == 1) {
+      reportSaveResult(KOREADER_STORE.selectServerUrl(KOReaderCredentialStore::koSyncServerUrl()));
+    } else if (index >= 2 && static_cast<size_t>(index - 2) < customCount) {
+      showCustomServerActions(static_cast<size_t>(index - 2));
+    } else {
+      openNewServerEditor();
+    }
+  });
+  requestUpdate();
+}
+
+void KOReaderSettingsActivity::showCustomServerActions(const size_t customIndex) {
+  const auto& servers = KOREADER_STORE.getCustomServers();
+  if (customIndex >= servers.size()) {
+    requestUpdate();
+    return;
+  }
+  const std::string title = servers[customIndex];
+  const std::string select = tr(STR_SELECT);
+  const std::string edit = tr(STR_EDIT_SERVER);
+  const std::string remove = tr(STR_DELETE_SERVER);
+  const char* actions[] = {select.c_str(), edit.c_str(), remove.c_str()};
+  optionPopup.show(title.c_str(), actions, 3, 0, [this, customIndex](const int action) {
+    if (action == 0) {
+      const auto& currentServers = KOREADER_STORE.getCustomServers();
+      reportSaveResult(customIndex < currentServers.size() &&
+                       KOREADER_STORE.selectServerUrl(currentServers[customIndex]));
+    } else if (action == 1) {
+      openCustomServerEditor(customIndex);
+    } else {
+      confirmCustomServerDelete(customIndex);
+    }
+  });
+  requestUpdate();
+}
+
+void KOReaderSettingsActivity::openNewServerEditor() {
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ADD_SERVER), "https://",
+                                              KOReaderCredentialStore::MAX_SERVER_URL_BYTES, InputType::Url),
+      [this](const ActivityResult& result) {
+        if (result.isCancelled) return;
+        const auto& entered = std::get<KeyboardResult>(result.data).text;
+        const bool valid = entered != "https://" && entered != "http://";
+        reportSaveResult(valid && KOREADER_STORE.addCustomServer(entered));
+      });
+}
+
+void KOReaderSettingsActivity::openCustomServerEditor(const size_t customIndex) {
+  const auto& servers = KOREADER_STORE.getCustomServers();
+  if (customIndex >= servers.size()) {
+    requestUpdate();
+    return;
+  }
+  const std::string current = servers[customIndex];
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_EDIT_SERVER), current,
+                                              KOReaderCredentialStore::MAX_SERVER_URL_BYTES, InputType::Url),
+      [this, customIndex](const ActivityResult& result) {
+        if (result.isCancelled) return;
+        const auto& entered = std::get<KeyboardResult>(result.data).text;
+        const bool valid = !entered.empty() && entered != "https://" && entered != "http://";
+        reportSaveResult(valid && KOREADER_STORE.updateCustomServer(customIndex, entered));
+      });
+}
+
+void KOReaderSettingsActivity::confirmCustomServerDelete(const size_t customIndex) {
+  const auto& servers = KOREADER_STORE.getCustomServers();
+  if (customIndex >= servers.size()) {
+    requestUpdate();
+    return;
+  }
+  const std::string server = servers[customIndex];
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_SERVER), server),
+                         [this, customIndex](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             reportSaveResult(KOREADER_STORE.removeCustomServer(customIndex));
+                           }
+                         });
+}
+
 void KOReaderSettingsActivity::render(RenderLock&&) {
+  if (optionPopup.processRender(renderer, mappedInput)) return;
+
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -151,17 +266,12 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
         } else if (index == 1) {
           return KOREADER_STORE.getPassword().empty() ? std::string(tr(STR_NOT_SET)) : std::string("******");
         } else if (index == 2) {
-          auto serverUrl = KOREADER_STORE.getServerUrl();
-          if (!serverUrl.empty()) {
-            return serverUrl;
-          }
-          // Show which server the default actually is, scheme stripped for space
-          std::string defaultUrl = KOREADER_STORE.getBaseUrl();
-          const auto schemeEnd = defaultUrl.find("://");
+          std::string serverUrl = KOREADER_STORE.getBaseUrl();
+          const auto schemeEnd = serverUrl.find("://");
           if (schemeEnd != std::string::npos) {
-            defaultUrl.erase(0, schemeEnd + 3);
+            serverUrl.erase(0, schemeEnd + 3);
           }
-          return std::string(tr(STR_DEFAULT_VALUE)) + ": " + defaultUrl;
+          return serverUrl;
         } else if (index == 3) {
           return KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME ? std::string(tr(STR_FILENAME))
                                                                                   : std::string(tr(STR_BINARY));
@@ -180,6 +290,12 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
   // Draw help text at bottom
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  if (showSaveError) {
+    showSaveError = false;
+    drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+    return;
+  }
 
   renderer.displayBuffer();
 }

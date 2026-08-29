@@ -353,8 +353,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadGithubReleaseAssetToFile(
   sink.write = [&file](const uint8_t* data, const size_t len) { return file.write(data, len) == len; };
 
   const DownloadError result = runGithubReleaseAsset(url, expectedSha256, sink);
-  file.flush();
-  const bool synced = file.sync();
+  bool synced = false;
+  if (result == OK) {
+    synced = file.sync();
+  }
   const bool closed = file.close();
 
   if (result != OK || !synced || !closed) {
@@ -401,8 +403,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   const DownloadError result = runGetSecure(url, username, password, sink);
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
-  file.flush();
-  const bool synced = file.sync();
+  bool synced = false;
+  if (result == OK) {
+    synced = file.sync();
+  }
   const bool closed = file.close();
 
   if (result != OK || !synced || !closed) {

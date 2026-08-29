@@ -109,7 +109,16 @@ bool FileBrowserActivity::stepFileLoad(const size_t maxEntries) {
     HalFile file = fileLoadDirectory.openNextFile();
     if (!file) {
       const uint8_t error = fileLoadDirectory.getError();
-      if (error != 0) LOG_ERR("FileBrowser", "Directory scan failed with SD error %u", error);
+      if (error != 0) {
+        LOG_ERR("FileBrowser", "Directory scan failed with SD error %u", error);
+        cancelFileLoad();
+        files.clear();
+        fileNameBytes = 0;
+        selectorIndex = 0;
+        popupMessage = StrId::STR_ERROR_GENERAL_FAILURE;
+        popupTime = millis();
+        return true;
+      }
       finishFileLoad();
       return true;
     }
@@ -187,13 +196,14 @@ const std::string* FileBrowserActivity::visibleEntry(const size_t index) const {
 
 void FileBrowserActivity::launchSearch() {
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_BOOKS),
-                                                                 searchQuery, BOOK_SEARCH_QUERY_BYTES),
+                         searchQuery, BOOK_SEARCH_QUERY_BYTES),
                          [this](const ActivityResult& result) {
-                           if (!result.isCancelled) {
-                             RenderLock lock(*this);
-                             applySearch(std::get<KeyboardResult>(result.data).text);
+                           if (result.isCancelled) {
+                             lockLongPressBack = true;
+                             return;
                            }
-                           requestUpdate();
+                           RenderLock lock(*this);
+                           applySearch(std::get<KeyboardResult>(result.data).text);
                          });
 }
 
@@ -339,7 +349,14 @@ bool FileBrowserActivity::removeDirFile(const std::string& fullPath) {
 
     dir.rewindDirectory();
     for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-      entry.getName(fileNameBuffer.get(), NAME_BUFFER_SIZE);
+      fileNameBuffer[0] = '\0';
+      const size_t nameLength = entry.getName(fileNameBuffer.get(), NAME_BUFFER_SIZE);
+      if (nameLength == 0 || nameLength >= NAME_BUFFER_SIZE || fileNameBuffer[nameLength] != '\0') {
+        LOG_ERR("FileBrowser", "Failed to read an entry name in: %s", currentPath.c_str());
+        entry.close();
+        dir.close();
+        return false;
+      }
       if (strcmp(fileNameBuffer.get(), ".") == 0 || strcmp(fileNameBuffer.get(), "..") == 0) {
         continue;
       }
@@ -365,6 +382,13 @@ bool FileBrowserActivity::removeDirFile(const std::string& fullPath) {
         }
         removeBookUserStateAfterDelete(entryPath);
       }
+    }
+
+    const uint8_t scanError = dir.getError();
+    const bool closeSucceeded = dir.close();
+    if (scanError != 0 || !closeSucceeded) {
+      LOG_ERR("FileBrowser", "Directory iteration failed while deleting: %s", currentPath.c_str());
+      return false;
     }
   }
 
@@ -408,7 +432,6 @@ void FileBrowserActivity::showBookActions(const std::string& fullPath, const std
                          popupMessage = StrId::STR_ERROR_GENERAL_FAILURE;
                        }
                        popupTime = millis();
-                       requestUpdate();
                        return;
                      }
                      promptDelete(fullPath, entry);
@@ -560,6 +583,7 @@ void FileBrowserActivity::loop() {
       mappedInput.getHeldTime(MappedInputManager::Button::Back) >= GO_HOME_MS && basepath != "/" &&
       !lockLongPressBack) {
     RenderLock lock(*this);
+    lockLongPressBack = true;
     basepath = "/";
     loadFiles();
     return;

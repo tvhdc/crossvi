@@ -313,10 +313,6 @@ bool DailyReadingHistory::valueForDay(const uint32_t day, uint32_t& seconds) con
   return true;
 }
 
-bool DailyReadingHistory::valueForDate(const ReadingStatsDate& date, uint32_t& seconds) const {
-  return date.isValid() && valueForDay(readingStatsDayIndex(date), seconds);
-}
-
 bool DailyReadingHistory::empty() const {
   if (!hasAnchor_) return true;
   return std::all_of(seconds_.begin(), seconds_.end(),

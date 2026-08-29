@@ -73,7 +73,6 @@ class DictionaryWordSelectActivity final : public Activity {
   bool rightLongHandled = false;
 
   Dictionary dict;
-  bool dictOpenAttempted = false;
   bool dictOpenOk = false;
   bool dictNeedsIndex = false;
 

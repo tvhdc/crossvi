@@ -50,7 +50,6 @@ struct ThemeMetrics {
   int scrollBarRightOffset;
 
   int homeTopPadding;
-  int homeCoverHeight;
   int homeCoverTileHeight;
   int homeRecentBooksCount;
   bool homeContinueReadingInMenu;
@@ -64,7 +63,6 @@ struct ThemeMetrics {
   int statusBarHorizontalMargin;
   int statusBarVerticalMargin;
 
-  int keyboardKeyWidth;
   int keyboardKeyHeight;
   int keyboardKeySpacing;
   int keyboardBottomKeyHeight;
@@ -90,11 +88,6 @@ struct ThemeMetrics {
   bool popupTextBold;
   bool popupTextInverted;
   int popupTextBaselineOffsetY;
-  int popupProgressBarHeight;
-  bool popupProgressDrawOutline;
-  bool popupProgressClampPercent;
-  bool popupProgressFillInverted;
-  bool popupProgressOutlineInverted;
 
   int optionPopupItemSpacing;
   int optionPopupInnerPadding;
@@ -157,7 +150,6 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .scrollBarWidth = 4,
                                  .scrollBarRightOffset = 5,
                                  .homeTopPadding = 40,
-                                 .homeCoverHeight = 400,
                                  .homeCoverTileHeight = 400,
                                  .homeRecentBooksCount = 1,
                                  .homeContinueReadingInMenu = false,
@@ -168,7 +160,6 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
                                  .statusBarVerticalMargin = 19,
-                                 .keyboardKeyWidth = 22,
                                  .keyboardKeyHeight = 40,
                                  .keyboardKeySpacing = 0,
                                  .keyboardBottomKeyHeight = 35,
@@ -193,11 +184,6 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .popupTextBold = true,
                                  .popupTextInverted = true,
                                  .popupTextBaselineOffsetY = -2,
-                                 .popupProgressBarHeight = 4,
-                                 .popupProgressDrawOutline = false,
-                                 .popupProgressClampPercent = false,
-                                 .popupProgressFillInverted = true,
-                                 .popupProgressOutlineInverted = true,
                                  .optionPopupItemSpacing = 6,
                                  .optionPopupInnerPadding = 16,
                                  .optionPopupSelectionHPadding = 8,
@@ -258,8 +244,7 @@ class BaseTheme {
                               const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
-                               int selectedIndex) const;
-  virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
+                               int selectedIndex, const char* footer = nullptr) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      const std::string& title, const int paddingBottom = 0, const int textYOffset = 0,
                      const bool fillMargin = true, const bool isPageBookmarked = false,

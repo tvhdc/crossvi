@@ -32,6 +32,7 @@ void SdCardFontSystem::begin() {
     }
   }
   registry_.discover();
+  if (!registry_.lastDiscoverySucceeded()) registryDirty_.store(true, std::memory_order_release);
 
   // Register this system as the SD font ID resolver in settings.
   // Uses a static trampoline since CrossPointSettings stores a plain function pointer.
@@ -46,6 +47,17 @@ void SdCardFontSystem::begin() {
   // nothing outside the active reader needs the loaded family.
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
+
+bool SdCardFontSystem::rediscoverIfDirty() {
+  if (!registryDirty_.exchange(false, std::memory_order_acquire)) return false;
+  LOG_DBG("SDFS", "Registry dirty — re-discovering fonts");
+  registry_.discover();
+  if (registry_.lastDiscoverySucceeded()) return true;
+  registryDirty_.store(true, std::memory_order_release);
+  return false;
+}
+
+void SdCardFontSystem::refreshIfDirty() { rediscoverIfDirty(); }
 
 void SdCardFontSystem::releaseLoadedFont(GfxRenderer& renderer) {
   if (manager_.currentFamilyName().empty()) return;
@@ -63,11 +75,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file
   // contents on disk may have changed (e.g. user re-uploaded a new build).
-  const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
-  if (registryWasDirty) {
-    LOG_DBG("SDFS", "Registry dirty — re-discovering fonts");
-    registry_.discover();
-  }
+  const bool registryWasRefreshed = rediscoverIfDirty();
 
   const char* wantedFamily = SETTINGS.sdFontFamilyName;
   const std::string& currentFamily = manager_.currentFamilyName();
@@ -88,6 +96,10 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
   if (familyMatches) {
     const auto* family = registry_.findFamily(wantedFamily);
     if (!family) {
+      if (!registry_.lastDiscoverySucceeded()) {
+        LOG_ERR("SDFS", "Font registry unavailable; keeping selection for retry: %s", wantedFamily);
+        return;
+      }
       LOG_DBG("SDFS", "SD font family disappeared: %s (clearing)", wantedFamily);
       releaseLoadedFont(renderer);
       SETTINGS.sdFontFamilyName[0] = '\0';
@@ -97,13 +109,15 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
     }
     const auto* selected = family->findClosestReaderSize(sizeEnum);
     const uint8_t wantedPt = selected ? selected->pointSize : 0;
-    if (!registryWasDirty && wantedPt == manager_.currentPointSize()) return;
+    if (!registryWasRefreshed && wantedPt == manager_.currentPointSize()) return;
     LOG_DBG("SDFS", "Reloading %s: size %u -> %u (enum %u)%s", wantedFamily, manager_.currentPointSize(), wantedPt,
-            sizeEnum, registryWasDirty ? " [registry dirty]" : "");
+            sizeEnum, registryWasRefreshed ? " [registry refreshed]" : "");
   }
 
+  bool fontCachesCleared = false;
   if (!currentFamily.empty()) {
     releaseLoadedFont(renderer);
+    fontCachesCleared = true;
   }
 
   const auto* family = registry_.findFamily(wantedFamily);
@@ -112,7 +126,9 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
     // disposable glyph data first, then require both total and contiguous
     // headroom. With exceptions disabled this gate is what turns a fragmented
     // heap into a normal font-load failure rather than an allocation abort.
-    if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    if (!fontCachesCleared) {
+      if (auto* cache = renderer.getFontCacheManager()) cache->clearAllCaches();
+    }
     const auto memory = MemoryBudget::snapshot();
     MemoryBudget::logStage("SDFS", "load_begin");
     if (!MemoryBudget::hasHeadroom(memory, MemoryBudget::SD_FONT_LOAD)) {
@@ -132,6 +148,10 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, const bool persistInv
       LOG_ERR("SDFS", "Failed to load SD font family: %s (keeping selection for retry)", wantedFamily);
     }
   } else {
+    if (!registry_.lastDiscoverySucceeded()) {
+      LOG_ERR("SDFS", "Font registry unavailable; keeping selection for retry: %s", wantedFamily);
+      return;
+    }
     LOG_DBG("SDFS", "SD font family not found: %s (clearing)", wantedFamily);
     SETTINGS.sdFontFamilyName[0] = '\0';
     normalizeBuiltinFontSize();

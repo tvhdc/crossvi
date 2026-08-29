@@ -88,7 +88,9 @@ GridLayout calculateLayout(const Rect rect, const uint8_t gridSetting) {
 
 bool drawCoverBitmap(const GfxRenderer& renderer, const LibraryBookRecord& book, const Rect cover) {
   if (book.coverBmpPath.empty()) return false;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t started = static_cast<uint32_t>(millis());
+#endif
   const std::string path = UITheme::getCoverThumbPath(book.coverBmpPath, cover.height);
   HalFile file;
   if (!Storage.openFileForRead("LIBGRID", path, file)) {
@@ -111,13 +113,17 @@ bool drawCoverBitmap(const GfxRenderer& renderer, const LibraryBookRecord& book,
             static_cast<unsigned>(static_cast<uint32_t>(millis()) - started));
   }
   Bitmap bitmap(file);
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t parseStart = static_cast<uint32_t>(millis());
+#endif
   if (bitmap.parseHeaders() != BmpReaderError::Ok) {
     LOG_DBG("COVR", "GRID parse_failed path=%s parse_ms=%u", path.c_str(),
             static_cast<unsigned>(static_cast<uint32_t>(millis()) - parseStart));
     return false;
   }
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   const uint32_t parseMs = static_cast<uint32_t>(millis()) - parseStart;
+#endif
   const int sourceWidth = bitmap.getWidth();
   const int sourceHeight = bitmap.getHeight();
   if (sourceWidth <= 0 || sourceHeight <= 0) return false;
@@ -218,26 +224,20 @@ bool drawCoverCell(const GfxRenderer& renderer, const GridLayout& layout, const 
   renderer.drawRoundedRect(cover.x, cover.y, cover.width, cover.height, 1, 3, true, true, true, true, true);
   if (book.pinned) drawPinnedBadge(renderer, cover);
 
-  if (LibraryGridModel::usesPerCoverTitles(gridSetting)) {
-    const auto lines = renderer.wrappedText(SMALL_FONT_ID, book.title.c_str(), cell.width, 2);
-    const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-    int y = cover.y + cover.height + layout.spec.titleGap +
-            std::max(0, (layout.spec.perCoverTitleHeight - lineHeight * static_cast<int>(lines.size())) / 2);
-    for (const auto& line : lines) {
-      const int width = renderer.getTextWidth(SMALL_FONT_ID, line.c_str());
-      renderer.drawText(SMALL_FONT_ID, cell.x + (cell.width - width) / 2, y, line.c_str());
-      y += lineHeight;
-    }
+  const auto lines = renderer.wrappedText(SMALL_FONT_ID, book.title.c_str(), cell.width, 2);
+  const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  int y = cover.y + cover.height + layout.spec.titleGap +
+          std::max(0, (layout.spec.perCoverTitleHeight - lineHeight * static_cast<int>(lines.size())) / 2);
+  for (const auto& line : lines) {
+    const int width = renderer.getTextWidth(SMALL_FONT_ID, line.c_str());
+    renderer.drawText(SMALL_FONT_ID, cell.x + (cell.width - width) / 2, y, line.c_str());
+    y += lineHeight;
   }
   return coverDrawn;
 }
 }  // namespace
 
 size_t LibraryGridView::pageSize(const uint8_t gridSetting) { return LibraryGridModel::pageSize(gridSetting); }
-
-int LibraryGridView::coverHeight(const Rect rect, const uint8_t gridSetting) {
-  return calculateLayout(rect, gridSetting).coverHeight;
-}
 
 uint8_t LibraryGridView::drawStatic(const GfxRenderer& renderer, const Rect rect,
                                     const std::vector<LibraryBookRecord>& books, const uint8_t gridSetting,

@@ -4,6 +4,7 @@
 
 #include "activities/Activity.h"
 #include "fontIds.h"
+#include "util/PressReleaseLatch.h"
 
 class ConfirmationActivity : public Activity {
  private:
@@ -22,6 +23,7 @@ class ConfirmationActivity : public Activity {
   std::string safeBody;
   int startY = 0;
   int lineHeight = 0;
+  InputIdleGate inputGate;
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,

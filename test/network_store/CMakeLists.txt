@@ -1,9 +1,10 @@
 add_executable(NetworkStoreTest
   NetworkStoreTest.cpp
   ${REPO_ROOT}/lib/KOReaderSync/KOReaderCredentialStore.cpp
+  ${REPO_ROOT}/lib/KOReaderSync/KOReaderDocumentId.cpp
   ${REPO_ROOT}/src/OpdsServerStore.cpp
   ${REPO_ROOT}/src/WifiCredentialStore.cpp
-  ${REPO_ROOT}/src/FinishedBooksStore.cpp
+  ${REPO_ROOT}/src/RecentBooksStore.cpp
   ${REPO_ROOT}/lib/Serialization/PersistableStore.cpp
   ${REPO_ROOT}/lib/Serialization/AtomicFile.cpp
   ${REPO_ROOT}/lib/Serialization/AtomicJsonFile.cpp

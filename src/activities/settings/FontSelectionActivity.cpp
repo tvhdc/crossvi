@@ -56,7 +56,8 @@ void FontSelectionActivity::onEnter() {
   sdFontSystem.releaseLoadedFont(renderer);
   // Preserve ensureLoaded()'s old missing-family repair without loading any
   // font file. This only consults the already-discovered registry.
-  if (SETTINGS.sdFontFamilyName[0] != '\0' && (!registry_ || !registry_->findFamily(SETTINGS.sdFontFamilyName))) {
+  if (SETTINGS.sdFontFamilyName[0] != '\0' &&
+      (!registry_ || (registry_->lastDiscoverySucceeded() && !registry_->findFamily(SETTINGS.sdFontFamilyName)))) {
     SETTINGS.sdFontFamilyName[0] = '\0';
     if (SETTINGS.fontSize >= ReaderFontSize::BUILTIN_COUNT) SETTINGS.fontSize = CrossPointSettings::EXTRA_LARGE;
     if (persistInvalidSelection_) SETTINGS.saveToFile();
@@ -151,25 +152,25 @@ void FontSelectionActivity::loop() {
   const int pageItems =
       UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, previewHeight + metrics_.verticalSpacing);
 
-  buttonNavigator_.onNextRelease([this, listSize] {
-    selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, listSize);
-    requestUpdate();
-  });
+  buttonNavigator_.onNextRelease(
+      [this, listSize] { selectIndex(ButtonNavigator::nextIndex(selectedIndex_, listSize)); });
 
-  buttonNavigator_.onPreviousRelease([this, listSize] {
-    selectedIndex_ = ButtonNavigator::previousIndex(selectedIndex_, listSize);
-    requestUpdate();
-  });
+  buttonNavigator_.onPreviousRelease(
+      [this, listSize] { selectIndex(ButtonNavigator::previousIndex(selectedIndex_, listSize)); });
 
   buttonNavigator_.onNextContinuous([this, listSize, pageItems] {
-    selectedIndex_ = ButtonNavigator::nextPageIndex(selectedIndex_, listSize, pageItems);
-    requestUpdate();
+    selectIndex(ButtonNavigator::nextPageIndex(selectedIndex_, listSize, pageItems));
   });
 
   buttonNavigator_.onPreviousContinuous([this, listSize, pageItems] {
-    selectedIndex_ = ButtonNavigator::previousPageIndex(selectedIndex_, listSize, pageItems);
-    requestUpdate();
+    selectIndex(ButtonNavigator::previousPageIndex(selectedIndex_, listSize, pageItems));
   });
+}
+
+void FontSelectionActivity::selectIndex(const int index) {
+  if (index == selectedIndex_) return;
+  selectedIndex_ = index;
+  requestUpdate();
 }
 
 void FontSelectionActivity::handleSelection() {

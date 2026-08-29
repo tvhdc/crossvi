@@ -85,7 +85,6 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
       parent.close();
     }
 
-    if (_putFile) _putFile.close();
     _putExisted = Storage.exists(_putPath.c_str());
 
     if (_putExisted) {
@@ -123,8 +122,10 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
   } else if (raw.status == RAW_END) {
     if (_putFile) {
-      _putFile.flush();
-      const bool synced = _putFile.sync();
+      bool synced = false;
+      if (_putOk) {
+        synced = _putFile.sync();
+      }
       const bool closed = _putFile.close();
       _putOk = _putOk && synced && closed;
     }
@@ -253,7 +254,17 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
     HalFile file = root.openNextFile();
     char name[500];
     while (file) {
-      file.getName(name, sizeof(name));
+      name[0] = '\0';
+      name[sizeof(name) - 1] = '\0';
+      const size_t nameLength = file.getName(name, sizeof(name));
+      if (nameLength == 0 || nameLength >= sizeof(name) || name[0] == '\0' || name[nameLength] != '\0') {
+        LOG_ERR("DAV", "Failed to read an entry name in: %s", path.c_str());
+        file.close();
+        yield();
+        resetTaskWatchdogIfSubscribed();
+        file = root.openNextFile();
+        continue;
+      }
 
       // Skip hidden/protected items
       const bool shouldHide =
@@ -601,7 +612,7 @@ void WebDAVHandler::handleMove(WebServer& s) {
   const BookPathMoveResult move = moveBookFilePreservingUserState(srcPath.c_str(), dstPath.c_str());
 
   if (move == BookPathMoveResult::Moved) {
-    s.send(dstExists ? 204 : 201);
+    s.send(201);
   } else if (move == BookPathMoveResult::StateUnavailable) {
     s.send(409, "text/plain", "Move refused because book state could not be migrated safely");
   } else {
@@ -727,8 +738,10 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   }
 
   srcFile.close();
-  stagingFile.flush();
-  const bool synced = stagingFile.sync();
+  bool synced = false;
+  if (copyOk && copied == sourceSize) {
+    synced = stagingFile.sync();
+  }
   const bool closed = stagingFile.close();
   copyOk = copyOk && copied == sourceSize && synced && closed;
 

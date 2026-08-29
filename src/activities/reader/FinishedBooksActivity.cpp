@@ -178,7 +178,7 @@ void FinishedBooksActivity::openSelectedStatistics() {
   startActivityForResult(
       std::make_unique<ReadingStatsActivity>(renderer, mappedInput, titleFor(*selected), std::move(presentation),
                                              ReadingStatsActivity::Page::Book, false, false, selected->path),
-      [this](const ActivityResult&) { requestUpdate(); });
+      [](const ActivityResult&) {});
 }
 
 void FinishedBooksActivity::move(const int delta) {
@@ -187,6 +187,7 @@ void FinishedBooksActivity::move(const int delta) {
   const size_t previous = selected_;
   selected_ =
       delta < 0 ? LibraryGridModel::previousIndex(selected_, count) : LibraryGridModel::nextIndex(selected_, count);
+  if (selected_ == previous && !statsLoadFailed_) return;
   if (selected_ != previous && !loadVisiblePage()) catalogScanPartial_ = true;
   statsLoadFailed_ = false;
   requestUpdate();

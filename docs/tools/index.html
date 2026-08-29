@@ -866,7 +866,7 @@
         downloadReady: "Tải {name} ({size})",
         statusLoaded: "Ảnh gốc: {width}×{height}, {size}",
         statusError: "Không mở được ảnh này. Hãy thử PNG, JPG, BMP hoặc WebP.",
-        copyHint: "Copy file tải về vào root thẻ SD. Ảnh phủ dùng /sleep-overlay.png; ảnh ngủ thường dùng /sleep.bmp.",
+        copyHint: "Chép tệp đã tải vào thẻ SD. Trên CrossVi, mở Ngủ & màn hình ngủ → Tuỳ chỉnh → Thêm ảnh để chọn tệp.",
         previewTitle: "Xem trước",
         previewEmpty: "Chọn ảnh để xem trước kết quả.",
         previewTransparent: "Ô caro là phần sẽ không che nội dung phía dưới.",
@@ -1003,7 +1003,7 @@
         downloadReady: "Download {name} ({size})",
         statusLoaded: "Original image: {width}×{height}, {size}",
         statusError: "This image could not be opened. Try PNG, JPG, BMP, or WebP.",
-        copyHint: "Copy the downloaded file to the SD card root. Overlay images use /sleep-overlay.png; full sleep pictures use /sleep.bmp.",
+        copyHint: "Copy the downloaded file to the SD card. On CrossVi, open Sleep settings → Custom → Add image and select it.",
         previewTitle: "Preview",
         previewEmpty: "Choose an image to preview the result.",
         previewTransparent: "The checkerboard shows parts that will let the screen underneath show through.",
@@ -1809,6 +1809,9 @@
       vocab.file.addEventListener("change", async event => {
         const selectionGeneration = ++vocabFileSelectionGeneration;
         const file = event.target.files && event.target.files[0];
+        vocabRows = [];
+        vocabNormalized = { entries: [], errors: [] };
+        vocab.download.disabled = true;
         if (!file) return;
         setVocabStatus("", "vocabReading");
         try {

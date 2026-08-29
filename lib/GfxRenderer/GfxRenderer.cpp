@@ -1647,66 +1647,6 @@ bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   return true;
 }
 
-void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {
-  if (numPoints < 3) return;
-
-  // Find bounding box
-  int minY = yPoints[0], maxY = yPoints[0];
-  for (int i = 1; i < numPoints; i++) {
-    if (yPoints[i] < minY) minY = yPoints[i];
-    if (yPoints[i] > maxY) maxY = yPoints[i];
-  }
-
-  // Clip to screen
-  if (minY < 0) minY = 0;
-  if (maxY >= getScreenHeight()) maxY = getScreenHeight() - 1;
-
-  // Allocate node buffer for scanline algorithm
-  auto* nodeX = static_cast<int*>(malloc(numPoints * sizeof(int)));
-  if (!nodeX) {
-    LOG_ERR("GFX", "!! Failed to allocate polygon node buffer");
-    return;
-  }
-
-  // Scanline fill algorithm
-  for (int scanY = minY; scanY <= maxY; scanY++) {
-    int nodes = 0;
-
-    // Find all intersection points with edges
-    int j = numPoints - 1;
-    for (int i = 0; i < numPoints; i++) {
-      if ((yPoints[i] < scanY && yPoints[j] >= scanY) || (yPoints[j] < scanY && yPoints[i] >= scanY)) {
-        // Calculate X intersection using fixed-point to avoid float
-        int dy = yPoints[j] - yPoints[i];
-        if (dy != 0) {
-          nodeX[nodes++] = xPoints[i] + (scanY - yPoints[i]) * (xPoints[j] - xPoints[i]) / dy;
-        }
-      }
-      j = i;
-    }
-
-    // Sort nodes by X
-    std::sort(nodeX, nodeX + nodes);
-
-    // Fill between pairs of nodes
-    for (int i = 0; i < nodes - 1; i += 2) {
-      int startX = nodeX[i];
-      int endX = nodeX[i + 1];
-
-      // Clip to screen
-      if (startX < 0) startX = 0;
-      if (endX >= getScreenWidth()) endX = getScreenWidth() - 1;
-
-      // Draw horizontal line
-      for (int x = startX; x <= endX; x++) {
-        drawPixel(x, scanY, state);
-      }
-    }
-  }
-
-  free(nodeX);
-}
-
 // For performance measurement (using static to allow "const" methods)
 static unsigned long start_ms = 0;
 
@@ -1797,10 +1737,8 @@ void GfxRenderer::invertRect(const int x, const int y, const int width, const in
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode, const bool turnOffScreen) const {
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
-  const bool actualTurnOff = turnOffScreen;
-  LOG_DBG("GFX", "displayBuffer req=%s off=%u fadingFix=%u actual_off=%u", gfxRefreshModeName(refreshMode),
-          static_cast<unsigned>(turnOffScreen), static_cast<unsigned>(fadingFix), static_cast<unsigned>(actualTurnOff));
-  display.displayBuffer(refreshMode, actualTurnOff);
+  LOG_DBG("GFX", "displayBuffer req=%s off=%u", gfxRefreshModeName(refreshMode), static_cast<unsigned>(turnOffScreen));
+  display.displayBuffer(refreshMode, turnOffScreen);
 }
 
 size_t GfxRenderer::readFramebufferRegion(int x, int y, int w, int h, uint8_t* dst, size_t dstCapacity) const {

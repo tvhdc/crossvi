@@ -23,6 +23,7 @@ class HomeShortcutsActivity final : public Activity {
   const HomeMenuItem returnMenuItem_;
   std::vector<HomeShortcutId> items_;
   int selectedIndex_ = 0;
+  bool showSaveError_ = false;
   ButtonNavigator buttonNavigator_;
   OptionPopup optionPopup_;
 

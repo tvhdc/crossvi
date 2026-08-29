@@ -123,4 +123,72 @@ TEST_F(KOReaderSyncClientTest, RejectsInvalidRequiredFieldsWithoutMutatingOutput
   }
 }
 
+TEST_F(KOReaderSyncClientTest, IgnoresMalformedCrossPointRichPosition) {
+  KOREADER_STORE.setServerUrl(KOReaderCredentialStore::crossPointServerUrl());
+  const std::vector<std::string> malformedPositions = {R"({})",
+                                                       R"({"pctQ":"250000","spine":3,"page":7,"pages":8})",
+                                                       R"({"pctQ":250000,"spine":3.0,"page":7,"pages":8})",
+                                                       R"({"pctQ":250000,"spine":3,"page":-1,"pages":8})",
+                                                       R"({"pctQ":250000,"spine":65536,"page":7,"pages":8})",
+                                                       R"({"pctQ":1000001,"spine":3,"page":7,"pages":8})",
+                                                       R"({"pctQ":250000,"spine":3,"page":7,"pages":0})",
+                                                       R"({"pctQ":250000,"spine":3,"page":8,"pages":8})"};
+
+  for (const auto& position : malformedPositions) {
+    setResponse("malformed-position", R"({"progress":"/body/p[2]","percentage":0.25,"position":)" + position + "}");
+    KOReaderProgress progress{};
+
+    ASSERT_EQ(KOReaderSyncClient::getProgress("malformed-position", progress), KOReaderSyncClient::OK);
+    EXPECT_EQ(progress.progress, "/body/p[2]");
+    EXPECT_FLOAT_EQ(progress.percentage, 0.25f);
+    EXPECT_FALSE(progress.position.has_value());
+  }
+}
+
+TEST_F(KOReaderSyncClientTest, AcceptsValidCrossPointRichPosition) {
+  KOREADER_STORE.setServerUrl(KOReaderCredentialStore::crossPointServerUrl());
+  setResponse(
+      "rich-position",
+      R"({"progress":"/body/p[2]","percentage":0.25,"position":{"pctQ":250000,"spine":3,"page":7,"pages":8,"para":9,"xpath":"/body/p[2]"}})");
+  KOReaderProgress progress{};
+
+  ASSERT_EQ(KOReaderSyncClient::getProgress("rich-position", progress), KOReaderSyncClient::OK);
+  ASSERT_TRUE(progress.position.has_value());
+  EXPECT_EQ(progress.position->pctQ, 250000U);
+  EXPECT_EQ(progress.position->spineIndex, 3U);
+  EXPECT_EQ(progress.position->pageNumber, 7U);
+  EXPECT_EQ(progress.position->totalPages, 8U);
+  EXPECT_EQ(progress.position->paragraphIndex, 9U);
+  EXPECT_EQ(progress.position->xpath, "/body/p[2]");
+}
+
+TEST_F(KOReaderSyncClientTest, IgnoresMalformedOptionalCrossPointRichPositionFields) {
+  KOREADER_STORE.setServerUrl(KOReaderCredentialStore::crossPointServerUrl());
+  const std::string oversizedXpath(121, 'x');
+  setResponse(
+      "malformed-rich-hints",
+      R"({"progress":"/body/p[2]","percentage":0.25,"position":{"pctQ":250000,"spine":3,"page":7,"pages":8,"para":"9","xpath":")" +
+          oversizedXpath + R"("}})");
+  KOReaderProgress progress{};
+
+  ASSERT_EQ(KOReaderSyncClient::getProgress("malformed-rich-hints", progress), KOReaderSyncClient::OK);
+  ASSERT_TRUE(progress.position.has_value());
+  EXPECT_FALSE(progress.position->paragraphIndex.has_value());
+  EXPECT_TRUE(progress.position->xpath.empty());
+}
+
+TEST_F(KOReaderSyncClientTest, AcceptsMaximumLengthCrossPointRichPositionXpath) {
+  KOREADER_STORE.setServerUrl(KOReaderCredentialStore::crossPointServerUrl());
+  const std::string maxXpath(120, 'x');
+  setResponse(
+      "max-rich-xpath",
+      R"({"progress":"/body/p[2]","percentage":0.25,"position":{"pctQ":250000,"spine":3,"page":7,"pages":8,"xpath":")" +
+          maxXpath + R"("}})");
+  KOReaderProgress progress{};
+
+  ASSERT_EQ(KOReaderSyncClient::getProgress("max-rich-xpath", progress), KOReaderSyncClient::OK);
+  ASSERT_TRUE(progress.position.has_value());
+  EXPECT_EQ(progress.position->xpath, maxXpath);
+}
+
 }  // namespace

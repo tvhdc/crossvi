@@ -30,6 +30,20 @@ TEST(DailyBookReadingHistory, RecordsAndMergesBooksForOneDay) {
   EXPECT_EQ(loaded.records[1].seconds, 30u);
 }
 
+TEST(DailyBookReadingHistory, ReusesThePrimaryValidationWhenUpdatingADay) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 25);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 90), RecordStatus::Ok);
+
+  Storage.resetFaultInjection();
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 15), RecordStatus::Ok);
+
+  // The primary is reused from load(). The two sibling reads protect newer or
+  // unreadable artifacts; the final two reads verify staging and publication.
+  EXPECT_EQ(Storage.openReadCallCount(DailyBookReadingHistory::pathForDay(day)), 2U);
+  EXPECT_EQ(Storage.openReadCallCount(), 5U);
+}
+
 TEST(DailyBookReadingHistory, RecordsEveryDayInASpanWithoutChangingTheGlobalHistoryFormat) {
   Storage.reset();
   DailyReadingHistoryDelta delta;
@@ -92,6 +106,114 @@ TEST(DailyBookReadingHistory, RecoversBackupAndRejectsNewerFiles) {
   EXPECT_EQ(DailyBookReadingHistory::load(day, protectedDay), DailyBookReadingHistory::LoadStatus::NewerVersion);
   EXPECT_EQ(DailyBookReadingHistory::record(day, "/books/three.epub", "Three", 30), RecordStatus::Protected);
   EXPECT_EQ(Storage.file(path), newer);
+}
+
+TEST(DailyBookReadingHistory, RecordDoesNotReplaceAnInvalidDayWithoutARecoveryCopy) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  const std::vector<uint8_t> invalid = {0x00, 0x01, 0x02};
+  Storage.setFile(path, invalid);
+
+  EXPECT_EQ(DailyBookReadingHistory::record(day, "/books/new.epub", "New", 30), RecordStatus::IoError);
+  EXPECT_EQ(Storage.file(path), invalid);
+}
+
+TEST(DailyBookReadingHistory, RecordStillUpdatesADayRecoveredFromBackup) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 10), RecordStatus::Ok);
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  Storage.setFile(path + ".bak", Storage.file(path));
+  Storage.setFile(path, {0x00});
+
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/two.epub", "Two", 20), RecordStatus::Ok);
+  DailyBookReadingDay loaded;
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(loaded.count, 2U);
+  EXPECT_EQ(loaded.records[0].path, "/books/one.epub");
+  EXPECT_EQ(loaded.records[1].path, "/books/two.epub");
+}
+
+TEST(DailyBookReadingHistory, ValidPrimaryDoesNotOverwriteNewerBackup) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 10), RecordStatus::Ok);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/two.epub", "Two", 20), RecordStatus::Ok);
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  const auto primary = Storage.file(path);
+  auto newerBackup = Storage.file(path + ".bak");
+  ASSERT_FALSE(newerBackup.empty());
+  newerBackup[4] = DailyBookReadingHistory::VERSION + 1;
+  Storage.setFile(path + ".bak", newerBackup);
+
+  EXPECT_EQ(DailyBookReadingHistory::record(day, "/books/three.epub", "Three", 30), RecordStatus::Protected);
+  EXPECT_EQ(Storage.file(path), primary);
+  EXPECT_EQ(Storage.file(path + ".bak"), newerBackup);
+}
+
+TEST(DailyBookReadingHistory, ValidPrimaryDoesNotOverwriteNewerTemp) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 10), RecordStatus::Ok);
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  const auto primary = Storage.file(path);
+  auto newerTemp = primary;
+  newerTemp[4] = DailyBookReadingHistory::VERSION + 1;
+  Storage.setFile(path + ".tmp", newerTemp);
+
+  EXPECT_EQ(DailyBookReadingHistory::record(day, "/books/two.epub", "Two", 20), RecordStatus::Protected);
+  EXPECT_EQ(Storage.file(path), primary);
+  ASSERT_TRUE(Storage.exists((path + ".tmp").c_str()));
+  EXPECT_EQ(Storage.file(path + ".tmp"), newerTemp);
+}
+
+TEST(DailyBookReadingHistory, ReadOnlyLoadStopsAfterAValidPrimary) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 10), RecordStatus::Ok);
+
+  Storage.resetFaultInjection();
+  DailyBookReadingDay loaded;
+  EXPECT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  EXPECT_EQ(Storage.openReadCallCount(), 1U);
+}
+
+TEST(DailyBookReadingHistory, ResetDoesNotDeleteNewerBackupAlongsideValidPrimary) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 10), RecordStatus::Ok);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/two.epub", "Two", 20), RecordStatus::Ok);
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  const auto primary = Storage.file(path);
+  auto newerBackup = Storage.file(path + ".bak");
+  newerBackup[4] = DailyBookReadingHistory::VERSION + 1;
+  Storage.setFile(path + ".bak", newerBackup);
+
+  EXPECT_FALSE(DailyBookReadingHistory::canReset());
+  EXPECT_FALSE(DailyBookReadingHistory::reset());
+  EXPECT_EQ(Storage.file(path), primary);
+  EXPECT_EQ(Storage.file(path + ".bak"), newerBackup);
+}
+
+TEST(DailyBookReadingHistory, ResetDoesNotDeleteNewerTempAlongsideValidPrimary) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/one.epub", "One", 10), RecordStatus::Ok);
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  const auto primary = Storage.file(path);
+  auto newerTemp = primary;
+  newerTemp[4] = DailyBookReadingHistory::VERSION + 1;
+  Storage.setFile(path + ".tmp", newerTemp);
+
+  EXPECT_FALSE(DailyBookReadingHistory::canReset());
+  EXPECT_FALSE(DailyBookReadingHistory::reset());
+  EXPECT_EQ(Storage.file(path), primary);
+  EXPECT_EQ(Storage.file(path + ".tmp"), newerTemp);
 }
 
 TEST(DailyBookReadingHistory, FailedPublicationKeepsThePreviousDay) {
@@ -184,4 +306,76 @@ TEST(DailyBookReadingHistory, FailedRekeyPublicationRetainsAliasAndResumesIdempo
     ASSERT_EQ(loaded.count, 1u);
     EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
   }
+}
+
+TEST(DailyBookReadingHistory, RekeysADayRecoveredFromBackupOnly) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 60), RecordStatus::Ok);
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  Storage.setFile(path + ".bak", Storage.file(path));
+  ASSERT_TRUE(Storage.remove(path.c_str()));
+
+  ASSERT_TRUE(DailyBookReadingHistory::finishPreparedRekey());
+  DailyBookReadingDay loaded;
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(loaded.count, 1U);
+  EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
+}
+
+TEST(DailyBookReadingHistory, RekeysADayRecoveredFromTempOnly) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 60), RecordStatus::Ok);
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  Storage.setFile(path + ".tmp", Storage.file(path));
+  ASSERT_TRUE(Storage.remove(path.c_str()));
+
+  ASSERT_TRUE(DailyBookReadingHistory::finishPreparedRekey());
+  DailyBookReadingDay loaded;
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(loaded.count, 1U);
+  EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
+}
+
+TEST(DailyBookReadingHistory, RekeysEachDayOnlyOnceWhenSiblingsExist) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 60), RecordStatus::Ok);
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  Storage.setFile(path + ".bak", Storage.file(path));
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+
+  Storage.resetFaultInjection();
+  ASSERT_TRUE(DailyBookReadingHistory::finishPreparedRekey());
+  // One marker read plus one bounded load/publish pass for this day.
+  EXPECT_EQ(Storage.openReadCallCount(), 6U);
+
+  DailyBookReadingDay loaded;
+  ASSERT_EQ(DailyBookReadingHistory::load(day, loaded), DailyBookReadingHistory::LoadStatus::Ok);
+  ASSERT_EQ(loaded.count, 1U);
+  EXPECT_EQ(loaded.records[0].path, "/books/new.epub");
+}
+
+TEST(DailyBookReadingHistory, NewerBackupOnlyKeepsPreparedRekeyForRecovery) {
+  Storage.reset();
+  const uint32_t day = dayIndex(2026, 8, 22);
+  ASSERT_EQ(DailyBookReadingHistory::record(day, "/books/old.epub", "Old", 60), RecordStatus::Ok);
+  ASSERT_TRUE(DailyBookReadingHistory::prepareRekey("/books/old.epub", "/books/new.epub"));
+
+  const std::string path = DailyBookReadingHistory::pathForDay(day);
+  auto newerBackup = Storage.file(path);
+  newerBackup[4] = DailyBookReadingHistory::VERSION + 1;
+  Storage.setFile(path + ".bak", newerBackup);
+  ASSERT_TRUE(Storage.remove(path.c_str()));
+
+  EXPECT_FALSE(DailyBookReadingHistory::finishPreparedRekey());
+  std::string alias;
+  EXPECT_TRUE(DailyBookReadingHistory::pendingRekeyAlias("/books/new.epub", alias));
+  EXPECT_EQ(alias, "/books/old.epub");
+  EXPECT_EQ(Storage.file(path + ".bak"), newerBackup);
 }

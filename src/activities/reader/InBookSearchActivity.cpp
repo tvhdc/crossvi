@@ -16,7 +16,8 @@ void InBookSearchActivity::onEnter() {
   normalized = makeBookSearchQuery(query);
   total = text ? text->getFileSize() : 0;
   buffer.reset(new (std::nothrow) uint8_t[CHUNK_BYTES]);
-  running = text != nullptr && !normalized.empty() && buffer != nullptr;
+  running = text != nullptr && !normalized.empty() && buffer != nullptr &&
+            Storage.openFileForRead("SEARCH", text->getPath(), contentFile);
   failed = !running;
   suppressInitialConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   startOffset = std::min(startOffset, total);
@@ -26,6 +27,11 @@ void InBookSearchActivity::onEnter() {
   hasLastMatch = false;
   overlap.clear();
   requestUpdate();
+}
+
+void InBookSearchActivity::onExit() {
+  contentFile.close();
+  Activity::onExit();
 }
 
 void InBookSearchActivity::finishWithOffset() {
@@ -57,7 +63,7 @@ void InBookSearchActivity::scanChunk() {
     return;
   }
   const size_t length = std::min(CHUNK_BYTES, limit - cursor);
-  if (!text->readContent(buffer.get(), cursor, length)) {
+  if (!text->readContent(contentFile, buffer.get(), cursor, length)) {
     failed = true;
     running = false;
     return;

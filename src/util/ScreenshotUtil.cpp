@@ -183,9 +183,9 @@ bool ScreenshotUtil::saveFramebufferAsBmp(const char* filename, const uint8_t* f
   }
 
   // Explicitly close() file before calling Storage.remove()
-  file.close();
+  const bool closed = file.close();
 
-  if (write_error) {
+  if (write_error || !closed) {
     Storage.remove(filename);
     return false;
   }

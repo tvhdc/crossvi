@@ -104,6 +104,26 @@ TEST(ReadingAchievements, RecognitionDayPersistsAndLegacyUnlocksRemainUndated) {
   EXPECT_FALSE(ReadingAchievements::peekPendingNotification(notification));
 }
 
+TEST(ReadingAchievements, RejectsAnnouncedAchievementThatIsStillLocked) {
+  Storage.reset();
+  constexpr size_t payloadSize =
+      2 + 2 * ReadingAchievementState::BYTE_COUNT + ReadingAchievements::COUNT * sizeof(uint32_t);
+  std::array<uint8_t, payloadSize> payload{};
+  payload[0] = 3;
+  payload[1] = 1;
+  payload[2 + ReadingAchievementState::BYTE_COUNT] = 1;
+
+  ReadingStatsEnvelope::Bytes encoded{};
+  const size_t encodedSize =
+      ReadingStatsEnvelope::encode(ReadingStatsEnvelope::Kind::Achievements, payload.data(), payload.size(), encoded);
+  ASSERT_NE(encodedSize, 0u);
+  Storage.setFile("/.crosspoint/achievements_v1.bin",
+                  std::vector<uint8_t>(encoded.begin(), encoded.begin() + encodedSize));
+
+  ReadingAchievementState state;
+  EXPECT_EQ(ReadingAchievements::load(state), ReadingAchievements::LoadStatus::Invalid);
+}
+
 TEST(ReadingAchievements, AllMetricBoundariesUseCanonicalIntegerValues) {
   ReadingAchievementState state;
   ReadingAchievementSnapshot snapshot;
@@ -180,6 +200,27 @@ TEST(ReadingAchievements, RetroactiveReconcilePersistsOnlyUnlockStateAndDoesNotR
   EXPECT_EQ(Storage.writeCallCount(), writes);
   ASSERT_TRUE(ReadingAchievements::ackPendingNotification());
   EXPECT_FALSE(ReadingAchievements::peekPendingNotification(notification));
+}
+
+TEST(ReadingAchievements, ReconcileReturnsThePersistedStateWithoutAnotherLoad) {
+  Storage.reset();
+  GlobalReadingStats stats;
+  stats.totalSessions = 10;
+  DailyReadingHistory history;
+
+  ReadingAchievementEvaluation evaluation;
+  ReadingAchievementState reconciled;
+  ASSERT_TRUE(ReadingAchievements::reconcile(stats, history, &evaluation, &reconciled));
+  EXPECT_TRUE(reconciled.initialized);
+  EXPECT_TRUE(reconciled.pendingHistoricalNotification);
+  EXPECT_EQ(reconciled.unlockedCount(), 2);
+  EXPECT_EQ(evaluation.newlyUnlocked, 2);
+
+  ReadingAchievementState persisted;
+  ASSERT_EQ(ReadingAchievements::load(persisted), ReadingAchievements::LoadStatus::Ok);
+  EXPECT_EQ(reconciled.unlocked, persisted.unlocked);
+  EXPECT_EQ(reconciled.announced, persisted.announced);
+  EXPECT_EQ(reconciled.unlockRecognitionDays, persisted.unlockRecognitionDays);
 }
 
 TEST(ReadingAchievements, UnavailableImportedMetricsDoNotCreateFalseUnlocks) {

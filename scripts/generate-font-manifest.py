@@ -52,36 +52,31 @@ FAMILY_DESCRIPTIONS: dict[str, str] = {}
 FAMILY_METADATA: dict[str, dict[str, str]] = {}
 
 
-def load_descriptions_from_yaml(yaml_path: Path) -> dict[str, str]:
-    """Load family descriptions from sd-fonts.yaml config."""
+def load_family_data_from_yaml(
+    yaml_path: Path,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Load family descriptions and optional metadata in one YAML parse."""
     try:
         import yaml
     except ImportError:
-        print("WARNING: pyyaml not installed, cannot load descriptions from YAML", file=sys.stderr)
-        return {}
+        print(
+            "WARNING: pyyaml not installed, cannot load font metadata from YAML",
+            file=sys.stderr,
+        )
+        return {}, {}
 
     with open(yaml_path) as f:
         config = yaml.safe_load(f)
 
-    return {f["name"]: f["description"] for f in config.get("families", []) if "description" in f}
-
-
-def load_metadata_from_yaml(yaml_path: Path) -> dict[str, dict[str, str]]:
-    """Load optional license/provenance fields without changing schema requirements."""
-    try:
-        import yaml
-    except ImportError:
-        return {}
-
-    with open(yaml_path) as f:
-        config = yaml.safe_load(f)
-
+    descriptions: dict[str, str] = {}
     metadata: dict[str, dict[str, str]] = {}
     for family in config.get("families", []):
+        if "description" in family:
+            descriptions[family["name"]] = family["description"]
         values = {key: str(family[key]) for key in ("license", "provenance") if family.get(key)}
         if values:
             metadata[family["name"]] = values
-    return metadata
+    return descriptions, metadata
 
 
 def read_cpfont_styles(filepath: Path) -> list[str]:
@@ -139,22 +134,15 @@ def parse_filename(filename: str) -> tuple[str, str] | None:
     return family, size_str
 
 
-def compute_crc32(filepath: Path) -> int:
-    """Compute CRC32 of a file, matching esp_rom_crc32_le(0xFFFFFFFF, ...) ^ 0xFFFFFFFF."""
+def compute_checksums(filepath: Path) -> tuple[int, str]:
+    """Compute the device CRC32 and release SHA-256 in one file pass."""
     crc = 0
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            crc = zlib.crc32(chunk, crc)
-    return crc & 0xFFFFFFFF
-
-
-def compute_sha256(filepath: Path) -> str:
-    """Compute the release-grade SHA-256 used by the device downloader."""
     digest = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
+            crc = zlib.crc32(chunk, crc)
             digest.update(chunk)
-    return digest.hexdigest()
+    return crc & 0xFFFFFFFF, digest.hexdigest()
 
 
 def scan_cpfont_files(input_dir: Path) -> dict[str, list[Path]]:
@@ -202,12 +190,13 @@ def build_manifest(
 
         file_entries = []
         for filepath in sorted(files, key=lambda p: p.name):
+            crc32, sha256 = compute_checksums(filepath)
             file_entries.append(
                 {
                     "name": filepath.name,
                     "size": filepath.stat().st_size,
-                    "crc32": compute_crc32(filepath),
-                    "sha256": compute_sha256(filepath),
+                    "crc32": crc32,
+                    "sha256": sha256,
                 }
             )
 
@@ -268,8 +257,7 @@ def main():
     if args.descriptions_from:
         desc_path = Path(args.descriptions_from)
         if desc_path.exists():
-            FAMILY_DESCRIPTIONS = load_descriptions_from_yaml(desc_path)
-            FAMILY_METADATA = load_metadata_from_yaml(desc_path)
+            FAMILY_DESCRIPTIONS, FAMILY_METADATA = load_family_data_from_yaml(desc_path)
             print(f"Loaded {len(FAMILY_DESCRIPTIONS)} descriptions from {desc_path}")
         else:
             print(f"WARNING: {desc_path} not found, using family names as descriptions", file=sys.stderr)

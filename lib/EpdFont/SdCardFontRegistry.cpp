@@ -58,13 +58,6 @@ int SdCardFontFamilyInfo::findClosestReaderSizeEnum(const uint8_t targetPointSiz
   return bestEnum;
 }
 
-bool SdCardFontFamilyInfo::hasSize(uint8_t size) const {
-  for (const auto& f : files) {
-    if (f.pointSize == size) return true;
-  }
-  return false;
-}
-
 std::vector<uint8_t> SdCardFontFamilyInfo::availableSizes() const {
   std::vector<uint8_t> sizes;
   for (const auto& f : files) {
@@ -150,21 +143,33 @@ bool SdCardFontRegistry::parseFilename(const char* filename, uint8_t& size, uint
   return true;
 }
 
-void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family) {
+bool SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family) {
   HalFile dir = Storage.open(dirPath);
-  if (!dir || !dir.isDirectory()) return;
+  if (!dir || !dir.isDirectory()) {
+    LOG_ERR("SDREG", "Could not open font family directory: %s", dirPath);
+    return false;
+  }
 
   char nameBuffer[128];
   while (family.files.size() < MAX_FILES_PER_FAMILY) {
     HalFile entry = dir.openNextFile();
     if (!entry) break;
     if (entry.isDirectory()) {
-      entry.close();
+      if (!entry.close()) {
+        LOG_ERR("SDREG", "Could not close nested directory in: %s", dirPath);
+        return false;
+      }
       continue;
     }
 
+    nameBuffer[0] = '\0';
     entry.getName(nameBuffer, sizeof(nameBuffer));
-    entry.close();
+    const bool entryError = entry.getError() != 0;
+    const bool entryClosed = entry.close();
+    if (entryError || !entryClosed || nameBuffer[0] == '\0') {
+      LOG_ERR("SDREG", "Could not read font filename in: %s", dirPath);
+      return false;
+    }
 
     // Skip macOS resource fork files (._*) and other hidden files
     if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
@@ -199,20 +204,31 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
     info.style = style;
     family.files.push_back(std::move(info));
   }
+  const bool iterationSucceeded = dir.getError() == 0;
+  const bool directoryClosed = dir.close();
+  if (!iterationSucceeded || !directoryClosed) {
+    LOG_ERR("SDREG", "Could not finish enumerating font directory: %s", dirPath);
+    return false;
+  }
+  return true;
 }
 
 // Scan a single root (e.g. "/.fonts") and append its families to `out`.
 // Skips families whose names already exist in `out` (de-duplicates between
 // the hidden and visible roots — first scan wins).
-void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFamilyInfo>& out) {
+bool SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFamilyInfo>& out) {
   HalFile root = Storage.open(rootPath);
   if (!root) {
+    if (!Storage.ready() || Storage.exists(rootPath)) {
+      LOG_ERR("SDREG", "Could not open fonts directory: %s", rootPath);
+      return false;
+    }
     LOG_DBG("SDREG", "Fonts directory not found: %s", rootPath);
-    return;
+    return true;
   }
   if (!root.isDirectory()) {
     LOG_ERR("SDREG", "Fonts path is not a directory: %s", rootPath);
-    return;
+    return false;
   }
 
   char nameBuffer[128];
@@ -220,8 +236,14 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
     HalFile entry = root.openNextFile();
     if (!entry) break;
     if (entry.isDirectory()) {
+      nameBuffer[0] = '\0';
       entry.getName(nameBuffer, sizeof(nameBuffer));
-      entry.close();
+      const bool entryError = entry.getError() != 0;
+      const bool entryClosed = entry.close();
+      if (entryError || !entryClosed || nameBuffer[0] == '\0') {
+        LOG_ERR("SDREG", "Could not read font family name in: %s", rootPath);
+        return false;
+      }
 
       // Skip hidden/system directories inside the root (macOS ._*, .Trashes, etc.)
       if (nameBuffer[0] == '.' || nameBuffer[0] == '_') continue;
@@ -243,7 +265,7 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
       SdCardFontFamilyInfo family;
       family.name = nameBuffer;
       std::string subDirPath = std::string(rootPath) + "/" + nameBuffer;
-      SdCardFontRegistry::scanDirectory(subDirPath.c_str(), family);
+      if (!SdCardFontRegistry::scanDirectory(subDirPath.c_str(), family)) return false;
 
       if (!family.files.empty()) {
         out.push_back(std::move(family));
@@ -251,23 +273,37 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
                 static_cast<int>(out.back().files.size()), rootPath);
       }
     } else {
-      entry.close();
+      if (!entry.close()) {
+        LOG_ERR("SDREG", "Could not close entry in fonts directory: %s", rootPath);
+        return false;
+      }
     }
   }
+  const bool iterationSucceeded = root.getError() == 0;
+  const bool rootClosed = root.close();
+  if (!iterationSucceeded || !rootClosed) {
+    LOG_ERR("SDREG", "Could not finish enumerating fonts directory: %s", rootPath);
+    return false;
+  }
+  return true;
 }
 
 bool SdCardFontRegistry::discover() {
-  families_.clear();
-  families_.reserve(MAX_SD_FAMILIES);
+  std::vector<SdCardFontFamilyInfo> discovered;
+  discovered.reserve(MAX_SD_FAMILIES);
 
   // Hidden root is scanned first so it wins on name collisions, matching the
   // sleep-folder pattern (/.sleep preferred over /sleep).
-  scanRoot(FONTS_DIR_HIDDEN, families_);
-  scanRoot(FONTS_DIR_VISIBLE, families_);
+  lastDiscoverySucceeded_ = scanRoot(FONTS_DIR_HIDDEN, discovered) && scanRoot(FONTS_DIR_VISIBLE, discovered);
+  if (!lastDiscoverySucceeded_) {
+    LOG_ERR("SDREG", "Discovery failed; keeping previous complete font registry");
+    return !families_.empty();
+  }
 
   // Sort families alphabetically
-  std::sort(families_.begin(), families_.end(),
+  std::sort(discovered.begin(), discovered.end(),
             [](const SdCardFontFamilyInfo& a, const SdCardFontFamilyInfo& b) { return a.name < b.name; });
+  families_.swap(discovered);
 
   LOG_DBG("SDREG", "Discovery complete: %d families", static_cast<int>(families_.size()));
   return !families_.empty();
@@ -300,11 +336,4 @@ const SdCardFontFamilyInfo* SdCardFontRegistry::findFamily(const std::string& na
     if (f.name == name) return &f;
   }
   return nullptr;
-}
-
-int SdCardFontRegistry::getFamilyIndex(const std::string& name) const {
-  for (int i = 0; i < static_cast<int>(families_.size()); i++) {
-    if (families_[i].name == name) return i;
-  }
-  return -1;
 }

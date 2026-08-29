@@ -21,7 +21,6 @@ struct SdCardFontFamilyInfo {
   const SdCardFontFileInfo* findClosestPointSize(uint8_t targetPointSize, uint8_t style = 0) const;
   const SdCardFontFileInfo* findClosestReaderSize(uint8_t fontSizeEnum, uint8_t style = 0) const;
   int findClosestReaderSizeEnum(uint8_t targetPointSize, uint8_t style = 0) const;
-  bool hasSize(uint8_t size) const;
   std::vector<uint8_t> availableSizes() const;
   std::vector<uint8_t> availableReaderSizeEnums(uint8_t style = 0) const;
 };
@@ -48,16 +47,20 @@ class SdCardFontRegistry {
   // Scan SD card, populate families_. Returns true if any families found.
   bool discover();
 
+  // False when the latest scan stopped on an SD/open/enumeration error. In
+  // that case discover() keeps the previous complete snapshot intact.
+  bool lastDiscoverySucceeded() const { return lastDiscoverySucceeded_; }
+
   const std::vector<SdCardFontFamilyInfo>& getFamilies() const { return families_; }
   const SdCardFontFamilyInfo* findFamily(const std::string& name) const;
-  int getFamilyIndex(const std::string& name) const;
   int getFamilyCount() const { return static_cast<int>(families_.size()); }
 
  private:
   std::vector<SdCardFontFamilyInfo> families_;  // sorted alphabetically
+  bool lastDiscoverySucceeded_ = false;
 
   static bool parseFilename(const char* filename, uint8_t& size, uint8_t& style);
-  static void scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family);
+  static bool scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family);
   // Scan one root (e.g. "/.fonts"), append families to `out`, dedup by name.
-  static void scanRoot(const char* rootPath, std::vector<SdCardFontFamilyInfo>& out);
+  static bool scanRoot(const char* rootPath, std::vector<SdCardFontFamilyInfo>& out);
 };

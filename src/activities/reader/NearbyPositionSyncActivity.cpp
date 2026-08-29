@@ -75,8 +75,12 @@ void NearbyPositionSyncActivity::onEnter() {
   Activity::onEnter();
 #ifdef SIMULATOR
   setError(tr(STR_NEARBY_ERROR_SIMULATOR));
+  return;
 #else
-  if (esp_efuse_mac_get_default(localMac_.data()) != ESP_OK) setError(tr(STR_NEARBY_ERROR_DEVICE_ID));
+  if (esp_efuse_mac_get_default(localMac_.data()) != ESP_OK) {
+    setError(tr(STR_NEARBY_ERROR_DEVICE_ID));
+    return;
+  }
 #endif
   requestUpdate();
 }

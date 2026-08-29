@@ -33,7 +33,7 @@ constexpr uint8_t AP_MAX_CONNECTIONS = 4;
 constexpr int QR_CODE_WIDTH = 198;
 constexpr int QR_CODE_HEIGHT = 198;
 
-#ifndef SIMULATOR
+#if !defined(SIMULATOR) && defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
 std::atomic<uint32_t> wifiDisconnectSequence{0};
 std::atomic<uint32_t> wifiDisconnectAt{0};
 std::atomic<uint8_t> wifiDisconnectReason{0};
@@ -96,13 +96,11 @@ void CrossPointWebServerActivity::onEnter() {
   lastReceivedAt = 0;
   restartToReader = false;
 
-#ifndef SIMULATOR
+#if !defined(SIMULATOR) && defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   if (wifiDisconnectEventId != 0) WiFi.removeEvent(wifiDisconnectEventId);
   reportedWifiDisconnectSequence = wifiDisconnectSequence.load(std::memory_order_acquire);
   wifiDisconnectEventId = WiFi.onEvent(recordWifiDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 #endif
-  requestUpdate();
-
   // Launch network mode selection subactivity
   LOG_DBG("WEBACT", "Launching NetworkModeSelectionActivity...");
   startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
@@ -121,16 +119,13 @@ void CrossPointWebServerActivity::onExit() {
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
-#ifndef SIMULATOR
+#if !defined(SIMULATOR) && defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
   if (wifiDisconnectEventId != 0) {
     WiFi.removeEvent(wifiDisconnectEventId);
     wifiDisconnectEventId = 0;
   }
 #endif
-  if (webServer) {
-    webServer->stop();
-    webServer.reset();
-  }
+  webServer.reset();
   stopDnsServer();
   MDNS.end();
 
@@ -182,9 +177,6 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 
   if (mode == NetworkMode::JOIN_NETWORK) {
     // STA mode - launch WiFi selection
-    LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
-    WiFi.mode(WIFI_STA);
-
     state = WebServerActivityState::WIFI_SELECTION;
     LOG_DBG("WEBACT", "Launching WifiSelectionActivity...");
     startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
@@ -199,7 +191,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   } else {
     // AP mode - start access point
     state = WebServerActivityState::AP_STARTING;
-    requestUpdate();
+    requestUpdateAndWait();
     startAccessPoint();
   }
 }
@@ -332,7 +324,15 @@ void CrossPointWebServerActivity::startWebServer() {
 void CrossPointWebServerActivity::loop() {
   // Handle different states
   if (state == WebServerActivityState::SERVER_RUNNING) {
-#ifndef SIMULATOR
+    // Consume the edge captured by main.cpp before the bounded HTTP burst.
+    // The burst periodically polls input again for responsiveness, and that
+    // update clears one-shot edges even when the button remains held.
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      onGoHome();
+      return;
+    }
+    bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+#if !defined(SIMULATOR) && defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
     const uint32_t disconnectSequence = wifiDisconnectSequence.load(std::memory_order_acquire);
     if (disconnectSequence != reportedWifiDisconnectSequence) {
       const uint8_t reason = wifiDisconnectReason.load(std::memory_order_relaxed);
@@ -438,6 +438,7 @@ void CrossPointWebServerActivity::loop() {
             onGoHome();
             return;
           }
+          confirmReleased = confirmReleased || mappedInput.wasReleased(MappedInputManager::Button::Confirm);
         }
       }
       lastHandleClientTime = millis();
@@ -456,12 +457,7 @@ void CrossPointWebServerActivity::loop() {
       }
     }
 
-    // Handle exit on Back button (also check outside loop)
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      onGoHome();
-      return;
-    }
-    if (!lastReceivedPath.empty() && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (!lastReceivedPath.empty() && confirmReleased) {
       openReceivedBook(lastReceivedPath);
       return;
     }
@@ -475,6 +471,7 @@ void CrossPointWebServerActivity::openReceivedBook(const std::string& path) {
   if (!APP_STATE.saveToFile()) {
     APP_STATE.openEpubPath = previousPath;
     LOG_ERR("WEBACT", "Could not persist Inbox open request");
+    showOpenError = true;
     requestUpdate();
     return;
   }
@@ -487,21 +484,23 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
   // Subactivities handle their own rendering
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
-    const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto pageWidth = renderer.getScreenWidth();
-    const auto pageHeight = renderer.getScreenHeight();
-
-    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
-
     if (state == WebServerActivityState::SERVER_RUNNING) {
-      GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
-                        connectedSSID.c_str());
       renderServerRunning();
     } else {
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const auto pageWidth = renderer.getScreenWidth();
+      const auto pageHeight = renderer.getScreenHeight();
+      GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                     isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
       const auto height = renderer.getLineHeight(UI_10_FONT_ID);
       const auto top = (pageHeight - height) / 2;
       renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_STARTING_HOTSPOT));
+    }
+
+    if (showOpenError) {
+      showOpenError = false;
+      drawTransientPopup(StrId::STR_ERROR_GENERAL_FAILURE);
+      return;
     }
     renderer.displayBuffer();
   }

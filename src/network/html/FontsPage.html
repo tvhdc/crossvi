@@ -238,6 +238,23 @@
         deleteConfirm: 'Xóa họ phông chữ "', deleteConfirmSuffix: '"?', deleteError: 'Lỗi xóa: ', uploadError: 'Lỗi tải lên: ', unknown: 'lỗi không xác định' }
     };
     let webLanguage = 'en';
+    let fontLoadGeneration = 0;
+    let fontUploadBusy = false;
+    let fontDeleteBusy = false;
+    function setFontUploadBusy(busy) {
+      fontUploadBusy = busy;
+      document.querySelectorAll('.font-delete-button').forEach(button => {
+        button.disabled = busy || fontDeleteBusy;
+      });
+    }
+    function setFontDeleteBusy(busy) {
+      fontDeleteBusy = busy;
+      document.querySelectorAll('.font-delete-button').forEach(button => {
+        button.disabled = busy || fontUploadBusy;
+      });
+      const submitButton = document.querySelector('#uploadForm button[type="submit"]');
+      if (submitButton) submitButton.disabled = busy || fontUploadBusy;
+    }
     function webText(key) { return (WEB_TEXT[webLanguage] && WEB_TEXT[webLanguage][key]) || WEB_TEXT.en[key] || key; }
     function applyWebLanguage(language, persist = true) {
       webLanguage = language === 'vi' ? 'vi' : 'en';
@@ -255,9 +272,14 @@
       if (typeof loadFonts === 'function') loadFonts();
     }
     const savedWebLanguage = localStorage.getItem(WEB_LANGUAGE_KEY);
-    if (savedWebLanguage) applyWebLanguage(savedWebLanguage, false);
-    else fetch('/api/status').then(response => response.ok ? response.json() : null)
-      .then(data => { if (data && data.language) applyWebLanguage(data.language === 'VI' ? 'vi' : 'en', false); })
+    const initialLanguageReady = savedWebLanguage
+      ? Promise.resolve(applyWebLanguage(savedWebLanguage, false))
+      : fetch('/api/status').then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (data && data.language && !localStorage.getItem(WEB_LANGUAGE_KEY)) {
+          applyWebLanguage(data.language === 'VI' ? 'vi' : 'en', false);
+        }
+      })
       .catch(() => {});
 
     function formatSize(bytes) {
@@ -267,10 +289,12 @@
     }
 
     async function loadFonts() {
+      const generation = ++fontLoadGeneration;
       const el = document.getElementById('families');
       try {
         const res = await fetch('/api/fonts');
         const data = await res.json();
+        if (generation !== fontLoadGeneration) return;
         // Build rows with DOM APIs and textContent so on-device family names
         // (which can contain arbitrary characters) cannot break markup or
         // execute script via innerHTML / inline onclick interpolation.
@@ -299,7 +323,8 @@
           info.appendChild(meta);
 
           const btn = document.createElement('button');
-          btn.className = 'btn btn-danger';
+          btn.className = 'btn btn-danger font-delete-button';
+          btn.disabled = fontUploadBusy || fontDeleteBusy;
           btn.textContent = webText('delete');
           // Capture name in the closure rather than interpolating into onclick.
           const familyName = f.name;
@@ -310,6 +335,7 @@
           el.appendChild(row);
         }
       } catch (e) {
+        if (generation !== fontLoadGeneration) return;
         el.replaceChildren();
         const p = document.createElement('p');
         p.className = 'empty';
@@ -319,7 +345,9 @@
     }
 
     async function deleteFamily(name) {
+      if (fontUploadBusy || fontDeleteBusy) return;
       if (!confirm(webText('deleteConfirm') + name + webText('deleteConfirmSuffix'))) return;
+      setFontDeleteBusy(true);
       const status = document.getElementById('status');
       status.className = '';
       status.style.display = 'block';
@@ -340,8 +368,10 @@
       } catch (err) {
         status.className = 'status-err';
         status.textContent = webText('deleteError') + err.message;
+      } finally {
+        await loadFonts();
+        setFontDeleteBusy(false);
       }
-      await loadFonts();
     }
 
     // Derive family name from a .cpfont filename: take everything before the
@@ -431,6 +461,8 @@
 
     document.getElementById('uploadForm').addEventListener('submit', async function(e) {
       e.preventDefault();
+      if (fontUploadBusy || fontDeleteBusy) return;
+      const submitButton = this.querySelector('button[type="submit"]');
       const status = document.getElementById('status');
       const files = cpfontFilesOnly(document.getElementById('fontFiles').files);
       if (files.length === 0) {
@@ -459,38 +491,45 @@
         return;
       }
 
+      setFontUploadBusy(true);
+      submitButton.disabled = true;
       status.className = '';
       status.style.display = 'block';
 
-      let uploaded = 0;
-      for (const file of files) {
-        const uploadName = sanitizeCpfontFilename(file.name);
-        status.textContent = webText('uploading') + ' ' + (uploaded + 1) + '/' + files.length + ': ' + file.name;
-        try {
-          await uploadFontInChunks(file, family, uploadName, (done, total) => {
-            const percent = Math.floor(done * 100 / total);
-            status.textContent = webText('uploading') + ' ' + (uploaded + 1) + '/' + files.length + ': ' +
-              file.name + ' (' + percent + '%)';
-          });
-        } catch (err) {
-          status.className = 'status-err';
-          status.textContent = webText('uploadError') + file.name + ': ' + (err.message || webText('unknown'));
-          await loadFonts();
-          return;
+      try {
+        let uploaded = 0;
+        for (const file of files) {
+          const uploadName = sanitizeCpfontFilename(file.name);
+          status.textContent = webText('uploading') + ' ' + (uploaded + 1) + '/' + files.length + ': ' + file.name;
+          try {
+            await uploadFontInChunks(file, family, uploadName, (done, total) => {
+              const percent = Math.floor(done * 100 / total);
+              status.textContent = webText('uploading') + ' ' + (uploaded + 1) + '/' + files.length + ': ' +
+                file.name + ' (' + percent + '%)';
+            });
+          } catch (err) {
+            status.className = 'status-err';
+            status.textContent = webText('uploadError') + file.name + ': ' + (err.message || webText('unknown'));
+            await loadFonts();
+            return;
+          }
+          uploaded++;
+          if (uploaded < files.length) {
+            await new Promise(resolve => setTimeout(resolve, BATCH_UPLOAD_DELAY_MS));
+          }
         }
-        uploaded++;
-        if (uploaded < files.length) {
-          await new Promise(resolve => setTimeout(resolve, BATCH_UPLOAD_DELAY_MS));
-        }
-      }
 
-      status.className = 'status-ok';
-      status.textContent = webText('uploaded') + ' ' + uploaded + ' file' + (uploaded === 1 ? '' : 's') +
-        ' to family "' + family + '".';
-      await loadFonts();
+        status.className = 'status-ok';
+        status.textContent = webText('uploaded') + ' ' + uploaded + ' file' + (uploaded === 1 ? '' : 's') +
+          ' to family "' + family + '".';
+        await loadFonts();
+      } finally {
+        setFontUploadBusy(false);
+        submitButton.disabled = false;
+      }
     });
 
-    loadFonts();
+    initialLanguageReady.then(() => loadFonts());
   </script>
   </body>
 </html>

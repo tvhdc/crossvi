@@ -5,6 +5,7 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 #include "ClockDateFormat.h"
@@ -87,10 +88,22 @@ void BookReadingHistoryActivity::stepScan() {
     return;
   }
   uint32_t day = 0;
-  if (isDirectory || nameLength == 0 || nameLength >= sizeof(name) ||
-      !DailyBookReadingHistory::dayFromFileName(name, day)) {
-    return;
+  if (isDirectory || nameLength == 0 || nameLength >= sizeof(name)) return;
+  size_t canonicalLength = nameLength;
+  bool backupArtifact = false;
+  bool tempArtifact = false;
+  if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".bak") == 0) {
+    canonicalLength -= 4;
+    backupArtifact = true;
+  } else if (canonicalLength > 4 && strcmp(name + canonicalLength - 4, ".tmp") == 0) {
+    canonicalLength -= 4;
+    tempArtifact = true;
   }
+  name[canonicalLength] = '\0';
+  if (!DailyBookReadingHistory::dayFromFileName(name, day)) return;
+  const std::string canonicalPath = DailyBookReadingHistory::pathForDay(day);
+  if ((backupArtifact || tempArtifact) && Storage.exists(canonicalPath.c_str())) return;
+  if (tempArtifact && Storage.exists((canonicalPath + ".bak").c_str())) return;
 
   DailyBookReadingDay daily;
   const DailyBookReadingHistory::LoadStatus status = DailyBookReadingHistory::load(day, daily);

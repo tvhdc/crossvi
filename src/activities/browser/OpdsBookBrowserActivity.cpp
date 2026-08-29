@@ -44,16 +44,15 @@ void OpdsBookBrowserActivity::onEnter() {
   Activity::onEnter();
 
   state = BrowserState::CHECK_WIFI;
+  retryOperation = RetryOperation::Feed;
   entries.clear();
   navigationHistory.clear();
   searchTemplate = "";
   currentPath = "";
   selectorIndex = 0;
-  consumeConfirm = false;
   consumeBack = false;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
-  requestUpdate();
 
   checkAndConnectWifi();
 }
@@ -73,10 +72,6 @@ void OpdsBookBrowserActivity::loop() {
     return;
   }
 
-  if (consumeConfirm && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    consumeConfirm = false;
-    return;
-  }
   if (consumeBack && mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     consumeBack = false;
     return;
@@ -85,10 +80,7 @@ void OpdsBookBrowserActivity::loop() {
   if (state == BrowserState::ERROR) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-        state = BrowserState::LOADING;
-        statusMessage = tr(STR_LOADING);
-        requestUpdate();
-        fetchFeed(currentPath);
+        retryFailedOperation();
       } else {
         launchWifiSelection();
       }
@@ -202,7 +194,20 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+void OpdsBookBrowserActivity::retryFailedOperation() {
+  if (retryOperation == RetryOperation::Download && selectorIndex >= 0 &&
+      selectorIndex < static_cast<int>(entries.size()) && entries[selectorIndex].type == OpdsEntryType::BOOK) {
+    downloadBook(entries[selectorIndex]);
+    return;
+  }
+
+  state = BrowserState::LOADING;
+  statusMessage = tr(STR_LOADING);
+  fetchFeed(currentPath);
+}
+
 void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
+  retryOperation = RetryOperation::Feed;
   if (server.url.empty()) {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_NO_SERVER_URL);
@@ -266,7 +271,6 @@ void OpdsBookBrowserActivity::navigateToEntry(const OpdsEntry& entry) {
   statusMessage = tr(STR_LOADING);
   releaseEntries();
   selectorIndex = 0;
-  requestUpdate(true);
   fetchFeed(currentPath);
 }
 
@@ -280,12 +284,12 @@ void OpdsBookBrowserActivity::navigateBack() {
     statusMessage = tr(STR_LOADING);
     releaseEntries();
     selectorIndex = 0;
-    requestUpdate();
     fetchFeed(currentPath);
   }
 }
 
 void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
+  retryOperation = RetryOperation::Download;
   state = BrowserState::DOWNLOADING;
   statusMessage = book.title;
   downloadProgress = downloadTotal = 0;
@@ -354,6 +358,7 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   if (result == HttpDownloader::OK) {
     const BookFilePublishResult published = publishStagedBookFile(stagingPath, filename);
     if (published == BookFilePublishResult::Published || published == BookFilePublishResult::Unchanged) {
+      retryOperation = RetryOperation::Feed;
       state = BrowserState::BROWSING;
     } else {
       Storage.remove(stagingPath.c_str());
@@ -370,25 +375,22 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
 }
 
 void OpdsBookBrowserActivity::launchSearch() {
-  consumeConfirm = true;
   state = BrowserState::SEARCH_INPUT;
-  requestUpdate();
 
   auto keyboard = std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH));
   startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
     state = BrowserState::BROWSING;
-    if (!result.isCancelled) {
-      performSearch(std::get<KeyboardResult>(result.data).text);
-    } else {
-      requestUpdate();
+    if (result.isCancelled) {
+      consumeBack = true;
+      return;
     }
+    performSearch(std::get<KeyboardResult>(result.data).text);
   });
 }
 
 void OpdsBookBrowserActivity::performSearch(const std::string& query) {
   if (query.empty() || searchTemplate.empty()) {
     state = BrowserState::BROWSING;
-    requestUpdate();
     return;
   }
 
@@ -421,7 +423,6 @@ void OpdsBookBrowserActivity::performSearch(const std::string& query) {
   statusMessage = tr(STR_LOADING);
   releaseEntries();
   selectorIndex = 0;
-  requestUpdate(true);
   fetchFeed(url);
 }
 
@@ -429,7 +430,6 @@ void OpdsBookBrowserActivity::checkAndConnectWifi() {
   if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
     state = BrowserState::LOADING;
     statusMessage = tr(STR_LOADING);
-    requestUpdate();
     fetchFeed(currentPath);
     return;
   }
@@ -438,7 +438,6 @@ void OpdsBookBrowserActivity::checkAndConnectWifi() {
 
 void OpdsBookBrowserActivity::launchWifiSelection() {
   state = BrowserState::WIFI_SELECTION;
-  requestUpdate();
 
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
@@ -446,14 +445,13 @@ void OpdsBookBrowserActivity::launchWifiSelection() {
 
 void OpdsBookBrowserActivity::onWifiSelectionComplete(const bool connected) {
   if (connected) {
-    state = BrowserState::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate(true);
-    fetchFeed(currentPath);
+    retryFailedOperation();
   } else {
+    // WifiSelectionActivity cancels on Back press. Drain the matching release
+    // here so it cannot immediately navigate the restored OPDS screen back.
+    consumeBack = true;
     // Leave WiFi up; onExit's silent reboot handles teardown without fragmenting.
     state = BrowserState::ERROR;
     errorMessage = tr(STR_WIFI_CONN_FAILED);
-    requestUpdate();
   }
 }

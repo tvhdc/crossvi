@@ -81,7 +81,7 @@ bool publishThumbIdentity(const std::string& path, const ZipFile::SourceIdentity
   HalFile file;
   if (!Storage.openFileForWrite("EBP", staging, file)) return false;
   const bool written = file.write(encoded.data(), encoded.size()) == static_cast<int>(encoded.size());
-  const bool synced = file.sync();
+  const bool synced = written && file.sync();
   const bool closed = file.close();
   if (!written || !synced || !closed) {
     Storage.remove(staging.c_str());
@@ -124,9 +124,11 @@ bool validateCachedThumbnail(const char* path, void* context) { return validateT
 enum class MarkerFileStatus : uint8_t { Missing, Valid, Invalid, IoError };
 
 MarkerFileStatus inspectNoCoverMarker(const char* path) {
-  if (!path || !Storage.exists(path)) return MarkerFileStatus::Missing;
+  if (!path) return MarkerFileStatus::Missing;
   HalFile file;
-  if (!Storage.openFileForRead("EBP", path, file)) return MarkerFileStatus::IoError;
+  if (!Storage.openFileForRead("EBP", path, file)) {
+    return Storage.exists(path) ? MarkerFileStatus::IoError : MarkerFileStatus::Missing;
+  }
   if (file.fileSize64() != sizeof(NO_COVER_MAGIC)) {
     return file.close() ? MarkerFileStatus::Invalid : MarkerFileStatus::IoError;
   }
@@ -147,24 +149,29 @@ bool writeNoCoverMarker(const std::string& finalPath) {
   const MarkerFileStatus finalStatus = inspectNoCoverMarker(finalPath.c_str());
   if (finalStatus == MarkerFileStatus::IoError) return false;
   if (finalStatus == MarkerFileStatus::Valid) {
-    StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateNoCoverMarker);
+    // The final marker was already verified. Revalidating it through recover()
+    // can replace it with a stale backup after a transient second-read error.
+    if (Storage.exists(backupPath.c_str())) Storage.remove(backupPath.c_str());
     return true;
   }
   const MarkerFileStatus backupStatus = inspectNoCoverMarker(backupPath.c_str());
   if (backupStatus == MarkerFileStatus::IoError) return false;
-  if (backupStatus == MarkerFileStatus::Valid &&
-      StagedFileTransaction::recover(finalPath.c_str(), backupPath.c_str(), validateNoCoverMarker) ==
-          StagedFileTransaction::Status::IoError) {
-    return false;
+  if (backupStatus == MarkerFileStatus::Valid) {
+    // Promote the verified backup directly. Asking recover() to validate it a
+    // second time can discard a valid recovery candidate on transient SD I/O.
+    if (finalStatus == MarkerFileStatus::Invalid && !Storage.remove(finalPath.c_str())) {
+      return false;
+    }
+    if (!Storage.rename(backupPath.c_str(), finalPath.c_str())) return false;
+    return inspectNoCoverMarker(finalPath.c_str()) == MarkerFileStatus::Valid;
   }
   if (backupStatus == MarkerFileStatus::Invalid && !Storage.remove(backupPath.c_str())) return false;
 
-  if (inspectNoCoverMarker(finalPath.c_str()) == MarkerFileStatus::Valid) return true;
   if (Storage.exists(stagingPath.c_str()) && !Storage.remove(stagingPath.c_str())) return false;
   HalFile marker;
   if (!Storage.openFileForWrite("EBP", stagingPath, marker)) return false;
   const bool written = marker.write(NO_COVER_MAGIC, sizeof(NO_COVER_MAGIC)) == sizeof(NO_COVER_MAGIC);
-  const bool synced = marker.sync();
+  const bool synced = written && marker.sync();
   const bool closed = marker.close();
   if (!written || !synced || !closed) {
     Storage.remove(stagingPath.c_str());
@@ -935,8 +942,11 @@ Epub::CoreMetadataStepResult Epub::stepCoreMetadataRead(BookMetadataCache::BookM
         state.cacheLoadActive = loadResult == BookMetadataCache::LoadStepResult::InProgress;
       }
       if (loadResult == BookMetadataCache::LoadStepResult::InProgress) return CoreMetadataStepResult::InProgress;
+      const bool verifiedNoCover = loadResult == BookMetadataCache::LoadStepResult::Loaded &&
+                                   bookMetadataCache->coreMetadata.coverItemHref.empty() &&
+                                   hasVerifiedNoCoverThumbnail(SHARED_THUMB_HEIGHT);
       if (loadResult != BookMetadataCache::LoadStepResult::Loaded ||
-          bookMetadataCache->coreMetadata.coverItemHref.empty()) {
+          (bookMetadataCache->coreMetadata.coverItemHref.empty() && !verifiedNoCover)) {
         return beginContainer();
       }
       state.metadata = bookMetadataCache->coreMetadata;
@@ -1285,7 +1295,7 @@ bool Epub::beginColdIndexing(const bool skipLoadingCss) {
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
   if (!setupCacheDir()) return false;
 
-  // Bind the whole indexing attempt to one source snapshot. buildBookBin()
+  // Bind the whole indexing attempt to one source snapshot. The cooperative book.bin build
   // rechecks this before publishing, and the final load checks it once more.
   if (!ensureSourceIdentitySnapshot()) {
     LOG_ERR("EBP", "Could not identify EPUB before indexing");
@@ -1493,7 +1503,7 @@ Epub::IndexStepResult Epub::stepIndexing() {
 
     case IndexingPhase::BuildBook: {
 #if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      const uint32_t started = static_cast<uint32_t>(millis());
+      const uint32_t stepStartedMs = static_cast<uint32_t>(millis());
 #endif
       if (!bookMetadataCache->isBuildingBookBin()) {
         if (!bookMetadataCache->beginBuildBookBin(filepath, indexingMetadata, sourceIdentitySnapshot)) {
@@ -1505,13 +1515,15 @@ Epub::IndexStepResult Epub::stepIndexing() {
       if (buildResult == BookMetadataCache::BuildStepResult::InProgress) return IndexStepResult::InProgress;
       if (buildResult == BookMetadataCache::BuildStepResult::Error) return fail("Could not update mappings and sizes");
       indexingBookBuilt = true;
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      const uint32_t completedMs = static_cast<uint32_t>(millis());
+      LOG_DBG("EBP", "book.bin publish step completed in %u ms", static_cast<unsigned>(completedMs - stepStartedMs));
+      LOG_DBG("EBP", "book.bin build phase completed in %u ms",
+              static_cast<unsigned>(completedMs - indexingPhaseStartedMs));
+#endif
       if (!bookMetadataCache->cleanupTmpFiles()) {
         LOG_DBG("EBP", "Could not cleanup tmp files - ignoring");
       }
-#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
-      LOG_DBG("EBP", "buildBookBin completed in %u ms",
-              static_cast<unsigned>(static_cast<uint32_t>(millis()) - started));
-#endif
       indexingPhase = IndexingPhase::Css;
       indexingPhaseStartedMs = static_cast<uint32_t>(millis());
       return IndexStepResult::InProgress;
@@ -1574,6 +1586,10 @@ Epub::IndexStepResult Epub::stepIndexing() {
         return fail("EPUB changed while indexing");
       }
 
+#if defined(ENABLE_SERIAL_LOG) && defined(LOG_LEVEL) && LOG_LEVEL >= 2
+      LOG_DBG("EBP", "Source identity check completed in %u ms",
+              static_cast<unsigned>(static_cast<uint32_t>(millis()) - indexingPhaseStartedMs));
+#endif
       indexingPhase = IndexingPhase::Idle;
       indexingReadState.reset();
       indexingMetadata = {};
@@ -1723,7 +1739,7 @@ bool Epub::openCoverSource(const std::string& coverImageHref, const bool jpeg, C
   constexpr size_t MAX_EXTRACTED_COVER_BYTES = 16U * 1024U * 1024U;
   const bool extracted =
       readItemContentsToStream(coverImageHref, extractedSource, 4096, false, MAX_EXTRACTED_COVER_BYTES);
-  const bool synced = extractedSource.sync();
+  const bool synced = extracted && extractedSource.sync();
   const bool closed = extractedSource.close();
   if (!extracted || !synced || !closed) {
     clearCoverSource();
@@ -1782,7 +1798,7 @@ bool Epub::generateCoverBmp(bool cropped) const {
                                                      source.file, source.offset, source.length, output, cropped)
                                                : JpegToBmpConverter::jpegFileToBmpStream(source.file, output, cropped))
                               : PngToBmpConverter::pngFileToBmpStream(source.file, output, cropped);
-  const bool outputSynced = output.sync();
+  const bool outputSynced = converted && output.sync();
   const bool outputClosed = output.close();
   const bool inputClosed = source.file.close();
   if (!retainCoverSource) clearCoverSource();
@@ -1903,10 +1919,11 @@ bool Epub::generateJpegThumbnailPair(const int carouselWidth, const int carousel
 
   std::array<bool, 2> outputReady{};
   for (size_t index = 0; index < outputs.size(); ++index) {
-    const bool synced = outputs[index].sync();
+    const bool convertedOutput = (converted & (1U << index)) != 0;
+    const bool synced = convertedOutput && outputs[index].sync();
     const bool closed = outputs[index].close();
-    outputReady[index] = (converted & (1U << index)) != 0 && synced && closed &&
-                         validateCachedThumbnail(stagingPaths[index].c_str(), &validation[index]);
+    outputReady[index] =
+        convertedOutput && synced && closed && validateCachedThumbnail(stagingPaths[index].c_str(), &validation[index]);
   }
   const bool inputClosed = source.file.close();
   if (!retainCoverSource) clearCoverSource();
@@ -2109,8 +2126,8 @@ Epub::ThumbnailStatus Epub::ensureThumbnail(const int width, const int height, c
   if (finalValid && readThumbIdentity(identityPath.c_str(), proof) && proof == sourceIdentity) {
     return ThumbnailStatus::Ready;
   }
-  if (validateNoCoverMarker(noCoverPath.c_str(), nullptr) && readThumbIdentity(noCoverIdentityPath.c_str(), proof) &&
-      proof == sourceIdentity) {
+  const bool noCoverValid = validateNoCoverMarker(noCoverPath.c_str(), nullptr);
+  if (noCoverValid && readThumbIdentity(noCoverIdentityPath.c_str(), proof) && proof == sourceIdentity) {
     return ThumbnailStatus::NoCover;
   }
 
@@ -2119,8 +2136,7 @@ Epub::ThumbnailStatus Epub::ensureThumbnail(const int width, const int height, c
   if (!fitWithin && finalValid && inspectSourceBinding() == SourceBindingStatus::Match) {
     if (publishThumbIdentity(identityPath, sourceIdentity)) return ThumbnailStatus::Ready;
   }
-  if (!fitWithin && validateNoCoverMarker(noCoverPath.c_str(), nullptr) &&
-      inspectSourceBinding() == SourceBindingStatus::Match) {
+  if (!fitWithin && noCoverValid && inspectSourceBinding() == SourceBindingStatus::Match) {
     if (publishThumbIdentity(noCoverIdentityPath, sourceIdentity)) return ThumbnailStatus::NoCover;
   }
 
@@ -2145,7 +2161,7 @@ Epub::ThumbnailStatus Epub::ensureThumbnail(const int width, const int height, c
     HalFile output;
     if (!Storage.openFileForWrite("EBP", stagingPath, output)) return ThumbnailStatus::IoError;
     const bool copied = readItemContentsToStream(embeddedEntry, output, 1024);
-    const bool synced = output.sync();
+    const bool synced = copied && output.sync();
     const bool closed = output.close();
     if (!copied || !synced || !closed || !validateCachedThumbnail(stagingPath.c_str(), &validation) ||
         !sourceStillMatchesSnapshot()) {
@@ -2180,7 +2196,7 @@ Epub::ThumbnailStatus Epub::ensureThumbnail(const int width, const int height, c
   if ((fitWithin ? Storage.exists(finalPath.c_str()) : finalValid) && !Storage.remove(finalPath.c_str())) {
     return ThumbnailStatus::IoError;
   }
-  if (validateNoCoverMarker(noCoverPath.c_str(), nullptr) && !Storage.remove(noCoverPath.c_str())) {
+  if (noCoverValid && !Storage.remove(noCoverPath.c_str())) {
     return ThumbnailStatus::IoError;
   }
   Storage.remove(identityPath.c_str());
@@ -2279,7 +2295,7 @@ bool Epub::generateThumbBmp(const int width, const int height, const bool crop) 
                                                                              output, width, height, crop)
                   : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(source.file, output, width, height, crop))
            : PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(source.file, output, width, height, crop);
-  const bool outputSynced = output.sync();
+  const bool outputSynced = converted && output.sync();
   const bool outputClosed = output.close();
   const bool inputClosed = source.file.close();
   if (!retainCoverSource) clearCoverSource();
@@ -2340,7 +2356,7 @@ bool Epub::extractItemToFileAtomically(const std::string& itemHref, const std::s
   if (!Storage.openFileForWrite("EBP", stagingPath, output)) return false;
   constexpr size_t MAX_EXTRACTED_RASTER_BYTES = 16U * 1024U * 1024U;
   const bool extracted = readItemContentsToStream(itemHref, output, 4096, false, MAX_EXTRACTED_RASTER_BYTES);
-  const bool synced = output.sync();
+  const bool synced = extracted && output.sync();
   const bool closed = output.close();
   if (!extracted || !synced || !closed || !sourceStillMatchesSnapshot() ||
       !validateRasterFile(stagingPath.c_str(), nullptr)) {
@@ -2613,27 +2629,6 @@ int Epub::getTocItemsCount() const {
   return bookMetadataCache->getTocCount();
 }
 
-// work out the section index for a toc index
-int Epub::getSpineIndexForTocIndex(const int tocIndex) const {
-  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
-    LOG_ERR("EBP", "getSpineIndexForTocIndex called but cache not loaded");
-    return 0;
-  }
-
-  if (tocIndex < 0 || tocIndex >= bookMetadataCache->getTocCount()) {
-    LOG_ERR("EBP", "getSpineIndexForTocIndex: tocIndex %d out of range", tocIndex);
-    return 0;
-  }
-
-  const int spineIndex = bookMetadataCache->getTocEntry(tocIndex).spineIndex;
-  if (spineIndex < 0) {
-    LOG_DBG("EBP", "Section not found for TOC index %d", tocIndex);
-    return 0;
-  }
-
-  return spineIndex;
-}
-
 int Epub::getTocIndexForSpineIndex(const int spineIndex) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) return -1;
   return bookMetadataCache->getSpineTocIndex(spineIndex);
@@ -2656,15 +2651,16 @@ int Epub::getSpineIndexForTextReference() const {
           bookMetadataCache->coreMetadata.textReferenceHref.size(),
           bookMetadataCache->coreMetadata.textReferenceHref.c_str());
 
+  const int spineCount = getSpineItemsCount();
   if (bookMetadataCache->coreMetadata.textReferenceHref.empty()) {
     // With no explicit start target, begin at the first primary reading-order
     // item and leave linear="no" auxiliaries reachable only through links/TOC.
     const int firstLinear = getAdjacentLinearSpineIndex(-1, true);
-    return firstLinear < getSpineItemsCount() ? firstLinear : 0;
+    return firstLinear < spineCount ? firstLinear : 0;
   }
 
   // loop through spine items to get the correct index matching the text href
-  for (size_t i = 0; i < getSpineItemsCount(); i++) {
+  for (int i = 0; i < spineCount; i++) {
     if (getSpineItem(i).href == bookMetadataCache->coreMetadata.textReferenceHref) {
       LOG_DBG("EBP", "Text reference %s found at index %d", bookMetadataCache->coreMetadata.textReferenceHref.c_str(),
               i);
@@ -2674,7 +2670,7 @@ int Epub::getSpineIndexForTextReference() const {
   // This should not happen, as we checked for empty textReferenceHref earlier
   LOG_DBG("EBP", "Section not found for text reference");
   const int firstLinear = getAdjacentLinearSpineIndex(-1, true);
-  return firstLinear < getSpineItemsCount() ? firstLinear : 0;
+  return firstLinear < spineCount ? firstLinear : 0;
 }
 
 // Calculate progress in book (returns 0.0-1.0)
@@ -2746,23 +2742,26 @@ int Epub::resolveHrefToSpineIndex(const std::string& href, const int sourceSpine
   size_t targetSlash = target.find_last_of('/');
   std::string targetFilename = (targetSlash != std::string::npos) ? target.substr(targetSlash + 1) : target;
 
-  // Prefer an exact path match across the complete spine. A matching basename
-  // earlier in the spine must not hide an exact path that appears later.
-  for (int i = 0; i < getSpineItemsCount(); i++) {
+  // Prefer an exact path match across the complete spine. Remember the legacy
+  // basename fallback during the same scan so a miss does not re-read every
+  // spine entry from book.bin.
+  int filenameMatch = -1;
+  bool filenameMatchAmbiguous = false;
+  const int spineCount = getSpineItemsCount();
+  for (int i = 0; i < spineCount; i++) {
     const auto& spineHref = getSpineItem(i).href;
     if (spineHref == target) return i;
-  }
 
-  int filenameMatch = -1;
-  for (int i = 0; i < getSpineItemsCount(); i++) {
-    const auto& spineHref = getSpineItem(i).href;
     // Retain the legacy filename fallback only when it is unambiguous.
     size_t spineSlash = spineHref.find_last_of('/');
     std::string spineFilename = (spineSlash != std::string::npos) ? spineHref.substr(spineSlash + 1) : spineHref;
     if (spineFilename == targetFilename) {
-      if (filenameMatch >= 0) return -1;
-      filenameMatch = i;
+      if (filenameMatch >= 0) {
+        filenameMatchAmbiguous = true;
+      } else {
+        filenameMatch = i;
+      }
     }
   }
-  return filenameMatch;
+  return filenameMatchAmbiguous ? -1 : filenameMatch;
 }

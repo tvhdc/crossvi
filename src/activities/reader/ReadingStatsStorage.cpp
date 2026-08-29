@@ -86,7 +86,6 @@ bool writeAtomic(const char* path, const char* backupPath, const bool rotateExis
     Storage.remove(tmpPath.c_str());
     return false;
   }
-  file.flush();
   const bool synced = file.sync();
   const bool closed = file.close();
   if (!synced || !closed || !verifyFile(tmpPath.c_str(), data, size)) {

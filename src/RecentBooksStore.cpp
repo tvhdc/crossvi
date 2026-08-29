@@ -1,10 +1,8 @@
 #include "RecentBooksStore.h"
 
-#include <Epub.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#include <Xtc.h>
 
 #include <algorithm>
 #include <iterator>
@@ -29,7 +27,7 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
   JsonArrayConst arr = doc["books"].as<JsonArrayConst>();
   recentBooks.reserve(std::min(arr.size(), static_cast<size_t>(MAX_RECENT_BOOKS)));
   for (JsonObjectConst obj : arr) {
-    if (getCount() >= MAX_RECENT_BOOKS) break;
+    if (recentBooks.size() >= MAX_RECENT_BOOKS) break;
     const char* storedPath = obj["path"] | "";
     if (storedPath[0] == '\0') continue;
     RecentBook book;
@@ -55,7 +53,7 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
     pinnedPaths.push_back(path);
   }
 
-  LOG_DBG("RBS", "Recent books loaded from file (%d entries)", getCount());
+  LOG_DBG("RBS", "Recent books loaded from file (%d entries)", static_cast<int>(recentBooks.size()));
   return true;
 }
 
@@ -100,19 +98,34 @@ void RecentBooksStore::addBook(const std::string& path, const std::string& title
   // Remove existing entry if present
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
+  const bool replacingExisting = it != recentBooks.end();
+  const size_t previousIndex =
+      replacingExisting ? static_cast<size_t>(std::distance(recentBooks.begin(), it)) : recentBooks.size();
+  RecentBook previous;
   if (it != recentBooks.end()) {
+    previous = std::move(*it);
     recentBooks.erase(it);
+  }
+
+  const bool evictingTail = !replacingExisting && recentBooks.size() >= MAX_RECENT_BOOKS;
+  RecentBook evicted;
+  if (evictingTail) {
+    evicted = std::move(recentBooks.back());
+    recentBooks.pop_back();
   }
 
   // Add to front
   recentBooks.insert(recentBooks.begin(), {path, title, author, coverBmpPath});
 
-  // Trim to max size
-  if (recentBooks.size() > MAX_RECENT_BOOKS) {
-    recentBooks.resize(MAX_RECENT_BOOKS);
+  if (!saveToFile()) {
+    recentBooks.erase(recentBooks.begin());
+    if (replacingExisting) {
+      recentBooks.insert(recentBooks.begin() + previousIndex, std::move(previous));
+    } else if (evictingTail) {
+      recentBooks.push_back(std::move(evicted));
+    }
+    LOG_ERR("RBS", "Failed to persist recent book: %s", path.c_str());
   }
-
-  saveToFile();
 }
 
 void RecentBooksStore::updateBook(const std::string& path, const std::string& title, const std::string& author,
@@ -121,6 +134,7 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
+    if (it->title == title && it->author == author && it->coverBmpPath == coverBmpPath) return;
     RecentBook previous = *it;
     RecentBook& book = *it;
     book.title = title;
@@ -156,26 +170,47 @@ void RecentBooksStore::updatePath(const std::string& oldPath, const std::string&
   if (!ensureLoaded()) return;
   auto it = std::find_if(recentBooks.begin(), recentBooks.end(),
                          [&](const RecentBook& book) { return book.path == oldPath; });
+  RecentBook previousBook;
+  bool bookChanged = false;
   bool changed = false;
   if (it != recentBooks.end()) {
+    previousBook = *it;
     it->path = newPath;
     if (!oldCachePath.empty() && !it->coverBmpPath.empty() && it->coverBmpPath.rfind(oldCachePath, 0) == 0) {
       it->coverBmpPath = newCachePath + it->coverBmpPath.substr(oldCachePath.size());
     }
+    bookChanged = true;
     changed = true;
   }
 
   auto pin = std::find(pinnedPaths.begin(), pinnedPaths.end(), oldPath);
+  const size_t pinIndex = static_cast<size_t>(std::distance(pinnedPaths.begin(), pin));
+  std::string previousPin;
+  bool pinChanged = false;
+  bool pinErased = false;
   if (pin != pinnedPaths.end() && newPath.size() <= MAX_PIN_PATH_BYTES) {
+    previousPin = *pin;
     const auto duplicate = std::find(pinnedPaths.begin(), pinnedPaths.end(), newPath);
     if (duplicate != pinnedPaths.end() && duplicate != pin) {
       pinnedPaths.erase(pin);
+      pinErased = true;
     } else {
       *pin = newPath;
     }
+    pinChanged = true;
     changed = true;
   }
-  if (changed) saveToFile();
+  if (!changed || saveToFile()) return;
+
+  if (bookChanged) *it = std::move(previousBook);
+  if (pinChanged) {
+    if (pinErased) {
+      pinnedPaths.insert(pinnedPaths.begin() + pinIndex, std::move(previousPin));
+    } else {
+      pinnedPaths[pinIndex] = std::move(previousPin);
+    }
+  }
+  LOG_ERR("RBS", "Failed to persist recent-book path update: %s", oldPath.c_str());
 }
 
 RecentBooksStore::PinResult RecentBooksStore::togglePin(const std::string& path) {
@@ -265,32 +300,4 @@ RecentBooksStore::PruneStepResult RecentBooksStore::pruneMissingStep(size_t& rec
   }
 
   return PruneStepResult::Complete;
-}
-
-RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
-  std::string lastBookFileName = "";
-  const size_t lastSlash = path.find_last_of('/');
-  if (lastSlash != std::string::npos) {
-    lastBookFileName = path.substr(lastSlash + 1);
-  }
-
-  LOG_DBG("RBS", "Loading recent book: %s", path.c_str());
-
-  // If epub, try to load the metadata for title/author and cover.
-  // Use buildIfMissing=false to avoid heavy epub loading on boot; getTitle()/getAuthor() may be
-  // blank until the book is opened, and entries with missing title are omitted from recent list.
-  if (FsHelpers::hasEpubExtension(lastBookFileName)) {
-    Epub epub(path, "/.crosspoint");
-    epub.load(false, true);
-    return RecentBook{path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath()};
-  } else if (FsHelpers::hasXtcExtension(lastBookFileName)) {
-    // Handle XTC file
-    Xtc xtc(path, "/.crosspoint");
-    if (xtc.load()) {
-      return RecentBook{path, xtc.getTitle(), xtc.getAuthor(), xtc.getThumbBmpPath()};
-    }
-  } else if (FsHelpers::hasTxtExtension(lastBookFileName) || FsHelpers::hasMarkdownExtension(lastBookFileName)) {
-    return RecentBook{path, lastBookFileName, "", ""};
-  }
-  return RecentBook{path, "", "", ""};
 }

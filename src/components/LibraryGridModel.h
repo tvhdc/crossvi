@@ -17,8 +17,6 @@ class LibraryGridModel final {
 
   static constexpr LibraryGridShape shape(const uint8_t /*setting*/) { return {3, 2}; }
 
-  static constexpr bool usesPerCoverTitles(const uint8_t /*setting*/) { return true; }
-
   static constexpr uint8_t canonicalSetting(const int /*setting*/) { return 0; }
 
   static constexpr uint8_t migrateLegacySetting(const int /*setting*/) { return 0; }

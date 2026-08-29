@@ -162,10 +162,12 @@ bool NearbySyncExchange::confirmPairing(const uint32_t nowMs) {
 }
 
 bool NearbySyncExchange::acknowledgePeerOffer(const uint32_t nowMs) {
-  if (role_ != NearbySync::Role::Receiver || state_ != State::OfferReady || peerOfferSize_ == 0 || !sendAck(nowMs)) {
-    return false;
-  }
+  if (role_ != NearbySync::Role::Receiver || state_ != State::OfferReady || peerOfferSize_ == 0) return false;
   enter(State::WaitingForComplete, nowMs);
+  // Applying the peer offer is already durable when the activity calls this.
+  // Treat a transient ESP-NOW enqueue failure as a dropped ACK and let the
+  // bounded WaitingForComplete retry loop resend it.
+  sendAck(nowMs);
   return true;
 }
 

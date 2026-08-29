@@ -51,7 +51,6 @@ bool writeVerified(const std::string& path, const uint8_t* data, const size_t si
   HalFile file;
   if (!Storage.openFileForWrite("ATOMIC", path, file)) return false;
   const bool written = size == 0 || file.write(data, size) == size;
-  file.flush();
   const bool synced = written && file.sync();
   const bool closed = file.close();
   if (!written || !synced || !closed) return false;
@@ -85,7 +84,7 @@ LoadStatus load(const char* path, std::string& data, const size_t maxSize, const
 }
 
 SaveStatus save(const char* path, const uint8_t* data, const size_t size, const size_t maxSize,
-                const Validator validator, void* context) {
+                const Validator validator, void* context, const bool rotateIfUnchanged) {
   if (!path || !validator || (!data && size != 0)) return SaveStatus::InvalidExistingState;
   if (size > maxSize) return SaveStatus::Oversize;
   if (!validator(data, size, context)) return SaveStatus::InvalidExistingState;
@@ -94,14 +93,18 @@ SaveStatus save(const char* path, const uint8_t* data, const size_t size, const 
   const std::string backupPath = siblingPath(path, ".bak");
   const std::string tempPath = siblingPath(path, ".tmp");
   Candidate primary = inspect(primaryPath, maxSize, validator, context);
-  Candidate backup = inspect(backupPath, maxSize, validator, context);
-  if (primary.status == CandidateStatus::IoError || backup.status == CandidateStatus::IoError) {
-    return SaveStatus::IoError;
-  }
+  if (primary.status == CandidateStatus::IoError) return SaveStatus::IoError;
   if (primary.status == CandidateStatus::Valid && primary.data.size() == size &&
-      (size == 0 || primary.data.compare(0, size, reinterpret_cast<const char*>(data), size) == 0)) {
+      (size == 0 || primary.data.compare(0, size, reinterpret_cast<const char*>(data), size) == 0) &&
+      !rotateIfUnchanged) {
+    // A failed publish can leave a verified temp beside the restored primary.
+    // Once the caller confirms that the primary is the desired value, that
+    // abandoned temp must not remain eligible for a later load-time recovery.
+    if (!removeIfPresent(tempPath)) return SaveStatus::IoError;
     return SaveStatus::Unchanged;
   }
+  Candidate backup = inspect(backupPath, maxSize, validator, context);
+  if (backup.status == CandidateStatus::IoError) return SaveStatus::IoError;
 
   if (!removeIfPresent(tempPath) || !writeVerified(tempPath, data, size, maxSize, validator, context)) {
     removeIfPresent(tempPath);

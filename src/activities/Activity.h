@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -34,6 +35,8 @@ class Activity {
   std::atomic_bool openingBook{false};
   std::atomic_bool exitingReader{false};
   std::atomic<StrId> blockingFeedback{StrId::_COUNT};
+  static constexpr uint32_t TRANSIENT_POPUP_DURATION_MS = 3000;
+  std::atomic<uint32_t> transientPopupDeadlineMs{0};
 
   // Opt-in helper for screens where global navigation is safe.
   bool handleSafeGlobalShortcut(GlobalShortcut shortcut);
@@ -54,6 +57,10 @@ class Activity {
   void clearBlockingFeedback();
   void showBlockingFeedback(StrId message);
   bool renderBlockingFeedbackOverlay();
+  void drawTransientPopup(StrId message);
+  void drawTransientPopup(const char* message);
+  void cancelTransientPopup();
+  bool dismissTransientPopupIfExpired();
 
  public:
   explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)

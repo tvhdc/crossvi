@@ -32,6 +32,6 @@ class ClockOffsetActivity final : public Activity {
 
   void loadFromSettings();
   void saveToSettings() const;
-  void adjustActiveField(int delta);
+  bool adjustActiveField(int delta);
   void clampForSign();
 };

@@ -543,7 +543,7 @@ void HomeActivity::loop() {
                                             : indexToMenuItem(selectorIndex - static_cast<int>(recentBooks.size()),
                                                               hasOpdsServers, hasReadingStatsShortcut());
     startActivityForResult(std::make_unique<HomeShortcutsActivity>(renderer, mappedInput, returnMenuItem),
-                           [this](const ActivityResult&) { requestUpdate(); });
+                           [](const ActivityResult&) {});
     return;
   }
 
@@ -693,11 +693,7 @@ void HomeActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
-
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-    if (standardLayout) requestUpdate();
-  }
+  firstRenderDone = true;
 }
 
 void HomeActivity::onSelectBook(const std::string& path) {
@@ -901,5 +897,5 @@ bool HomeActivity::loadRecentNonEpubReadingStats() {
 
 void HomeActivity::onReadingStatsOpen() {
   startActivityForResult(std::make_unique<ReadingStatsMenuActivity>(renderer, mappedInput),
-                         [this](const ActivityResult&) { requestUpdate(); });
+                         [](const ActivityResult&) {});
 }

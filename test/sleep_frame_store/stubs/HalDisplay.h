@@ -6,8 +6,12 @@
 
 class HalDisplay {
  public:
-  HalDisplay(const uint16_t width, const uint16_t height)
-      : width_(width), height_(height), buffer_(static_cast<size_t>(width) * height / 8U, 0) {}
+  // Production HalDisplay reports the panel's physical landscape geometry,
+  // while SleepFrameStore persists portrait-oriented frame metadata.
+  HalDisplay(const uint16_t portraitWidth, const uint16_t portraitHeight)
+      : width_(portraitHeight),
+        height_(portraitWidth),
+        buffer_(static_cast<size_t>(portraitWidth) * portraitHeight / 8U, 0) {}
 
   uint16_t getDisplayWidth() const { return width_; }
   uint16_t getDisplayHeight() const { return height_; }

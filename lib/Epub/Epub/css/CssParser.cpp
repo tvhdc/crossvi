@@ -51,6 +51,18 @@ constexpr size_t MAX_CLASSES_PER_ELEMENT = 4;
 // If below this threshold, we skip CSS to avoid display artifacts.
 constexpr size_t MIN_FREE_HEAP_FOR_CSS = 48 * 1024;
 
+bool hasCssResolutionHeadroom() {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap >= MIN_FREE_HEAP_FOR_CSS) return true;
+  static bool warningLogged = false;
+  if (!warningLogged) {
+    warningLogged = true;
+    LOG_DBG("CSS", "Warning: low heap (%u bytes) below MIN_FREE_HEAP_FOR_CSS (%u), returning empty style", freeHeap,
+            static_cast<unsigned>(MIN_FREE_HEAP_FOR_CSS));
+  }
+  return false;
+}
+
 // Maximum length for a single selector string
 // Prevents parsing of extremely long or malformed selectors
 constexpr size_t MAX_SELECTOR_LENGTH = 256;
@@ -737,51 +749,48 @@ bool CssParser::loadFromStream(HalFile& source) {
 
 // Style resolution
 
-CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view classAttr) const {
-  static bool lowHeapWarningLogged = false;
-  if (ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CSS) {
-    if (!lowHeapWarningLogged) {
-      lowHeapWarningLogged = true;
-      LOG_DBG("CSS", "Warning: low heap (%u bytes) below MIN_FREE_HEAP_FOR_CSS (%u), returning empty style",
-              ESP.getFreeHeap(), static_cast<unsigned>(MIN_FREE_HEAP_FOR_CSS));
-    }
-    return CssStyle{};
+void CssParser::applyElementRule(CssStyle& result, const std::string_view tagName) const {
+  if (const auto it = rulesBySelector_.find(tagName); it != rulesBySelector_.end()) {
+    result.applyOver(it->second);
   }
+}
+
+void CssParser::applyClassRules(CssStyle& result, const std::string_view tagName,
+                                const std::string_view classAttr) const {
+  forEachDelimitedToken(classAttr, isCssWhitespace, [&](const std::string_view cls) {
+    if (const auto it = rulesBySelector_.find(CompositeKey{".", cls}); it != rulesBySelector_.end()) {
+      result.applyOver(it->second);
+    }
+  });
+  forEachDelimitedToken(classAttr, isCssWhitespace, [&](const std::string_view cls) {
+    if (const auto it = rulesBySelector_.find(CompositeKey{tagName, ".", cls}); it != rulesBySelector_.end()) {
+      result.applyOver(it->second);
+    }
+  });
+}
+
+CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view classAttr) const {
+  if (!hasCssResolutionHeadroom()) return CssStyle{};
 
   CssStyle result;
 
   // 1. Apply element-level style (lowest priority). The map's hash/equal are
   // case-insensitive, so the raw tagName view can be used as the lookup key.
-  if (auto it = rulesBySelector_.find(tagName); it != rulesBySelector_.end()) {
-    result.applyOver(it->second);
-  }
-
-  if (classAttr.empty()) return result;
-
-  // TODO: Support combinations of classes (e.g. style on .class1.class2)
-  // 2. Apply class styles (medium priority). The transparent hash/equal accept
-  // a CompositeKey, so we never materialize the concatenation.
-  forEachDelimitedToken(classAttr, isCssWhitespace, [&](std::string_view cls) {
-    if (auto it = rulesBySelector_.find(CompositeKey{".", cls}); it != rulesBySelector_.end()) {
-      result.applyOver(it->second);
-    }
-  });
-
-  // TODO: Support combinations of classes (e.g. style on p.class1.class2)
-  // 3. Apply element.class styles (higher priority).
-  forEachDelimitedToken(classAttr, isCssWhitespace, [&](std::string_view cls) {
-    if (auto it = rulesBySelector_.find(CompositeKey{tagName, ".", cls}); it != rulesBySelector_.end()) {
-      result.applyOver(it->second);
-    }
-  });
+  applyElementRule(result, tagName);
+  // 2. Apply class styles, then element.class styles. The shared helper keeps
+  // the same target-selector ordering in the ancestor-aware overload.
+  applyClassRules(result, tagName, classAttr);
 
   return result;
 }
 
 CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view classAttr,
                                  const std::vector<AncestorEntry>& ancestors) const {
-  CssStyle result = resolveStyle(tagName, classAttr);
-  if (ancestors.empty()) return result;
+  if (ancestors.empty()) return resolveStyle(tagName, classAttr);
+  if (!hasCssResolutionHeadroom()) return CssStyle{};
+
+  CssStyle result;
+  applyElementRule(result, tagName);
 
   const auto forEachClass = [](const std::string_view classes, const auto& fn) {
     size_t count = 0;
@@ -802,8 +811,7 @@ CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view clas
   };
 
   // Descendant rules sit between the basic element rule and the current
-  // element's class-specific rules. Re-applying the basic rules afterwards
-  // preserves the existing CrossVi priority model for the target element.
+  // element's class-specific rules.
   for (const AncestorEntry& ancestor : ancestors) {
     if (ancestor.tag.empty()) continue;
     applyChildVariants(ancestor.tag, {}, {});
@@ -812,8 +820,7 @@ CssStyle CssParser::resolveStyle(std::string_view tagName, std::string_view clas
       applyChildVariants(ancestor.tag, ".", ancestorClass);
     });
   }
-  const CssStyle targetRules = resolveStyle(tagName, classAttr);
-  result.applyOver(targetRules);
+  applyClassRules(result, tagName, classAttr);
   return result;
 }
 
@@ -944,7 +951,6 @@ bool CssParser::saveToCache() const {
 
     const uint32_t storedCrc = ~crc;
     if (writeOk && file.write(&storedCrc, sizeof(storedCrc)) != sizeof(storedCrc)) writeOk = false;
-    if (writeOk) file.flush();
     const bool synced = writeOk && file.sync();
     const bool closed = file.close();
     fileComplete = writeOk && synced && closed;

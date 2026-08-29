@@ -8,8 +8,8 @@
 
 namespace {
 
-void addDictionary(const std::string& name) {
-  const std::string folder = "/dictionaries/" + name;
+void addDictionary(const std::string& name, const std::string& root = "/dictionaries") {
+  const std::string folder = root + "/" + name;
   Storage.addDirectory(folder);
   Storage.setFile(folder + "/data.idx", {});
   Storage.setFile(folder + "/data.dict", {});
@@ -50,4 +50,43 @@ TEST_F(DictionaryRegistryTest, ResolveRejectsUnrepresentableOrInvalidPersistedNa
   EXPECT_EQ(basePath, "/dictionaries/valid/data");
   EXPECT_FALSE(DictionaryRegistry::resolveBasePath(std::string(32, 'x').c_str(), basePath));
   EXPECT_FALSE(DictionaryRegistry::resolveBasePath(std::string("bad\xC3\x28", 5).c_str(), basePath));
+}
+
+TEST_F(DictionaryRegistryTest, DuplicateFolderAcrossRootsIsListedOnceWithPreferredRoot) {
+  addDictionary("shared");
+  addDictionary("shared", "/.dictionaries");
+
+  std::vector<DictionaryEntry> dictionaries;
+  DictionaryRegistry::discover(dictionaries);
+
+  ASSERT_EQ(dictionaries.size(), 1U);
+  EXPECT_EQ(dictionaries.front().name, "shared");
+
+  std::string basePath;
+  ASSERT_TRUE(DictionaryRegistry::resolveBasePath("shared", basePath));
+  EXPECT_EQ(basePath, "/dictionaries/shared/data");
+}
+
+TEST_F(DictionaryRegistryTest, ResolveRejectsAStemFromAnIncompleteDirectoryScan) {
+  const std::string folder = "/dictionaries/ambiguous";
+  Storage.addDirectory(folder);
+  Storage.setFile(folder + "/a.dict", {});
+  Storage.setFile(folder + "/a.idx", {});
+  Storage.setFile(folder + "/z.idx", {});
+  Storage.failDirectoryIterationAfter(folder, 2);
+
+  std::string basePath;
+  EXPECT_FALSE(DictionaryRegistry::resolveBasePath("ambiguous", basePath));
+}
+
+TEST_F(DictionaryRegistryTest, DiscoveryDoesNotPublishAPartialRootScan) {
+  addDictionary("first");
+  addDictionary("second");
+  Storage.failDirectoryIterationAfter("/dictionaries", 1);
+  std::vector<DictionaryEntry> dictionaries{{"previous", "previous"}};
+
+  DictionaryRegistry::discover(dictionaries);
+
+  ASSERT_EQ(dictionaries.size(), 1U);
+  EXPECT_EQ(dictionaries.front().name, "previous");
 }

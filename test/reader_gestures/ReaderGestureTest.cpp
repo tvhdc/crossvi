@@ -133,6 +133,21 @@ TEST(ReaderRendering, UsesFastCleanupForThePeriodicX3Refresh) {
   EXPECT_EQ(pagesUntilRefresh, 1);
 }
 
+TEST(ReaderRendering, ManualRefreshKeepsTheBalancedCleanPassOnX3) {
+  display = {};
+  GfxRenderer renderer;
+  ReaderUtils::X3ReaderWaveformState state;
+  int pagesUntilRefresh = -1;
+
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilRefresh, state);
+  EXPECT_EQ(renderer.fastDisplayCalls, 0);
+  EXPECT_EQ(renderer.halfDisplayCalls, 1);
+
+  state.pageVisible();
+  EXPECT_EQ(display.immediateGhostCleanupCalls, 0);
+  EXPECT_EQ(pagesUntilRefresh, 1);
+}
+
 TEST(ReaderRendering, KeepsBalancedPeriodicRefreshWhenFastCleanupIsUnsupported) {
   display = {};
   display.x3GhostCleanupSupported = false;
@@ -306,25 +321,6 @@ TEST(ReaderGesture, TiltTurnsBothDirectionsWhenEnabled) {
   EXPECT_FALSE(opposite.next);
 }
 
-TEST(TiltPageTurnPolicy, DecodesConfiguredBigEndianSamples) {
-  EXPECT_EQ(TiltPageTurnPolicy::decodeBigEndian(0x12, 0x34), 0x1234);
-  EXPECT_EQ(TiltPageTurnPolicy::decodeBigEndian(0xFF, 0x00), -256);
-}
-
-TEST(TiltPageTurnPolicy, MapsRightAndLeftModesAcrossOrientation) {
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 0, 1), 0.5f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 0, 2), -0.5f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 1, 1), -0.25f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 1, 2), 0.25f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 2, 1), -0.5f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 2, 2), 0.5f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 3, 1), 0.25f);
-  EXPECT_FLOAT_EQ(TiltPageTurnPolicy::selectedAxis(0.5f, 0.25f, 3, 2), -0.25f);
-  EXPECT_TRUE(TiltPageTurnPolicy::shouldTurnNext(0.51f, TiltPageTurnPolicy::TRIGGER_THRESHOLD_G));
-  EXPECT_FALSE(TiltPageTurnPolicy::shouldTurnNext(0.49f, TiltPageTurnPolicy::TRIGGER_THRESHOLD_G));
-  EXPECT_FALSE(TiltPageTurnPolicy::shouldTurnNext(-0.51f, TiltPageTurnPolicy::TRIGGER_THRESHOLD_G));
-}
-
 TEST(TiltPageTurnPolicy, KeepsExistingDirectionSelectedAsReversed) {
   EXPECT_EQ(TiltPageTurnPolicy::settingOptionForMode(0), 0);
   EXPECT_EQ(TiltPageTurnPolicy::settingOptionForMode(1), 2);
@@ -333,55 +329,4 @@ TEST(TiltPageTurnPolicy, KeepsExistingDirectionSelectedAsReversed) {
   EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(1), 2);
   EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(2), 1);
   EXPECT_EQ(TiltPageTurnPolicy::modeForSettingOption(99), 0);
-}
-
-TEST(TiltPageTurnPolicy, RequiresNeutralAndTwoDeliberateSamples) {
-  TiltPageTurnPolicy::GestureState state;
-  using Direction = TiltPageTurnPolicy::Direction;
-
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.70f, 0, true), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 50, true), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 100, true), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.60f, 150, true), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.60f, 200, true), Direction::Forward);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.60f, 1000, true), Direction::None);
-}
-
-TEST(TiltPageTurnPolicy, RenderBusyDiscardsGestureUntilNeutralAgain) {
-  TiltPageTurnPolicy::GestureState state;
-  using Direction = TiltPageTurnPolicy::Direction;
-
-  TiltPageTurnPolicy::updateGesture(state, 0.00f, 0, true);
-  TiltPageTurnPolicy::updateGesture(state, 0.00f, 50, true);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 100, true), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 150, false), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 800, true), Direction::None);
-  TiltPageTurnPolicy::updateGesture(state, 0.00f, 850, true);
-  TiltPageTurnPolicy::updateGesture(state, 0.00f, 900, true);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 950, true), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 1000, true), Direction::Back);
-}
-
-TEST(TiltPageTurnPolicy, WaitsForCompletedPageRenderBeforeRearming) {
-  TiltPageTurnPolicy::GestureState state;
-  using Direction = TiltPageTurnPolicy::Direction;
-
-  TiltPageTurnPolicy::updateGesture(state, 0.00f, 0, true, 10);
-  TiltPageTurnPolicy::updateGesture(state, 0.00f, 50, true, 10);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.70f, 100, true, 10), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.70f, 150, true, 10), Direction::Forward);
-
-  // Render was requested but has not completed: even a complete neutral/new
-  // gesture sequence must remain blocked.
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 800, true, 10), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 850, true, 10), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 900, true, 10), Direction::None);
-
-  // Generation 11 acknowledges the displayed page. The device must then be
-  // level for two new samples before another deliberate tilt is accepted.
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 950, true, 11), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 1000, true, 11), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, 0.00f, 1050, true, 11), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 1100, true, 11), Direction::None);
-  EXPECT_EQ(TiltPageTurnPolicy::updateGesture(state, -0.70f, 1150, true, 11), Direction::Back);
 }

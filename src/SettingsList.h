@@ -31,8 +31,8 @@ inline SettingInfo buildPersistedFontSizeSetting() {
                                   StrId::STR_CAT_READER);
 }
 
-inline SettingInfo buildDictionaryFontSizeSetting() {
-  std::vector<std::string> labels{I18N.get(StrId::STR_USE_READER_FONT_SIZE)};
+inline SettingInfo buildDictionaryFontSizeSetting(const Language language = I18N.getLanguage()) {
+  std::vector<std::string> labels{I18N.get(StrId::STR_USE_READER_FONT_SIZE, language)};
   labels.reserve(ReaderFontSize::BUILTIN_COUNT + 1);
   for (uint8_t index = 0; index < ReaderFontSize::BUILTIN_COUNT; ++index) {
     labels.push_back(readerFontSizeLabel(index));
@@ -126,22 +126,23 @@ inline SettingInfo buildAvailableFontSizeSetting(const SdCardFontRegistry& regis
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
-inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
+inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry,
+                                          const Language language = I18N.getLanguage()) {
   // Built-in font labels (StrId)
   std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF};
-  // Runtime string labels for SD card fonts
-  std::vector<std::string> enumStringValues;
+  // Snapshot the registry names once; the same values drive labels and both
+  // getter/setter callbacks below.
+  std::vector<std::string> sdFamilyNames;
 
-  // Reserve: first CrossPointSettings::BUILTIN_FONT_COUNT entries use StrId, rest use strings
   if (registry) {
     const auto& families = registry->getFamilies();
-    enumStringValues.reserve(families.size());
-    std::transform(families.begin(), families.end(), std::back_inserter(enumStringValues),
+    sdFamilyNames.reserve(families.size());
+    std::transform(families.begin(), families.end(), std::back_inserter(sdFamilyNames),
                    [](const SdCardFontFamilyInfo& f) { return f.name; });
   }
 
   // Capture the SD font count for the lambdas
-  const int sdFontCount = static_cast<int>(enumStringValues.size());
+  const int sdFontCount = static_cast<int>(sdFamilyNames.size());
 
   // Total option count = built-in + SD card families
   // For the combined enumStringValues: we need all entries as strings (built-in names + SD names)
@@ -149,8 +150,8 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   // with all options when SD fonts are present.
   std::vector<std::string> allStringValues;
   if (sdFontCount > 0) {
-    allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF));
-    allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
+    allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF, language));
+    allStringValues.insert(allStringValues.end(), sdFamilyNames.begin(), sdFamilyNames.end());
   }
 
   SettingInfo s;
@@ -160,15 +161,6 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   s.enumStringValues = std::move(allStringValues);
   s.key = "fontFamily";
   s.category = StrId::STR_CAT_READER;
-
-  // Capture registry families by copy for the lambdas
-  std::vector<std::string> sdFamilyNames;
-  if (registry) {
-    const auto& families = registry->getFamilies();
-    sdFamilyNames.reserve(families.size());
-    std::transform(families.begin(), families.end(), std::back_inserter(sdFamilyNames),
-                   [](const SdCardFontFamilyInfo& f) { return f.name; });
-  }
 
   s.valueGetter = [sdFamilyNames]() -> uint8_t {
     // If an SD card font is selected, find its index
@@ -219,9 +211,7 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 
   s.valueGetter = [folderNames]() -> uint8_t {
     for (size_t i = 0; i < folderNames.size(); i++) {
-      // Compare within the settings field capacity: an over-long folder name is
-      // stored truncated, and must still match its list entry.
-      if (strncmp(folderNames[i].c_str(), SETTINGS.dictionaryName, sizeof(SETTINGS.dictionaryName) - 1) == 0) {
+      if (strcmp(folderNames[i].c_str(), SETTINGS.dictionaryName) == 0) {
         return static_cast<uint8_t>(i + 1);
       }
     }
@@ -289,8 +279,7 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::DynamicEnum(
             StrId::STR_SLEEP_SCREEN,
             {StrId::STR_DEFAULT_VALUE, StrId::STR_COVER, StrId::STR_CUSTOM, StrId::STR_NONE_OPT,
-             StrId::STR_READING_STATS, StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS,
-             StrId::STR_TRANSPARENT_SLEEP},
+             StrId::STR_READING_STATS, StrId::STR_COVER_WITH_STATS, StrId::STR_CUSTOM_WITH_STATS},
             [] { return CrossPointSettings::sleepScreenSelection(SETTINGS.sleepScreen); },
             [](const uint8_t selection) { SETTINGS.sleepScreen = CrossPointSettings::sleepScreenMode(selection); },
             "sleepScreen", StrId::STR_CAT_DISPLAY),
@@ -307,9 +296,6 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
             StrId::STR_REFRESH_EVERY, &CrossPointSettings::refreshFrequency,
             {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30},
             "refreshFrequency", StrId::STR_CAT_DISPLAY),
-        SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
-                            StrId::STR_CAT_DISPLAY),
-
         // --- Reader ---
         // Built-in font-family entry. Replaced per-call with a registry-aware
         // version when SD fonts are installed.
@@ -407,49 +393,29 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(
             StrId::STR_KOREADER_USERNAME, [] { return KOREADER_STORE.getUsername(); },
-            [](const std::string& v) {
-              KOREADER_STORE.setCredentials(v, KOREADER_STORE.getPassword());
-              KOREADER_STORE.saveToFile();
-            },
-            "koUsername", StrId::STR_KOREADER_SYNC),
+            [](const std::string& v) { KOREADER_STORE.setCredentials(v, KOREADER_STORE.getPassword()); }, "koUsername",
+            StrId::STR_KOREADER_SYNC),
         SettingInfo::DynamicString(
             StrId::STR_KOREADER_PASSWORD, [] { return KOREADER_STORE.getPassword(); },
-            [](const std::string& v) {
-              KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), v);
-              KOREADER_STORE.saveToFile();
-            },
-            "koPassword", StrId::STR_KOREADER_SYNC),
+            [](const std::string& v) { KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), v); }, "koPassword",
+            StrId::STR_KOREADER_SYNC),
         SettingInfo::DynamicString(
             StrId::STR_SYNC_SERVER_URL, [] { return KOREADER_STORE.getServerUrl(); },
-            [](const std::string& v) {
-              KOREADER_STORE.setServerUrl(v);
-              KOREADER_STORE.saveToFile();
-            },
-            "koServerUrl", StrId::STR_KOREADER_SYNC),
+            [](const std::string& v) { KOREADER_STORE.setServerUrl(v); }, "koServerUrl", StrId::STR_KOREADER_SYNC),
         SettingInfo::DynamicEnum(
             StrId::STR_DOCUMENT_MATCHING, {StrId::STR_FILENAME, StrId::STR_BINARY},
             [] { return static_cast<uint8_t>(KOREADER_STORE.getMatchMethod()); },
-            [](uint8_t v) {
-              KOREADER_STORE.setMatchMethod(static_cast<DocumentMatchMethod>(v));
-              KOREADER_STORE.saveToFile();
-            },
-            "koMatchMethod", StrId::STR_KOREADER_SYNC),
+            [](uint8_t v) { KOREADER_STORE.setMatchMethod(static_cast<DocumentMatchMethod>(v)); }, "koMatchMethod",
+            StrId::STR_KOREADER_SYNC),
         SettingInfo::DynamicEnum(
             StrId::STR_SEND_METADATA, {StrId::STR_STATE_OFF, StrId::STR_STATE_ON},
             [] { return static_cast<uint8_t>(KOREADER_STORE.getSendMetadata()); },
-            [](uint8_t v) {
-              KOREADER_STORE.setSendMetadata(v != 0);
-              KOREADER_STORE.saveToFile();
-            },
-            "koSendMetadata", StrId::STR_KOREADER_SYNC),
+            [](uint8_t v) { KOREADER_STORE.setSendMetadata(v != 0); }, "koSendMetadata", StrId::STR_KOREADER_SYNC),
         SettingInfo::DynamicEnum(
             StrId::STR_SYNC_BEHAVIOR, {StrId::STR_ASK_EVERY_TIME, StrId::STR_SMART_SYNC},
             [] { return static_cast<uint8_t>(KOREADER_STORE.getSyncBehavior()); },
-            [](uint8_t v) {
-              KOREADER_STORE.setSyncBehavior(static_cast<KOReaderSyncBehavior>(v));
-              KOREADER_STORE.saveToFile();
-            },
-            "koSyncBehavior", StrId::STR_KOREADER_SYNC),
+            [](uint8_t v) { KOREADER_STORE.setSyncBehavior(static_cast<KOReaderSyncBehavior>(v)); }, "koSyncBehavior",
+            StrId::STR_KOREADER_SYNC),
         // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
         SettingInfo::Enum(StrId::STR_TITLE, &CrossPointSettings::statusBarTitle,
                           {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE}, "statusBarTitle",
@@ -511,12 +477,16 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
 }
 
 std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry,
-                                         const std::vector<DictionaryEntry>* dictionaries) {
+                                         const std::vector<DictionaryEntry>* dictionaries,
+                                         const Language language = I18N.getLanguage()) {
   std::vector<SettingInfo> v = getBaseSettingsList();
+  auto dictionaryFontSize = std::find_if(
+      v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_DICTIONARY_FONT_SIZE; });
+  if (dictionaryFontSize != v.end()) *dictionaryFontSize = buildDictionaryFontSizeSetting(language);
   if (registry) {
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_FAMILY; });
     if (registry->getFamilyCount() > 0 && it != v.end()) {
-      *it = buildFontFamilySetting(registry);
+      *it = buildFontFamilySetting(registry, language);
     }
     it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_SIZE; });
     if (it != v.end()) *it = buildAvailableFontSizeSetting(*registry);
@@ -532,5 +502,6 @@ std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry,
 #else
 const std::vector<SettingInfo>& getBaseSettingsList();
 std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
-                                         const std::vector<DictionaryEntry>* dictionaries = nullptr);
+                                         const std::vector<DictionaryEntry>* dictionaries = nullptr,
+                                         Language language = I18N.getLanguage());
 #endif
