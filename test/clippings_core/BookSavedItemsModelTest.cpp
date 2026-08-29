@@ -52,6 +52,33 @@ TEST(BookSavedItemsModelTest, UsesRawTextAndFixedPageAnchors) {
   EXPECT_EQ(BookSavedItemsModel::highlightPosition(highlight), 1200U);
 }
 
+TEST(BookSavedItemsModelTest, AnchoredHighlightsSortBySpineBeforeTheirLocalTextOffset) {
+  ClippingCodec::ClippingMetadata firstChapter;
+  firstChapter.spineIndex = 1;
+  firstChapter.hasTextAnchor = true;
+  firstChapter.textSourceStart = 9000;
+
+  ClippingCodec::ClippingMetadata secondChapter;
+  secondChapter.spineIndex = 2;
+  secondChapter.hasTextAnchor = true;
+  secondChapter.textSourceStart = 10;
+
+  auto laterInFirstChapter = firstChapter;
+  laterInFirstChapter.textSourceStart = 9500;
+
+  std::vector<BookSavedItemsModel::ItemRef> items{
+      {BookSavedItemsModel::Kind::Highlight, 2, BookSavedItemsModel::highlightPosition(secondChapter)},
+      {BookSavedItemsModel::Kind::Highlight, 1, BookSavedItemsModel::highlightPosition(laterInFirstChapter)},
+      {BookSavedItemsModel::Kind::Highlight, 0, BookSavedItemsModel::highlightPosition(firstChapter)}};
+  BookSavedItemsModel::sortItems(items);
+
+  ASSERT_EQ(items.size(), 3U);
+  EXPECT_EQ(items[0].sourceIndex, 0U);
+  EXPECT_EQ(items[1].sourceIndex, 1U);
+  EXPECT_EQ(items[2].sourceIndex, 2U);
+  EXPECT_EQ(BookSavedItemsModel::highlightPosition(firstChapter), (uint64_t{1} << 32U) | 9000U);
+}
+
 TEST(BookSavedItemsModelTest, FiltersTabsWithoutCopyingSourceContent) {
   std::vector<BookmarkEntry> bookmarks{epubBookmark(0, 0), epubBookmark(0, 2)};
   auto all = BookSavedItemsModel::project(bookmarks, nullptr, BookSavedItemsModel::Tab::All);

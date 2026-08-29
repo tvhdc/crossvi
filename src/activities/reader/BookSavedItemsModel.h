@@ -37,7 +37,9 @@ inline uint64_t bookmarkPosition(const BookmarkEntry& bookmark) {
 }
 
 inline uint64_t highlightPosition(const ClippingCodec::ClippingMetadata& clipping) {
-  if (clipping.hasTextAnchor) return clipping.textSourceStart;
+  if (clipping.hasTextAnchor) {
+    return (static_cast<uint64_t>(clipping.spineIndex) << 32U) | clipping.textSourceStart;
+  }
   return (static_cast<uint64_t>(clipping.spineIndex) << 32U) | (static_cast<uint64_t>(clipping.startPage) << 16U) |
          clipping.startWordIndex;
 }

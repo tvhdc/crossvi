@@ -14,6 +14,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <MemoryBudget.h>
+#include <Utf8.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -2345,7 +2346,15 @@ void EpubReaderActivity::openClippingSelection() {
     clipping.textSourceStart = selection->textSourceStart;
     clipping.textSourceEnd = selection->textSourceEnd;
     const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-    if (tocIndex >= 0) clipping.chapterTitle = epub->getTocItem(tocIndex).title;
+    if (tocIndex >= 0) {
+      const std::string& title = epub->getTocItem(tocIndex).title;
+      size_t titleBytes = title.size();
+      if (titleBytes > ClippingCodec::MAX_CHAPTER_TITLE_BYTES) {
+        titleBytes = static_cast<size_t>(
+            utf8SafeTruncateBuffer(title.c_str(), static_cast<int>(ClippingCodec::MAX_CHAPTER_TITLE_BYTES)));
+      }
+      clipping.chapterTitle.assign(title.data(), titleBytes);
+    }
     const std::time_t now = std::time(nullptr);
     if (now >= 1577836800 && static_cast<uint64_t>(now) <= UINT32_MAX) {
       clipping.timestamp = static_cast<uint32_t>(now);

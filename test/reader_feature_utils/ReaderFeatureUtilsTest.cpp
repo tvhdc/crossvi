@@ -318,6 +318,19 @@ TEST(Utf8Safety, DropsAnIncompleteSequenceStartingAtTheFirstByte) {
   EXPECT_EQ(utf8SafeTruncateBuffer("\xC3\xA9", 2), 2);
 }
 
+TEST(Utf8Safety, BoundsChapterTitlesWithoutSplittingAMultibyteCharacter) {
+  const std::string ascii65(65, 'a');
+  EXPECT_EQ(utf8SafeTruncateBuffer(ascii65.c_str(), 64), 64);
+
+  const std::string splitCharacter = std::string(63, 'a') + "\xC3\xA9";
+  EXPECT_EQ(splitCharacter.size(), 65U);
+  EXPECT_EQ(utf8SafeTruncateBuffer(splitCharacter.c_str(), 64), 63);
+
+  const std::string exactCharacter = std::string(62, 'a') + "\xC3\xA9";
+  EXPECT_EQ(exactCharacter.size(), 64U);
+  EXPECT_EQ(utf8SafeTruncateBuffer(exactCharacter.c_str(), 64), 64);
+}
+
 TEST(PowerButtonGesture, SingleIsImmediateWhenDoubleClickIsDisabled) {
   PowerButtonGesture gesture;
   EXPECT_EQ(gesture.update(10, true, false, true, 0, false), PowerButtonGesture::Event::None);

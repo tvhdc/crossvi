@@ -362,6 +362,20 @@ TEST(ClippingCodec, EnforcesSixtyFourClippingAndTextLimits) {
   EXPECT_EQ(ClippingCodec::encodeRecord(tooLong, record), Status::LimitExceeded);
 }
 
+TEST(ClippingCodec, KeepsChapterTitleValidationStrictAtTheRecordBoundary) {
+  ClippingMetadata clipping = sampleClipping();
+  clipping.textLength = 1;
+  clipping.chapterTitle.assign(ClippingCodec::MAX_CHAPTER_TITLE_BYTES, 'a');
+  std::array<uint8_t, ClippingCodec::RECORD_SIZE> record{};
+  EXPECT_EQ(ClippingCodec::encodeRecord(clipping, record), Status::Ok);
+
+  clipping.chapterTitle.push_back('b');
+  EXPECT_EQ(ClippingCodec::encodeRecord(clipping, record), Status::LimitExceeded);
+
+  clipping.chapterTitle.assign("\xC3", 1);
+  EXPECT_EQ(ClippingCodec::encodeRecord(clipping, record), Status::InvalidUtf8);
+}
+
 TEST(ClippingCodec, ReadsOnlyUnambiguousCrossInkV1AndV2Files) {
   for (const uint8_t version : {uint8_t{1}, uint8_t{2}}) {
     auto legacy = makeLegacyFile(version, sampleBook(), {{sampleClipping(), "bản cũ"}});

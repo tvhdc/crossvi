@@ -345,10 +345,10 @@ void BookSavedItemsActivity::loop() {
     }
     return;
   }
-  navigator_.onNextPress([this] {
+  navigator_.onNextRelease([this] {
     if (moveSelectionNext()) requestUpdate();
   });
-  navigator_.onPreviousPress([this] {
+  navigator_.onPreviousRelease([this] {
     if (moveSelectionPrevious()) requestUpdate();
   });
   navigator_.onContinuous({MappedInputManager::Button::Right}, [this] {

@@ -25,6 +25,22 @@ def load_git_branch():
 
 
 class CodegenTest(unittest.TestCase):
+    def test_epub_highlight_metadata_is_bounded_and_saved_items_use_release_edges(self):
+        reader = (REPO_ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text(encoding="utf-8")
+        clipping = reader[reader.index("void EpubReaderActivity::openClippingSelection") :
+                          reader.index("uint32_t EpubReaderActivity::currentClippingLayoutFingerprint")]
+        self.assertIn("ClippingCodec::MAX_CHAPTER_TITLE_BYTES", clipping)
+        self.assertIn("utf8SafeTruncateBuffer", clipping)
+        self.assertLess(clipping.index("utf8SafeTruncateBuffer"), clipping.index("clippingStore.add"))
+
+        saved_items = (REPO_ROOT / "src/activities/reader/BookSavedItemsActivity.cpp").read_text(encoding="utf-8")
+        loop = saved_items[saved_items.index("void BookSavedItemsActivity::loop()") :
+                           saved_items.index("std::string BookSavedItemsActivity::rowTitle")]
+        self.assertIn("navigator_.onNextRelease", loop)
+        self.assertIn("navigator_.onPreviousRelease", loop)
+        self.assertNotIn("navigator_.onNextPress", loop)
+        self.assertNotIn("navigator_.onPreviousPress", loop)
+
     def test_vocabulary_dataset_switch_rolls_back_to_a_valid_runtime_dataset(self):
         activity = (REPO_ROOT / "src/activities/reader/VocabularyLearningActivity.cpp").read_text(encoding="utf-8")
         switch = activity[activity.index("bool VocabularyLearningActivity::selectDataset") :
